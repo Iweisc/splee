@@ -1,0 +1,201 @@
+# Splee spec
+
+Splee is a functional clone of explee.com: an AI outbound agent. You paste your website, a Claude agent researches your company, competitors and buyer segments, finds companies and decision makers on the web, writes personal cold emails, sends them from your own mailboxes within a daily budget, reads replies over IMAP, classifies them, and auto-replies with your booking link.
+
+- Backend: Rust, Axum 0.8, sqlx + Postgres, `claude-agent-sdk-rs` (drives the local `claude` CLI). `backend/`
+- Frontend: Next.js 16 App Router, React 19, Tailwind 4. `frontend/`
+- Next rewrites `/api/*` to the backend (`http://127.0.0.1:8787/api/*`), so cookies are same-origin.
+- Postgres: `docker compose up -d` (port 55432). Backend: `cd backend && cargo run`. Frontend: `cd frontend && pnpm dev` (port 3333).
+
+Schema: `backend/migrations/0001_init.sql`. Rust rows: `backend/src/models.rs`. TS types: `frontend/src/lib/types.ts`. Those three are the contract. Change all three together.
+
+## Conventions
+
+- JSON in and out. Errors are `{ "error": "message" }` with a meaningful status (see `backend/src/error.rs`).
+- Money is micro-dollars (`*_micros`, 1 USD = 1_000_000) except `daily_budget_cents`.
+- Timestamps are RFC 3339 strings. IDs are UUIDs.
+- Lists return `{ "items": [...], "total": n }` when paginated (`?page=1&per_page=50`, page is 1-based). Small fixed lists return a bare array.
+- Auth: cookie `splee_session` (extractor `Auth` in `backend/src/auth.rs`). `Auth::project(db, id)` checks org ownership. Admin-only routes call `auth.require_admin()`.
+- Public API v1 uses `Authorization: Bearer splee_...` (extractor `ApiKeyAuth`).
+- Agent work is always `agent::enqueue(db, kind, project_id, org_id, input)` from routes. Never call Claude inside a request handler, except support chat.
+- Pricing: $0.04 per sent email (`billing::EMAIL_COST_MICROS`), $30 signup credits, sending stops at zero balance or when today's spend reaches the project's daily budget.
+
+## Agent pipeline (explore run)
+
+One `explore` run executes 6 steps in order and emits `agent_events` as it goes. `agent_runs.step` is the current step (1-6). Each step writes its results to the normal tables as soon as it finishes, so the UI can render partial results.
+
+| step | title (UI) | writes |
+|------|-----------|--------|
+| 1 | Research your company | `projects.company`, `projects.name` |
+| 2 | Explore competitors | `competitors` (up to 12) |
+| 3 | Define campaigns | `segments` (4-6, with icon, est_size, fit_score, targeting) |
+| 4 | Find potential customers | `companies` for the top segment (demo: 10, app: 25) |
+| 5 | Find decision makers | `leads` for the best companies (demo: 6, app: 20) |
+| 6 | Write personal emails | `email_messages` drafts, kind `initial`, status `draft` (demo: 3, app: all leads) |
+
+Event kinds: `phase` (data `{step, title, status: "started"|"finished"}`), `log` (short line like `searching "alternatives to larksilk"…`), `tool` (data `{name, input}`), `done`, `error`.
+
+`segments.icon` is one of: `building, store, hotel, heart, palette, home, scissors, briefcase, graduation-cap, stethoscope, factory, truck, utensils, code, shopping-cart, users, landmark, plane, dumbbell, camera`.
+
+`companies.employees` is a display string like `11-50`.
+
+### Run inputs (`agent_runs.input`), enqueued by B1 routes, consumed by B2
+
+| kind | input |
+|---|---|
+| explore | `{mode: "demo"|"app", from_step?: number (default 1), note?: string}` (demo sizes vs app sizes in the table above) |
+| find_companies | `{segment_id, count}` |
+| find_people | `{segment_id, company_ids?: uuid[], max_per_company?: number (default 2)}` |
+| write_emails | `{segment_id?, lead_ids?: uuid[], instructions?: string, follow_up?: bool, rewrite?: bool}`. Writes `initial` drafts for leads that have none. `follow_up` writes each lead's next follow-up. `rewrite` rewrites each lead's unsent first email or pending follow-up in place, keeping its status. |
+| classify_reply | `{message_id}` (inbound email_messages row) |
+| draft_reply | `{message_id}` |
+| linkedin_sequence | `{lead_id}` (connect note + 2 follow-up messages → `linkedin_messages`) |
+| explorer | `{query, country?, ip}` → `output.results: ExplorerCompany[]` |
+| segment_from_prompt | `{segment_id, prompt}` fills the draft segment's fields |
+
+`research_company` is reserved and unused.
+
+## Endpoints
+
+All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend agent/mail agent.
+
+### Public (no auth)
+
+| method | path | owner | body / query | response |
+|---|---|---|---|---|
+| GET | /public/stats | B1 | | `{hot_leads, companies}` (counts of leads with status hot/meeting_booked and orgs; add 0 offsets, no fake numbers) |
+| POST | /demo | B2 | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (`X-Forwarded-For` or peer). |
+| GET | /demo/:project_id?token= | B2 | | `DemoState` |
+| GET | /demo/:project_id/events?token=&after=<event id> | B2 | | SSE. Each message `data: AgentEvent` JSON. Sends backlog after `after`, then live. Ends after `done`/`error`. |
+| POST | /demo/:project_id/correct?token= | B2 | `{note}` | re-runs from step 1 with the user's correction ("Details look off?"). `{ok:true}` |
+| POST | /support/messages | B2 | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. |
+| POST | /explorer | B2 | `{query, country?}` | `{run_id}` (Segments Explorer, public, rate limited) |
+| GET | /explorer/:run_id | B2 | | `{run: AgentRun, results: ExplorerCompany[]}` |
+| GET | /unsubscribe/:token | B2 | | marks lead unsubscribed + suppression, returns `{ok:true, email}` (frontend page `/unsubscribe/[token]` calls it) |
+
+### Auth (B1)
+
+| method | path | body | response |
+|---|---|---|---|
+| POST | /auth/signup | `{email, password, name, referral_code?, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, $30 `signup_bonus`, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. |
+| POST | /auth/login | `{email, password}` | `Me`, sets cookie |
+| POST | /auth/logout | | `{ok:true}` |
+| GET | /auth/me | | `Me` or 401 |
+| POST | /auth/switch-org | `{org_id}` | `Me` |
+| GET | /invites/:token | | `{org_name, email, role}` (public) |
+| POST | /invites/:token/accept | | `Me` (signed-in user joins org) |
+
+### Organization (B1)
+
+| method | path | body | response |
+|---|---|---|---|
+| GET/PATCH | /organization | `{name}` | `Organization` |
+| GET | /organization/users | | `Member[]` |
+| PATCH | /organization/users/:user_id | `{role}` | `Member` (admin) |
+| DELETE | /organization/users/:user_id | | `{ok}` (admin, can't remove last owner) |
+| GET/POST | /organization/invites | `{email, role}` | `Invite[]` / `{invite, link}` (link = PUBLIC_URL/invite/token; also emailed if the org has an active mailbox) |
+| DELETE | /organization/invites/:id | | `{ok}` |
+| POST | /organization/stop-campaigns | `{reason, details}` | pauses every project + stores stop_feedback. `{ok}` |
+| GET | /organization/deletion-eligibility | | `{eligible, reason}` (not eligible with emails scheduled in the next hour) |
+| DELETE | /organization | | `{ok}` (owner) |
+| GET/POST | /organization/api-keys | `{name}` | `ApiKey[]` / `{api_key: ApiKey, secret}` (secret shown once) |
+| DELETE | /organization/api-keys/:id | | `{ok}` (revoke) |
+| GET/PUT | /notification-preferences | `NotificationPrefs` | `NotificationPrefs` |
+| GET | /referral | | `{code, link, referred: [{org_name, created_at, rewarded}], earned_micros}` |
+
+### Billing (B1)
+
+| method | path | body | response |
+|---|---|---|---|
+| GET | /billing | | `{balance_micros, spent_today_micros, total_spent_micros, emails_sent, ledger: LedgerEntry[] (last 100), stripe_enabled}` |
+| GET/PUT | /billing/profile | `BillingProfile` fields | `BillingProfile` |
+| POST | /billing/topup | `{amount_cents}` min 1000 | `{checkout_url}` via Stripe Checkout, or 501 when STRIPE_SECRET_KEY is unset |
+| POST | /billing/stripe-webhook | raw Stripe event | verifies signature, credits `topup` on `checkout.session.completed` |
+
+### Projects and campaigns (B1)
+
+| method | path | body | response |
+|---|---|---|---|
+| GET | /projects | | `ProjectSummary[]` |
+| POST | /projects | `{domain?, description?}` | `Project` + enqueues `explore` with `{mode:"app"}` |
+| POST | /projects/claim | `{project_id, token}` | `Project`. Signed-in version of signup `claim`. |
+| GET/PATCH/DELETE | /projects/:id | `{name?, company?}` | `ProjectDetail` |
+| POST | /projects/:id/research | `{note?}` | re-enqueue `explore` from step 1 `{run_id}` |
+| GET | /projects/:id/stats?days=30 | | `ProjectStats` |
+| GET | /projects/:id/runs | | `AgentRun[]` (last 50) |
+| POST | /projects/:id/rewrite-emails | | `{run_id}`. One write_emails run in rewrite mode for every lead with an unsent (draft/approved/scheduled) first email or follow-up. 409 when there are none or a write run is already going. The sender holds those leads until the run ends. |
+| GET/POST | /projects/:id/competitors | `{domain, name?, note?}` | `Competitor[]` / `Competitor`. 409 when the domain is already listed. The explore run's competitor step replaces the whole list. |
+| DELETE | /competitors/:id | | `{ok}` |
+| GET | /projects/:id/segments | | `SegmentWithStats[]` |
+| POST | /projects/:id/segments | `{prompt}` or full segment fields | `Segment`. With `prompt`, enqueues `segment_from_prompt` and returns the draft segment immediately |
+| GET/PATCH/DELETE | /segments/:id | Segment fields | `SegmentWithStats` |
+| POST | /segments/:id/find-companies | `{count?}` | `{run_id}` |
+| POST | /segments/:id/find-people | `{company_ids?}` | `{run_id}` |
+| POST | /segments/:id/write-emails | `{lead_ids?}` | `{run_id}` |
+| POST | /segments/:id/start | | sets status `working`, approves its drafts, `{ok}` |
+| POST | /segments/:id/pause | | `{ok}` |
+| GET | /projects/:id/companies?segment_id&status&q&page | | paginated `Company` |
+| PATCH | /companies/:id | `{status}` | `Company` |
+| GET | /projects/:id/leads?segment_id&status&q&page | | paginated `LeadRow` |
+| GET/PATCH/DELETE | /leads/:id | `{status?, email?, title?...}` | `LeadDetail` |
+| GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings` |
+| POST | /projects/:id/start | | unpauses the project (requires balance > 0 and at least one active mailbox, else 402/400 with a clear message) `{ok}` |
+| POST | /projects/:id/pause | | `{ok}` |
+| GET/POST | /projects/:id/materials | `{kind,title,content,url}` | `Material[]` / `Material` |
+| PATCH/DELETE | /materials/:id | | `Material` / `{ok}` |
+| POST | /projects/:id/import | multipart: `file` (CSV), `segment_id?`, `mapping` (JSON `{email:"Email", full_name:"Name", ...}`) | `Import` (skips suppressed, duplicate and invalid emails) |
+| GET | /projects/:id/imports | | `Import[]` |
+| POST | /projects/:id/import/preview | multipart `file` | `{headers: string[], rows: string[][] (first 5), suggested_mapping}` |
+
+### Emails and inbox (B1)
+
+| method | path | body | response |
+|---|---|---|---|
+| GET | /emails?project_id&segment_id&status&kind&q&page | | paginated `EmailRow` (outbound only). `status` and `kind` take comma lists. |
+| GET/PATCH | /emails/:id | `{subject?, body?, status?: "approved"|"cancelled"}` | `EmailRow` |
+| POST | /emails/:id/regenerate | `{instructions?}` | `{run_id}` (write_emails in rewrite mode for that one lead) |
+| GET | /inbox?project_id&filter=all|hot|needs_reply|auto_replied|other&page | | paginated `InboxThread` |
+| GET | /inbox/threads/:lead_id | | `{lead: LeadDetail, messages: EmailMessage[] (both directions, oldest first)}` |
+| POST | /inbox/threads/:lead_id/reply | `{body}` | queues a `manual_reply` (status scheduled, now) `EmailMessage` |
+| POST | /inbox/messages/:id/approve | `{body?}` | approves a pending `auto_reply` draft |
+| POST | /inbox/threads/:lead_id/status | `{status}` | updates lead status (hot, meeting_booked, not_interested...) |
+| GET | /projects/:id/linkedin?segment_id | | `[{lead: LeadRow, messages: LinkedinMessage[]}]` |
+| POST | /leads/:id/linkedin | | `{run_id}` (linkedin_sequence) |
+| PATCH | /linkedin/:id | `{status, body?}` | `LinkedinMessage` |
+
+### Mailboxes and suppressions
+
+| method | path | owner | body | response |
+|---|---|---|---|---|
+| GET/POST | /mailboxes | B1 | `MailboxInput` | `Mailbox[]` / `Mailbox` (passwords encrypted with `crypto::encrypt`) |
+| PATCH/DELETE | /mailboxes/:id | B1 | partial `MailboxInput` (empty password = keep) | `Mailbox` |
+| POST | /mailboxes/:id/test | B1 route, calls `mail::test_mailbox` (B2) | | `{ok, error?}`; sets status/last_error |
+| POST | /mailboxes/:id/check-dns | B1 route, calls `mail::check_dns` (B2) | | `Mailbox` with `dns` |
+| GET | /suppressions?q&page | B1 | | paginated `Suppression` |
+| POST | /suppressions | B1 | `{values: string}` newline/comma separated emails or domains | `{added}` |
+| DELETE | /suppressions/:id | B1 | | `{ok}` |
+
+### Runs (B2)
+
+| method | path | response |
+|---|---|---|
+| GET | /runs/:id | `{run: AgentRun, events: AgentEvent[]}` (auth, org scoped) |
+| GET | /runs/:id/events?after= | SSE like the demo stream (auth) |
+| POST | /runs/:id/cancel | `{ok}` |
+
+### Public API v1 (B1, ApiKeyAuth)
+
+`GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads/:id`, `GET /v1/projects/:id/replies?since=` (inbound messages).
+
+## Background workers (B2)
+
+- Agent worker: claims `agent_runs` with `for update skip locked`, runs up to `AGENT_CONCURRENCY` at once. Each Claude call uses `claude-agent-sdk-rs` `query_stream` with `setting_sources: []` (never load the host user's Claude settings), `cwd` = a temp dir, `tools`/`allowed_tools` = `WebSearch`, `WebFetch` only (none for classification/writing), JSON-schema `output_format`, model `AGENT_MODEL`. Tool calls and short text become `tool`/`log` events. Cost is added to `agent_runs.cost_usd`.
+- Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with balance > 0 and today's spend under its daily budget: take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, debit `email_sent`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working. Referral reward when the referred org passes the qualifying spend.
+- IMAP poller (every 60s): fetch new messages per mailbox (UID > imap_last_uid), match to lead by `In-Reply-To`/`References` then by from address, store `inbound` rows, enqueue `classify_reply`. Bounces (mailer-daemon) mark lead `bounced` + suppression. Classification `hot` → lead `hot`, webhook + Slack notify; `unsubscribe` → suppression; `ooo` → reschedule. For hot/question replies when `auto_reply_mode != off`, enqueue `draft_reply` (includes booking link) → `auto` sends it, `approve` leaves it as draft for the inbox.
+- Optimizer (hourly): per working segment with >= 40 sent emails, cost per hot lead < $10 → `scaling`, > $25 → `paused`, else `working`. Scaling segments get first pick in the sender.
+
+## Frontend routes
+
+Marketing (C): `/`, `/pricing`, `/about`, `/affiliate`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
+
+App (D1, D2) under `/app`: see `frontend/src/components/app/nav.ts`.

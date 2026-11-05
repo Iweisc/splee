@@ -1,0 +1,190 @@
+"use client";
+
+import { useParams } from "next/navigation";
+import { useSyncExternalStore } from "react";
+import { KeyRound } from "lucide-react";
+import { PageBody, PageHeader } from "@/components/app/page-header";
+import { CodeBlock } from "@/components/app/settings/code-block";
+import { MicroLabel, Section, SettingsColumn } from "@/components/app/settings/layout";
+import { LinkButton } from "@/components/ui/button";
+import { Badge } from "@/components/ui/misc";
+
+interface Endpoint {
+  method: "GET" | "POST";
+  path: string;
+  summary: string;
+  params?: [name: string, description: string][];
+  body?: string;
+  response: string;
+}
+
+const LEAD = `{
+  "id": "c42e…",
+  "project_id": "9b1f…",
+  "segment_id": "5d0a…",
+  "full_name": "Sarah Chen",
+  "title": "Founder",
+  "email": "sarah@northwind.studio",
+  "email_status": "found",
+  "company_name": "Northwind Studio",
+  "company_domain": "northwind.studio",
+  "linkedin_url": "",
+  "source": "agent",
+  "status": "contacted",
+  "last_contacted_at": "2026-11-03T09:14:00Z",
+  "created_at": "2026-11-02T16:40:00Z"
+}`;
+
+const indent = (json: string, spaces: number) => json.replaceAll("\n", `\n${" ".repeat(spaces)}`);
+
+function endpoints(projectId: string): Endpoint[] {
+  return [
+    {
+      method: "GET",
+      path: "/projects",
+      summary: "Projects in your organization.",
+      response: `[
+  {
+    "id": "${projectId}",
+    "name": "Acme",
+    "domain": "acme.com",
+    "status": "active",
+    "created_at": "2026-11-01T12:00:00Z"
+  }
+]`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/leads?status=hot&page=1`,
+      summary: "Leads of a project, 50 per page, newest first.",
+      params: [
+        ["status", "optional lead status: new, contacted, replied, hot, meeting_booked, …"],
+        ["page", "1-based page number"],
+      ],
+      response: `{
+  "items": [
+    ${indent(LEAD, 4)}
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/leads`,
+      summary: "Add your own leads. Suppressed, duplicate and invalid emails are skipped.",
+      body: `{
+  "leads": [
+    {
+      "email": "sarah@northwind.studio",
+      "full_name": "Sarah Chen",
+      "title": "Founder",
+      "company_name": "Northwind Studio",
+      "company_domain": "northwind.studio",
+      "linkedin_url": "https://www.linkedin.com/in/…",
+      "segment_id": "5d0a…"
+    }
+  ]
+}`,
+      response: `{ "imported": 1, "skipped": 0 }`,
+    },
+    {
+      method: "GET",
+      path: "/leads/c42e…",
+      summary: "One lead.",
+      response: LEAD,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/replies?since=2026-11-01T00:00:00Z`,
+      summary: "Replies your leads sent, with the agent's classification. Poll with since set to the last created_at you saw.",
+      params: [["since", "optional RFC 3339 timestamp"]],
+      response: `[
+  {
+    "id": "71aa…",
+    "lead_id": "c42e…",
+    "direction": "inbound",
+    "subject": "Re: Northwind Studio x Acme",
+    "body": "Sounds interesting, can you send times for next week?",
+    "from_email": "sarah@northwind.studio",
+    "classification": "hot",
+    "classification_reason": "Asks to schedule a call",
+    "created_at": "2026-11-04T10:12:00Z"
+  }
+]`,
+    },
+  ];
+}
+
+// The API lives on the same host as the app, so the examples use whatever origin this page is served from.
+const subscribe = () => () => {};
+const useOrigin = () => useSyncExternalStore(subscribe, () => window.location.origin, () => "");
+
+export default function DocsPage() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const base = `${useOrigin()}/api/v1`;
+
+  return (
+    <>
+      <PageHeader
+        title="API"
+        description="Read leads and replies, and push your own leads into Splee from your CRM or scripts."
+        actions={
+          <LinkButton href="/app/api-keys" variant="outline">
+            <KeyRound className="size-4" /> API keys
+          </LinkButton>
+        }
+      />
+      <PageBody>
+        <SettingsColumn>
+          <Section title="Authentication" description="Send an API key from the API keys page as a Bearer token. Keys belong to the organization and see all of its projects.">
+            <div className="space-y-3 text-sm">
+              <div>
+                <MicroLabel>Base URL</MicroLabel>
+                <code className="mt-1 block font-mono">{base}</code>
+              </div>
+              <CodeBlock label="Header" code={"Authorization: Bearer splee_…"} />
+              <p className="text-muted-foreground">
+                Requests and responses are JSON. Errors return a status code and <code className="font-mono">{`{ "error": "message" }`}</code>. Paginated lists
+                return <code className="font-mono">{`{ "items": [...], "total": n }`}</code>.
+              </p>
+            </div>
+          </Section>
+
+          {endpoints(projectId).map((e) => {
+            const curl = [
+              `curl${e.method === "POST" ? " -X POST" : ""} "${base}${e.path}"`,
+              `  -H "Authorization: Bearer $SPLEE_API_KEY"`,
+              ...(e.body ? [`  -H "Content-Type: application/json"`, `  -d '${e.body}'`] : []),
+            ].join(" \\\n");
+            return (
+              <Section
+                key={e.method + e.path}
+                title={
+                  <span className="flex items-center gap-2 font-mono text-sm">
+                    <Badge tone={e.method === "GET" ? "blue" : "green"}>{e.method}</Badge>
+                    {e.path.split("?")[0]}
+                  </span>
+                }
+                description={e.summary}
+              >
+                {e.params && (
+                  <ul className="mb-4 space-y-1 text-sm">
+                    {e.params.map(([name, description]) => (
+                      <li key={name}>
+                        <code className="font-mono">{name}</code> <span className="text-muted-foreground">{description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="grid gap-3">
+                  <CodeBlock label="Request" code={curl} />
+                  <CodeBlock label="Response" code={e.response} />
+                </div>
+              </Section>
+            );
+          })}
+        </SettingsColumn>
+      </PageBody>
+    </>
+  );
+}

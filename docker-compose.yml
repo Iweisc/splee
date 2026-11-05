@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: splee-db
+    network_mode: bridge
+    environment:
+      POSTGRES_USER: splee
+      POSTGRES_PASSWORD: splee
+      POSTGRES_DB: splee
+    ports:
+      - "55432:5432"
+    volumes:
+      - splee-db:/var/lib/postgresql/data
+volumes:
+  splee-db:

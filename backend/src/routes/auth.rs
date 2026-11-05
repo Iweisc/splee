@@ -1,0 +1,267 @@
+use std::sync::LazyLock;
+
+use axum::extract::{Path, State};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use axum_extra::extract::CookieJar;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::{FromRow, PgConnection};
+use uuid::Uuid;
+
+use super::projects;
+use super::util_input;
+use crate::auth::{Auth, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
+use crate::billing;
+use crate::crypto::sha256_hex;
+use crate::error::{AppError, AppResult};
+use crate::models::{Organization, User};
+use crate::state::AppState;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/auth/signup", post(signup))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(get_me))
+        .route("/auth/switch-org", post(switch_org))
+        .route("/invites/{token}", get(get_invite))
+        .route("/invites/{token}/accept", post(accept_invite))
+}
+
+#[derive(Serialize)]
+pub struct Me {
+    user: User,
+    org: Organization,
+    role: String,
+    orgs: Vec<OrgRef>,
+    balance_micros: i64,
+    payments_enabled: bool,
+}
+
+#[derive(Serialize, FromRow)]
+struct OrgRef {
+    id: Uuid,
+    name: String,
+    role: String,
+}
+
+pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> {
+    let db = &state.db;
+    let user = sqlx::query_as::<_, User>("select * from users where id = $1").bind(user_id).fetch_one(db).await?;
+    let org = sqlx::query_as::<_, Organization>("select * from organizations where id = $1")
+        .bind(org_id)
+        .fetch_one(db)
+        .await?;
+    let orgs = sqlx::query_as::<_, OrgRef>(
+        "select o.id, o.name, m.role from memberships m join organizations o on o.id = m.org_id
+         where m.user_id = $1 order by m.created_at",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
+    Ok(Me { user, org, role, orgs, balance_micros: billing::balance(db, org_id).await?, payments_enabled: state.cfg.payments_enabled })
+}
+
+#[derive(Deserialize)]
+struct SignupBody {
+    email: String,
+    password: String,
+    #[serde(default)]
+    name: String,
+    referral_code: Option<String>,
+    claim: Option<ClaimBody>,
+    invite_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ClaimBody {
+    pub project_id: Uuid,
+    pub token: String,
+}
+
+async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<SignupBody>) -> AppResult<(CookieJar, Json<Me>)> {
+    let email = util_input::email(&body.email).ok_or_else(|| AppError::BadRequest("Enter a valid email address".into()))?;
+    if body.password.chars().count() < 8 {
+        return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
+    }
+    let name = body.name.trim().to_string();
+    let password_hash = hash_password(&body.password)?;
+
+    let mut tx = state.db.begin().await?;
+    let user_id: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, $2, $3) returning id")
+        .bind(&email)
+        .bind(&name)
+        .bind(&password_hash)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| match AppError::from(e) {
+            AppError::Conflict(_) => AppError::Conflict("An account with this email already exists. Sign in instead.".into()),
+            other => other,
+        })?;
+    sqlx::query("insert into notification_prefs (user_id) values ($1)").bind(user_id).execute(&mut *tx).await?;
+
+    let org_id = match body.invite_token.as_deref() {
+        Some(token) => {
+            let (org_id, role): (Uuid, String) = take_invite(&mut tx, token)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("This invite is no longer valid".into()))?;
+            add_member(&mut tx, org_id, user_id, &role).await?;
+            org_id
+        }
+        None => {
+            let referred_by = match body.referral_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                Some(code) => sqlx::query_scalar("select id from organizations where referral_code = $1")
+                    .bind(code.to_lowercase())
+                    .fetch_optional(&mut *tx)
+                    .await?,
+                None => None,
+            };
+            let org_name = if name.is_empty() { email.split('@').nth(1).unwrap_or(&email).to_string() } else { name.clone() };
+            let org_id = create_org(&mut tx, &org_name, referred_by).await?;
+            add_member(&mut tx, org_id, user_id, "owner").await?;
+            billing::add_entry(&mut *tx, org_id, billing::SIGNUP_BONUS_MICROS, "signup_bonus", None, "Free credits").await?;
+            org_id
+        }
+    };
+
+    // A stale or already-claimed demo shouldn't block account creation, so a failed claim is ignored here.
+    if let Some(claim) = &body.claim {
+        projects::claim(&mut tx, claim.project_id, &claim.token, org_id, user_id).await?;
+    }
+    tx.commit().await?;
+
+    let cookie = create_session(&state.db, user_id, org_id).await?;
+    Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
+}
+
+async fn create_org(conn: &mut PgConnection, name: &str, referred_by: Option<Uuid>) -> AppResult<Uuid> {
+    loop {
+        let code: String = Uuid::new_v4().as_bytes()[..8].iter().map(|b| (b'a' + b % 26) as char).collect();
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "insert into organizations (name, referral_code, referred_by) values ($1, $2, $3)
+             on conflict (referral_code) do nothing returning id",
+        )
+        .bind(name)
+        .bind(code)
+        .bind(referred_by)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(id) = id {
+            return Ok(id);
+        }
+    }
+}
+
+async fn add_member(conn: &mut PgConnection, org_id: Uuid, user_id: Uuid, role: &str) -> AppResult<()> {
+    sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, $3) on conflict do nothing")
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+async fn take_invite(conn: &mut PgConnection, token: &str) -> AppResult<Option<(Uuid, String)>> {
+    Ok(sqlx::query_as("update invites set accepted_at = now() where token = $1 and accepted_at is null returning org_id, role")
+        .bind(token)
+        .fetch_optional(conn)
+        .await?)
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    email: String,
+    password: String,
+}
+
+// Verifying against a throwaway hash keeps login timing the same whether or not the email exists.
+static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_password("splee-timing-dummy").expect("argon2 hashing works"));
+
+async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<LoginBody>) -> AppResult<(CookieJar, Json<Me>)> {
+    let invalid = || AppError::BadRequest("Invalid email or password".into());
+    let user: Option<(Uuid, String)> = sqlx::query_as("select id, password_hash from users where email = $1::citext")
+        .bind(body.email.trim())
+        .fetch_optional(&state.db)
+        .await?;
+    let Some((user_id, hash)) = user else {
+        verify_password(&body.password, &DUMMY_HASH);
+        return Err(invalid());
+    };
+    if !verify_password(&body.password, &hash) {
+        return Err(invalid());
+    }
+    let org_id: Uuid = sqlx::query_scalar("select org_id from memberships where user_id = $1 order by created_at limit 1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("Your account isn't part of any organization anymore".into()))?;
+    let cookie = create_session(&state.db, user_id, org_id).await?;
+    Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
+}
+
+async fn logout(State(state): State<AppState>, jar: CookieJar) -> AppResult<(CookieJar, Json<Value>)> {
+    if let Some(cookie) = jar.get(SESSION_COOKIE) {
+        sqlx::query("delete from sessions where token_hash = $1").bind(sha256_hex(cookie.value())).execute(&state.db).await?;
+    }
+    Ok((jar.add(clear_session_cookie()), Json(json!({ "ok": true }))))
+}
+
+async fn get_me(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Me>> {
+    Ok(Json(me(&state, auth.user_id, auth.org_id).await?))
+}
+
+#[derive(Deserialize)]
+struct SwitchOrgBody {
+    org_id: Uuid,
+}
+
+async fn switch_org(State(state): State<AppState>, auth: Auth, Json(body): Json<SwitchOrgBody>) -> AppResult<Json<Me>> {
+    sqlx::query("select 1 from memberships where org_id = $1 and user_id = $2")
+        .bind(body.org_id)
+        .bind(auth.user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    sqlx::query("update sessions set org_id = $1 where token_hash = $2")
+        .bind(body.org_id)
+        .bind(&auth.token_hash)
+        .execute(&state.db)
+        .await?;
+    Ok(Json(me(&state, auth.user_id, body.org_id).await?))
+}
+
+#[derive(Serialize, FromRow)]
+struct InvitePreview {
+    org_name: String,
+    email: String,
+    role: String,
+}
+
+async fn get_invite(State(state): State<AppState>, Path(token): Path<String>) -> AppResult<Json<InvitePreview>> {
+    let invite = sqlx::query_as::<_, InvitePreview>(
+        "select o.name as org_name, i.email::text as email, i.role from invites i join organizations o on o.id = i.org_id
+         where i.token = $1 and i.accepted_at is null",
+    )
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(invite))
+}
+
+async fn accept_invite(State(state): State<AppState>, auth: Auth, Path(token): Path<String>) -> AppResult<Json<Me>> {
+    let mut tx = state.db.begin().await?;
+    let (org_id, role) =
+        take_invite(&mut tx, &token).await?.ok_or_else(|| AppError::BadRequest("This invite is no longer valid".into()))?;
+    add_member(&mut tx, org_id, auth.user_id, &role).await?;
+    sqlx::query("update sessions set org_id = $1 where token_hash = $2")
+        .bind(org_id)
+        .bind(&auth.token_hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(me(&state, auth.user_id, org_id).await?))
+}
