@@ -204,6 +204,7 @@ function ThreadPane({ leadId }: { leadId: string }) {
       </ol>
 
       <div className="flex items-end gap-2 border-t border-border p-3">
+        {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
           value={reply}
           onChange={(e) => setReply(e.target.value)}
@@ -211,11 +212,10 @@ function ThreadPane({ leadId }: { leadId: string }) {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim()) send();
           }}
           placeholder={`Reply to ${lead.first_name || lead.full_name || "lead"}…`}
-          className="min-h-12 resize-none"
-          rows={2}
+          className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content"
         />
         <Button onClick={send} loading={sending} disabled={!reply.trim()} aria-label="Send reply">
-          {!sending && <Send className="size-4" />} Send
+          {!sending && <Send className="size-4" />} <span className="max-sm:hidden">Send</span>
         </Button>
       </div>
     </div>
