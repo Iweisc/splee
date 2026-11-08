@@ -148,6 +148,8 @@ export function Tabs<T extends string>({
       {options.map((o) => (
         <button
           key={o.value}
+          // Tabs can sit inside a form, like the mailbox form's provider tabs, where a default button would submit it.
+          type="button"
           onClick={() => onChange(o.value)}
           className={cn(
             "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
