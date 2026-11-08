@@ -148,9 +148,10 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
               <li key={m.user_id} className="flex items-center gap-3 px-4 py-3 text-sm">
                 <Avatar name={m.name || m.email} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {m.name || m.email}
-                    {self && <span className="font-normal text-muted-foreground"> (you)</span>}
+                  {/* A long name is cut short, but "(you)" always shows after it. */}
+                  <p className="flex gap-1 font-medium">
+                    <span className="truncate">{m.name || m.email}</span>
+                    {self && <span className="shrink-0 font-normal text-muted-foreground">(you)</span>}
                   </p>
                   <p className="truncate text-xs text-muted-foreground">
                     {m.email} · joined {timeAgo(m.created_at)}
