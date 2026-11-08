@@ -1,8 +1,9 @@
 "use client";
 
 import { use, useState } from "react";
-import { Hash, Send, Webhook } from "lucide-react";
+import { Hash, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
+import { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { isUrl } from "@/components/app/settings/is-url";
@@ -11,6 +12,7 @@ import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { api } from "@/lib/api";
+import type { ProjectSettings } from "@/lib/types";
 
 const PAYLOAD = `POST <your webhook URL>
 Content-Type: application/json
@@ -80,6 +82,31 @@ function TestButton({ projectId, target, url }: { projectId: string; target: "sl
   );
 }
 
+/** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
+function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
+  const { mutate } = useSWRConfig();
+  const [busy, setBusy] = useState(false);
+  const replace = async () => {
+    if (!confirm("Replace the signing secret? Your endpoint will reject Splee's webhooks until you give it the new one.")) return;
+    setBusy(true);
+    try {
+      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/webhook-secret`, { method: "POST" });
+      await mutate(`/projects/${projectId}/settings`, fresh, { revalidate: false });
+      onReplaced(fresh.webhook_secret);
+      toast.success("Signing secret replaced. Update it in your endpoint.");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button size="sm" variant="outline" onClick={replace} loading={busy}>
+      {!busy && <RefreshCw className="size-3.5" />} Replace
+    </Button>
+  );
+}
+
 export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectId]/integrations">) {
   const { projectId } = use(params);
   return (
@@ -133,7 +160,13 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="mt-4 flex flex-col gap-1.5">
               <span className="text-sm font-medium">Signing secret</span>
-              <CopyField value={s.webhook_secret} />
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <CopyField value={s.webhook_secret} />
+                </div>
+                {/* Also patches an unsaved draft, so replacing the secret doesn't look like an unsaved edit. */}
+                <ReplaceSecretButton projectId={projectId} onReplaced={(webhook_secret) => update({ webhook_secret })} />
+              </div>
               <p className="text-xs text-muted-foreground">
                 Every webhook request is signed with this, so your endpoint can reject requests that didn&apos;t come from Splee. Slack messages aren&apos;t
                 signed.

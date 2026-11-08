@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/settings", get(get_settings).put(update_settings))
         .route("/projects/{id}/integrations/test", post(test_integration))
+        .route("/projects/{id}/integrations/webhook-secret", post(replace_webhook_secret))
 }
 
 /// Settings rows are created with the project, but older demo projects may not have one yet.
@@ -184,4 +185,17 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
     let secret = if body.target == "webhook" { Some(load_or_create(&state.db, project.id).await?.webhook_secret) } else { None };
     hooks::post_json(&body.url, &payload, secret.as_deref()).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// For a secret that leaked. Requests signed with the old one stop verifying right away.
+async fn replace_webhook_secret(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set webhook_secret = encode(gen_random_bytes(24), 'hex') where project_id = $1 returning *",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
 }
