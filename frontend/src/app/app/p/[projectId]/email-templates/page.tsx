@@ -9,7 +9,7 @@ import { OptionCards } from "@/components/app/settings/option-cards";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select, Textarea } from "@/components/ui/form";
+import { Field, Input, NumberInput, Select, Textarea } from "@/components/ui/form";
 import { Badge, Card } from "@/components/ui/misc";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
@@ -83,12 +83,11 @@ export default function EmailTemplatesPage() {
           <Section title="Length and call to action" description="The word limit applies to the email body. The call to action is the question each first email ends with.">
             <div className="grid gap-4 sm:grid-cols-[10rem_1fr]">
               <Field label="Max words">
-                <Input
-                  type="number"
+                <NumberInput
                   min={MIN_WORDS}
                   max={MAX_WORDS}
                   value={s.max_words}
-                  onChange={(e) => update({ max_words: Number(e.target.value) })}
+                  onValueChange={(max_words) => update({ max_words })}
                   className="tabular-nums"
                 />
               </Field>

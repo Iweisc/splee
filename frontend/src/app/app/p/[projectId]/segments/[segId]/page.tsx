@@ -16,7 +16,7 @@ import { SegmentToggle } from "@/components/app/work/segment-toggle";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { FitScore, SegmentIcon, SegmentStatusDot } from "@/components/app/work/status";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/form";
+import { NumberInput } from "@/components/ui/form";
 import { Card, Skeleton, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailRow, Paginated, SegmentWithStats } from "@/lib/types";
@@ -141,12 +141,11 @@ function Pipeline({ segment, busy }: { segment: SegmentWithStats; busy: boolean 
       done: segment.companies > 0,
       action: (
         <div className="flex gap-1.5">
-          <Input
-            type="number"
+          <NumberInput
             min={1}
             max={200}
             value={count}
-            onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
+            onValueChange={(n) => setCount(Math.min(200, Math.max(1, Math.round(n))))}
             className="h-8 w-16 px-2 tabular-nums"
             aria-label="Number of companies"
           />

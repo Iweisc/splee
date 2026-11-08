@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select } from "@/components/ui/form";
+import { Field, Input, NumberInput, Select } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import type { Mailbox, MailboxInput } from "@/lib/types";
 import { MicroLabel } from "./layout";
@@ -131,7 +131,7 @@ export function MailboxForm({
               <Input value={m.smtp_host} onChange={(e) => set({ smtp_host: e.target.value.trim() })} placeholder="smtp.example.com" />
             </Field>
             <Field label="Port">
-              <Input type="number" value={m.smtp_port} onChange={(e) => set({ smtp_port: Number(e.target.value) })} />
+              <NumberInput required value={m.smtp_port} onValueChange={(smtp_port) => set({ smtp_port })} />
             </Field>
             <Field label="Security">
               <Select value={m.smtp_security} onChange={(e) => set({ smtp_security: e.target.value as MailboxInput["smtp_security"] })}>
@@ -172,7 +172,7 @@ export function MailboxForm({
               <Input value={m.imap_host} onChange={(e) => set({ imap_host: e.target.value.trim() })} placeholder="imap.example.com" />
             </Field>
             <Field label="Port">
-              <Input type="number" value={m.imap_port} onChange={(e) => set({ imap_port: Number(e.target.value) })} />
+              <NumberInput required value={m.imap_port} onValueChange={(imap_port) => set({ imap_port })} />
             </Field>
           </div>
         )}
@@ -200,7 +200,7 @@ export function MailboxForm({
       </fieldset>
 
       <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
-        <Input type="number" min={1} value={m.daily_limit} onChange={(e) => set({ daily_limit: Number(e.target.value) })} className="w-28 tabular-nums" />
+        <NumberInput required min={1} value={m.daily_limit} onValueChange={(daily_limit) => set({ daily_limit })} className="w-28 tabular-nums" />
       </Field>
 
       <Field
@@ -210,12 +210,12 @@ export function MailboxForm({
         <div className="relative w-28">
           <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-muted-foreground">$</span>
           {/* Stored per email in micro-dollars, so $1 per 1,000 emails is 1,000 micros per email. */}
-          <Input
-            type="number"
+          <NumberInput
+            required
             min={0}
             step={0.01}
             value={m.cost_per_email_micros / 1000}
-            onChange={(e) => set({ cost_per_email_micros: Math.round(Number(e.target.value) * 1000) })}
+            onValueChange={(usd) => set({ cost_per_email_micros: Math.round(usd * 1000) })}
             className="pl-6 tabular-nums"
           />
         </div>
