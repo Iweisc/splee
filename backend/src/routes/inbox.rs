@@ -74,9 +74,11 @@ const THREADS: &str = "with t as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
          -- Declines, out-of-office notes, unsubscribes and bounces are answered by the classifier, not by you.
-         -- A pending auto-reply draft still waits on you to approve it, so it counts.
+         -- A pending auto-reply draft still waits on you to approve it, so it counts. Marking the lead as booked or
+         -- not interested is how you clear a reply you handled outside Splee.
          last_direction = 'inbound'
-           and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce') as is_needs_reply
+           and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce')
+           and lead_status not in ('meeting_booked', 'not_interested', 'bounced', 'unsubscribed', 'do_not_contact') as is_needs_reply
        from t
      )
      select * from f where case $3
@@ -262,15 +264,28 @@ mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
-    async fn needs_reply_skips_replies_the_classifier_handled(db: PgPool) {
+    async fn needs_reply_skips_handled_replies(db: PgPool) {
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
         let project: Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
         let mut leads = vec![];
-        // None is a reply the classifier hasn't read yet.
-        for classification in [None, Some("question"), Some("not_interested"), Some("ooo"), Some("unsubscribe"), Some("bounce")] {
-            let lead: Uuid =
-                sqlx::query_scalar("insert into leads (project_id, status) values ($1, 'replied') returning id").bind(project).fetch_one(&db).await.unwrap();
+        // None is a reply the classifier hasn't read yet. The last two are questions you marked by hand.
+        for (classification, status) in [
+            (None, "replied"),
+            (Some("question"), "replied"),
+            (Some("not_interested"), "not_interested"),
+            (Some("ooo"), "replied"),
+            (Some("unsubscribe"), "unsubscribed"),
+            (Some("bounce"), "bounced"),
+            (Some("question"), "not_interested"),
+            (Some("question"), "meeting_booked"),
+        ] {
+            let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, status) values ($1, $2) returning id")
+                .bind(project)
+                .bind(status)
+                .fetch_one(&db)
+                .await
+                .unwrap();
             sqlx::query(
                 "insert into email_messages (project_id, lead_id, direction, kind, status, sent_at, created_at)
                  values ($1, $2, 'outbound', 'initial', 'sent', now() - interval '1 day', now() - interval '1 day')",
@@ -320,7 +335,8 @@ mod tests {
             ids
         };
         assert_eq!(threads("needs_reply").await, sorted(leads[..2].to_vec()));
-        assert_eq!(threads("other").await, sorted(leads[2..].to_vec()));
+        assert_eq!(threads("other").await, sorted(leads[2..7].to_vec()));
+        assert_eq!(threads("hot").await, vec![leads[7]]);
         assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 2);
     }
 }
