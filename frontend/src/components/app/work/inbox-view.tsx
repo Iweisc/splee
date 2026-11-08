@@ -17,16 +17,19 @@ import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
 
 /** Two-pane inbox. Without `projectId` it covers every project in the org. */
-export function InboxView({ projectId }: { projectId?: string }) {
+export function InboxView({ projectId, initialLead }: { projectId?: string; initialLead?: string }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [project, setProject] = useState("");
   const [page, setPage] = useState(1);
-  const [selectedLead, setSelectedLead] = useState<string | null>(null);
+  const [selectedLead, setSelectedLead] = useState<string | null>(initialLead ?? null);
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
   const key = `/inbox${qs({ project_id: projectId ?? project, filter, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
-  const selected = data?.items.find((t) => t.lead.id === selectedLead) ?? data?.items[0];
+  // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
+  // filter hides falls back to the first thread.
+  const linked = selectedLead !== null && selectedLead === initialLead;
+  const selectedId = data?.items.find((t) => t.lead.id === selectedLead)?.lead.id ?? (linked ? selectedLead : data?.items[0]?.lead.id);
 
   return (
     <Card className="grid min-h-[520px] flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -83,7 +86,7 @@ export function InboxView({ projectId }: { projectId?: string }) {
                 <li key={t.lead.id} className="border-b border-border">
                   <button
                     onClick={() => setSelectedLead(t.lead.id)}
-                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent", selected?.lead.id === t.lead.id && "bg-accent")}
+                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent", selectedId === t.lead.id && "bg-accent")}
                   >
                     <Avatar name={t.lead.full_name || t.lead.email || "?"} />
                     <span className="min-w-0 flex-1">
@@ -115,8 +118,8 @@ export function InboxView({ projectId }: { projectId?: string }) {
         >
           <ArrowLeft className="size-4" /> All replies
         </button>
-        {selected ? (
-          <ThreadPane key={selected.lead.id} leadId={selected.lead.id} />
+        {selectedId ? (
+          <ThreadPane key={selectedId} leadId={selectedId} />
         ) : (
           !!data?.items.length && <EmptyState className="flex-1" title="Select a conversation" />
         )}
