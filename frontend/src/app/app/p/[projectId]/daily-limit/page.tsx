@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import useSWR from "swr";
-import { MicroLabel, ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { MicroLabel } from "@/components/app/work/states";
 import { NumberInput } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";

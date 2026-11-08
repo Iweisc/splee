@@ -5,7 +5,8 @@ import { useSyncExternalStore } from "react";
 import { KeyRound } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CodeBlock } from "@/components/app/settings/code-block";
-import { MicroLabel, Section, SettingsColumn } from "@/components/app/settings/layout";
+import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { MicroLabel } from "@/components/app/work/states";
 import { LinkButton } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
 

@@ -12,10 +12,6 @@ export function SettingsColumn({ className, ...props }: React.HTMLAttributes<HTM
   return <div className={cn("mx-auto flex max-w-3xl flex-col gap-5", className)} {...props} />;
 }
 
-export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("font-mono text-[11px] tracking-wide text-muted-foreground uppercase", className)} {...props} />;
-}
-
 /** A settings card: title, one line on what it changes, then the controls. */
 export function Section({
   title,

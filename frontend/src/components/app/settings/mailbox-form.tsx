@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import type { Mailbox, MailboxInput } from "@/lib/types";
-import { MicroLabel } from "./layout";
+import { MicroLabel } from "@/components/app/work/states";
 
 type Preset = "google" | "microsoft" | "zoho" | "custom";
 
