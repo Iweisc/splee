@@ -47,13 +47,13 @@ export function SegmentFields({ value, onChange }: { value: SegmentDraft; onChan
         </div>
       </Field>
       <Field label="Who they are">
-        <Textarea value={value.description} onChange={(e) => set("description", e.target.value)} className="min-h-16" />
+        <Textarea value={value.description} onChange={(e) => set("description", e.target.value)} className="min-h-16 field-sizing-content" />
       </Field>
       <Field label="Pain points" hint="What hurts for them today. The agent uses this when writing emails.">
-        <Textarea value={value.pain_points} onChange={(e) => set("pain_points", e.target.value)} className="min-h-16" />
+        <Textarea value={value.pain_points} onChange={(e) => set("pain_points", e.target.value)} className="min-h-16 field-sizing-content" />
       </Field>
       <Field label="Angle" hint="Why your product matters to this segment in one or two sentences.">
-        <Textarea value={value.angle} onChange={(e) => set("angle", e.target.value)} className="min-h-16" />
+        <Textarea value={value.angle} onChange={(e) => set("angle", e.target.value)} className="min-h-16 field-sizing-content" />
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         {TARGETING_FIELDS.map((f) => (
