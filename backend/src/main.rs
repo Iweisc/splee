@@ -26,9 +26,26 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let reset_email = match args.as_slice() {
+        [] => None,
+        [cmd, email] if cmd == "reset-password" => Some(email.clone()),
+        _ => anyhow::bail!("usage: splee [reset-password <email>]"),
+    };
+
     let cfg = Config::from_env()?;
     let db = PgPoolOptions::new().max_connections(20).connect(&cfg.database_url).await?;
     sqlx::migrate!().run(&db).await?;
+
+    // This runs once and exits, without the API or workers, so it's safe next to a running server.
+    if let Some(email) = reset_email {
+        let Some(password) = auth::reset_password(&db, &email).await? else {
+            anyhow::bail!("no user with email {email}");
+        };
+        println!("New password for {email}: {password}");
+        println!("They're signed out everywhere and can change it under Account after they sign in.");
+        return Ok(());
+    }
 
     let (events, _) = broadcast::channel(1024);
     let state = AppState {

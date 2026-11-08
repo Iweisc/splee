@@ -62,6 +62,7 @@ The quick start is for your own machine. To run Splee for a team:
 3. **Frontend.** Build it with `API_URL` pointing at the backend, `(cd frontend && pnpm install && API_URL=http://127.0.0.1:8787 pnpm build)`, then start it with `(cd frontend && pnpm start)` on port 3333.
 4. **HTTPS.** Put a reverse proxy such as Caddy or nginx in front of port 3333 for `PUBLIC_URL`'s host. Only the frontend needs to be public, because it proxies `/api/*` to the backend.
 5. **Backups.** Back up the database and keep `APP_SECRET` with it. Mailbox passwords in a backup can't be decrypted without the secret they were saved with.
+6. **Forgotten passwords.** There's no reset email. Run `(cd backend && ./target/release/splee reset-password person@example.com)`, which prints a new random password, signs that person out everywhere and clears their failed sign-ins. It's safe to run while the server is up. They can change the password under Account.
 
 Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
 
