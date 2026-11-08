@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::demo::client_ip;
+use super::demo::{check_public_agent, client_ip};
 use crate::agent::sdk::{self, Call};
 use crate::auth::MaybeAuth;
 use crate::error::{AppError, AppResult};
@@ -80,6 +80,9 @@ async fn send(
     let content: String = body.content.trim().chars().take(MAX_CONTENT_CHARS).collect();
     if content.is_empty() {
         return Err(AppError::BadRequest("Type a message first".into()));
+    }
+    if auth.is_none() {
+        check_public_agent(&state)?;
     }
     let ip = client_ip(&headers, peer);
     let recent: i64 = sqlx::query_scalar(

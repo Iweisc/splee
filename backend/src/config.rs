@@ -18,6 +18,8 @@ pub struct Config {
     pub bird_bin: Option<String>,
     /// False makes sign-up invite-only after the first account, so strangers can't run agents on the host's Claude account.
     pub open_signup: bool,
+    /// False turns off agent runs for signed-out visitors: the demo, the company explorer and the support chat.
+    pub public_agent: bool,
 }
 
 impl Config {
@@ -32,6 +34,7 @@ impl Config {
             sending_enabled: env::var("SENDING_ENABLED").map(|v| v != "false").unwrap_or(true),
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
             open_signup: env::var("OPEN_SIGNUP").map(|v| v != "false").unwrap_or(true),
+            public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -69,6 +72,7 @@ mod tests {
             sending_enabled: false,
             bird_bin: None,
             open_signup: true,
+            public_agent: true,
         }
     }
 
