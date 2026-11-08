@@ -120,18 +120,31 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: Stri
         .build();
 
     // ClaudeClient rather than query_stream: only the client answers the CLI's calls to in-process MCP tools.
-    let mut client = ClaudeClient::new(opts);
+    let mut guard = DisconnectOnDrop(Some(ClaudeClient::new(opts)));
+    let client = guard.0.as_mut().expect("just set");
     client.connect().await.context("could not start the Claude CLI")?;
     let attempt = tokio::time::timeout(call.timeout, async {
         client.query(prompt).await.context("could not send the prompt to the Claude CLI")?;
-        read_answer(state, run, &client).await
+        read_answer(state, run, client).await
     })
     .await;
-    // Dropping the client does not stop the CLI: the SDK's reader task keeps it alive. So every path
-    // disconnects. A CLI still mid-turn won't exit on its own, and giving up on the wait drops the child,
-    // which the vendored SDK spawns with kill_on_drop.
-    let _ = tokio::time::timeout(Duration::from_secs(10), client.disconnect()).await;
     attempt.map_err(|_| anyhow!("Claude did not finish within {} minutes", call.timeout.as_secs().div_ceil(60)))?
+}
+
+/// Dropping a ClaudeClient does not stop the CLI: the SDK's reader task keeps it alive. So this disconnects a
+/// connected client on every path, including a cancelled run, which drops `once` mid-await. Without it the CLI
+/// kept working, and spending, until its turn ended. A cancel during `connect()` itself still isn't covered.
+struct DisconnectOnDrop(Option<ClaudeClient>);
+
+impl Drop for DisconnectOnDrop {
+    fn drop(&mut self) {
+        let (Some(mut client), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current()) else { return };
+        // A CLI still mid-turn won't exit on its own, and giving up on the wait drops the child, which the vendored
+        // SDK spawns with kill_on_drop.
+        runtime.spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_secs(10), client.disconnect()).await;
+        });
+    }
 }
 
 async fn read_answer(state: &AppState, run: Option<&Ctx>, client: &ClaudeClient) -> anyhow::Result<Attempt> {
