@@ -6,7 +6,8 @@ import { cn, money, num } from "@/lib/utils";
 import { SegmentIcon, SegmentStatusDot } from "./status";
 import { Td, Th, Tr } from "./states";
 
-// Columns that only show once the table is wide enough for them.
+// Columns that only show once the table is wide enough for them. Narrower tables show the status under the name.
+const STATUS = "hidden @md:table-cell";
 const COUNTS = "hidden @lg:table-cell";
 const COST = "hidden @xl:table-cell";
 
@@ -23,7 +24,7 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
         <thead>
           <tr>
             <Th>Campaign</Th>
-            <Th>Status</Th>
+            <Th className={STATUS}>Status</Th>
             <Th className={cn(COUNTS, "text-right")}>Sent</Th>
             <Th className={cn(COUNTS, "text-right")}>Replies</Th>
             <Th className="text-right">Hot</Th>
@@ -36,10 +37,15 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
               <Td>
                 <span className="flex items-center gap-2.5">
                   <SegmentIcon name={s.icon} className="size-6" />
-                  <span className="font-medium">{s.name}</span>
+                  <span>
+                    <span className="block font-medium">{s.name}</span>
+                    <span className="@md:hidden">
+                      <SegmentStatusDot status={s.status} />
+                    </span>
+                  </span>
                 </span>
               </Td>
-              <Td>
+              <Td className={STATUS}>
                 <SegmentStatusDot status={s.status} />
               </Td>
               <Td className={cn(COUNTS, "text-right tabular-nums")}>{num(s.sent)}</Td>
