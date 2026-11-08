@@ -67,7 +67,7 @@ The quick start is for your own machine. To run Splee for a team:
 6. **Backups.** Back up the database and keep `APP_SECRET` with it. Mailbox passwords in a backup can't be decrypted without the secret they were saved with.
 7. **Forgotten passwords.** There's no reset email. Run `(cd backend && ./target/release/splee reset-password person@example.com)`, which prints a new random password, signs that person out everywhere and clears their failed sign-ins. It's safe to run while the server is up. They can change the password under Account.
 
-Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
+To start both on boot and restart them after a crash, adapt the example systemd units in [`deploy/systemd/`](deploy/systemd). Stopping the backend's unit also stops any `claude` processes it started. Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
 
 ## How it works
 

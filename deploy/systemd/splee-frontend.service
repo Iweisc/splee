@@ -1,0 +1,19 @@
+# Example unit for the Splee web app. Build it first with API_URL set: `next build` bakes that in.
+# Assumes the repo is at /opt/splee and runs as the user "splee". Copy it to /etc/systemd/system/.
+[Unit]
+Description=Splee web app
+After=network-online.target splee-backend.service
+Wants=network-online.target
+
+[Service]
+User=splee
+WorkingDirectory=/opt/splee/frontend
+# `pnpm start` serves on port 3333. Put your HTTPS proxy in front of it.
+ExecStart=/usr/bin/env pnpm start
+Environment=PATH=/home/splee/.local/share/pnpm:/usr/local/bin:/usr/bin
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
