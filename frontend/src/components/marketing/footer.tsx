@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { regions } from "@/content/regions";
+import { SOURCE_URL } from "@/lib/source";
 
 const tools = [
   { href: "/b2b-database", label: "B2B company search" },
@@ -46,6 +47,10 @@ export function Footer() {
         <div className="mt-20 flex flex-col justify-between gap-3 text-muted-foreground sm:flex-row">
           <p>© {new Date().getFullYear()} Splee, a self-hosted outbound agent</p>
           <p>
+            <a href={SOURCE_URL} target="_blank" rel="noreferrer" className="hover:text-foreground">
+              Source code
+            </a>
+            <span className="mx-2">|</span>
             <Link href="/terms-of-use" className="hover:text-foreground">
               Terms of use
             </Link>
