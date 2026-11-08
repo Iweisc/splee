@@ -5,7 +5,8 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import { Search, ShieldBan, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { LoadError, Section, SettingsColumn } from "@/components/app/settings/layout";
+import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
@@ -96,9 +97,7 @@ export default function DoNotContactPage() {
             </div>
 
             {error ? (
-              <div className="p-4">
-                <LoadError error={error} what="the list" />
-              </div>
+              <LoadError error={error} what="the list" retry={() => mutate()} />
             ) : !data ? (
               <div className="space-y-3 p-4">
                 {Array.from({ length: 4 }, (_, i) => (

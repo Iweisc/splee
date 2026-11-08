@@ -17,12 +17,12 @@ export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLPar
   return <p className={cn("font-mono text-[11px] tracking-wide text-muted-foreground uppercase", className)} {...props} />;
 }
 
-export function LoadError({ error, retry, className }: { error: unknown; retry?: () => void; className?: string }) {
+export function LoadError({ error, retry, what = "this", className }: { error: unknown; retry?: () => void; what?: string; className?: string }) {
   return (
     <EmptyState
       className={className}
       icon={<TriangleAlert className="size-5 text-danger" />}
-      title="Couldn't load this"
+      title={`Couldn't load ${what}`}
       action={
         retry && (
           <Button variant="outline" size="sm" onClick={retry}>

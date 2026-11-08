@@ -55,7 +55,7 @@ export default function ApiKeysPage() {
       <PageBody>
         <SettingsColumn>
           {error ? (
-            <LoadError error={error} what="API keys" />
+            <LoadError error={error} what="API keys" retry={() => mutate()} />
           ) : !data ? (
             <SectionsSkeleton count={1} />
           ) : data.length === 0 ? (

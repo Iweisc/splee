@@ -46,7 +46,7 @@ export default function CompetitorsPage() {
       <PageBody>
         <SettingsColumn>
           {error ? (
-            <LoadError error={error} what="competitors" />
+            <LoadError error={error} what="competitors" retry={() => mutate()} />
           ) : !data ? (
             <SectionsSkeleton />
           ) : data.length === 0 ? (

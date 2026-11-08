@@ -42,7 +42,7 @@ export default function NotificationsPage() {
       <PageBody>
         <SettingsColumn>
           {error ? (
-            <LoadError error={error} what="notification settings" />
+            <LoadError error={error} what="notification settings" retry={() => mutate()} />
           ) : !data ? (
             <SectionsSkeleton count={4} />
           ) : (
