@@ -84,19 +84,23 @@ export function MailboxForm({
 
   return (
     <form
-      className="grid gap-5"
+      // minmax(0,1fr) keeps the column at the modal's width. An auto column grows to its widest child, like the provider tabs, and pushes every field past the modal's edge on phones.
+      className="grid grid-cols-[minmax(0,1fr)] gap-5"
       onSubmit={(e) => {
         e.preventDefault();
         if (valid) onSubmit({ ...m, imap_username: imapUser, imap_password: imapPassword });
       }}
     >
       <div>
+        {/* The four tabs don't fit one row on phones, and scrolling hid Zoho and Custom past the edge.
+            So phones get a 2x2 grid with shorter labels, and the note below still names the full product. */}
         <Tabs
+          className="max-sm:grid max-sm:grid-cols-2"
           value={preset}
           onChange={pickPreset}
           options={[
-            { value: "google", label: "Google Workspace" },
-            { value: "microsoft", label: "Microsoft 365" },
+            { value: "google", label: <>Google<span className="max-sm:hidden"> Workspace</span></> },
+            { value: "microsoft", label: <>Microsoft<span className="max-sm:hidden"> 365</span></> },
             { value: "zoho", label: "Zoho" },
             { value: "custom", label: "Custom" },
           ]}
