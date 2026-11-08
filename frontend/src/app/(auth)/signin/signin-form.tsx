@@ -47,7 +47,10 @@ export function SigninForm({ next }: { next: string | null }) {
           Sign in
         </Button>
       </form>
-      <p className="mt-6 text-center text-sm text-muted-foreground">
+      <p className="mt-4 text-center text-xs text-muted-foreground">
+        Forgot your password? <span className="whitespace-nowrap">Ask whoever hosts Splee to reset it.</span>
+      </p>
+      <p className="mt-4 text-center text-sm text-muted-foreground">
         New to Splee?{" "}
         <Link href={`/signup${qs({ next })}`} className="font-medium text-foreground hover:underline">
           Create an account

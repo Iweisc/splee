@@ -30,6 +30,24 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Backs `splee reset-password <email>`. There's no reset email, because an org may have no mailbox to send it from,
+/// so whoever runs the server sets a random password and hands it over. Returns None when no user has that email.
+pub async fn reset_password(db: &PgPool, email: &str) -> anyhow::Result<Option<String>> {
+    let password = Uuid::new_v4().simple().to_string();
+    let hash = hash_password(&password)?;
+    let mut tx = db.begin().await?;
+    let user_id: Option<Uuid> = sqlx::query_scalar("update users set password_hash = $2 where email = $1::citext returning id")
+        .bind(email)
+        .bind(&hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(user_id) = user_id else { return Ok(None) };
+    sqlx::query("delete from sessions where user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("delete from login_failures where email = $1::citext").bind(email).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Some(password))
+}
+
 /// Creates a session row and returns the cookie to set on the response.
 /// `secure` comes from Config::secure_cookies, so the cookie is HTTPS-only wherever the app is served over HTTPS.
 pub async fn create_session(db: &PgPool, user_id: Uuid, org_id: Uuid, secure: bool) -> AppResult<Cookie<'static>> {
@@ -149,5 +167,36 @@ impl FromRequestParts<AppState> for ApiKeyAuth {
         .fetch_optional(&state.db)
         .await?;
         Ok(ApiKeyAuth { org_id: org_id.ok_or(AppError::Unauthorized)? })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{reset_password, verify_password};
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn reset_password_replaces_the_hash_and_signs_the_user_out(db: PgPool) {
+        let user: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('ana@example.com', 'old') returning id").fetch_one(&db).await.unwrap();
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ('t', $1, $2, now() + interval '1 day')")
+            .bind(user)
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into login_failures (email) values ('ana@example.com')").execute(&db).await.unwrap();
+
+        let password = reset_password(&db, "Ana@Example.com").await.unwrap().unwrap();
+
+        let hash: String = sqlx::query_scalar("select password_hash from users where id = $1").bind(user).fetch_one(&db).await.unwrap();
+        assert!(verify_password(&password, &hash));
+        let left: i64 = sqlx::query_scalar("select (select count(*) from sessions) + (select count(*) from login_failures)").fetch_one(&db).await.unwrap();
+        assert_eq!(left, 0);
+        assert!(reset_password(&db, "nobody@example.com").await.unwrap().is_none());
     }
 }
