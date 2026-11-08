@@ -14,6 +14,13 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 import { MicroLabel, toastError } from "./states";
 import { EmailStatusBadge } from "./status";
 
+const KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string> = {
+  initial: "First email",
+  auto_reply: "Auto-reply",
+  manual_reply: "Manual reply",
+  inbound: "Lead's reply",
+};
+
 /** Read-only preview for sent/scheduled emails, inline editor for drafts. Remount it (key) when the email changes. */
 export function EmailPreview({ email, showProject }: { email: EmailRow; showProject?: boolean }) {
   const { mutate } = useSWRConfig();
@@ -81,7 +88,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <dt>Type</dt>
-        <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : email.kind.replace("_", " ")}</dd>
+        <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : KINDS[email.kind]}</dd>
         {email.from_email && (
           <>
             <dt>From</dt>
