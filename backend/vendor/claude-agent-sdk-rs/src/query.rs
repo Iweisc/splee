@@ -28,22 +28,14 @@ fn create_message_stream(
         let mut message_stream = transport.read_messages();
         while let Some(json_result) = message_stream.next().await {
             match json_result {
-                Ok(json) => {
-                    let known = matches!(
-                        json.get("type").and_then(|t| t.as_str()),
-                        Some("assistant" | "system" | "result" | "stream_event" | "user" | "control_cancel_request")
-                    );
-                    match MessageParser::parse(json) {
-                        Ok(message) => yield Ok(message),
-                        // Splee patch: newer CLIs emit message types this release doesn't know
-                        // (e.g. `tool_progress`). Skip those instead of ending the whole stream.
-                        Err(_) if !known => continue,
-                        Err(e) => {
-                            yield Err(e);
-                            break;
-                        }
+                Ok(json) => match MessageParser::parse_known(json) {
+                    Some(Ok(message)) => yield Ok(message),
+                    None => continue,
+                    Some(Err(e)) => {
+                        yield Err(e);
+                        break;
                     }
-                }
+                },
                 Err(e) => {
                     yield Err(e);
                     break;

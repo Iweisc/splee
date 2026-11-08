@@ -34,8 +34,9 @@ impl InternalClient {
 
             while let Some(result) = stream.next().await {
                 let json = result?;
-                let message = MessageParser::parse(json)?;
-                messages.push(message);
+                if let Some(message) = MessageParser::parse_known(json) {
+                    messages.push(message?);
+                }
             }
             // Stream is dropped here
         }

@@ -560,9 +560,10 @@ impl ClaudeClient {
 
             // No mutex needed - flume receiver is lock-free
             while let Ok(json) = rx.recv_async().await {
-                match MessageParser::parse(json) {
-                    Ok(msg) => yield Ok(msg),
-                    Err(e) => yield Err(e),
+                match MessageParser::parse_known(json) {
+                    Some(Ok(msg)) => yield Ok(msg),
+                    Some(Err(e)) => yield Err(e),
+                    None => continue,
                 }
             }
         })
@@ -623,15 +624,16 @@ impl ClaudeClient {
 
             // No mutex needed - flume receiver is lock-free
             while let Ok(json) = rx.recv_async().await {
-                match MessageParser::parse(json) {
-                    Ok(msg) => {
+                match MessageParser::parse_known(json) {
+                    Some(Ok(msg)) => {
                         let is_result = matches!(msg, Message::Result(_));
                         yield Ok(msg);
                         if is_result {
                             break;
                         }
                     }
-                    Err(e) => yield Err(e),
+                    Some(Err(e)) => yield Err(e),
+                    None => continue,
                 }
             }
         })

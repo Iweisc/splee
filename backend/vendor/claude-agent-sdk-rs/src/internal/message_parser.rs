@@ -21,4 +21,31 @@ impl MessageParser {
             .into()
         })
     }
+
+    /// Splee patch: newer CLIs emit message types this release doesn't know (e.g. `tool_progress`,
+    /// `rate_limit_event`). Those return None so readers skip them instead of failing the response.
+    /// A known type that doesn't parse is still an error.
+    pub fn parse_known(data: serde_json::Value) -> Option<Result<Message>> {
+        let known = matches!(
+            data.get("type").and_then(|t| t.as_str()),
+            Some("assistant" | "system" | "result" | "stream_event" | "user" | "control_cancel_request")
+        );
+        match Self::parse(data) {
+            Err(_) if !known => None,
+            parsed => Some(parsed),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn skips_unknown_types_but_not_broken_known_ones() {
+        assert!(MessageParser::parse_known(json!({"type": "rate_limit_event", "rate_limit_info": {}})).is_none());
+        assert!(MessageParser::parse_known(json!({"type": "tool_progress"})).is_none());
+        assert!(matches!(MessageParser::parse_known(json!({"type": "result"})), Some(Err(_))));
+    }
 }
