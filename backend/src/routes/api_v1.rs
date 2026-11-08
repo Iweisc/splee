@@ -14,9 +14,10 @@ use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_scope;
+use crate::agent::{self, kind};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
-use crate::models::{EmailMessage, Lead, Project, Ts};
+use crate::models::{EmailMessage, Lead, Project, Segment, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/suppressions", post(add_suppressions))
+        .route("/v1/segments/{id}/write-emails", post(write_emails))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -201,4 +203,13 @@ async fn add_suppressions(State(state): State<AppState>, auth: ApiKeyAuth, Json(
     }
     let added = suppressions::insert(&state.db, auth.org_id, body.values.iter().map(|v| v.trim()).filter(|v| !v.is_empty())).await?;
     Ok(Json(json!({ "added": added })))
+}
+
+/// Writes a first email for every lead in the campaign that has none, like "Write emails" in the app. Lets a CRM push
+/// leads with segment_id and then get them written. In a campaign that's sending, the new emails go straight into the queue.
+async fn write_emails(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    segments::ensure_unwritten_leads(&state.db, &segment).await?;
+    let run_id = agent::enqueue(&state.db, kind::WRITE_EMAILS, Some(segment.project_id), Some(auth.org_id), json!({ "segment_id": id })).await?;
+    Ok(Json(json!({ "run_id": run_id })))
 }
