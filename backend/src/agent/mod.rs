@@ -176,6 +176,10 @@ async fn execute(state: AppState, run: AgentRun) {
     };
 
     let step = ctx.step();
+    // Before the final event, so the UI's refresh on that event already sees the settled project.
+    if !matches!(result, Some(Ok(_))) {
+        settle_research(&state.db, &ctx.run).await;
+    }
     let finished = match result {
         None => events::emit(&state, run_id, step, "error", "Run cancelled", json!({"cancelled": true})).await.map(|_| ()),
         Some(Ok(outcome)) => {
@@ -209,6 +213,28 @@ async fn execute(state: AppState, run: AgentRun) {
     };
     if let Err(e) = finished {
         tracing::error!(%run_id, error = ?e, "could not finish agent run");
+    }
+}
+
+/// Only a research run that succeeds moves its project out of `researching`. One that was cancelled or failed
+/// would leave it there for good, which hides the profile and disables "Re-run research". So it goes back to
+/// `ready` when step 1 saved a profile, else `failed`, unless another research run for the project is already lined up.
+pub async fn settle_research(db: &PgPool, run: &AgentRun) {
+    let Some(project_id) = run.project_id.filter(|_| run.kind == kind::EXPLORE) else {
+        return;
+    };
+    let settled = sqlx::query(
+        "update projects set status = case when company = '{}'::jsonb then 'failed' else 'ready' end
+         where id = $1 and status = 'researching'
+           and not exists (select 1 from agent_runs where project_id = $1 and kind = $2 and status in ('queued', 'running') and id <> $3)",
+    )
+    .bind(project_id)
+    .bind(kind::EXPLORE)
+    .bind(run.id)
+    .execute(db)
+    .await;
+    if let Err(e) = settled {
+        tracing::error!(run_id = %run.id, error = ?e, "could not settle the project after research stopped");
     }
 }
 

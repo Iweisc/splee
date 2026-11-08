@@ -56,7 +56,8 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
   }
 
   const { project, settings, latest_run: run } = detail;
-  const failed = project.status === "failed";
+  // A run that stopped after step 1 leaves the project `ready` so research can be re-run, but onboarding isn't done.
+  const failed = project.status === "failed" || run?.status === "failed" || run?.status === "cancelled";
   const done = !failed && project.status !== "researching";
 
   return (
