@@ -1,16 +1,17 @@
 //! One Claude call: a prompt in, a typed JSON answer out. Drives the local `claude` CLI through
 //! claude-agent-sdk-rs and turns its tool calls into run events.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use claude_agent_sdk_rs::{ClaudeAgentOptions, ContentBlock, Message, Tools, query_stream};
+use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, ContentBlock, McpServers, Message, Tools};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use super::Ctx;
+use super::{Ctx, x};
 use crate::events;
 use crate::state::AppState;
 
@@ -73,11 +74,7 @@ pub async fn ask<T: DeserializeOwned>(state: &AppState, run: Option<&Ctx>, call:
                 call.prompt
             )
         };
-        let result = tokio::time::timeout(call.timeout, once(state, run, call, prompt)).await;
-        let Ok(result) = result else {
-            anyhow::bail!("Claude did not finish within {} minutes", call.timeout.as_secs().div_ceil(60));
-        };
-        let attempt = result?;
+        let attempt = once(state, run, call, prompt).await?;
         if let Some(ctx) = run {
             ctx.add_cost(attempt.cost).await;
         }
@@ -96,9 +93,17 @@ pub async fn ask<T: DeserializeOwned>(state: &AppState, run: Option<&Ctx>, call:
 
 async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, prompt: String) -> anyhow::Result<Attempt> {
     let tools: Vec<String> = if call.web { WEB_TOOLS.iter().map(|t| t.to_string()).collect() } else { vec![] };
+    let mut allowed = tools.clone();
+    let mut servers = HashMap::new();
+    if let (true, Some(bird)) = (call.web, &state.cfg.bird_bin) {
+        servers.insert("x".to_string(), x::server(bird.clone()));
+        allowed.extend([x::SEARCH.to_string(), x::READ.to_string()]);
+    }
     let opts = ClaudeAgentOptions::builder()
-        .tools(Tools::List(tools.clone()))
-        .allowed_tools(tools)
+        // `tools` only picks built-in tools. MCP tools such as the X ones just need to be allowed.
+        .tools(Tools::List(tools))
+        .allowed_tools(allowed)
+        .mcp_servers(McpServers::Dict(servers))
         // Never load the host user's ~/.claude settings, CLAUDE.md or plugins.
         .setting_sources(vec![])
         .cwd(std::env::temp_dir())
@@ -112,7 +117,23 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, prompt: String) 
         .skip_version_check(true)
         .build();
 
-    let mut stream = query_stream(prompt, Some(opts)).await.context("could not start the Claude CLI")?;
+    // ClaudeClient rather than query_stream: only the client answers the CLI's calls to in-process MCP tools.
+    let mut client = ClaudeClient::new(opts);
+    client.connect().await.context("could not start the Claude CLI")?;
+    let attempt = tokio::time::timeout(call.timeout, async {
+        client.query(prompt).await.context("could not send the prompt to the Claude CLI")?;
+        read_answer(state, run, &client).await
+    })
+    .await;
+    // Dropping the client does not stop the CLI: the SDK's reader task keeps it alive. So every path
+    // disconnects. A CLI still mid-turn won't exit on its own, and giving up on the wait drops the child,
+    // which the vendored SDK spawns with kill_on_drop.
+    let _ = tokio::time::timeout(Duration::from_secs(10), client.disconnect()).await;
+    attempt.map_err(|_| anyhow!("Claude did not finish within {} minutes", call.timeout.as_secs().div_ceil(60)))?
+}
+
+async fn read_answer(state: &AppState, run: Option<&Ctx>, client: &ClaudeClient) -> anyhow::Result<Attempt> {
+    let mut stream = client.receive_response();
     while let Some(message) = stream.next().await {
         match message.context("Claude CLI stream failed")? {
             Message::Assistant(msg) => {
@@ -139,6 +160,8 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
     let line = match name {
         "WebSearch" => format!("searching \"{}\"…", input["query"].as_str().unwrap_or_default()),
         "WebFetch" => format!("fetching {}…", short_url(input["url"].as_str().unwrap_or_default())),
+        x::SEARCH => format!("searching X \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        x::READ => format!("reading X post {}…", short_url(input["post"].as_str().unwrap_or_default())),
         other => format!("{other}…"),
     };
     let step = ctx.step();

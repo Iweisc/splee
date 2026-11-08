@@ -18,9 +18,9 @@ docker compose up -d                                  # Postgres on 127.0.0.1:55
 (cd frontend && pnpm install && pnpm dev)             # http://localhost:3333
 ```
 
-Set a real `APP_SECRET` in `backend/.env` before connecting mailboxes. It encrypts their passwords. `AGENT_MODEL` picks the Claude model (default `claude-sonnet-5-5`). Card top-ups need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. `PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and top-ups for local testing. Usage is still recorded in the ledger.
+Set a real `APP_SECRET` in `backend/.env` before connecting mailboxes. It encrypts their passwords. `AGENT_MODEL` picks the Claude model (default `claude-sonnet-5-5`). Card top-ups need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. `PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and top-ups for local testing. Usage is still recorded in the ledger. `BIRD_BIN` points at the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`) and lets research runs search and read X. bird uses the cookies of a browser that is logged into x.com, so the agent reads X as that account. Pick the browser in `~/.config/bird/config.json5`.
 
 ## Notes
 
-- `backend/vendor/claude-agent-sdk-rs` is crates.io 0.6.4 with one patch in `src/query.rs`: newer CLIs emit message types the crate doesn't know (`tool_progress`), which used to end the whole run. Drop the `[patch.crates-io]` entry once upstream handles them.
+- `backend/vendor/claude-agent-sdk-rs` is crates.io 0.6.4 with two patches. `src/query.rs` skips message types the crate doesn't know (newer CLIs emit `tool_progress`), which used to end the whole run. `src/internal/transport/subprocess.rs` spawns the CLI with `kill_on_drop`, so a timed-out call can't leave it running. Drop the `[patch.crates-io]` entry once upstream handles both.
 - Every server process runs the background workers (agent runs, sender, IMAP poller). Run one backend per database.
