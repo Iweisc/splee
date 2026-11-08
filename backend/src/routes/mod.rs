@@ -58,3 +58,12 @@ pub fn router() -> Router<AppState> {
         .merge(explorer::router())
         .merge(unsubscribe::router())
 }
+
+#[cfg(test)]
+mod tests {
+    // axum panics on overlapping routes while building the router, which used to crash the API on boot.
+    #[test]
+    fn router_builds() {
+        let _ = super::router();
+    }
+}
