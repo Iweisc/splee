@@ -23,12 +23,17 @@ const LEAD = `{
   "project_id": "9b1f…",
   "segment_id": "5d0a…",
   "full_name": "Sarah Chen",
+  "first_name": "Sarah",
+  "last_name": "Chen",
   "title": "Founder",
   "email": "sarah@northwind.studio",
   "email_status": "found",
   "company_name": "Northwind Studio",
   "company_domain": "northwind.studio",
-  "linkedin_url": "",
+  "linkedin_url": "https://www.linkedin.com/in/sarah-chen",
+  "x_url": "https://x.com/sarahchen",
+  "city": "Portland",
+  "country_code": "US",
   "source": "agent",
   "status": "contacted",
   "last_contacted_at": "2026-11-03T09:14:00Z",
@@ -56,10 +61,11 @@ function endpoints(projectId: string): Endpoint[] {
     {
       method: "GET",
       path: `/projects/${projectId}/leads?status=hot&page=1`,
-      summary: "Leads of a project, 50 per page, newest first.",
+      summary: "Leads of a project, newest first.",
       params: [
         ["status", "optional lead status: new, contacted, replied, hot, meeting_booked, …"],
         ["page", "1-based page number"],
+        ["per_page", "1 to 200, default 50"],
       ],
       response: `{
   "items": [
@@ -71,7 +77,8 @@ function endpoints(projectId: string): Endpoint[] {
     {
       method: "POST",
       path: `/projects/${projectId}/leads`,
-      summary: "Add your own leads. Suppressed, duplicate and invalid emails are skipped.",
+      summary:
+        "Add up to 1,000 leads per request. Suppressed, duplicate and invalid emails are skipped, and errors lists the first 200 of them with their zero-based index in leads.",
       body: `{
   "leads": [
     {
@@ -82,22 +89,35 @@ function endpoints(projectId: string): Endpoint[] {
       "company_domain": "northwind.studio",
       "linkedin_url": "https://www.linkedin.com/in/…",
       "segment_id": "5d0a…"
+    },
+    {
+      "email": "sarah@northwind.studio",
+      "full_name": "Sarah Chen"
     }
   ]
 }`,
-      response: `{ "imported": 1, "skipped": 0 }`,
+      response: `{
+  "imported": 1,
+  "skipped": 1,
+  "errors": [{ "row": 1, "error": "Duplicate: sarah@northwind.studio" }]
+}`,
     },
     {
       method: "GET",
       path: "/leads/c42e…",
-      summary: "One lead.",
-      response: LEAD,
+      summary: "One lead with its campaign, company and every email in both directions, oldest first.",
+      response: `${LEAD.slice(0, -2)},
+  "segment_name": "Design studios",
+  "company": { "id": "e810…", "domain": "northwind.studio", "name": "Northwind Studio", "fit_score": 86, "…": "…" },
+  "emails": [{ "id": "a19c…", "direction": "outbound", "kind": "initial", "subject": "Northwind Studio x Acme", "status": "sent", "…": "…" }]
+}`,
     },
     {
       method: "GET",
       path: `/projects/${projectId}/replies?since=2026-11-01T00:00:00Z`,
-      summary: "Replies your leads sent, with the agent's classification. Poll with since set to the last created_at you saw.",
-      params: [["since", "optional RFC 3339 timestamp"]],
+      summary:
+        "Replies your leads sent, with the agent's classification. Oldest first, up to 500 per request. Poll with since set to the last created_at you saw.",
+      params: [["since", "optional RFC 3339 timestamp, returns replies created after it"]],
       response: `[
   {
     "id": "71aa…",
