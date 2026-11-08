@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import useSWR from "swr";
-import { Gift } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
@@ -67,12 +66,6 @@ export function SignupForm({
   return (
     <Card className="w-full max-w-[400px] p-8">
       <h1 className="text-2xl font-medium tracking-tight">{inviteToken ? "Join your team on Splee" : "Create your account"}</h1>
-      {!inviteToken && (
-        <p className="mt-2 inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-sm">
-          <Gift className="size-4" />
-          $30 in free credits, no card needed
-        </p>
-      )}
       {claim && (
         <p className="mt-4 rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-800">
           Your research for {claimedName ? <strong className="font-medium">{claimedName}</strong> : "this demo"} will be saved.

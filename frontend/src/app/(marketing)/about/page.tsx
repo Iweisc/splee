@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Globe, Mail, Wallet } from "lucide-react";
+import { Code, Globe, Mail } from "lucide-react";
 import { FinalCta } from "@/components/marketing/final-cta";
 
 export const metadata: Metadata = { title: "About · Splee" };
@@ -13,12 +13,12 @@ const principles = [
   {
     icon: Mail,
     title: "You own the sending",
-    body: "Emails go out from your mailboxes, under your name, within the daily budget you set. You can pause everything at any time.",
+    body: "Emails go out from your mailboxes, under your name, on the schedule you set. You can pause everything at any time.",
   },
   {
-    icon: Wallet,
-    title: "You pay for what's sent",
-    body: "$0.04 per email and nothing else. Research and writing aren't billed, and there's no subscription to cancel.",
+    icon: Code,
+    title: "It's yours to run",
+    body: "Splee is free and open source under the AGPL-3.0. You host it, it uses your Claude account, and the data stays in your database.",
   },
 ];
 

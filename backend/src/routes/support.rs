@@ -35,9 +35,8 @@ contact database. Emails are taken from the web when published, otherwise guesse
 Domains without a mail server are dropped.
 - Emails are sent from your own mailboxes that you connect with SMTP and IMAP (Google Workspace, Microsoft 365 or any provider with app \
 passwords). Replies are read over IMAP. Splee checks your domain's MX, SPF and DMARC records. Sending from a separate domain protects your main domain's reputation.
-- Pricing: finding companies, people and writing emails is free. Each sent email costs $0.04. New accounts get $30 in free credits, \
-about 750 emails. There's no subscription. You set a daily budget per project and sending stops when it's reached or when your balance hits zero. \
-Top-ups are by card when the operator has enabled billing.
+- Price: Splee is free and open source (AGPL-3.0). People run it themselves, on their own machine or server, with their own Claude \
+account for research and writing and their own mailboxes for sending. There are no credits, plans or per-email fees.
 - You can set targeting (countries, company sizes, keywords to exclude), a send schedule with timezone, days and hours, follow-ups \
 (by default two, after 3 and 5 days), tone, language, length, call to action, signature, booking link and materials such as case \
 studies or FAQs the agent can use.

@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { ArrowRight, Check, CircleAlert, CreditCard } from "lucide-react";
+import { ArrowRight, Check, CircleAlert, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { STEPS } from "./steps";
@@ -62,18 +62,18 @@ export function Stepper({
   );
 }
 
-export function CreditsBanner({ onStart, loading }: { onStart: () => void; loading: boolean }) {
+export function StartBanner({ onStart, loading }: { onStart: () => void; loading: boolean }) {
   return (
     <div className="sticky top-0 z-20 flex flex-wrap items-center gap-4 border-b border-border bg-muted px-5 py-3.5">
       <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border-strong bg-card">
-        <CreditCard className="size-5 text-muted-foreground" />
+        <Send className="size-5 text-muted-foreground" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-[17px] font-semibold">$30 free credits — get new clients on autopilot</p>
-        <p className="text-sm text-muted-foreground">No upfront charge · 750 emails included · Start outbound in 60s</p>
+        <p className="text-[17px] font-semibold">Get new clients on autopilot</p>
+        <p className="text-sm text-muted-foreground">Save this research, connect a mailbox and start sending in a few minutes</p>
       </div>
       <Button variant="brand" onClick={onStart} loading={loading} className="h-11 rounded-lg px-5 font-semibold">
-        Start outreach for free
+        Start outreach
         <ArrowRight className="size-4" />
       </Button>
     </div>

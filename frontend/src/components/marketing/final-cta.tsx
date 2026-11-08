@@ -33,7 +33,7 @@ export function FinalCta() {
         ))}
       </h2>
       <LinkButton href="/signup" size="lg" className="relative z-10 mt-8 h-12 rounded-lg px-8">
-        Get $30 in credits to try it
+        Get started
       </LinkButton>
       <ConvergingLines direction="up" className="-mt-6 h-[300px] w-full max-w-[1440px] [mask-image:linear-gradient(#000_55%,transparent)]" />
     </section>

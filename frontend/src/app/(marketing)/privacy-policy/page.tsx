@@ -31,7 +31,7 @@ export default function PrivacyPolicy() {
           heading: "Third parties",
           body: (
             <p>
-              Research and writing run on Anthropic&apos;s Claude. Payments, if enabled, go through Stripe. Emails are sent through the
+              Research and writing run on Anthropic&apos;s Claude. Emails are sent through the
               mailboxes each user connects. Nothing is sold to anyone.
             </p>
           ),

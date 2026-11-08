@@ -10,8 +10,8 @@ const things = [
     tilt: "",
   },
   {
-    title: "$0.04 per email",
-    body: "No subscription. Research and writing aren't billed, only emails sent",
+    title: "Yours to run",
+    body: "Run it yourself with your own Claude account and mailboxes. No credits, no per-email fees",
     tilt: "md:rotate-1",
   },
 ];

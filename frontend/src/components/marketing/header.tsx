@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { SOURCE_URL } from "@/lib/source";
 import { useEffect, useRef, useState } from "react";
 import { Building2, ChevronDown, LayoutGrid, MapPin, Menu, Search, Send, X } from "lucide-react";
 import { Logo } from "@/components/ui/logo";
@@ -15,9 +16,8 @@ const products = [
 ];
 
 const links = [
-  { href: "/pricing", label: "Pricing" },
-  { href: "/affiliate", label: "Affiliates" },
   { href: "/about", label: "About" },
+  { href: SOURCE_URL, label: "GitHub" },
 ];
 
 const navLink = "px-4 py-3 text-base transition-colors duration-300 hover:text-foreground/70";

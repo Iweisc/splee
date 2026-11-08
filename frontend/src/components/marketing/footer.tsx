@@ -10,8 +10,6 @@ const tools = [
 
 const resources = [
   { href: "/about", label: "About" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/affiliate", label: "Affiliate program" },
   { href: "/compliance-faq", label: "Compliance FAQ" },
 ];
 

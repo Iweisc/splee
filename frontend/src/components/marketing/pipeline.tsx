@@ -25,11 +25,11 @@ const people = [
 ];
 
 const results = [
-  { name: "Event designers", status: "Scaling", cost: "$1.74" },
-  { name: "Wedding planners", status: "Scaling", cost: "$1.92" },
-  { name: "Hotel banquet teams", status: "Working", cost: "$2.10" },
-  { name: "Restaurant groups", status: "Paused", cost: "$6.40" },
-  { name: "Set decorators", status: "Paused", cost: "$5.85" },
+  { name: "Event designers", status: "Scaling", emails: "44" },
+  { name: "Wedding planners", status: "Scaling", emails: "48" },
+  { name: "Hotel banquet teams", status: "Working", emails: "53" },
+  { name: "Restaurant groups", status: "Paused", emails: "160" },
+  { name: "Set decorators", status: "Paused", emails: "146" },
 ];
 
 const STICKY_TOP = 140;
@@ -81,7 +81,7 @@ export function Pipeline() {
 
   return (
     <section className="mx-auto w-full max-w-[1240px] px-5 pt-40">
-      <h2 className="sticky top-20 z-0 pb-5 text-center text-4xl font-normal">We run the entire pipeline</h2>
+      <h2 className="sticky top-20 z-0 pb-5 text-center text-4xl font-normal">It runs the entire pipeline</h2>
       <div className="relative mt-6 pb-16">
         {cards.map((c, i) => (
           <div
@@ -220,7 +220,7 @@ function ResultsTable() {
       <div className="grid grid-cols-[1.4fr_1fr_auto] bg-accent px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
         <span>Campaign</span>
         <span>Status</span>
-        <span>Cost/lead</span>
+        <span>Emails/lead</span>
       </div>
       {results.map((r) => {
         const paused = r.status === "Paused";
@@ -231,7 +231,7 @@ function ResultsTable() {
               {r.status}
               {!paused && <span className="size-1.5 bg-brand-300" />}
             </span>
-            <span className="text-right text-muted-foreground tabular-nums">{r.cost}</span>
+            <span className="text-right text-muted-foreground tabular-nums">{r.emails}</span>
           </div>
         );
       })}

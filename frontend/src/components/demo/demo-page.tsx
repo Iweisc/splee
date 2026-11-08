@@ -17,7 +17,7 @@ import type { AgentEvent, DemoState } from "@/lib/types";
 import { isDomain, normalizeDomain } from "@/lib/utils";
 import { Sidebar } from "./sidebar";
 import { StepDetail } from "./step-detail";
-import { CreditsBanner, Stepper } from "./stepper";
+import { StartBanner, Stepper } from "./stepper";
 import { STEP_COUNT, STEPS } from "./steps";
 
 interface Session {
@@ -197,7 +197,7 @@ export function DemoPage({ slug, urlToken }: { slug: string; urlToken: string | 
         onCorrect={() => setCorrecting(true)}
       />
       <main className="flex min-w-0 flex-1 flex-col md:overflow-y-auto">
-        {(current >= BANNER_FROM_STEP || succeeded) && <CreditsBanner onStart={startOutreach} loading={claiming} />}
+        {(current >= BANNER_FROM_STEP || succeeded) && <StartBanner onStart={startOutreach} loading={claiming} />}
         {actionError && <p className="border-b border-border bg-red-50 px-5 py-2 text-sm text-red-700">{actionError}</p>}
         <Stepper
           finished={finished}
