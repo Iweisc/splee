@@ -60,7 +60,8 @@ export default function SchedulePage() {
 
             <Section title="Send window" description="Emails due outside this window wait until it opens again.">
               <Field label="Days">
-                <div className="flex flex-wrap gap-2">
+                {/* Seven columns as wide as the From/Until row below, so the week stays on one row on phones instead of breaking 4 + 3. */}
+                <div className="grid max-w-sm grid-cols-7 gap-1 sm:gap-1.5">
                   {DAYS.map((label, i) => {
                     const day = i + 1;
                     const on = s.send_days.includes(day);
@@ -73,7 +74,7 @@ export default function SchedulePage() {
                           update({ send_days: on ? s.send_days.filter((d) => d !== day) : [...s.send_days, day].sort((a, b) => a - b) })
                         }
                         className={cn(
-                          "w-14 rounded-lg border py-2 text-sm font-medium transition-colors",
+                          "rounded-lg border py-2 text-sm font-medium transition-colors",
                           on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card hover:bg-accent",
                         )}
                       >
