@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,6 @@ pub fn router() -> Router<AppState> {
         .route("/organization/users/{user_id}", patch(update_member).delete(remove_member))
         .route("/organization/invites", get(list_invites).post(create_invite))
         .route("/organization/invites/{id}", delete(delete_invite))
-        .route("/organization/stop-campaigns", post(stop_campaigns))
         .route("/organization/deletion-eligibility", get(deletion_eligibility))
 }
 
@@ -201,48 +200,13 @@ async fn delete_invite(State(state): State<AppState>, auth: Auth, Path(id): Path
     Ok(Json(json!({ "ok": true })))
 }
 
-#[derive(Deserialize)]
-struct StopBody {
-    reason: String,
-    #[serde(default)]
-    details: String,
-}
-
-async fn stop_campaigns(State(state): State<AppState>, auth: Auth, Json(body): Json<StopBody>) -> AppResult<Json<Value>> {
-    let reason = body.reason.trim();
-    if reason.is_empty() {
-        return Err(AppError::BadRequest("Pick a reason".into()));
-    }
-    let mut tx = state.db.begin().await?;
-    sqlx::query(
-        "update project_settings set paused = true
-         where project_id in (select id from projects where org_id = $1)",
-    )
-    .bind(auth.org_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("update projects set status = 'paused' where org_id = $1 and status = 'active'")
-        .bind(auth.org_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("insert into stop_feedback (org_id, user_id, reason, details) values ($1, $2, $3, $4)")
-        .bind(auth.org_id)
-        .bind(auth.user_id)
-        .bind(reason)
-        .bind(body.details.trim())
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
-}
-
 #[derive(Serialize)]
 struct Eligibility {
     eligible: bool,
     reason: String,
 }
 
-// Paused projects never send, so their queued emails don't block deletion. Otherwise "stop campaigns" would never unblock it.
+// Paused projects never send, so their queued emails don't block deletion. Otherwise "Pause sending" would never unblock it.
 async fn eligibility(db: &PgPool, org_id: Uuid) -> AppResult<Eligibility> {
     let due: i64 = sqlx::query_scalar(
         "select count(*) from email_messages e
@@ -260,7 +224,7 @@ async fn eligibility(db: &PgPool, org_id: Uuid) -> AppResult<Eligibility> {
         Eligibility {
             eligible: false,
             reason: format!(
-                "{due} {} scheduled to go out within the next hour. Stop your campaigns first.",
+                "{due} {} scheduled to go out within the next hour. Pause sending on your projects first.",
                 if due == 1 { "email is" } else { "emails are" }
             ),
         }

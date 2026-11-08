@@ -98,7 +98,6 @@ All paths below are under `/api`.
 | DELETE | /organization/users/:user_id | | `{ok}` (admin, can't remove last owner) |
 | GET/POST | /organization/invites | `{email, role}` | `Invite[]` / `{invite, link}` (link = PUBLIC_URL/invite/token; also emailed if the org has an active mailbox). `Invite.expires_at` = created_at + 7 days. Expired invites stay listed until revoked. |
 | DELETE | /organization/invites/:id | | `{ok}` |
-| POST | /organization/stop-campaigns | `{reason, details}` | pauses every project + stores stop_feedback. `{ok}` |
 | GET | /organization/deletion-eligibility | | `{eligible, reason}` (not eligible with emails scheduled in the next hour) |
 | DELETE | /organization | | `{ok}` (owner) |
 | GET/POST | /organization/api-keys | `{name}` | `ApiKey[]` / `{api_key: ApiKey, secret}` (secret shown once) |
