@@ -23,6 +23,7 @@ export interface Me {
   org: Organization;
   role: Role;
   orgs: { id: UUID; name: string; role: Role }[];
+  public_url: string;
 }
 
 export interface Member {

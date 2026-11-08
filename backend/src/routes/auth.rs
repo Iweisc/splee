@@ -35,6 +35,8 @@ pub struct Me {
     org: Organization,
     role: String,
     orgs: Vec<OrgRef>,
+    /// Links in emails (unsubscribe, invites) point here. The mailboxes page warns when it's left on localhost.
+    public_url: String,
 }
 
 #[derive(Serialize, FromRow)]
@@ -59,7 +61,7 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     .fetch_all(db)
     .await?;
     let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
-    Ok(Me { user, org, role, orgs })
+    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone() })
 }
 
 #[derive(Deserialize)]
