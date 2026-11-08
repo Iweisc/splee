@@ -129,6 +129,14 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "POST",
+      path: "/suppressions",
+      summary:
+        "Add up to 1,000 emails or domains to your organization's do-not-contact list, for example from your CRM. Splee checks the list before every email, so queued emails to them are cancelled too. added counts the new ones. One value that isn't an email or a domain rejects the request.",
+      body: `{ "values": ["sarah@northwind.studio", "competitor.com"] }`,
+      response: `{ "added": 2 }`,
+    },
+    {
       method: "GET",
       path: `/projects/${projectId}/replies?since=2026-11-01T00:00:00Z`,
       summary:
