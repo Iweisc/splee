@@ -157,6 +157,8 @@ async fn update(
            smtp_username = coalesce($7, smtp_username),
            smtp_password_enc = coalesce($8, smtp_password_enc),
            imap_host = coalesce($9, imap_host),
+           -- Another IMAP server, or IMAP added to a mailbox that has been sending, starts over like a new mailbox.
+           imap_last_uid = case when coalesce($9, imap_host) <> imap_host then -1 else imap_last_uid end,
            imap_port = coalesce($10, imap_port),
            imap_username = coalesce($11, imap_username),
            imap_password_enc = coalesce($12, imap_password_enc),

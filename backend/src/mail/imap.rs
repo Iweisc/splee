@@ -67,6 +67,19 @@ pub async fn test(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Where a mailbox's first poll starts: just before the oldest message in INBOX that arrived on or after `since`, so a
+/// busy inbox isn't downloaded from UID 1. Without such a message, after the newest one.
+pub async fn first_uid(state: &AppState, mb: &Mailbox, since: chrono::NaiveDate) -> anyhow::Result<u32> {
+    let mut session = connect(state, mb).await?;
+    let inbox = session.select("INBOX").await.map_err(|e| anyhow!("IMAP: could not open INBOX: {e}"))?;
+    let found = session.uid_search(format!("SINCE {}", since.format("%-d-%b-%Y"))).await.map_err(|e| anyhow!("IMAP search failed: {e}"))?;
+    let _ = session.logout().await;
+    Ok(match found.into_iter().min() {
+        Some(oldest) => oldest - 1,
+        None => inbox.uid_next.unwrap_or(1).saturating_sub(1),
+    })
+}
+
 /// Raw RFC 822 messages in INBOX with a UID above `after`, oldest first.
 pub async fn fetch_new(state: &AppState, mb: &Mailbox, after: u32) -> anyhow::Result<Vec<(u32, Vec<u8>)>> {
     let mut session = connect(state, mb).await?;

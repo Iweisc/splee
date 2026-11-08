@@ -1,12 +1,13 @@
 //! IMAP poller: stores replies to our emails and hands them to the classifier.
 
+use chrono::Utc;
 use mail_parser::{HeaderValue, MessageParser, MimeHeaders};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::imap;
 use crate::agent::{self, kind};
-use crate::models::{EmailMessage, Lead, Mailbox};
+use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
@@ -24,7 +25,21 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
 }
 
 async fn poll(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
-    let after = u32::try_from(mb.imap_last_uid).unwrap_or(0);
+    let after = match u32::try_from(mb.imap_last_uid) {
+        Ok(after) => after,
+        // Not polled yet. Replies can only be to emails this mailbox sent, so mail from before its first send is skipped.
+        // A day of slack covers the server counting dates in another time zone.
+        Err(_) => {
+            let first_sent: Option<Ts> = sqlx::query_scalar("select min(sent_at) from email_messages where mailbox_id = $1 and status = 'sent'")
+                .bind(mb.id)
+                .fetch_one(&state.db)
+                .await?;
+            let since = first_sent.unwrap_or_else(Utc::now) - chrono::Duration::days(1);
+            let start = imap::first_uid(state, mb, since.date_naive()).await?;
+            sqlx::query("update mailboxes set imap_last_uid = $2 where id = $1 and imap_last_uid < 0").bind(mb.id).bind(i64::from(start)).execute(&state.db).await?;
+            start
+        }
+    };
     let messages = imap::fetch_new(state, mb, after).await?;
     for (uid, raw) in messages {
         if let Err(e) = store(state, mb, &raw).await {
