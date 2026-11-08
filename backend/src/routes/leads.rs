@@ -251,6 +251,7 @@ struct LeadBody {
     first_name: Option<String>,
     last_name: Option<String>,
     linkedin_url: Option<String>,
+    x_url: Option<String>,
     company_name: Option<String>,
 }
 
@@ -264,21 +265,33 @@ async fn update_lead(
     if let Some(status) = &body.status {
         util_input::one_of("status", status, LEAD_STATUSES)?;
     }
+    // Blank clears a wrong address. Leads without one already exist, research leaves them when it finds none.
+    let clear_email = body.email.as_deref().is_some_and(|raw| raw.trim().is_empty());
     let email = match body.email.as_deref() {
-        Some(raw) => Some(util_input::email(raw).ok_or_else(|| AppError::BadRequest("Enter a valid email address".into()))?),
+        Some(raw) if !clear_email => Some(util_input::email(raw).ok_or_else(|| AppError::BadRequest("Enter a valid email address".into()))?),
+        _ => None,
+    };
+    // Blank clears it. Anything else has to hold an X handle, stored as https://x.com/<handle> like research writes it.
+    let x_url = match body.x_url.as_deref().map(str::trim) {
+        Some("") => Some(String::new()),
+        Some(raw) => match agent::x::profile_url(raw) {
+            url if url.is_empty() => return Err(AppError::BadRequest("Enter an X profile link or @handle".into())),
+            url => Some(url),
+        },
         None => None,
     };
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
            status = coalesce($2, status),
-           email = coalesce($3, email),
-           email_status = case when $3 is not null and $3 is distinct from email::text then 'unknown' else email_status end,
+           email = case when $11 then null else coalesce($3, email) end,
+           email_status = case when $11 or ($3 is not null and $3 is distinct from email::text) then 'unknown' else email_status end,
            title = coalesce($4, title),
            full_name = coalesce($5, full_name),
            first_name = coalesce($6, first_name),
            last_name = coalesce($7, last_name),
            linkedin_url = coalesce($8, linkedin_url),
-           company_name = coalesce($9, company_name)
+           company_name = coalesce($9, company_name),
+           x_url = coalesce($10, x_url)
          where id = $1 returning *",
     )
     .bind(lead.id)
@@ -290,6 +303,8 @@ async fn update_lead(
     .bind(body.last_name.as_deref().map(str::trim))
     .bind(body.linkedin_url.as_deref().map(str::trim))
     .bind(body.company_name.as_deref().map(str::trim))
+    .bind(x_url)
+    .bind(clear_email)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(detail(&state.db, lead).await?))
