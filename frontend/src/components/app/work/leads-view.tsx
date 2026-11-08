@@ -8,13 +8,18 @@ import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { LeadRow, Paginated, SegmentWithStats } from "@/lib/types";
-import { timeAgo } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, Tr, useDebounced } from "./states";
 import { LEAD_STATUS, LeadStatusBadge } from "./status";
 
 /** Leads table with filters. Pass `segmentId` to pin it to one campaign (hides the campaign filter). */
+// Columns that only show once there is room for them.
+const COMPANY = "hidden sm:table-cell";
+const CONTACTED = "hidden md:table-cell";
+const WIDE = "hidden xl:table-cell";
+
 export function LeadsView({ projectId, segmentId }: { projectId: string; segmentId?: string }) {
   const [q, setQ] = useState("");
   const [segment, setSegment] = useState("");
@@ -37,12 +42,13 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
-        <div className="relative min-w-56 flex-1">
+        {/* The search takes a row's spare room. The filters only stretch to fill a row they wrapped onto. */}
+        <div className="relative min-w-56 flex-[999_1_0%]">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input value={q} onChange={filter(setQ)} placeholder="Search name, email or company" className="h-9 pl-9" />
         </div>
         {!segmentId && (
-          <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto">
+          <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto flex-auto">
             <option value="">All campaigns</option>
             {segments?.map((s) => (
               <option key={s.id} value={s.id}>
@@ -51,7 +57,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             ))}
           </Select>
         )}
-        <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto">
+        <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto">
           <option value="">Any status</option>
           {Object.entries(LEAD_STATUS).map(([value, s]) => (
             <option key={value} value={value}>
@@ -61,7 +67,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
         </Select>
         {!!data?.total && (
           // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
-          <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9")}>
+          <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
             <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${data.total} leads`}
           </a>
         )}
@@ -92,13 +98,14 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
+                {/* Narrower screens drop the least useful columns instead of scrolling sideways. The lead's modal has all of them. */}
                 <tr>
                   <Th>Name</Th>
-                  <Th>Company</Th>
-                  <Th>Email</Th>
-                  {!segmentId && <Th>Campaign</Th>}
+                  <Th className={COMPANY}>Company</Th>
+                  <Th className={WIDE}>Email</Th>
+                  {!segmentId && <Th className={WIDE}>Campaign</Th>}
                   <Th>Status</Th>
-                  <Th className="text-right whitespace-nowrap">Last contacted</Th>
+                  <Th className={cn(CONTACTED, "text-right whitespace-nowrap")}>Last contacted</Th>
                 </tr>
               </thead>
               <tbody>
@@ -106,15 +113,15 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   <Tr key={l.id} onClick={() => setOpenLead(l.id)}>
                     <Td>
                       <p className="font-medium">{l.full_name || "—"}</p>
-                      <p className="max-w-44 truncate text-xs text-muted-foreground">{l.title}</p>
+                      <p className="max-w-36 truncate text-xs text-muted-foreground sm:max-w-44">{l.title}</p>
                     </Td>
-                    <Td className="max-w-40 truncate">{l.company_name}</Td>
-                    <Td className="max-w-44 truncate text-muted-foreground">{l.email ?? "—"}</Td>
-                    {!segmentId && <Td className="max-w-40 truncate text-muted-foreground">{l.segment_name ?? "—"}</Td>}
+                    <Td className={cn(COMPANY, "max-w-40 truncate")}>{l.company_name}</Td>
+                    <Td className={cn(WIDE, "max-w-44 truncate text-muted-foreground")}>{l.email ?? "—"}</Td>
+                    {!segmentId && <Td className={cn(WIDE, "max-w-40 truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
                     <Td>
                       <LeadStatusBadge status={l.status} />
                     </Td>
-                    <Td className="text-right whitespace-nowrap text-muted-foreground">{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
+                    <Td className={cn(CONTACTED, "text-right whitespace-nowrap text-muted-foreground")}>{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
                   </Tr>
                 ))}
               </tbody>
