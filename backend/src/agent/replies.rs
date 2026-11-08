@@ -188,7 +188,8 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
         .ok()
         .flatten();
     let (webhook, slack, secret) = hooks.unwrap_or_default();
-    let link = format!("{}/app/p/{}/inbox", state.cfg.public_url, t.project.id);
+    // Opens this lead's conversation, not just the inbox.
+    let link = format!("{}/app/p/{}/inbox?lead={}", state.cfg.public_url, t.project.id, t.lead.id);
     let who = format!("{} ({})", t.lead.full_name, t.lead.company_name);
 
     if !webhook.trim().is_empty() {

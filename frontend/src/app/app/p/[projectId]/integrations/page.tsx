@@ -42,7 +42,7 @@ Splee-Signature: v1=5f0c…
     "body": "Sounds interesting, can you send times for next week?",
     "reason": "Asks to schedule a call"
   },
-  "url": "https://your-splee-host/app/p/9b1f…/inbox"
+  "url": "https://your-splee-host/app/p/9b1f…/inbox?lead=c42e…"
 }`;
 
 // Keep in sync with hooks::sign in backend/src/hooks.rs.
