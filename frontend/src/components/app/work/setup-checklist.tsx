@@ -6,12 +6,11 @@ import useSWR from "swr";
 import { Card } from "@/components/ui/misc";
 import type { Mailbox, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { fetcher, useMe } from "@/hooks/use-me";
+import { fetcher } from "@/hooks/use-me";
 import { MicroLabel } from "./states";
 
 /** What has to be true before the sender will actually send for this project. */
 export function SetupChecklist({ projectId, settings, className }: { projectId: string; settings: ProjectSettings; className?: string }) {
-  const { me } = useMe();
   const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
 
@@ -28,16 +27,6 @@ export function SetupChecklist({ projectId, settings, className }: { projectId: 
       done: !!segments?.some((s) => s.status === "working" || s.status === "scaling"),
       href: `/app/p/${projectId}/segments`,
     },
-    ...(me?.payments_enabled === false
-      ? []
-      : [
-          {
-            label: "Have credits on your balance",
-            hint: "$0.04 per sent email.",
-            done: (me?.balance_micros ?? 0) > 0,
-            href: "/app/billing",
-          },
-        ]),
     {
       label: "Add your booking link",
       hint: "Auto-replies to interested leads include it.",

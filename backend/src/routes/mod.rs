@@ -4,7 +4,6 @@ use crate::state::AppState;
 
 pub mod auth;
 pub mod org;
-pub mod billing;
 pub mod projects;
 pub mod competitors;
 pub mod segments;
@@ -18,7 +17,6 @@ pub mod imports;
 pub mod suppressions;
 pub mod notifications;
 pub mod api_keys;
-pub mod referral;
 pub mod api_v1;
 pub mod stats;
 pub mod demo;
@@ -35,7 +33,6 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(auth::router())
         .merge(org::router())
-        .merge(billing::router())
         .merge(projects::router())
         .merge(competitors::router())
         .merge(segments::router())
@@ -49,7 +46,6 @@ pub fn router() -> Router<AppState> {
         .merge(suppressions::router())
         .merge(notifications::router())
         .merge(api_keys::router())
-        .merge(referral::router())
         .merge(api_v1::router())
         .merge(stats::router())
         .merge(demo::router())

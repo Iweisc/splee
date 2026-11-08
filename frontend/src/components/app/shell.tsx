@@ -12,7 +12,7 @@ import { Favicon, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
-import { cn, money } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { orgNav, projectNav } from "./nav";
 
@@ -112,14 +112,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="border-t border-border p-3">
           <SupportChat inSidebar />
-          <Link href="/app/billing" className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm hover:bg-accent">
-            <span className="text-muted-foreground">Balance</span>
-            {me.payments_enabled ? (
-              <span className={cn("font-medium tabular-nums", me.balance_micros <= 0 && "text-danger")}>{money(me.balance_micros)}</span>
-            ) : (
-              <span className="text-xs text-muted-foreground">Payments off</span>
-            )}
-          </Link>
           <a
             href={SOURCE_URL}
             target="_blank"
@@ -146,7 +138,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** "Leads · Acme" for project pages, "Billing · Splee" for the rest. */
+/** "Leads · Acme" for project pages, "Team · Splee" for the rest. */
 // Project pages that aren't in the sidebar.
 const EXTRA_PROJECT_PAGES: Record<string, string> = { new: "New campaign", docs: "API docs" };
 const EXTRA_ORG_PAGES: Record<string, string> = { "/app/inbox": "Inbox", "/app/emails": "Emails", "/app/onboarding": "New project" };

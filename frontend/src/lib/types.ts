@@ -15,9 +15,6 @@ export type Role = "owner" | "admin" | "member";
 export interface Organization {
   id: UUID;
   name: string;
-  referral_code: string;
-  referred_by: UUID | null;
-  referral_rewarded: boolean;
   created_at: Ts;
 }
 
@@ -26,9 +23,6 @@ export interface Me {
   org: Organization;
   role: Role;
   orgs: { id: UUID; name: string; role: Role }[];
-  balance_micros: number;
-  /** False on local/test servers: the balance is tracked but never blocks sending. */
-  payments_enabled: boolean;
 }
 
 export interface Member {
@@ -59,53 +53,11 @@ export interface ApiKey {
   created_at: Ts;
 }
 
-export type LedgerKind = "signup_bonus" | "topup" | "email_sent" | "referral_bonus" | "adjustment";
-
-export interface LedgerEntry {
-  id: UUID;
-  org_id: UUID;
-  amount_micros: number;
-  kind: LedgerKind;
-  ref_id: UUID | null;
-  note: string;
-  created_at: Ts;
-}
-
-export interface BillingSummary {
-  balance_micros: number;
-  spent_today_micros: number;
-  total_spent_micros: number;
-  emails_sent: number;
-  ledger: LedgerEntry[];
-  stripe_enabled: boolean;
-  payments_enabled: boolean;
-}
-
-export interface BillingProfile {
-  org_id: UUID;
-  company_name: string;
-  address_line1: string;
-  address_line2: string;
-  city: string;
-  postal_code: string;
-  country: string;
-  vat_id: string;
-  updated_at: Ts;
-}
-
 export interface NotificationPrefs {
   user_id: UUID;
   hot_lead_email: boolean;
   daily_digest: boolean;
-  low_balance: boolean;
   weekly_report: boolean;
-}
-
-export interface Referral {
-  code: string;
-  link: string;
-  referred: { org_name: string; created_at: Ts; rewarded: boolean }[];
-  earned_micros: number;
 }
 
 export interface CompanyProfile {

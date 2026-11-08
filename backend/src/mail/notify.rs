@@ -4,31 +4,9 @@
 use chrono::{Datelike, Timelike, Utc, Weekday};
 use uuid::Uuid;
 
-use crate::billing::{self, EMAIL_COST_MICROS};
 use crate::state::AppState;
 
-pub const LOW_BALANCE_MICROS: i64 = 2_000_000;
 const DIGEST_HOUR_UTC: u32 = 8;
-
-/// Called after every sent email. Fires only on the email that takes the balance below the threshold.
-pub async fn low_balance(state: &AppState, org_id: Uuid) -> anyhow::Result<()> {
-    if !state.cfg.payments_enabled {
-        return Ok(());
-    }
-    let balance = billing::balance(&state.db, org_id).await?;
-    if !(balance < LOW_BALANCE_MICROS && balance + EMAIL_COST_MICROS >= LOW_BALANCE_MICROS) {
-        return Ok(());
-    }
-    let link = format!("{}/app/billing", state.cfg.public_url);
-    let body = format!(
-        "Your Splee balance is down to {}. Sending stops when it reaches $0.00.\n\nAdd funds: {link}",
-        usd(balance)
-    );
-    for (_, to) in recipients(state, org_id, "low_balance").await? {
-        super::send_system_email(state, org_id, &to, "Your Splee balance is running low", &body).await?;
-    }
-    Ok(())
-}
 
 /// Hourly. Daily digests go out at 08:00 UTC, weekly reports on Monday at the same hour.
 pub async fn digests(state: &AppState) -> anyhow::Result<()> {

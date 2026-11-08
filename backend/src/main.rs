@@ -1,6 +1,5 @@
 mod agent;
 mod auth;
-mod billing;
 mod config;
 mod crypto;
 mod error;
@@ -36,7 +35,6 @@ async fn main() -> anyhow::Result<()> {
         db,
         cfg: Arc::new(cfg.clone()),
         events,
-        http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build()?,
     };
 
     agent::spawn_workers(state.clone());

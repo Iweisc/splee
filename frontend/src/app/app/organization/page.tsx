@@ -27,7 +27,7 @@ export default function TeamPage() {
 
   return (
     <>
-      <PageHeader title="Team" description="Everyone in an organization shares its projects, mailboxes and balance." />
+      <PageHeader title="Team" description="Everyone in an organization shares its projects and mailboxes." />
       <PageBody>
         <SettingsColumn>
           {me.orgs.length > 1 && <OrgSwitcher me={me} />}
@@ -41,7 +41,7 @@ export default function TeamPage() {
   );
 }
 
-/** Every cached project, mailbox and balance belongs to the previous org, so drop the whole cache and start over at /app. */
+/** Every cached project and mailbox belongs to the previous org, so drop the whole cache and start over at /app. */
 function useStartOver() {
   const router = useRouter();
   const { mutate } = useSWRConfig();
@@ -61,7 +61,7 @@ function OrgSwitcher({ me }: { me: Me }) {
     });
 
   return (
-    <Section title="Your organizations" description="Projects, mailboxes and billing are separate for each organization.">
+    <Section title="Your organizations" description="Projects and mailboxes are separate for each organization.">
       <ul className="divide-y divide-border rounded-xl ring-1 ring-border">
         {me.orgs.map((o) => (
           <li key={o.id} className="flex items-center gap-3 px-4 py-3 text-sm">
@@ -308,7 +308,7 @@ function DeleteOrganization({ me }: { me: Me }) {
   return (
     <Section
       title="Delete organization"
-      description="Permanently deletes every project, lead, email, mailbox and the remaining balance. This can't be undone."
+      description="Permanently deletes every project, lead, email and mailbox. This can't be undone."
       className="ring-1 ring-red-200"
       actions={
         <Button

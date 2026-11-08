@@ -18,11 +18,7 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
-    PaymentRequired(String),
-    #[error("{0}")]
     TooManyRequests(String),
-    #[error("{0}")]
-    NotConfigured(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -47,9 +43,7 @@ impl IntoResponse for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::PaymentRequired(_) => StatusCode::PAYMENT_REQUIRED,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
-            AppError::NotConfigured(_) => StatusCode::NOT_IMPLEMENTED,
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 StatusCode::INTERNAL_SERVER_ERROR

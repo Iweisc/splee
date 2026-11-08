@@ -14,7 +14,6 @@ export default async function SignupPage({ searchParams }: PageProps<"/signup">)
     <SignupForm
       next={safeNext(sp.next)}
       claim={claim && token ? { project_id: claim, token } : null}
-      referralCode={one(sp.ref)}
       inviteToken={one(sp.invite)}
       inviteEmail={one(sp.email)}
     />
