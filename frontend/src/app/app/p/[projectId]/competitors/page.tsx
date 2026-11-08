@@ -97,7 +97,7 @@ export default function CompetitorsPage() {
                 <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Acme" />
               </Field>
               <Field label="How it overlaps (optional)" className="sm:col-span-2">
-                <Input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} placeholder="e.g. Same product, aimed at enterprise teams" />
+                <Input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} placeholder="e.g. Same product for enterprises" />
               </Field>
               <div className="flex justify-end sm:col-span-2">
                 <Button type="submit" disabled={!draft.domain.trim()} loading={pending === "add"}>
