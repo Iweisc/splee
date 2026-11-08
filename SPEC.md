@@ -71,7 +71,8 @@ All paths below are under `/api`.
 | POST | /support/messages | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. |
 | POST | /explorer | `{query, country?}` | `{run_id}` (Segments Explorer, public, rate limited) |
 | GET | /explorer/:run_id | | `{run: AgentRun, results: ExplorerCompany[]}` |
-| GET | /unsubscribe/:token | | marks lead unsubscribed + suppression, returns `{ok:true, email}` (frontend page `/unsubscribe/[token]` calls it) |
+| GET | /unsubscribe/:token | | `{email, unsubscribed}`. Read-only, because mail security scanners open links in a browser. |
+| POST | /unsubscribe/:token | | marks lead unsubscribed + suppression, returns `{ok:true, email}`. The `/unsubscribe/[token]` page's button and the RFC 8058 `List-Unsubscribe-Post` one-click both use it. |
 
 ### Auth
 
