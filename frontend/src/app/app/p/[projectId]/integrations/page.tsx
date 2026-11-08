@@ -1,10 +1,15 @@
 "use client";
 
-import { Hash, Webhook } from "lucide-react";
+import { use, useState } from "react";
+import { Hash, Send, Webhook } from "lucide-react";
+import { toast } from "sonner";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { toastError } from "@/components/app/work/states";
+import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
+import { api } from "@/lib/api";
 
 const PAYLOAD = `POST <your webhook URL>
 Content-Type: application/json
@@ -34,7 +39,29 @@ Content-Type: application/json
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
 
-export default function IntegrationsPage() {
+/** Posts a sample alert to the URL as typed, saved or not. */
+function TestButton({ projectId, target, url }: { projectId: string; target: "slack" | "webhook"; url: string }) {
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    setBusy(true);
+    try {
+      await api(`/projects/${projectId}/integrations/test`, { body: { target, url } });
+      toast.success(target === "slack" ? "Test sent. Check the Slack channel." : "Test sent. Your endpoint accepted it.");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button size="sm" variant="outline" onClick={send} loading={busy} disabled={!isUrl(url)}>
+      {!busy && <Send className="size-3.5" />} Send a test
+    </Button>
+  );
+}
+
+export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectId]/integrations">) {
+  const { projectId } = use(params);
   return (
     <ProjectSettingsPage
       title="Integrations"
@@ -50,6 +77,7 @@ export default function IntegrationsPage() {
               </span>
             }
             description="Posts a message to a Slack channel for every hot lead, with the lead, company and their reply."
+            actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field
               label="Incoming webhook URL"
@@ -72,6 +100,7 @@ export default function IntegrationsPage() {
               </span>
             }
             description="Sends a JSON POST for every hot lead, for your CRM, Zapier, Make or your own backend."
+            actions={<TestButton projectId={projectId} target="webhook" url={s.webhook_url} />}
           >
             <Field label="Endpoint URL" error={problemFor("Webhook URL", s.webhook_url)}>
               <Input
@@ -86,7 +115,10 @@ export default function IntegrationsPage() {
               <div className="mt-3">
                 <CodeBlock code={PAYLOAD} label="hot_lead" />
                 {/* Keep PAYLOAD in sync with the json! in notify_hot, backend/src/agent/replies.rs. */}
-                <p className="mt-2 text-xs text-muted-foreground">These are all the fields Splee sends. The values are examples.</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  These are all the fields Splee sends. The values are examples. &quot;Send a test&quot; posts the same shape with{" "}
+                  <code>&quot;event&quot;: &quot;test&quot;</code>.
+                </p>
               </div>
             </details>
           </Section>
