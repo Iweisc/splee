@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,12 +7,12 @@ use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
 use super::auth::ClaimBody;
-use super::{settings, util_input, util_scope};
+use super::{settings, util_input};
 use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::billing;
 use crate::error::{AppError, AppResult};
-use crate::models::{AgentRun, Competitor, Project, ProjectSettings};
+use crate::models::{AgentRun, Project, ProjectSettings};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -23,8 +23,6 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/research", post(research))
         .route("/projects/{id}/runs", get(runs))
         .route("/projects/{id}/rewrite-emails", post(rewrite_emails))
-        .route("/projects/{id}/competitors", get(list_competitors).post(add_competitor))
-        .route("/competitors/{id}", delete(remove_competitor))
         .route("/projects/{id}/start", post(start))
         .route("/projects/{id}/pause", post(pause))
 }
@@ -247,44 +245,6 @@ async fn runs(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     .fetch_all(&state.db)
     .await?;
     Ok(Json(runs))
-}
-
-async fn list_competitors(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Competitor>>> {
-    auth.project(&state.db, id).await?;
-    let competitors = sqlx::query_as::<_, Competitor>("select * from competitors where project_id = $1 order by created_at")
-        .bind(id)
-        .fetch_all(&state.db)
-        .await?;
-    Ok(Json(competitors))
-}
-
-#[derive(Deserialize)]
-struct CompetitorBody {
-    domain: String,
-}
-
-async fn add_competitor(
-    State(state): State<AppState>,
-    auth: Auth,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CompetitorBody>,
-) -> AppResult<Json<Competitor>> {
-    auth.project(&state.db, id).await?;
-    let domain = util_input::domain(&body.domain).ok_or_else(|| AppError::BadRequest("Enter a valid domain".into()))?;
-    let competitor = sqlx::query_as::<_, Competitor>(
-        "insert into competitors (project_id, domain, name) values ($1, $2, $2) returning *",
-    )
-    .bind(id)
-    .bind(domain)
-    .fetch_one(&state.db)
-    .await?;
-    Ok(Json(competitor))
-}
-
-async fn remove_competitor(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let competitor: Competitor = util_scope::load(&state.db, "competitors", id, auth.org_id).await?;
-    sqlx::query("delete from competitors where id = $1").bind(competitor.id).execute(&state.db).await?;
-    Ok(Json(json!({ "ok": true })))
 }
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
