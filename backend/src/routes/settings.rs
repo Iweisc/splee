@@ -38,7 +38,7 @@ async fn get_settings(State(state): State<AppState>, auth: Auth, Path(id): Path<
 // `paused` is left out on purpose: unpausing goes through POST /projects/:id/start, which checks balance and mailboxes.
 #[derive(Deserialize)]
 struct SettingsBody {
-    daily_budget_cents: Option<i32>,
+    daily_email_limit: Option<i32>,
     timezone: Option<String>,
     send_days: Option<Vec<i32>>,
     send_start_hour: Option<i32>,
@@ -70,8 +70,8 @@ async fn update_settings(
     let current = load_or_create(&state.db, id).await?;
     let bad = |m: &str| Err(AppError::BadRequest(m.into()));
 
-    if body.daily_budget_cents.is_some_and(|c| c < 0) {
-        return bad("Daily budget can't be negative");
+    if body.daily_email_limit.is_some_and(|n| !(1..=5000).contains(&n)) {
+        return bad("Daily email limit must be between 1 and 5,000");
     }
     if let Some(tz) = &body.timezone {
         let known: bool = sqlx::query_scalar("select exists(select 1 from pg_timezone_names where name = $1)")
@@ -105,7 +105,7 @@ async fn update_settings(
 
     let settings = sqlx::query_as::<_, ProjectSettings>(
         "update project_settings set
-           daily_budget_cents = coalesce($2, daily_budget_cents),
+           daily_email_limit = coalesce($2, daily_email_limit),
            timezone = coalesce($3, timezone),
            send_days = coalesce($4, send_days),
            send_start_hour = $5,
@@ -128,7 +128,7 @@ async fn update_settings(
          where project_id = $1 returning *",
     )
     .bind(id)
-    .bind(body.daily_budget_cents)
+    .bind(body.daily_email_limit)
     .bind(body.timezone)
     .bind(body.send_days)
     .bind(start)

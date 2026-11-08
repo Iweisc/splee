@@ -31,6 +31,9 @@ struct Totals {
     replies: i64,
     hot: i64,
     meetings: i64,
+    ai_cost_micros: i64,
+    email_cost_micros: i64,
+    #[sqlx(skip)]
     spend_micros: i64,
     #[sqlx(skip)]
     cost_per_hot_micros: Option<i64>,
@@ -73,13 +76,14 @@ async fn project_stats(
              and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound')) as replies,
            (select count(*) from leads where project_id = $1 and status in ('hot', 'meeting_booked')) as hot,
            (select count(*) from leads where project_id = $1 and status = 'meeting_booked') as meetings,
-           (select coalesce(-sum(cl.amount_micros), 0)::bigint from credit_ledger cl
-             join email_messages e on e.id = cl.ref_id
-             where cl.kind = 'email_sent' and e.project_id = $1) as spend_micros",
+           (select (coalesce(sum(cost_usd), 0) * 1000000)::bigint from agent_runs where project_id = $1) as ai_cost_micros,
+           (select coalesce(sum(cost_micros), 0)::bigint from email_messages
+             where project_id = $1 and direction = 'outbound' and status = 'sent') as email_cost_micros",
     )
     .bind(id)
     .fetch_one(&state.db)
     .await?;
+    totals.spend_micros = totals.ai_cost_micros + totals.email_cost_micros;
     totals.cost_per_hot_micros = (totals.hot > 0).then(|| totals.spend_micros / totals.hot);
 
     // Days are UTC. A reply or hot lead is counted on the day its inbound message arrived.
