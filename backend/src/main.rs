@@ -65,6 +65,21 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
     tracing::info!("listening on {}", cfg.bind_addr);
     // ConnectInfo gives public routes the peer address for rate limiting.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>());
+    // Without this, SIGTERM ends the process on the spot and the `claude` processes of running agent calls live on,
+    // still spending. Returning drops the runtime's tasks, and the vendored SDK spawns the CLI with kill_on_drop.
+    // Not axum's graceful shutdown: it would wait for the SSE streams, which never end on their own.
+    tokio::select! {
+        served = server => served?,
+        () = stop_signal() => tracing::info!("stopping"),
+    }
     Ok(())
+}
+
+async fn stop_signal() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler installs");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }
