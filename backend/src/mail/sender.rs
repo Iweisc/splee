@@ -380,22 +380,51 @@ pub async fn optimize(state: &AppState) -> anyhow::Result<()> {
     .fetch_all(&state.db)
     .await?;
     for (id, status, sent, hot) in rows {
-        if sent < 40 {
-            continue;
-        }
-        // These were $10 and $25 per hot lead when every email cost $0.04.
-        // No hot lead yet counts as all the emails sent so far for one, the most optimistic reading.
-        let next = if hot > 0 && sent < 250 * hot {
-            "scaling"
-        } else if sent > 625 * hot.max(1) {
-            "paused"
-        } else {
-            "working"
-        };
+        let Some(next) = campaign_status(sent, hot) else { continue };
         if next != status {
             tracing::info!(segment_id = %id, from = %status, to = next, "optimizer moved campaign");
             sqlx::query("update segments set status = $2 where id = $1").bind(id).bind(next).execute(&state.db).await?;
         }
     }
     Ok(())
+}
+
+/// Where the optimizer puts a campaign, or None while it has too little data to judge.
+fn campaign_status(sent: i64, hot: i64) -> Option<&'static str> {
+    if sent < 40 {
+        return None;
+    }
+    // These were $10 and $25 per hot lead when every email cost $0.04.
+    // No hot lead yet counts as all the emails sent so far for one, the most optimistic reading.
+    Some(if hot > 0 && sent < 250 * hot {
+        "scaling"
+    } else if sent > 625 * hot.max(1) {
+        "paused"
+    } else {
+        "working"
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::campaign_status;
+
+    #[test]
+    fn waits_for_enough_sends() {
+        assert_eq!(campaign_status(39, 5), None);
+    }
+
+    #[test]
+    fn scales_cheap_campaigns_and_pauses_expensive_ones() {
+        assert_eq!(campaign_status(400, 2), Some("scaling"));
+        assert_eq!(campaign_status(800, 2), Some("working"));
+        // 625.5 emails per hot lead is over the line, which integer division used to miss.
+        assert_eq!(campaign_status(1251, 2), Some("paused"));
+    }
+
+    #[test]
+    fn no_hot_lead_pauses_only_past_the_threshold() {
+        assert_eq!(campaign_status(625, 0), Some("working"));
+        assert_eq!(campaign_status(626, 0), Some("paused"));
+    }
 }

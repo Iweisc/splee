@@ -324,3 +324,28 @@ async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+
+    use super::with_stats;
+    use crate::routes::stats::tests::seed_costs;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn campaign_spend_counts_its_own_runs_and_emails(db: PgPool) {
+        let seeded = seed_costs(&db).await;
+        let rows = with_stats(&db, seeded.project, None).await.unwrap();
+        let row = |id| rows.iter().find(|r| r.segment.id == id).unwrap();
+
+        let cheap = row(seeded.cheap);
+        assert_eq!((cheap.sent, cheap.hot, cheap.spend_micros), (2, 1, 251_000));
+        assert_eq!(cheap.cost_per_hot_micros, Some(251_000));
+
+        let pricey = row(seeded.pricey);
+        assert_eq!((pricey.sent, pricey.hot, pricey.spend_micros), (1, 0, 500_700));
+        assert_eq!(pricey.cost_per_hot_micros, None);
+    }
+}
