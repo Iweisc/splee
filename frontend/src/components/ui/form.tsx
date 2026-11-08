@@ -41,8 +41,9 @@ export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<H
   return <textarea className={cn(field, "min-h-24 py-2 leading-relaxed", className)} {...props} />;
 }
 
+/** With `w-auto` a select is as wide as its longest option, like a long campaign name. max-w-full stops that from widening the page. */
 export function Select({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={cn(field, "h-10 pr-8", className)} {...props} />;
+  return <select className={cn(field, "h-10 max-w-full pr-8", className)} {...props} />;
 }
 
 export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
