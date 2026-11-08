@@ -222,11 +222,11 @@ function Chat() {
 function ResultsTable() {
   return (
     // Rows are subgrids of one grid, so the header and every row share the same column widths.
-    // On phones, Status hugs its content and the last header breaks after the slash, so names get the room.
-    <div className="grid grid-cols-[minmax(0,1fr)_auto_min-content] gap-x-3 sm:grid-cols-[minmax(0,1.4fr)_1fr_auto] overflow-hidden rounded-xl shadow-plaque">
-      <div className="col-span-3 grid grid-cols-subgrid bg-accent px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+    // Phones are too narrow for three columns, so each status goes under its campaign name instead.
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 overflow-hidden rounded-xl shadow-plaque sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+      <div className="col-span-full grid grid-cols-subgrid bg-accent px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
         <span>Campaign</span>
-        <span>Status</span>
+        <span className="max-sm:hidden">Status</span>
         <span className="text-right">
           Emails/
           <wbr />
@@ -236,13 +236,13 @@ function ResultsTable() {
       {results.map((r) => {
         const paused = r.status === "Paused";
         return (
-          <div key={r.name} className={cn("col-span-3 grid grid-cols-subgrid border-t border-border px-4 py-2", paused && "text-muted-foreground")}>
+          <div key={r.name} className={cn("col-span-full grid grid-cols-subgrid border-t border-border px-4 py-2", paused && "text-muted-foreground")}>
             <span className={cn("truncate", !paused && "font-medium")}>{r.name}</span>
-            <span className="flex items-center gap-2 text-muted-foreground">
+            <span className="flex items-center gap-2 text-muted-foreground max-sm:col-start-1 max-sm:text-xs">
               {r.status}
               {!paused && <span className="size-1.5 bg-brand-300" />}
             </span>
-            <span className="text-right text-muted-foreground tabular-nums">{r.emails}</span>
+            <span className="text-right text-muted-foreground tabular-nums max-sm:col-start-2 max-sm:row-span-2 max-sm:row-start-1 max-sm:self-center">{r.emails}</span>
           </div>
         );
       })}
