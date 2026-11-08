@@ -13,6 +13,8 @@ pub struct Config {
     pub payments_enabled: bool,
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
+    /// Path to the `bird` CLI. When set, research runs can search and read X as the account bird is logged in as.
+    pub bird_bin: Option<String>,
 }
 
 impl Config {
@@ -27,6 +29,7 @@ impl Config {
             payments_enabled: env::var("PAYMENTS_ENABLED").map(|v| v != "false").unwrap_or(true),
             stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|v| !v.is_empty()),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok().filter(|v| !v.is_empty()),
+            bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
         })
     }
 }

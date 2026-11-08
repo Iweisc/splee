@@ -680,7 +680,8 @@ impl Transport for SubprocessTransport {
             cmd.current_dir(cwd);
         }
 
-        // Spawn process
+        // Spawn process. splee patch: kill the CLI when a caller gives up waiting for it to exit.
+        cmd.kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             ClaudeError::Process(ProcessError::new(
                 format!("Failed to spawn Claude CLI process: {}", e),
