@@ -41,7 +41,7 @@ The backend reads `backend/.env`, and the frontend reads its own environment.
 |---|---|---|
 | `DATABASE_URL` | required | Postgres connection string. |
 | `APP_SECRET` | required | Encrypts mailbox passwords. Set a long random value before you connect a real mailbox, and keep it, because changing it makes the saved passwords unreadable. |
-| `PUBLIC_URL` | `http://localhost:3333` | Where the app is served. Used for unsubscribe, invite and inbox links in emails. |
+| `PUBLIC_URL` | `http://localhost:3333` | Where the app is served. Used for unsubscribe, invite and inbox links in emails. An `https://` URL also makes the sign-in cookie HTTPS-only. |
 | `BIND_ADDR` | `127.0.0.1:8787` | Address the API listens on. |
 | `AGENT_MODEL` | `claude-sonnet-5-5` | Claude model for every agent run. |
 | `AGENT_CONCURRENCY` | `2` | How many agent runs execute at once. |
