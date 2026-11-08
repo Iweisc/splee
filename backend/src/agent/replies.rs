@@ -197,6 +197,7 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
             "lead": {
                 "id": t.lead.id, "full_name": t.lead.full_name, "email": t.lead.email, "title": t.lead.title,
                 "company_name": t.lead.company_name, "company_domain": t.lead.company_domain,
+                "linkedin_url": t.lead.linkedin_url, "x_url": t.lead.x_url,
             },
             "reply": {"id": t.inbound.id, "subject": t.inbound.subject, "body": t.inbound.body, "reason": reason},
             "url": link,

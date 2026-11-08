@@ -26,7 +26,9 @@ Content-Type: application/json
     "email": "sarah@northwind.studio",
     "title": "Founder",
     "company_name": "Northwind Studio",
-    "company_domain": "northwind.studio"
+    "company_domain": "northwind.studio",
+    "linkedin_url": "https://www.linkedin.com/in/sarah-chen",
+    "x_url": "https://x.com/sarahchen"
   },
   "reply": {
     "id": "71aa…",
