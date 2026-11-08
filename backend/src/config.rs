@@ -1,5 +1,8 @@
 use std::env;
 
+/// The value in backend/.env.example. Keep the two in sync.
+const EXAMPLE_APP_SECRET: &str = "dev-only-change-me-0123456789abcdef";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
@@ -17,7 +20,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        Ok(Self {
+        let cfg = Self {
             database_url: env::var("DATABASE_URL")?,
             app_secret: env::var("APP_SECRET")?,
             public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3333".into()),
@@ -26,11 +29,51 @@ impl Config {
             agent_concurrency: env::var("AGENT_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
             sending_enabled: env::var("SENDING_ENABLED").map(|v| v != "false").unwrap_or(true),
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
-        })
+        };
+        cfg.check_app_secret()?;
+        Ok(cfg)
+    }
+
+    /// Local dev runs on the example secret, so this only bites on an HTTPS deployment, where the example
+    /// (public in the repo) or a short value would let anyone decrypt the saved mailbox passwords.
+    fn check_app_secret(&self) -> anyhow::Result<()> {
+        let weak = self.app_secret == EXAMPLE_APP_SECRET || self.app_secret.len() < 32;
+        anyhow::ensure!(
+            !(self.secure_cookies() && weak),
+            "APP_SECRET is the example value or shorter than 32 characters. Set a long random one, e.g. `openssl rand -hex 32`."
+        );
+        Ok(())
     }
 
     /// The browser only gets the session cookie through PUBLIC_URL, so that decides whether it can be HTTPS-only.
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(public_url: &str, app_secret: &str) -> Config {
+        Config {
+            database_url: String::new(),
+            app_secret: app_secret.into(),
+            public_url: public_url.into(),
+            bind_addr: String::new(),
+            agent_model: String::new(),
+            agent_concurrency: 1,
+            sending_enabled: false,
+            bird_bin: None,
+        }
+    }
+
+    #[test]
+    fn https_deployments_need_a_real_app_secret() {
+        let strong = "4f9c2a7e1b3d5f6a8c0e2b4d6f8a1c3e";
+        assert!(cfg("https://splee.example.com", EXAMPLE_APP_SECRET).check_app_secret().is_err());
+        assert!(cfg("https://splee.example.com", "short").check_app_secret().is_err());
+        assert!(cfg("https://splee.example.com", strong).check_app_secret().is_ok());
+        assert!(cfg("http://localhost:3333", EXAMPLE_APP_SECRET).check_app_secret().is_ok());
     }
 }
