@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, Link2, Mail, MapPin, Trash2 } from "lucide-react";
+import { ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/form";
+import { Field, Input, Select } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
 import { Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
@@ -27,18 +27,37 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
   const { mutate: mutateAll } = useSWRConfig();
   const { data: lead, error, mutate } = useSWR<LeadDetail>(`/leads/${leadId}`, fetcher);
   const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
   if (!lead) return <ListSkeleton rows={5} />;
 
+  const update = async (changes: Record<string, string>) => {
+    await mutate(api<LeadDetail>(`/leads/${leadId}`, { method: "PATCH", body: changes }), { revalidate: false });
+    mutateAll((k) => typeof k === "string" && k.includes("/leads"));
+  };
+
   const setStatus = async (status: LeadStatus) => {
     try {
-      await mutate(api<LeadDetail>(`/leads/${leadId}`, { method: "PATCH", body: { status } }), { revalidate: false });
-      mutateAll((k) => typeof k === "string" && k.includes("/leads"));
+      await update({ status });
     } catch (e) {
       toastError(e);
     }
   };
+
+  if (editing) {
+    return (
+      <LeadForm
+        lead={lead}
+        onCancel={() => setEditing(false)}
+        onSave={async (changes) => {
+          await update(changes);
+          toast.success("Lead updated");
+          setEditing(false);
+        }}
+      />
+    );
+  }
 
   const remove = async () => {
     if (!confirm(`Delete ${lead.full_name || lead.email}? Their emails are deleted too.`)) return;
@@ -79,6 +98,9 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         {lead.segment_name && <Badge>{lead.segment_name}</Badge>}
         <Badge className="capitalize">{lead.source}</Badge>
         <span className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+          <Pencil className="size-3.5" /> Edit
+        </Button>
         <Button variant="ghost" size="sm" onClick={remove} loading={deleting} className="text-danger">
           <Trash2 className="size-3.5" /> Delete
         </Button>
@@ -146,6 +168,75 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         )}
       </div>
     </div>
+  );
+}
+
+const FORM_FIELDS = [
+  { key: "first_name", label: "First name" },
+  { key: "last_name", label: "Last name" },
+  { key: "title", label: "Title" },
+  { key: "company_name", label: "Company" },
+  { key: "email", label: "Email", type: "email" },
+  { key: "linkedin_url", label: "LinkedIn profile", type: "url", placeholder: "https://www.linkedin.com/in/…" },
+  { key: "x_url", label: "X profile", placeholder: "@handle or https://x.com/…" },
+] as const;
+
+type FormKey = (typeof FORM_FIELDS)[number]["key"];
+
+/** Fixes what research got wrong. */
+function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () => void; onSave: (changes: Record<string, string>) => Promise<void> }) {
+  const [values, setValues] = useState<Record<FormKey, string>>(() => {
+    const v = {} as Record<FormKey, string>;
+    for (const f of FORM_FIELDS) v[f.key] = lead[f.key] ?? "";
+    return v;
+  });
+  const [saving, setSaving] = useState(false);
+  const unsent = lead.emails.some((m) => m.direction === "outbound" && ["draft", "approved", "scheduled"].includes(m.status));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const changes: Record<string, string> = {};
+    for (const f of FORM_FIELDS) {
+      if (values[f.key].trim() !== (lead[f.key] ?? "")) changes[f.key] = values[f.key].trim();
+    }
+    if ("first_name" in changes || "last_name" in changes) {
+      changes.full_name = `${values.first_name.trim()} ${values.last_name.trim()}`.trim();
+    }
+    if (Object.keys(changes).length === 0) return onCancel();
+    setSaving(true);
+    try {
+      await onSave(changes);
+    } catch (err) {
+      toastError(err);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-5">
+      <p className="pr-6 text-lg font-semibold">Edit {lead.full_name || lead.email}</p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {FORM_FIELDS.map((f) => (
+          <Field key={f.key} label={f.label}>
+            <Input
+              type={"type" in f ? f.type : "text"}
+              value={values[f.key]}
+              placeholder={"placeholder" in f ? f.placeholder : undefined}
+              onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+            />
+          </Field>
+        ))}
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        {unsent && <p className="mr-auto text-xs text-muted-foreground">Emails already written keep the old details. Rewrite them on the Emails page.</p>}
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" loading={saving}>
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }
 
