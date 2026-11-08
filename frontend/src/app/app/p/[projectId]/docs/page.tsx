@@ -106,6 +106,13 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "POST",
+      path: "/segments/5d0a…/write-emails",
+      summary:
+        "Have the agent write a first email for every lead in a campaign that doesn't have one yet, like Write emails in the app. Add leads with segment_id above (campaign ids are in stats below), then call this. In a campaign that's sending, the new emails are approved straight away. 409 when every lead already has an email.",
+      response: `{ "run_id": "9b4f…" }`,
+    },
+    {
       method: "GET",
       path: "/leads?email=sarah@northwind.studio",
       summary:

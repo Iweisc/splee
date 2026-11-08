@@ -217,6 +217,15 @@ async fn enqueue_for(state: &AppState, auth: &Auth, segment: &Segment, run_kind:
     Ok(Json(json!({ "run_id": run_id })))
 }
 
+/// Refuses a run for the whole campaign when every lead already has a first email. It would finish instantly with
+/// nothing written, and the caller would never hear why.
+pub(super) async fn ensure_unwritten_leads(db: &PgPool, segment: &Segment) -> AppResult<()> {
+    if agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.is_empty() {
+        return Err(AppError::Conflict("Every lead in this campaign already has an email. Find or add more people first.".into()));
+    }
+    Ok(())
+}
+
 /// Keeps only ids that belong to the segment's project.
 async fn owned_ids(db: &PgPool, table: &'static str, ids: &[Uuid], project_id: Uuid) -> AppResult<Vec<Uuid>> {
     let sql = format!("select id from {table} where id = any($1) and project_id = $2");
@@ -275,9 +284,8 @@ async fn write_emails(
     let mut input = json!({ "segment_id": id });
     if let Some(ids) = body.lead_ids {
         input["lead_ids"] = json!(owned_ids(&state.db, "leads", &ids, segment.project_id).await?);
-    } else if agent::leads_without_initial(&state.db, segment.project_id, Some(id)).await?.is_empty() {
-        // The run would finish instantly with nothing written, so the UI never got any feedback.
-        return Err(AppError::Conflict("Every lead in this campaign already has an email. Find more people first.".into()));
+    } else {
+        ensure_unwritten_leads(&state.db, &segment).await?;
     }
     if let Some(instructions) = body.instructions.filter(|i| !i.trim().is_empty()) {
         input["instructions"] = json!(instructions);

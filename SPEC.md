@@ -182,7 +182,7 @@ All paths below are under `/api`.
 
 ### Public API v1 (ApiKeyAuth)
 
-`GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads?email=` (the org's leads with that address across projects, newest first, up to 100), `GET /v1/leads/:id`, `PATCH /v1/leads/:id` (`{status}` → `LeadDetail`), `GET /v1/projects/:id/replies?since=` (inbound messages), `GET /v1/projects/:id/stats` (`{totals: Totals, campaigns: SegmentWithStats[]}`, the same numbers as `/projects/:id/stats` without the daily series), `POST /v1/suppressions` (`{values: string[]}`, up to 1,000 emails or domains → `{added}`, 400 naming the first invalid value).
+`GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads?email=` (the org's leads with that address across projects, newest first, up to 100), `GET /v1/leads/:id`, `PATCH /v1/leads/:id` (`{status}` → `LeadDetail`), `GET /v1/projects/:id/replies?since=` (inbound messages), `GET /v1/projects/:id/stats` (`{totals: Totals, campaigns: SegmentWithStats[]}`, the same numbers as `/projects/:id/stats` without the daily series), `POST /v1/suppressions` (`{values: string[]}`, up to 1,000 emails or domains → `{added}`, 400 naming the first invalid value), `POST /v1/segments/:id/write-emails` (no body → `{run_id}`, a write_emails run for every lead in the campaign without a first email, 409 when there are none).
 
 ## Background workers
 
