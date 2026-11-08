@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, CalendarCheck, Flame, Inbox, Pencil, Send, ThumbsDown } from "lucide-react";
+import { ArrowLeft, CalendarCheck, Check, Flame, Inbox, Pencil, Send, ThumbsDown } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -142,6 +142,18 @@ function ThreadPane({ leadId }: { leadId: string }) {
   const conversation = messages.filter((m) => m !== pendingDraft && m.status !== "cancelled");
 
   const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
+  // The lead wrote last and nobody has dealt with it yet.
+  const last = conversation.at(-1);
+  const awaiting = last?.direction === "inbound" && !last.handled_at;
+
+  const markDone = async () => {
+    try {
+      await api(`/inbox/threads/${leadId}/done`, { method: "POST" });
+      await refresh();
+    } catch (e) {
+      toastError(e);
+    }
+  };
 
   const setStatus = async (status: LeadStatus) => {
     try {
@@ -196,6 +208,11 @@ function ThreadPane({ leadId }: { leadId: string }) {
               {a.icon} {a.label}
             </Button>
           ))}
+          {awaiting && (
+            <Button size="sm" variant="outline" onClick={markDone} title="Needs no reply. Takes it out of Needs reply until they write again.">
+              <Check className="size-3.5" /> Done
+            </Button>
+          )}
         </div>
       </div>
 

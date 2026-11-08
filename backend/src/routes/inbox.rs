@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/inbox/threads/{lead_id}", get(thread))
         .route("/inbox/threads/{lead_id}/reply", post(reply))
         .route("/inbox/threads/{lead_id}/status", post(set_status))
+        .route("/inbox/threads/{lead_id}/done", post(mark_done))
         .route("/inbox/messages/{id}/approve", post(approve))
 }
 
@@ -55,8 +56,7 @@ struct ThreadRef {
 const THREADS: &str = "with t as (
        select l.id as lead_id, l.status as lead_status, p.name as project_name,
          last.id as last_message_id, last.direction as last_direction, last.at as last_at,
-         (select i.classification from email_messages i where i.lead_id = l.id and i.direction = 'inbound'
-           order by i.created_at desc limit 1) as classification,
+         reply.classification, reply.handled_at is not null as handled,
          exists (select 1 from email_messages d where d.lead_id = l.id and d.kind = 'auto_reply'
            and d.status = 'draft') as pending_auto_reply,
          exists (select 1 from email_messages a where a.lead_id = l.id and a.kind = 'auto_reply'
@@ -68,15 +68,19 @@ const THREADS: &str = "with t as (
          where e.lead_id = l.id and e.status not in ('draft', 'cancelled')
          order by at desc limit 1
        ) last
+       cross join lateral (
+         select i.classification, i.handled_at from email_messages i
+         where i.lead_id = l.id and i.direction = 'inbound'
+         order by i.created_at desc limit 1
+       ) reply
        where p.org_id = $1 and ($2::uuid is null or l.project_id = $2)
-         and exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
      ), f as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
          -- Declines, out-of-office notes, unsubscribes and bounces are answered by the classifier, not by you.
          -- A pending auto-reply draft still waits on you to approve it, so it counts. Marking the lead as booked or
-         -- not interested is how you clear a reply you handled outside Splee.
-         last_direction = 'inbound'
+         -- not interested, or marking the thread done, is how you clear a reply you handled outside Splee.
+         last_direction = 'inbound' and not handled
            and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce')
            and lead_status not in ('meeting_booked', 'not_interested', 'bounced', 'unsubscribed', 'do_not_contact') as is_needs_reply
        from t
@@ -254,6 +258,16 @@ async fn set_status(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// For a reply that needs no answer. It stays in the thread and leaves Needs reply until the lead writes again.
+async fn mark_done(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
+    sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
+        .bind(lead.id)
+        .execute(&state.db)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::PgPool;
@@ -279,6 +293,8 @@ mod tests {
             (Some("bounce"), "bounced"),
             (Some("question"), "not_interested"),
             (Some("question"), "meeting_booked"),
+            (Some("question"), "replied"),
+            (Some("question"), "replied"),
         ] {
             let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, status) values ($1, $2) returning id")
                 .bind(project)
@@ -316,6 +332,19 @@ mod tests {
             .await
             .unwrap();
 
+        // The first reply was marked done. The second lead wrote again after that, which brings the thread back.
+        sqlx::query("update email_messages set handled_at = now() - interval '1 hour' where lead_id = any($1) and direction = 'inbound'")
+            .bind(&leads[8..])
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'inbound', 'inbound', 'received')")
+            .bind(project)
+            .bind(leads[9])
+            .execute(&db)
+            .await
+            .unwrap();
+
         let threads = |filter: &'static str| {
             let db = db.clone();
             async move {
@@ -334,9 +363,9 @@ mod tests {
             ids.sort();
             ids
         };
-        assert_eq!(threads("needs_reply").await, sorted(leads[..2].to_vec()));
-        assert_eq!(threads("other").await, sorted(leads[2..7].to_vec()));
+        assert_eq!(threads("needs_reply").await, sorted(vec![leads[0], leads[1], leads[9]]));
+        assert_eq!(threads("other").await, sorted([&leads[2..7], &leads[8..9]].concat()));
         assert_eq!(threads("hot").await, vec![leads[7]]);
-        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 2);
+        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 3);
     }
 }
