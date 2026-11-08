@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
+        .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/stats", get(project_stats))
@@ -99,6 +100,29 @@ async fn add_leads(
     let rows = body.leads.into_iter().enumerate().collect();
     let outcome = util_lead_import::insert(&state.db, auth.org_id, id, "api", rows).await?;
     Ok(Json(json!({ "imported": outcome.imported, "skipped": outcome.skipped, "errors": outcome.errors })))
+}
+
+#[derive(Deserialize)]
+struct FindQuery {
+    #[serde(default)]
+    email: String,
+}
+
+/// Calendars and CRMs know a person by email, not by lead id. The same person can be a lead in several projects, so this is a list.
+async fn find_leads(State(state): State<AppState>, auth: ApiKeyAuth, Query(q): Query<FindQuery>) -> AppResult<Json<Vec<Lead>>> {
+    let email = q.email.trim();
+    if email.is_empty() {
+        return Err(AppError::BadRequest("Add ?email= with the address to look up".into()));
+    }
+    let leads = sqlx::query_as::<_, Lead>(
+        "select l.* from leads l join projects p on p.id = l.project_id
+         where p.org_id = $1 and l.email = $2::citext order by l.created_at desc limit 100",
+    )
+    .bind(auth.org_id)
+    .bind(email)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(leads))
 }
 
 async fn get_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {

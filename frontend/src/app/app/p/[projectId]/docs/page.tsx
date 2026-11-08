@@ -107,6 +107,16 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: "/leads?email=sarah@northwind.studio",
+      summary:
+        "Find leads by email across all your projects, for tools that only know the address, such as a calendar booking. Newest first, up to 100. Then use the id with PATCH below.",
+      params: [["email", "the address to look up, any case"]],
+      response: `[
+  ${indent(LEAD, 2)}
+]`,
+    },
+    {
+      method: "GET",
       path: "/leads/c42e…",
       summary: "One lead with its campaign, company and every email in both directions, oldest first.",
       response: `${LEAD.slice(0, -2)},
