@@ -61,7 +61,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
         {active && <RunProgress key={active.id} run={active} />}
         {sending && <SendWindowNotice projectId={projectId} settings={settings} />}
         <Stats projectId={projectId} />
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <Campaigns projectId={projectId} />
           <div className="flex flex-col gap-4">
             {!sending && <SetupChecklist projectId={projectId} settings={settings} />}
