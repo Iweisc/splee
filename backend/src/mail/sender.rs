@@ -122,14 +122,17 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
 }
 
 enum Skip {
+    /// Not sent on purpose: the lead opted out, replied or is on the do-not-contact list.
     Cancel(&'static str),
+    /// Can never be delivered as it stands. Failed emails show in the Failed tab with the reason.
+    Fail(&'static str),
     /// Try again on a later tick.
     Wait,
 }
 
 async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, lead: &Lead) -> anyhow::Result<Option<Skip>> {
     let Some(address) = lead.email.as_deref().filter(|e| e.contains('@')) else {
-        return Ok(Some(Skip::Cancel("Lead has no email address")));
+        return Ok(Some(Skip::Fail("Lead has no email address")));
     };
     if matches!(lead.status.as_str(), "unsubscribed" | "bounced" | "do_not_contact") {
         return Ok(Some(Skip::Cancel("Lead opted out or bounced")));
@@ -149,7 +152,7 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
     }
     // A sure bounce hurts the mailbox's reputation, so don't send what DNS says can't arrive.
     if dns::undeliverable(&dns::resolver()?, domain).await {
-        return Ok(Some(Skip::Cancel("The recipient's domain can't receive email")));
+        return Ok(Some(Skip::Fail("The recipient's domain can't receive email")));
     }
     Ok(None)
 }
@@ -285,8 +288,14 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
 
 async fn release(state: &AppState, email: &EmailMessage, skip: Skip) -> anyhow::Result<()> {
     match skip {
-        Skip::Cancel(reason) => {
-            sqlx::query("update email_messages set status = 'cancelled', error = $2 where id = $1").bind(email.id).bind(reason).execute(&state.db).await?;
+        Skip::Cancel(reason) | Skip::Fail(reason) => {
+            let status = if matches!(skip, Skip::Fail(_)) { "failed" } else { "cancelled" };
+            sqlx::query("update email_messages set status = $3, error = $2 where id = $1")
+                .bind(email.id)
+                .bind(reason)
+                .bind(status)
+                .execute(&state.db)
+                .await?;
         }
         Skip::Wait => {
             sqlx::query("update email_messages set status = 'approved' where id = $1").bind(email.id).execute(&state.db).await?;
