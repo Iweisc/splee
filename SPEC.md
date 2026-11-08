@@ -63,6 +63,7 @@ All paths below are under `/api`.
 
 | method | path | body / query | response |
 |---|---|---|---|
+| GET | /health | | `{ok:true}` when Postgres answers, else 503 with no body. For uptime monitors. |
 | GET | /public/stats | | `{hot_leads, companies}` (counts of leads with status hot/meeting_booked and orgs; add 0 offsets, no fake numbers) |
 | POST | /demo | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (the last `X-Forwarded-For` entry, which the HTTPS proxy sets, or the peer). |
 | GET | /demo/:project_id?token= | | `DemoState` |
