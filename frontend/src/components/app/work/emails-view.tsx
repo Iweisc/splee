@@ -111,7 +111,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
           </EmptyState>
         </Card>
       ) : (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <Card className="overflow-hidden">
             <ul>
               {data.items.map((e) => (

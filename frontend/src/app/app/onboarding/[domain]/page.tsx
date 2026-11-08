@@ -83,7 +83,7 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
           </LinkButton>
         }
       />
-      <PageBody className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <PageBody className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
           {run && <RunProgress key={run.id} run={run} />}
           <Campaigns projectId={project.id} />
