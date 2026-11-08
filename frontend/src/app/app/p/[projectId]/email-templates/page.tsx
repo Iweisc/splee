@@ -66,7 +66,7 @@ export default function EmailTemplatesPage() {
               value={s.tone}
               onChange={(tone) => update({ tone })}
               options={TONES}
-              className="grid-cols-2 sm:grid-cols-4"
+              className="sm:grid-cols-2"
             />
             <Field label="Language" className="mt-5 max-w-xs">
               <Select value={s.email_language} onChange={(e) => update({ email_language: e.target.value })}>
