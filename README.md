@@ -52,6 +52,7 @@ The backend reads `backend/.env`, and the frontend reads its own environment.
 | `BIRD_BIN` | unset | Path to the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`). When set, research runs can search and read X. |
 | `RUST_LOG` | unset | Log filter, e.g. `splee=debug,tower_http=info`. |
 | `API_URL` (frontend) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. |
+| `NEXT_PUBLIC_SOURCE_URL` (frontend, build time) | `https://github.com/Iweisc/splee` | Where the "Source code" links in the footer and sidebar point. If you run a modified version for other people, the AGPL requires you to point this at your source. |
 
 bird reads X with the cookies of a browser that is logged into x.com, so the agent sees X as that account. Pick the browser in `~/.config/bird/config.json5`.
 

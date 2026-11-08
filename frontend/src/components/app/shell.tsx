@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import useSWR from "swr";
-import { ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
+import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
 import { Toaster } from "sonner";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Favicon, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
+import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn, money } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
@@ -119,6 +120,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="text-xs text-muted-foreground">Payments off</span>
             )}
           </Link>
+          <a
+            href={SOURCE_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            Source code <ArrowUpRight className="size-3.5" />
+          </a>
           <div className="mt-1 flex items-center justify-between gap-2 px-2 py-1.5">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">{me.user.name || me.user.email}</p>
