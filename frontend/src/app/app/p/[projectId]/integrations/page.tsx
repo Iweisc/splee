@@ -50,10 +50,11 @@ function fromSplee(rawBody, headers, secret) {
   const timestamp = headers["splee-timestamp"];
   const signed = \`\${timestamp}.\${rawBody}\`;
   const expected = "v1=" + createHmac("sha256", secret).update(signed).digest("hex");
-  const given = String(headers["splee-signature"] ?? "");
+  const given = Buffer.from(String(headers["splee-signature"] ?? ""));
   const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) < 300;
-  if (!fresh || given.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+  // Byte lengths, not string lengths: timingSafeEqual throws when they differ.
+  if (!fresh || given.length !== Buffer.byteLength(expected)) return false;
+  return timingSafeEqual(given, Buffer.from(expected));
 }`;
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
