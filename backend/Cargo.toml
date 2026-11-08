@@ -25,6 +25,7 @@ csv = "1.4.0"
 dotenvy = "0.15.7"
 futures = "0.3.34"
 hex = "0.4.3"
+hmac = "0.13"
 hickory-resolver = { version = "0.26.3", features = ["tokio"] }
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1", "tokio1-rustls", "builder", "smtp-transport", "hostname", "ring", "rustls-native-certs"] }
 mail-parser = "0.11.9"

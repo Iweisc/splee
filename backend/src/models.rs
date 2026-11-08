@@ -93,6 +93,7 @@ pub struct ProjectSettings {
     pub targeting: Value,
     pub webhook_url: String,
     pub slack_webhook_url: String,
+    pub webhook_secret: String,
     pub paused: bool,
 }
 

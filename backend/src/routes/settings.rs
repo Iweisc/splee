@@ -181,6 +181,7 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
             "url": link,
         })
     };
-    hooks::post_json(&body.url, &payload).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
+    let secret = if body.target == "webhook" { Some(load_or_create(&state.db, project.id).await?.webhook_secret) } else { None };
+    hooks::post_json(&body.url, &payload, secret.as_deref()).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
     Ok(Json(json!({ "ok": true })))
 }

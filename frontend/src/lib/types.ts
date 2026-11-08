@@ -124,6 +124,7 @@ export interface ProjectSettings {
   targeting: Targeting;
   webhook_url: string;
   slack_webhook_url: string;
+  webhook_secret: string;
   paused: boolean;
 }
 

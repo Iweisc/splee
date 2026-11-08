@@ -180,13 +180,14 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
 
 /// Webhook, Slack and email alerts for a hot lead. Failures are logged, they never fail the run.
 async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
-    let hooks: Option<(String, String)> = sqlx::query_as("select webhook_url, slack_webhook_url from project_settings where project_id = $1")
+    let hooks: Option<(String, String, String)> =
+        sqlx::query_as("select webhook_url, slack_webhook_url, webhook_secret from project_settings where project_id = $1")
         .bind(t.project.id)
         .fetch_optional(&state.db)
         .await
         .ok()
         .flatten();
-    let (webhook, slack) = hooks.unwrap_or_default();
+    let (webhook, slack, secret) = hooks.unwrap_or_default();
     let link = format!("{}/app/p/{}/inbox", state.cfg.public_url, t.project.id);
     let who = format!("{} ({})", t.lead.full_name, t.lead.company_name);
 
@@ -202,14 +203,14 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
             "reply": {"id": t.inbound.id, "subject": t.inbound.subject, "body": t.inbound.body, "reason": reason},
             "url": link,
         });
-        if let Err(e) = hooks::post_json(&webhook, &payload).await {
+        if let Err(e) = hooks::post_json(&webhook, &payload, Some(&secret)).await {
             tracing::warn!(error = %e, "hot lead webhook failed");
         }
     }
     if !slack.trim().is_empty() {
         let snippet: String = t.inbound.body.trim().chars().take(300).collect();
         let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
-        if let Err(e) = hooks::post_json(&slack, &json!({"text": text})).await {
+        if let Err(e) = hooks::post_json(&slack, &json!({"text": text}), None).await {
             tracing::warn!(error = %e, "slack notification failed");
         }
     }
