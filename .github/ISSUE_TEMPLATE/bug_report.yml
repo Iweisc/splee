@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in Splee doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project's Leads page
+        2. Filter by status "New"
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Backend logs
+      description: Log lines around the failure. Remove email addresses, mailbox credentials and API keys first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: macOS 15, Docker Postgres, claude CLI 2.x
