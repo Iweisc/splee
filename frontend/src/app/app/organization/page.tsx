@@ -224,6 +224,7 @@ function Invites() {
                 <p className="text-xs text-muted-foreground">
                   {ROLE_LABELS[i.role]} · invited {timeAgo(i.created_at)}
                 </p>
+                <Expiry invite={i} />
               </div>
               <Button variant="outline" size="sm" onClick={() => revoke(i)} loading={pending === i.id}>
                 Revoke
@@ -360,3 +361,12 @@ function DeleteOrganization({ me }: { me: Me }) {
     </Section>
   );
 }
+
+// The link stops working at expires_at. An expired invite stays listed so an admin sees why nobody joined.
+function Expiry({ invite }: { invite: Invite }) {
+  const days = daysUntil(invite.expires_at);
+  if (days <= 0) return <p className="text-xs text-danger">Link expired</p>;
+  return <p className="text-xs text-muted-foreground">{days === 1 ? "Link expires within a day" : `Link expires in ${days} days`}</p>;
+}
+
+const daysUntil = (ts: string) => Math.ceil((new Date(ts).getTime() - Date.now()) / 86_400_000);

@@ -14,7 +14,7 @@ use super::util_input;
 use crate::auth::{Auth, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
 use crate::crypto::sha256_hex;
 use crate::error::{AppError, AppResult};
-use crate::models::{Organization, User};
+use crate::models::{INVITE_TTL, Organization, User};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -139,7 +139,10 @@ async fn add_member(conn: &mut PgConnection, org_id: Uuid, user_id: Uuid, role: 
 }
 
 async fn take_invite(conn: &mut PgConnection, token: &str) -> AppResult<Option<(Uuid, String)>> {
-    Ok(sqlx::query_as("update invites set accepted_at = now() where token = $1 and accepted_at is null returning org_id, role")
+    Ok(sqlx::query_as(&format!(
+        "update invites set accepted_at = now()
+         where token = $1 and accepted_at is null and created_at > now() - interval '{INVITE_TTL}' returning org_id, role"
+    ))
         .bind(token)
         .fetch_optional(conn)
         .await?)
@@ -239,10 +242,10 @@ struct InvitePreview {
 }
 
 async fn get_invite(State(state): State<AppState>, Path(token): Path<String>) -> AppResult<Json<InvitePreview>> {
-    let invite = sqlx::query_as::<_, InvitePreview>(
+    let invite = sqlx::query_as::<_, InvitePreview>(&format!(
         "select o.name as org_name, i.email::text as email, i.role from invites i join organizations o on o.id = i.org_id
-         where i.token = $1 and i.accepted_at is null",
-    )
+         where i.token = $1 and i.accepted_at is null and i.created_at > now() - interval '{INVITE_TTL}'"
+    ))
     .bind(token)
     .fetch_optional(&state.db)
     .await?

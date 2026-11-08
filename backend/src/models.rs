@@ -25,6 +25,9 @@ pub struct Organization {
     pub created_at: Ts,
 }
 
+/// How long an invite link works, so a forwarded or forgotten link can't be used to join months later.
+pub const INVITE_TTL: &str = "7 days";
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Invite {
     pub id: Uuid,
@@ -36,6 +39,8 @@ pub struct Invite {
     pub invited_by: Option<Uuid>,
     pub accepted_at: Option<Ts>,
     pub created_at: Ts,
+    /// Not a column: queries select it as created_at + INVITE_TTL.
+    pub expires_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
