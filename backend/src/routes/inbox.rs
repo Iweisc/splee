@@ -74,7 +74,8 @@ const THREADS: &str = "with t as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
          -- Declines, out-of-office notes, unsubscribes and bounces are answered by the classifier, not by you.
-         last_direction = 'inbound' and not pending_auto_reply
+         -- A pending auto-reply draft still waits on you to approve it, so it counts.
+         last_direction = 'inbound'
            and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce') as is_needs_reply
        from t
      )
@@ -281,6 +282,14 @@ mod tests {
             .unwrap();
             leads.push(lead);
         }
+
+        // In approve mode the question's auto-reply waits as a draft until you send it.
+        sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', 'auto_reply', 'draft')")
+            .bind(project)
+            .bind(leads[1])
+            .execute(&db)
+            .await
+            .unwrap();
 
         let threads = |filter: &'static str| {
             let db = db.clone();
