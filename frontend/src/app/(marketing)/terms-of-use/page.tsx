@@ -30,15 +30,6 @@ export default function TermsOfUse() {
           ),
         },
         {
-          heading: "Credits and payment",
-          body: (
-            <p>
-              New workspaces get $30 in credits. Each email sent costs $0.04 and is deducted from your balance. Sending stops when your
-              balance reaches zero or your daily budget is used up. There is no subscription.
-            </p>
-          ),
-        },
-        {
           heading: "Ending use",
           body: (
             <p>

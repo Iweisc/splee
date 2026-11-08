@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ArrowRight, Gift } from "lucide-react";
+import { ArrowRight, Code } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Textarea } from "@/components/ui/form";
 import { Modal } from "@/components/ui/misc";
@@ -30,8 +30,8 @@ export function Hero() {
         <div className="mb-10 flex flex-wrap items-center justify-center gap-2">
           <span className="inline-flex items-center rounded-full bg-accent px-4 py-1.5 text-sm">No SDRs or email infra needed</span>
           <span className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-1.5 text-sm">
-            <Gift className="size-4" />
-            $30 in free credits
+            <Code className="size-4" />
+            Free and open source
           </span>
         </div>
         <WebsiteForm />

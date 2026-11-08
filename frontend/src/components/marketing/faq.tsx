@@ -4,7 +4,7 @@ import { ChevronDown } from "lucide-react";
 const questions: { q: string; a: React.ReactNode }[] = [
   {
     q: "How does Splee work?",
-    a: "Give it your website. A Claude agent researches your company, your competitors and your likely buyers on the web, proposes campaigns, finds matching companies and decision makers, and writes each person a personal email. Once you connect a mailbox and start a campaign, it sends within your daily budget, follows up, reads replies and answers interested leads with your booking link.",
+    a: "Give it your website. A Claude agent researches your company, your competitors and your likely buyers on the web, proposes campaigns, finds matching companies and decision makers, and writes each person a personal email. Once you connect a mailbox and start a campaign, it sends on your schedule, follows up, reads replies and answers interested leads with your booking link.",
   },
   {
     q: "Will it work for my business?",
@@ -20,12 +20,8 @@ const questions: { q: string; a: React.ReactNode }[] = [
     ),
   },
   {
-    q: "Do I really get $30 free?",
-    a: "Yes. Every new workspace starts with $30 in credits, which covers about 750 emails. You don't need a card to sign up. When the credits run out, sending stops until you top up.",
-  },
-  {
     q: "How much does Splee cost?",
-    a: "$0.04 per email sent. Research, finding leads and writing emails aren't billed, and there's no subscription. You set a daily budget for each project, and sending stops when that budget is reached or your balance hits zero.",
+    a: "Nothing. Splee is free and open source under the AGPL-3.0, and you run it on your own machine or server. Research and writing use your own Claude account, and emails go out through your own mailboxes, so those are the only costs.",
   },
   {
     q: "Which countries and languages can I target?",
@@ -41,7 +37,7 @@ const questions: { q: string; a: React.ReactNode }[] = [
   },
   {
     q: "What results can I expect?",
-    a: "That depends on your offer, your market and your mailboxes, and we don't guarantee any results. A hot lead is a reply that moves the deal forward, like \"send me pricing\". Your dashboard shows the cost per hot lead for each campaign, and campaigns that get too expensive are paused automatically.",
+    a: "That depends on your offer, your market and your mailboxes, and we don't guarantee any results. A hot lead is a reply that moves the deal forward, like \"send me pricing\". Your dashboard shows how each campaign performs, and campaigns that need too many emails per hot lead are paused automatically.",
   },
 ];
 
