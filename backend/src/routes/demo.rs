@@ -27,12 +27,14 @@ pub fn router() -> Router<AppState> {
         .route("/demo/{id}/correct", post(correct))
 }
 
-/// The visitor's address: the first X-Forwarded-For hop (set by the Next.js proxy), else the TCP peer.
+/// The visitor's address for rate limits on public agent runs: the last X-Forwarded-For entry, else the TCP peer.
+/// The Next.js proxy passes the header through untouched, so earlier entries are whatever the client sent. The last one
+/// is the address the HTTPS proxy in front (Caddy, nginx) saw, which a client can't choose.
 pub fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
+        .and_then(|v| v.rsplit(',').next())
         .map(|ip| ip.trim().to_string())
         .filter(|ip| !ip.is_empty())
         .unwrap_or_else(|| peer.ip().to_string())
@@ -224,4 +226,20 @@ async fn correct(
         .await?;
     agent::enqueue(&state.db, kind::EXPLORE, Some(id), None, json!({"mode": "demo", "from_step": 1, "note": note, "ip": ip})).await?;
     Ok(Json(json!({"ok": true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderMap;
+
+    use super::client_ip;
+
+    #[test]
+    fn client_ip_ignores_entries_the_client_sent() {
+        let peer = "127.0.0.1:3333".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        assert_eq!(client_ip(&headers, peer), "127.0.0.1");
+        headers.insert("x-forwarded-for", "6.6.6.6, 203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(&headers, peer), "203.0.113.9");
+    }
 }
