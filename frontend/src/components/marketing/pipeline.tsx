@@ -42,13 +42,15 @@ export function Pipeline() {
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     let frame = 0;
+    // Matches the md:sticky on the cards. Below it they scroll as a plain list, so nothing slides over anything.
+    const stacked = window.matchMedia("(min-width: 768px)");
     // A card shrinks a little for every later card that slides over it, so the stack reads as depth.
     const update = () => {
       frame = 0;
       const els = wraps.current;
       const depth = els.map(() => 0);
       els.forEach((el, j) => {
-        if (!el || j === 0) return;
+        if (!el || j === 0 || !stacked.matches) return;
         const distance = el.getBoundingClientRect().top - (STICKY_TOP + STICKY_STEP * j);
         const covered = Math.min(1, Math.max(0, 1 - distance / el.offsetHeight));
         for (let i = 0; i < j; i++) depth[i]! += covered;
