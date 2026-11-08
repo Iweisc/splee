@@ -12,7 +12,7 @@ use crate::auth::{Auth, clear_session_cookie};
 use crate::crypto::random_token;
 use crate::error::{AppError, AppResult};
 use crate::mail;
-use crate::models::{Invite, Organization, Ts};
+use crate::models::{INVITE_TTL, Invite, Organization, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -142,9 +142,10 @@ async fn remove_member(State(state): State<AppState>, auth: Auth, Path(user_id):
 }
 
 async fn list_invites(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<Invite>>> {
-    let invites = sqlx::query_as::<_, Invite>(
-        "select * from invites where org_id = $1 and accepted_at is null order by created_at desc",
-    )
+    let invites = sqlx::query_as::<_, Invite>(&format!(
+        "select *, created_at + interval '{INVITE_TTL}' as expires_at from invites
+         where org_id = $1 and accepted_at is null order by created_at desc"
+    ))
     .bind(auth.org_id)
     .fetch_all(&state.db)
     .await?;
@@ -161,9 +162,10 @@ async fn create_invite(State(state): State<AppState>, auth: Auth, Json(body): Js
     auth.require_admin()?;
     let email = util_input::email(&body.email).ok_or_else(|| AppError::BadRequest("Enter a valid email address".into()))?;
     util_input::one_of("role", &body.role, &["admin", "member"])?;
-    let invite = sqlx::query_as::<_, Invite>(
-        "insert into invites (org_id, email, role, token, invited_by) values ($1, $2, $3, $4, $5) returning *",
-    )
+    let invite = sqlx::query_as::<_, Invite>(&format!(
+        "insert into invites (org_id, email, role, token, invited_by) values ($1, $2, $3, $4, $5)
+         returning *, created_at + interval '{INVITE_TTL}' as expires_at"
+    ))
     .bind(auth.org_id)
     .bind(&email)
     .bind(&body.role)
@@ -178,7 +180,7 @@ async fn create_invite(State(state): State<AppState>, auth: Auth, Json(body): Js
         .fetch_one(&state.db)
         .await?;
     let subject = format!("You're invited to join {org_name} on Splee");
-    let text = format!("You've been invited to join {org_name} on Splee.\n\nAccept the invite: {link}\n");
+    let text = format!("You've been invited to join {org_name} on Splee.\n\nAccept the invite: {link}\n\nThe link works for {INVITE_TTL}.\n");
     if let Err(e) = mail::send_system_email(&state, auth.org_id, &email, &subject, &text).await {
         tracing::warn!(error = ?e, "invite email failed, the link still works");
     }

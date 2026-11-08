@@ -83,8 +83,8 @@ All paths below are under `/api`.
 | GET | /auth/me | | `Me` or 401 |
 | POST | /auth/password | `{current_password, new_password}` | `{ok}`. 400 when the current password is wrong or the new one is under 8 characters. Deletes the user's other sessions. |
 | POST | /auth/switch-org | `{org_id}` | `Me` |
-| GET | /invites/:token | | `{org_name, email, role}` (public) |
-| POST | /invites/:token/accept | | `Me` (signed-in user joins org) |
+| GET | /invites/:token | | `{org_name, email, role}` (public). 404 once the invite is used, revoked or 7 days old. |
+| POST | /invites/:token/accept | | `Me` (signed-in user joins org). 400 for a used, revoked or 7-day-old invite, as does signup with that `invite_token`. |
 
 ### Organization
 
@@ -94,7 +94,7 @@ All paths below are under `/api`.
 | GET | /organization/users | | `Member[]` |
 | PATCH | /organization/users/:user_id | `{role}` | `Member` (admin) |
 | DELETE | /organization/users/:user_id | | `{ok}` (admin, can't remove last owner) |
-| GET/POST | /organization/invites | `{email, role}` | `Invite[]` / `{invite, link}` (link = PUBLIC_URL/invite/token; also emailed if the org has an active mailbox) |
+| GET/POST | /organization/invites | `{email, role}` | `Invite[]` / `{invite, link}` (link = PUBLIC_URL/invite/token; also emailed if the org has an active mailbox). `Invite.expires_at` = created_at + 7 days. Expired invites stay listed until revoked. |
 | DELETE | /organization/invites/:id | | `{ok}` |
 | POST | /organization/stop-campaigns | `{reason, details}` | pauses every project + stores stop_feedback. `{ok}` |
 | GET | /organization/deletion-eligibility | | `{eligible, reason}` (not eligible with emails scheduled in the next hour) |

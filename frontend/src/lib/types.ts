@@ -41,6 +41,7 @@ export interface Invite {
   invited_by: UUID | null;
   accepted_at: Ts | null;
   created_at: Ts;
+  expires_at: Ts;
 }
 
 export interface ApiKey {

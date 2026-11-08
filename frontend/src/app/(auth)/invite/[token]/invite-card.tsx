@@ -39,7 +39,7 @@ export function InviteCard({ token }: { token: string }) {
     return (
       <Card className="w-full max-w-[400px] p-8 text-center">
         <h1 className="text-xl font-medium">This invite isn&apos;t valid</h1>
-        <p className="mt-2 text-sm text-muted-foreground">It may have been used already or revoked. Ask your teammate for a new link.</p>
+        <p className="mt-2 text-sm text-muted-foreground">It may have been used already, revoked, or be more than 7 days old. Ask your teammate for a new link.</p>
       </Card>
     );
   }
