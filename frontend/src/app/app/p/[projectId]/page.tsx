@@ -173,9 +173,10 @@ function Stats({ projectId }: { projectId: string }) {
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+      {/* One card for all seven stats, so the taller Spend cell doesn't leave empty boxes beside it. */}
+      <Card className="grid grid-cols-2 gap-y-1 py-1.5 sm:grid-cols-4 xl:grid-cols-7 xl:divide-x xl:divide-border">
         {kpis.map((k) => (
-          <Card key={k.label} className="px-4 py-3.5" title={k.title}>
+          <div key={k.label} className="px-4 py-2" title={k.title}>
             <MicroLabel>{k.label}</MicroLabel>
             {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
             {k.detail && (
@@ -185,9 +186,9 @@ function Stats({ projectId }: { projectId: string }) {
                 ))}
               </div>
             )}
-          </Card>
+          </div>
         ))}
-      </div>
+      </Card>
       <Card className="p-5">
         <MicroLabel className="mb-3">Last 30 days</MicroLabel>
         {data ? <DailyChart daily={data.daily} /> : <Skeleton className="h-48" />}
