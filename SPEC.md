@@ -18,7 +18,7 @@ Schema: `backend/migrations/`. Rust rows: `backend/src/models.rs`. TS types: `fr
 - Auth: cookie `splee_session` (extractor `Auth` in `backend/src/auth.rs`). `Auth::project(db, id)` checks org ownership. Admin-only routes call `auth.require_admin()`.
 - Public API v1 uses `Authorization: Bearer splee_...` (extractor `ApiKeyAuth`).
 - Agent work is always `agent::enqueue(db, kind, project_id, org_id, input)` from routes. Never call Claude inside a request handler, except support chat.
-- Pricing: $0.04 per sent email (`billing::EMAIL_COST_MICROS`), $30 signup credits, sending stops at zero balance or once the project has sent `daily_email_limit` emails today. Spend in stats is real cost, not credits: `agent_runs.cost_usd` (what Claude Code reports) plus `email_messages.cost_micros`, which is the sending mailbox's `cost_per_email_micros`.
+- Splee is free. Sending stops for the day once the project has sent `daily_email_limit` emails or a mailbox reaches its `daily_limit`. Spend in stats is real cost, not credits: `agent_runs.cost_usd` (what Claude Code reports) plus `email_messages.cost_micros`, which is the sending mailbox's `cost_per_email_micros`.
 
 ## Agent pipeline (explore run)
 
@@ -77,7 +77,7 @@ All paths below are under `/api`.
 
 | method | path | body | response |
 |---|---|---|---|
-| POST | /auth/signup | `{email, password, name, referral_code?, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, $30 `signup_bonus`, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. |
+| POST | /auth/signup | `{email, password, name, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. |
 | POST | /auth/login | `{email, password}` | `Me`, sets cookie |
 | POST | /auth/logout | | `{ok:true}` |
 | GET | /auth/me | | `Me` or 401 |
@@ -101,16 +101,6 @@ All paths below are under `/api`.
 | GET/POST | /organization/api-keys | `{name}` | `ApiKey[]` / `{api_key: ApiKey, secret}` (secret shown once) |
 | DELETE | /organization/api-keys/:id | | `{ok}` (revoke) |
 | GET/PUT | /notification-preferences | `NotificationPrefs` | `NotificationPrefs` |
-| GET | /referral | | `{code, link, referred: [{org_name, created_at, rewarded}], earned_micros}` |
-
-### Billing
-
-| method | path | body | response |
-|---|---|---|---|
-| GET | /billing | | `{balance_micros, spent_today_micros, total_spent_micros, emails_sent, ledger: LedgerEntry[] (last 100), stripe_enabled}` |
-| GET/PUT | /billing/profile | `BillingProfile` fields | `BillingProfile` |
-| POST | /billing/topup | `{amount_cents}` min 1000 | `{checkout_url}` via Stripe Checkout, or 501 when STRIPE_SECRET_KEY is unset |
-| POST | /billing/stripe-webhook | raw Stripe event | verifies signature, credits `topup` on `checkout.session.completed` |
 
 ### Projects and campaigns
 
@@ -141,7 +131,7 @@ All paths below are under `/api`.
 | GET/PATCH/DELETE | /leads/:id | `{status?, email?, title?...}` | `LeadDetail` |
 | GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings` |
 | POST | /projects/:id/integrations/test | `{target: "slack"\|"webhook", url}` | `{ok}`. Posts a sample alert to the URL as typed. The webhook gets the `hot_lead` shape with `"event": "test"` and a sample lead. Slack gets `{text}` naming the project. 400 with the reason when it fails. |
-| POST | /projects/:id/start | | unpauses the project (requires balance > 0 and at least one active mailbox, else 402/400 with a clear message) `{ok}` |
+| POST | /projects/:id/start | | unpauses the project (requires at least one active mailbox, else 400 with a clear message) `{ok}` |
 | POST | /projects/:id/pause | | `{ok}` |
 | GET/POST | /projects/:id/materials | `{kind,title,content,url}` | `Material[]` / `Material` |
 | PATCH/DELETE | /materials/:id | | `Material` / `{ok}` |
@@ -192,7 +182,7 @@ All paths below are under `/api`.
 ## Background workers
 
 - Agent worker: claims `agent_runs` with `for update skip locked`, runs up to `AGENT_CONCURRENCY` at once. Each Claude call uses `claude-agent-sdk-rs` `ClaudeClient` with `setting_sources: []` (never load the host user's Claude settings), `cwd` = a temp dir, `tools`/`allowed_tools` = `WebSearch`, `WebFetch` only (none for classification/writing), JSON-schema `output_format`, model `AGENT_MODEL`. With `BIRD_BIN` set, research calls also get `mcp__x__search` and `mcp__x__read`, an in-process MCP server that runs the `bird` CLI (npm `@steipete/bird`) to search and read X with a logged-in browser's cookies. Tool calls and short text become `tool`/`log` events. Cost is added to `agent_runs.cost_usd`.
-- Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with balance > 0 and fewer outbound emails sent today than its `daily_email_limit` (replies count but are never held back): take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, debit `email_sent`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working. Referral reward when the referred org passes the qualifying spend.
+- Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with fewer outbound emails sent today than its `daily_email_limit` (replies count but are never held back): take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, record the mailbox's `cost_per_email_micros`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working.
 - IMAP poller (every 60s): fetch new messages per mailbox (UID > imap_last_uid), match to lead by `In-Reply-To`/`References` then by from address, store `inbound` rows, enqueue `classify_reply`. Bounces (mailer-daemon) mark lead `bounced` + suppression. Classification `hot` → lead `hot`, webhook + Slack notify; `unsubscribe` → suppression; `ooo` → reschedule. For hot/question replies when `auto_reply_mode != off`, enqueue `draft_reply` (includes booking link) → `auto` sends it, `approve` leaves it as draft for the inbox.
 - Optimizer (hourly): per working segment with >= 40 sent emails, sent emails per hot lead < 250 → `scaling`, > 625 → `paused`, else `working`. Scaling segments get first pick in the sender.
 

@@ -85,10 +85,9 @@ function SendingToggle({ projectId, sending }: { projectId: string; sending: boo
       await mutate(() => true);
       toast.success(sending ? "Sending paused" : "Sending started");
     } catch (e) {
-      // The backend answers 402 when the balance is empty and 400 when no mailbox is active.
-      if (e instanceof ApiError && (e.status === 402 || e.status === 400)) {
-        const fix = e.status === 402 ? { label: "Add credits", href: "/app/billing" } : { label: "Connect mailbox", href: "/app/domains" };
-        toast.error(e.message, { action: { label: fix.label, onClick: () => router.push(fix.href) } });
+      // The backend answers 400 when no mailbox is active.
+      if (e instanceof ApiError && e.status === 400) {
+        toast.error(e.message, { action: { label: "Connect mailbox", onClick: () => router.push("/app/domains") } });
       } else {
         toastError(e);
       }

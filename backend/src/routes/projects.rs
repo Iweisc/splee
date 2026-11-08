@@ -10,7 +10,6 @@ use super::auth::ClaimBody;
 use super::{settings, util_input};
 use crate::agent::{self, kind};
 use crate::auth::Auth;
-use crate::billing;
 use crate::error::{AppError, AppResult};
 use crate::models::{AgentRun, Project, ProjectSettings};
 use crate::state::AppState;
@@ -249,9 +248,6 @@ async fn runs(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.project(&state.db, id).await?;
-    if billing::spendable(&state, auth.org_id).await? <= 0 {
-        return Err(AppError::PaymentRequired("Your balance is empty. Top up your credits to start sending.".into()));
-    }
     let has_mailbox: bool = sqlx::query_scalar("select exists(select 1 from mailboxes where org_id = $1 and status = 'active')")
         .bind(auth.org_id)
         .fetch_one(&state.db)

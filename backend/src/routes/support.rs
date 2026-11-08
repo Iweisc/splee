@@ -43,8 +43,7 @@ studies or FAQs the agent can use.
 - Every email has an unsubscribe link. Unsubscribes and bounces are added to your do-not-contact list automatically. You can upload \
 your own suppression list and import leads from CSV.
 - The agent can also draft LinkedIn connection notes and messages, which you send yourself.
-- Hot-lead alerts go by email, webhook or Slack. Teams can invite members. There is a public API with API keys. The referral program \
-gives the referrer $30 in credits once the referred account has spent $10 on emails.
+- Hot-lead alerts go by email, webhook or Slack. Teams can invite members. There is a public API with API keys.
 - The Segments Explorer is a free tool that finds companies matching a description, on demand from the web.";
 
 /// Only true where the operator set BIRD_BIN, so the assistant never promises X research a deployment doesn't have.

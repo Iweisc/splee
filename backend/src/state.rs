@@ -12,5 +12,4 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     /// Every agent event is persisted first, then broadcast here so SSE handlers can push it live.
     pub events: broadcast::Sender<AgentEvent>,
-    pub http: reqwest::Client,
 }

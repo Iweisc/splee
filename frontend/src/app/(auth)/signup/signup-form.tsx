@@ -19,13 +19,11 @@ interface Claim {
 export function SignupForm({
   next,
   claim,
-  referralCode,
   inviteToken,
   inviteEmail,
 }: {
   next: string | null;
   claim: Claim | null;
-  referralCode: string | null;
   inviteToken: string | null;
   inviteEmail: string | null;
 }) {
@@ -50,7 +48,6 @@ export function SignupForm({
           name,
           email,
           password,
-          referral_code: referralCode ?? undefined,
           claim: claim ?? undefined,
           invite_token: inviteToken ?? undefined,
         },

@@ -22,9 +22,6 @@ pub struct User {
 pub struct Organization {
     pub id: Uuid,
     pub name: String,
-    pub referral_code: String,
-    pub referred_by: Option<Uuid>,
-    pub referral_rewarded: bool,
     pub created_at: Ts,
 }
 
@@ -53,35 +50,10 @@ pub struct ApiKey {
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
-pub struct LedgerEntry {
-    pub id: Uuid,
-    pub org_id: Uuid,
-    pub amount_micros: i64,
-    pub kind: String,
-    pub ref_id: Option<Uuid>,
-    pub note: String,
-    pub created_at: Ts,
-}
-
-#[derive(Debug, Clone, Serialize, FromRow)]
-pub struct BillingProfile {
-    pub org_id: Uuid,
-    pub company_name: String,
-    pub address_line1: String,
-    pub address_line2: String,
-    pub city: String,
-    pub postal_code: String,
-    pub country: String,
-    pub vat_id: String,
-    pub updated_at: Ts,
-}
-
-#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct NotificationPrefs {
     pub user_id: Uuid,
     pub hot_lead_email: bool,
     pub daily_digest: bool,
-    pub low_balance: bool,
     pub weekly_report: bool,
 }
 

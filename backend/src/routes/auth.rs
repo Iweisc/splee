@@ -12,7 +12,6 @@ use uuid::Uuid;
 use super::projects;
 use super::util_input;
 use crate::auth::{Auth, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
-use crate::billing;
 use crate::crypto::sha256_hex;
 use crate::error::{AppError, AppResult};
 use crate::models::{Organization, User};
@@ -35,8 +34,6 @@ pub struct Me {
     org: Organization,
     role: String,
     orgs: Vec<OrgRef>,
-    balance_micros: i64,
-    payments_enabled: bool,
 }
 
 #[derive(Serialize, FromRow)]
@@ -61,7 +58,7 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     .fetch_all(db)
     .await?;
     let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
-    Ok(Me { user, org, role, orgs, balance_micros: billing::balance(db, org_id).await?, payments_enabled: state.cfg.payments_enabled })
+    Ok(Me { user, org, role, orgs })
 }
 
 #[derive(Deserialize)]
@@ -70,7 +67,6 @@ struct SignupBody {
     password: String,
     #[serde(default)]
     name: String,
-    referral_code: Option<String>,
     claim: Option<ClaimBody>,
     invite_token: Option<String>,
 }
@@ -111,17 +107,12 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
             org_id
         }
         None => {
-            let referred_by = match body.referral_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-                Some(code) => sqlx::query_scalar("select id from organizations where referral_code = $1")
-                    .bind(code.to_lowercase())
-                    .fetch_optional(&mut *tx)
-                    .await?,
-                None => None,
-            };
             let org_name = if name.is_empty() { email.split('@').nth(1).unwrap_or(&email).to_string() } else { name.clone() };
-            let org_id = create_org(&mut tx, &org_name, referred_by).await?;
+            let org_id: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id")
+                .bind(&org_name)
+                .fetch_one(&mut *tx)
+                .await?;
             add_member(&mut tx, org_id, user_id, "owner").await?;
-            billing::add_entry(&mut *tx, org_id, billing::SIGNUP_BONUS_MICROS, "signup_bonus", None, "Free credits").await?;
             org_id
         }
     };
@@ -134,24 +125,6 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
 
     let cookie = create_session(&state.db, user_id, org_id).await?;
     Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
-}
-
-async fn create_org(conn: &mut PgConnection, name: &str, referred_by: Option<Uuid>) -> AppResult<Uuid> {
-    loop {
-        let code: String = Uuid::new_v4().as_bytes()[..8].iter().map(|b| (b'a' + b % 26) as char).collect();
-        let id: Option<Uuid> = sqlx::query_scalar(
-            "insert into organizations (name, referral_code, referred_by) values ($1, $2, $3)
-             on conflict (referral_code) do nothing returning id",
-        )
-        .bind(name)
-        .bind(code)
-        .bind(referred_by)
-        .fetch_optional(&mut *conn)
-        .await?;
-        if let Some(id) = id {
-            return Ok(id);
-        }
-    }
 }
 
 async fn add_member(conn: &mut PgConnection, org_id: Uuid, user_id: Uuid, role: &str) -> AppResult<()> {

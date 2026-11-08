@@ -9,10 +9,10 @@ It runs on your machine or server, with your own Claude subscription and mailbox
 - **Research.** It profiles your company, maps competitors, proposes buyer segments as campaigns, finds companies and decision makers, and writes personal emails and LinkedIn sequences. Every run streams its progress live and can be cancelled.
 - **Sending.** It sends from any SMTP mailbox, rotating mailboxes under per-mailbox daily limits. Sending respects each project's time zone, send days and hours. Follow-ups thread under the first email. You can choose to review every draft or approve whole campaigns.
 - **Inbox.** It polls IMAP for replies and sorts them into hot, question, not interested, out of office, unsubscribe or bounce. It drafts replies with your booking link and either sends them or holds them for approval.
-- **Safety rails.** It keeps a suppression list of emails and domains, adds an unsubscribe link and `List-Unsubscribe` header to every outreach email, and handles bounces. A daily email limit per project and an org balance cap sending, and the DNS checker covers MX, SPF and DMARC.
+- **Safety rails.** It keeps a suppression list of emails and domains, adds an unsubscribe link and `List-Unsubscribe` header to every outreach email, and handles bounces. A daily email limit per project and per mailbox caps sending, and the DNS checker covers MX, SPF and DMARC.
 - **Costs.** Spend and cost per hot lead add up what Claude Code reports for each agent run and the cost per email you set on each mailbox. On a Claude subscription, the AI part is the equivalent API price.
 - **Integrations.** Hot-lead alerts go out by email, Slack or webhook. Leads import from CSV and export to CSV. A public REST API takes API keys.
-- **Teams.** It has organizations, invites, admin roles, a referral program and optional Stripe top-ups.
+- **Teams.** It has organizations, invites and admin roles.
 
 ## Quick start
 
@@ -33,8 +33,6 @@ docker compose up -d                                  # Postgres on 127.0.0.1:55
 
 Open http://localhost:3333, sign up and paste a website. The first account in an organization is its owner.
 
-`PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and card top-ups, so you can use everything locally. Usage is still recorded in the ledger.
-
 ## Configuration
 
 The backend reads `backend/.env`, and the frontend reads its own environment.
@@ -47,9 +45,7 @@ The backend reads `backend/.env`, and the frontend reads its own environment.
 | `BIND_ADDR` | `127.0.0.1:8787` | Address the API listens on. |
 | `AGENT_MODEL` | `claude-sonnet-5-5` | Claude model for every agent run. |
 | `AGENT_CONCURRENCY` | `2` | How many agent runs execute at once. |
-| `PAYMENTS_ENABLED` | `true` | `false` stops the org balance from blocking sending and turns off card top-ups. |
 | `SENDING_ENABLED` | `true` | `false` stops the sender, so approved emails, follow-ups and auto-replies wait. IMAP polling, agent runs and notification emails to your team still run. |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | Card top-ups through Stripe Checkout. Point the Stripe webhook at `/api/billing/stripe-webhook`. |
 | `BIRD_BIN` | unset | Path to the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`). When set, research runs can search and read X. |
 | `RUST_LOG` | unset | Log filter, e.g. `splee=debug,tower_http=info`. |
 | `API_URL` (frontend) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. |

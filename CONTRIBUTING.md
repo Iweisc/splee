@@ -4,7 +4,7 @@ Thanks for helping. Bug reports, fixes, features and docs are all welcome. Befor
 
 ## Set up
 
-Follow [Quick start](README.md#quick-start). Keep `PAYMENTS_ENABLED=false` in `backend/.env` for local work.
+Follow [Quick start](README.md#quick-start).
 
 Splee sends real email. Before you connect a real mailbox, use test addresses or a sink like [Mailpit](https://mailpit.axllent.org). Don't point a development backend at a database with live campaigns. Every backend process runs the sender, the IMAP poller and the agent queue. `SENDING_ENABLED=false` stops only the sender.
 

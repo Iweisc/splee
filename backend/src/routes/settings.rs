@@ -35,7 +35,7 @@ async fn get_settings(State(state): State<AppState>, auth: Auth, Path(id): Path<
     Ok(Json(load_or_create(&state.db, id).await?))
 }
 
-// `paused` is left out on purpose: unpausing goes through POST /projects/:id/start, which checks balance and mailboxes.
+// `paused` is left out on purpose: unpausing goes through POST /projects/:id/start, which checks for an active mailbox.
 #[derive(Deserialize)]
 struct SettingsBody {
     daily_email_limit: Option<i32>,

@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use super::smtp;
 use crate::agent::{self, kind};
-use crate::billing::{self, EMAIL_COST_MICROS, REFERRAL_BONUS_MICROS, REFERRAL_QUALIFYING_SPEND_MICROS};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 
@@ -72,10 +71,6 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
 }
 
 async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()> {
-    let balance = billing::spendable(state, p.org_id).await?;
-    if balance <= 0 {
-        return Ok(());
-    }
     let now = Utc::now();
     let cold_slots = if !p.paused && p.in_window(now) {
         // Replies count toward the limit too, so a busy inbox slows cold sending rather than adding to it.
@@ -86,7 +81,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
         .bind(p.day_start(now))
         .fetch_one(&state.db)
         .await?;
-        (i64::from(p.daily_email_limit) - sent_today).max(0).min((balance + EMAIL_COST_MICROS - 1) / EMAIL_COST_MICROS)
+        (i64::from(p.daily_email_limit) - sent_today).max(0)
     } else {
         0
     };
@@ -117,9 +112,6 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     // Replies sent in this tick also use up the day's room, so cold emails stop at the limit rather than one past it.
     let mut room = cold_slots;
     for email in due {
-        if billing::spendable(state, p.org_id).await? <= 0 {
-            break;
-        }
         if room <= 0 && !REPLY_KINDS.contains(&email.kind.as_str()) {
             continue;
         }
@@ -263,7 +255,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     };
 
     match smtp::send(&transport, message).await {
-        Ok(()) => record_sent(state, org_id, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await,
+        Ok(()) => record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await,
         Err(e) => {
             let code = e.status().map(|c| c.to_string()).unwrap_or_default();
             // 550/551/553 reject this recipient. Anything else is a problem with the mailbox or the connection.
@@ -304,7 +296,6 @@ async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, er
 #[allow(clippy::too_many_arguments)]
 async fn record_sent(
     state: &AppState,
-    org_id: Uuid,
     email: &EmailMessage,
     lead: &Lead,
     mb: &Mailbox,
@@ -327,7 +318,6 @@ async fn record_sent(
     .bind(mb.cost_per_email_micros)
     .execute(&mut *tx)
     .await?;
-    billing::add_entry(&mut *tx, org_id, -EMAIL_COST_MICROS, "email_sent", Some(email.id), &format!("Email to {to}")).await?;
     sqlx::query(
         "update leads set last_contacted_at = now(), status = case when status in ('new', 'queued') then 'contacted' else status end where id = $1",
     )
@@ -335,24 +325,7 @@ async fn record_sent(
     .execute(&mut *tx)
     .await?;
 
-    // The referrer gets paid once, when this org's total email spend first crosses the threshold.
-    let referrer: Option<Option<Uuid>> = sqlx::query_scalar(
-        "update organizations set referral_rewarded = true
-         where id = $1 and referred_by is not null and not referral_rewarded
-           and (select coalesce(-sum(amount_micros), 0) from credit_ledger where org_id = $1 and kind = 'email_sent') >= $2
-         returning referred_by",
-    )
-    .bind(org_id)
-    .bind(REFERRAL_QUALIFYING_SPEND_MICROS)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some(Some(referrer)) = referrer {
-        billing::add_entry(&mut *tx, referrer, REFERRAL_BONUS_MICROS, "referral_bonus", Some(org_id), "Referral reward").await?;
-    }
     tx.commit().await?;
-    if let Err(e) = super::notify::low_balance(state, org_id).await {
-        tracing::warn!(error = ?e, "low balance email failed");
-    }
     Ok(())
 }
 
