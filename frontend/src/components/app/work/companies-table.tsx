@@ -20,6 +20,12 @@ const STATUS_LABEL: Record<Company["status"], string> = {
   excluded: "Excluded",
 };
 
+// Columns that only show once the table is wide enough for them, least useful last.
+const ACTION = "hidden @lg:table-cell";
+const STATUS = "hidden @2xl:table-cell";
+const REASON = "hidden @4xl:table-cell";
+const FIRMOGRAPHICS = "hidden @[70rem]:table-cell";
+
 export function CompaniesTable({ projectId, segmentId }: { projectId: string; segmentId: string }) {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
@@ -62,17 +68,17 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
         </EmptyState>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className="@container overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr>
                   <Th>Company</Th>
-                  <Th>Size</Th>
-                  <Th>Location</Th>
+                  <Th className={FIRMOGRAPHICS}>Size</Th>
+                  <Th className={FIRMOGRAPHICS}>Location</Th>
                   <Th>Fit</Th>
-                  <Th>Why it fits</Th>
-                  <Th>Status</Th>
-                  <Th />
+                  <Th className={REASON}>Why it fits</Th>
+                  <Th className={STATUS}>Status</Th>
+                  <Th className={ACTION} />
                 </tr>
               </thead>
               <tbody>
@@ -81,24 +87,25 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                     <Td>
                       <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
                         <Favicon domain={c.domain} />
-                        <span className="min-w-0">
+                        <span className="max-w-40 min-w-0 @md:max-w-48">
                           <span className="block truncate font-medium">{c.name || c.domain}</span>
                           <span className="block truncate text-xs text-muted-foreground">{c.domain}</span>
                         </span>
                       </a>
                     </Td>
-                    <Td className="whitespace-nowrap tabular-nums">{c.employees || "—"}</Td>
-                    <Td className="whitespace-nowrap">{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>
-                    <Td>
+                    <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>
+                    <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap")}>{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>
+                    {/* The reason doubles as a tooltip for when its own column is hidden. */}
+                    <Td title={c.fit_reason}>
                       <FitScore value={c.fit_score} />
                     </Td>
-                    <Td className="max-w-md">
+                    <Td className={cn(REASON, "max-w-md min-w-60")}>
                       <p className="line-clamp-2 text-xs text-muted-foreground">{c.fit_reason}</p>
                     </Td>
-                    <Td>
+                    <Td className={STATUS}>
                       <Badge tone={c.status === "people_found" ? "green" : "neutral"}>{STATUS_LABEL[c.status]}</Badge>
                     </Td>
-                    <Td className="text-right">
+                    <Td className={cn(ACTION, "text-right")}>
                       <Button size="sm" variant="ghost" onClick={() => toggleExcluded(c)}>
                         {c.status === "excluded" ? "Include" : "Exclude"}
                       </Button>
