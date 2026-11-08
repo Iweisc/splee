@@ -71,6 +71,16 @@ fn strip_quoted(body: &str) -> String {
         }
         kept.push(line);
     }
+    // Gmail wraps a long "On <date> <name> <address> wrote:" line, so only its last piece ends with "wrote:".
+    while kept.last().is_some_and(|l| l.trim().is_empty()) {
+        kept.pop();
+    }
+    if kept.last().is_some_and(|l| l.trim().ends_with("wrote:")) {
+        let from = kept.len().saturating_sub(3);
+        if let Some(start) = (from..kept.len()).rev().find(|&i| kept[i].trim().starts_with("On ")) {
+            kept.truncate(start);
+        }
+    }
     let text = kept.join("\n").trim().to_string();
     if text.is_empty() { body.trim().to_string() } else { text }
 }
@@ -171,4 +181,32 @@ async fn match_lead(state: &AppState, mb: &Mailbox, ids: &[String], from: Option
     .fetch_optional(&state.db)
     .await?;
     Ok(lead.map(|l| (l, None)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_quoted;
+
+    #[test]
+    fn drops_the_quoted_thread() {
+        let body = "Sounds good, Tuesday works.\n\nOn Mon, Nov 9, 2026 at 10:00 AM Sarah Chen <sarah@northwind.example> wrote:\n> Hi Sarah,\n> quick question";
+        assert_eq!(strip_quoted(body), "Sounds good, Tuesday works.");
+    }
+
+    #[test]
+    fn drops_an_attribution_line_gmail_wrapped() {
+        let body = "Sounds good, Tuesday works.\n\nOn Mon, Nov 9, 2026 at 10:00 AM Sarah Chen <\nsarah@northwind.example> wrote:\n\n> Hi Sarah,";
+        assert_eq!(strip_quoted(body), "Sounds good, Tuesday works.");
+    }
+
+    #[test]
+    fn drops_an_outlook_quote() {
+        let body = "Not interested, thanks.\n\n-----Original Message-----\nFrom: Sam\nSubject: Hello";
+        assert_eq!(strip_quoted(body), "Not interested, thanks.");
+    }
+
+    #[test]
+    fn keeps_a_reply_that_is_only_quoted() {
+        assert_eq!(strip_quoted("> only a quote"), "> only a quote");
+    }
 }
