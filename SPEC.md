@@ -131,6 +131,7 @@ All paths below are under `/api`.
 | GET/PATCH/DELETE | /leads/:id | `{status?, email?, title?...}` | `LeadDetail` |
 | GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings` |
 | POST | /projects/:id/integrations/test | `{target: "slack"\|"webhook", url}` | `{ok}`. Posts a sample alert to the URL as typed. The webhook gets the `hot_lead` shape with `"event": "test"` and a sample lead, signed like real alerts. Slack gets `{text}` naming the project. 400 with the reason when it fails. |
+| POST | /projects/:id/integrations/webhook-secret | | `ProjectSettings` with a new random `webhook_secret`. The old one stops verifying immediately. |
 | POST | /projects/:id/start | | unpauses the project (requires at least one active mailbox, else 400 with a clear message) `{ok}` |
 | POST | /projects/:id/pause | | `{ok}` |
 | GET/POST | /projects/:id/materials | `{kind,title,content,url}` | `Material[]` / `Material` |
