@@ -52,9 +52,17 @@ struct AddBody {
 }
 
 async fn add(State(state): State<AppState>, auth: Auth, Json(body): Json<AddBody>) -> AppResult<Json<Value>> {
+    let raws = body.values.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|v| !v.is_empty());
+    let added = insert(&state.db, auth.org_id, raws).await?;
+    Ok(Json(json!({ "added": added })))
+}
+
+/// Adds emails and domains to the org's suppression list and returns how many were new.
+/// One value that is neither an email nor a domain rejects the whole batch, naming it.
+pub async fn insert<'a>(db: &sqlx::PgPool, org_id: Uuid, raws: impl IntoIterator<Item = &'a str>) -> AppResult<u64> {
     let mut values = Vec::new();
     let mut kinds = Vec::new();
-    for raw in body.values.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|v| !v.is_empty()) {
+    for raw in raws {
         let parsed = if raw.contains('@') {
             util_input::email(raw).map(|v| (v, "email"))
         } else {
@@ -69,13 +77,13 @@ async fn add(State(state): State<AppState>, auth: Auth, Json(body): Json<AddBody
          select $1, v, k, 'manual' from unnest($2::text[], $3::text[]) as u(v, k)
          on conflict (org_id, value) do nothing",
     )
-    .bind(auth.org_id)
+    .bind(org_id)
     .bind(&values)
     .bind(&kinds)
-    .execute(&state.db)
+    .execute(db)
     .await?
     .rows_affected();
-    Ok(Json(json!({ "added": added })))
+    Ok(added)
 }
 
 async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {

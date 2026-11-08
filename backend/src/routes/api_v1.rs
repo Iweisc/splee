@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::leads::{self, LeadDetail};
 use super::segments::{self, SegmentWithStats};
 use super::stats::{self, Totals};
+use super::suppressions;
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_input::{self, LEAD_STATUSES};
@@ -25,10 +26,12 @@ pub fn router() -> Router<AppState> {
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/stats", get(project_stats))
+        .route("/v1/suppressions", post(add_suppressions))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
 const MAX_REPLIES: i64 = 500;
+const MAX_SUPPRESSIONS_PER_REQUEST: usize = 1000;
 
 async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
     sqlx::query("select 1 from projects where id = $1 and org_id = $2")
@@ -160,4 +163,18 @@ struct ProjectStats {
 async fn project_stats(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectStats>> {
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(ProjectStats { totals: stats::totals(&state.db, id).await?, campaigns: segments::with_stats(&state.db, id, None).await? }))
+}
+
+#[derive(Deserialize)]
+struct SuppressionsBody {
+    values: Vec<String>,
+}
+
+/// For syncing do-not-contact lists from a CRM. The sender checks suppressions before every email, so queued emails to these stop too.
+async fn add_suppressions(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<SuppressionsBody>) -> AppResult<Json<Value>> {
+    if body.values.len() > MAX_SUPPRESSIONS_PER_REQUEST {
+        return Err(AppError::BadRequest(format!("Send at most {MAX_SUPPRESSIONS_PER_REQUEST} values per request")));
+    }
+    let added = suppressions::insert(&state.db, auth.org_id, body.values.iter().map(|v| v.trim()).filter(|v| !v.is_empty())).await?;
+    Ok(Json(json!({ "added": added })))
 }
