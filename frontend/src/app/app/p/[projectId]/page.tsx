@@ -173,9 +173,11 @@ function Stats({ projectId }: { projectId: string }) {
 
   return (
     <>
+      {/* Each card spans three subgrid rows (label, value, detail), so a label that wraps
+          to two lines pushes every value in that row down together instead of just its own. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
         {kpis.map((k) => (
-          <Card key={k.label} className="px-4 py-3.5" title={k.title}>
+          <Card key={k.label} className="row-span-3 grid grid-rows-subgrid gap-y-0 px-4 py-3.5" title={k.title}>
             <MicroLabel>{k.label}</MicroLabel>
             {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
             {k.detail && <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">{k.detail}</p>}
