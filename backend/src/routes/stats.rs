@@ -23,7 +23,7 @@ struct StatsQuery {
 }
 
 #[derive(Serialize, FromRow)]
-struct Totals {
+pub(super) struct Totals {
     leads: i64,
     drafts: i64,
     scheduled: i64,
@@ -55,7 +55,7 @@ struct ProjectStats {
 }
 
 /// Lifetime funnel and cost of a project. Spend is real cost: Claude's reported cost per agent run plus each sent email's mailbox price.
-async fn totals(db: &PgPool, id: Uuid) -> sqlx::Result<Totals> {
+pub(super) async fn totals(db: &PgPool, id: Uuid) -> sqlx::Result<Totals> {
     let mut totals = sqlx::query_as::<_, Totals>(
         "select
            (select count(*) from leads where project_id = $1) as leads,

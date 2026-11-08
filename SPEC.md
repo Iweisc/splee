@@ -177,7 +177,7 @@ All paths below are under `/api`.
 
 ### Public API v1 (ApiKeyAuth)
 
-`GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads/:id`, `GET /v1/projects/:id/replies?since=` (inbound messages).
+`GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads/:id`, `GET /v1/projects/:id/replies?since=` (inbound messages), `GET /v1/projects/:id/stats` (`{totals: Totals, campaigns: SegmentWithStats[]}`, the same numbers as `/projects/:id/stats` without the daily series).
 
 ## Background workers
 
