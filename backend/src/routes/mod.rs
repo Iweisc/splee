@@ -1,4 +1,8 @@
-use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::{Json, Router};
+use serde_json::{Value, json};
 
 use crate::state::AppState;
 
@@ -53,6 +57,17 @@ pub fn router() -> Router<AppState> {
         .merge(support::router())
         .merge(explorer::router())
         .merge(unsubscribe::router())
+        .route("/health", get(health))
+}
+
+/// For uptime monitors and container health checks. Through the frontend's /api proxy it covers the frontend, the API and Postgres.
+async fn health(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    // A database that stops answering would otherwise hold this for the pool's 30 s acquire timeout, past most monitors' own.
+    let ping = tokio::time::timeout(std::time::Duration::from_secs(5), sqlx::query("select 1").execute(&state.db)).await;
+    if !matches!(ping, Ok(Ok(_))) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[cfg(test)]
