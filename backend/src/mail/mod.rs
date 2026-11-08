@@ -31,7 +31,7 @@ pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });
     let s = state.clone();
-    tokio::spawn(async move { every(Duration::from_secs(3600), || sender::optimize(&s), "optimizer").await });
+    tokio::spawn(async move { every(Duration::from_secs(3600), || sender::optimize(&s.db), "optimizer").await });
     // Checked every 15 minutes so the 08:00 UTC window is never skipped. notification_log prevents doubles.
     tokio::spawn(async move { every(Duration::from_secs(900), || notify::digests(&state), "digests").await });
 }

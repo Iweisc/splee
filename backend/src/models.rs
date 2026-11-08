@@ -131,6 +131,8 @@ pub struct Segment {
     pub angle: String,
     pub position: i32,
     pub created_at: Ts,
+    /// When the optimizer paused it. It never pauses a campaign twice, so resuming one sticks.
+    pub auto_paused_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

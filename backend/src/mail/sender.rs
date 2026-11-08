@@ -387,21 +387,29 @@ async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Hourly: campaigns with enough data move between scaling, working and paused by emails sent per hot lead.
-pub async fn optimize(state: &AppState) -> anyhow::Result<()> {
-    let rows: Vec<(Uuid, String, i64, i64)> = sqlx::query_as(
-        "select s.id, s.status,
+pub async fn optimize(db: &sqlx::PgPool) -> anyhow::Result<()> {
+    let rows: Vec<(Uuid, String, bool, i64, i64)> = sqlx::query_as(
+        "select s.id, s.status, s.auto_paused_at is not null,
                 (select count(*) from email_messages e where e.segment_id = s.id and e.status = 'sent'),
                 (select count(*) from leads l where l.segment_id = s.id and l.status in ('hot', 'meeting_booked'))
          from segments s join project_settings ps on ps.project_id = s.project_id
          where s.status in ('working', 'scaling') and not ps.paused",
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
-    for (id, status, sent, hot) in rows {
-        let Some(next) = campaign_status(sent, hot) else { continue };
+    for (id, status, paused_before, sent, hot) in rows {
+        let Some(mut next) = campaign_status(sent, hot) else { continue };
+        // You resumed it after we paused it, so it's yours to stop now.
+        if next == "paused" && paused_before {
+            next = "working";
+        }
         if next != status {
             tracing::info!(segment_id = %id, from = %status, to = next, "optimizer moved campaign");
-            sqlx::query("update segments set status = $2 where id = $1").bind(id).bind(next).execute(&state.db).await?;
+            sqlx::query("update segments set status = $2, auto_paused_at = case when $2 = 'paused' then now() else auto_paused_at end where id = $1")
+                .bind(id)
+                .bind(next)
+                .execute(db)
+                .await?;
         }
     }
     Ok(())
@@ -425,7 +433,50 @@ fn campaign_status(sent: i64, hot: i64) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::campaign_status;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{campaign_status, optimize};
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_resumed_campaign_is_not_paused_again(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, paused) values ($1, false)").bind(project).execute(&db).await.unwrap();
+        let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status) values ($1, 'Costly', 'working') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, segment_id, status) values ($1, $2, 'contacted') returning id")
+            .bind(project)
+            .bind(segment)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        // 700 sends and no hot lead is over the 625-per-hot-lead line.
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, segment_id, direction, kind, status, sent_at)
+             select $1, $2, $3, 'outbound', 'initial', 'sent', now() from generate_series(1, 700)",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(segment)
+        .execute(&db)
+        .await
+        .unwrap();
+        let status = || sqlx::query_scalar::<_, String>("select status from segments where id = $1").bind(segment).fetch_one(&db);
+
+        optimize(&db).await.unwrap();
+        assert_eq!(status().await.unwrap(), "paused");
+
+        sqlx::query("update segments set status = 'working' where id = $1").bind(segment).execute(&db).await.unwrap();
+        optimize(&db).await.unwrap();
+        assert_eq!(status().await.unwrap(), "working");
+    }
 
     #[test]
     fn waits_for_enough_sends() {

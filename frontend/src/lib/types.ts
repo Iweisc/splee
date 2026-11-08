@@ -191,6 +191,8 @@ export interface Segment {
   angle: string;
   position: number;
   created_at: Ts;
+  /** When the optimizer paused it. It never pauses a campaign twice, so resuming one sticks. */
+  auto_paused_at: Ts | null;
 }
 
 export interface SegmentWithStats extends Segment {
