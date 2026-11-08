@@ -99,6 +99,10 @@ pub struct ProjectSettings {
     pub webhook_url: String,
     pub slack_webhook_url: String,
     pub webhook_secret: String,
+    pub webhook_error: Option<String>,
+    pub webhook_failed_at: Option<Ts>,
+    pub slack_error: Option<String>,
+    pub slack_failed_at: Option<Ts>,
     pub paused: bool,
 }
 

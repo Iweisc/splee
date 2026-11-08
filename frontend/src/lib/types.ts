@@ -126,6 +126,10 @@ export interface ProjectSettings {
   webhook_url: string;
   slack_webhook_url: string;
   webhook_secret: string;
+  webhook_error: string | null;
+  webhook_failed_at: string | null;
+  slack_error: string | null;
+  slack_failed_at: string | null;
   paused: boolean;
 }
 

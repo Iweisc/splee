@@ -203,16 +203,20 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
             "reply": {"id": t.inbound.id, "subject": t.inbound.subject, "body": t.inbound.body, "reason": reason},
             "url": link,
         });
-        if let Err(e) = hooks::post_json(&webhook, &payload, Some(&secret)).await {
+        let result = hooks::post_json(&webhook, &payload, Some(&secret)).await;
+        if let Err(e) = &result {
             tracing::warn!(error = %e, "hot lead webhook failed");
         }
+        hooks::record(&state.db, t.project.id, hooks::Alert::Webhook, &webhook, &result).await;
     }
     if !slack.trim().is_empty() {
         let snippet: String = t.inbound.body.trim().chars().take(300).collect();
         let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
-        if let Err(e) = hooks::post_json(&slack, &json!({"text": text}), None).await {
+        let result = hooks::post_json(&slack, &json!({"text": text}), None).await;
+        if let Err(e) = &result {
             tracing::warn!(error = %e, "slack notification failed");
         }
+        hooks::record(&state.db, t.project.id, hooks::Alert::Slack, &slack, &result).await;
     }
 
     let Some(org_id) = t.project.org_id else { return };

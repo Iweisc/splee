@@ -130,8 +130,8 @@ All paths below are under `/api`.
 | GET | /projects/:id/leads?segment_id&status&q&page | | paginated `LeadRow` |
 | GET | /projects/:id/leads/export?segment_id&status&q | | `text/csv` download of every matching lead. Cells that start with `= + - @` get a leading `'`. |
 | GET/PATCH/DELETE | /leads/:id | `{status?, email?, title?...}` | `LeadDetail` |
-| GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings` |
-| POST | /projects/:id/integrations/test | `{target: "slack"\|"webhook", url}` | `{ok}`. Posts a sample alert to the URL as typed. The webhook gets the `hot_lead` shape with `"event": "test"` and a sample lead, signed like real alerts. Slack gets `{text}` naming the project. 400 with the reason when it fails. |
+| GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings`. `webhook_error`/`webhook_failed_at` and `slack_error`/`slack_failed_at` are read-only: the last failed hot-lead alert, cleared when a delivery or a passing test to the saved URL goes through, or when PUT changes that URL. |
+| POST | /projects/:id/integrations/test | `{target: "slack"\|"webhook", url}` | `{ok}`. Posts a sample alert to the URL as typed. The webhook gets the `hot_lead` shape with `"event": "test"` and a sample lead, signed like real alerts. Slack gets `{text}` naming the project. 400 with the reason when it fails. A pass on the saved URL clears its last failure. |
 | POST | /projects/:id/integrations/webhook-secret | | `ProjectSettings` with a new random `webhook_secret`. The old one stops verifying immediately. |
 | POST | /projects/:id/start | | unpauses the project (requires at least one active mailbox, else 400 with a clear message) `{ok}` |
 | POST | /projects/:id/pause | | `{ok}` |

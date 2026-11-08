@@ -17,8 +17,18 @@ export function useProjectSettings() {
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const settings = draft ?? data;
-  const dirty = draft !== null && data !== undefined && JSON.stringify(draft) !== JSON.stringify(data);
+  // The backend sets the alert failure fields itself, so they come from the latest fetch even under an unsaved draft.
+  const settings =
+    draft && data
+      ? {
+          ...draft,
+          webhook_error: data.webhook_error,
+          webhook_failed_at: data.webhook_failed_at,
+          slack_error: data.slack_error,
+          slack_failed_at: data.slack_failed_at,
+        }
+      : (draft ?? data);
+  const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);
 
   const update = (patch: Partial<ProjectSettings>) => {
     if (settings) setDraft((d) => ({ ...(d ?? settings), ...patch }));

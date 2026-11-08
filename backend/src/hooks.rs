@@ -43,6 +43,31 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+pub enum Alert {
+    Webhook,
+    Slack,
+}
+
+/// Saves how a hot-lead alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
+/// Matching on the URL keeps a slow delivery to an old URL from marking a URL that was saved since.
+pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url: &str, result: &anyhow::Result<()>) {
+    let sql = match alert {
+        Alert::Webhook => {
+            "update project_settings set webhook_error = $3, webhook_failed_at = case when $3::text is null then null else now() end
+             where project_id = $1 and webhook_url = $2"
+        }
+        Alert::Slack => {
+            "update project_settings set slack_error = $3, slack_failed_at = case when $3::text is null then null else now() end
+             where project_id = $1 and slack_webhook_url = $2"
+        }
+    };
+    let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
+    if let Err(e) = sqlx::query(sql).bind(project_id).bind(url).bind(error).execute(db).await {
+        tracing::warn!(error = %e, "couldn't save the alert outcome");
+    }
+}
+
 fn sign(secret: &str, timestamp: &str, body: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
     mac.update(timestamp.as_bytes());
@@ -100,5 +125,29 @@ mod tests {
     fn signature_matches_a_receiver_computing_it_independently() {
         // Expected value from: printf '1700000000.{"a":1}' | openssl dgst -sha256 -hmac secret
         assert_eq!(sign("secret", "1700000000", br#"{"a":1}"#), "49f24e537407743fa4a0242bb63b94b9a47ee99cbbe071ccd8a22550ae411686");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn record_keeps_the_last_failure_for_the_saved_url(db: sqlx::PgPool) {
+        let org: uuid::Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: uuid::Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, webhook_url) values ($1, 'https://new.example/hook')").bind(project).execute(&db).await.unwrap();
+        let state = || async {
+            sqlx::query_as::<_, (Option<String>, bool)>("select webhook_error, webhook_failed_at is not null from project_settings where project_id = $1")
+                .bind(project)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        };
+
+        record(&db, project, Alert::Webhook, "https://old.example/hook", &Err(anyhow::anyhow!("stale"))).await;
+        assert_eq!(state().await, (None, false));
+        record(&db, project, Alert::Webhook, "https://new.example/hook", &Err(anyhow::anyhow!("HTTP 500"))).await;
+        assert_eq!(state().await, (Some("HTTP 500".into()), true));
+        record(&db, project, Alert::Webhook, "https://new.example/hook", &Ok(())).await;
+        assert_eq!(state().await, (None, false));
     }
 }
