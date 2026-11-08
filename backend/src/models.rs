@@ -182,6 +182,7 @@ pub struct Lead {
     pub email: Option<String>,
     pub email_status: String,
     pub linkedin_url: String,
+    pub x_url: String,
     pub company_name: String,
     pub company_domain: Option<String>,
     pub city: String,

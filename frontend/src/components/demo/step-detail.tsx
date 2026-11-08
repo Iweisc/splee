@@ -1,6 +1,7 @@
 import { Check, ExternalLink, User } from "lucide-react";
 import { flag } from "@/components/marketing/flag";
 import { LinkedinIcon } from "@/components/marketing/linkedin-icon";
+import { XIcon } from "@/components/marketing/x-icon";
 import { LogoMark } from "@/components/ui/logo";
 import { Avatar, Badge, Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import type { DemoState, Lead } from "@/lib/types";
@@ -248,6 +249,11 @@ function People({ leads }: { leads: Lead[] }) {
               {l.linkedin_url && (
                 <a href={l.linkedin_url} target="_blank" rel="noreferrer" aria-label="LinkedIn profile" className="text-muted-foreground hover:text-foreground">
                   <LinkedinIcon className="size-4" />
+                </a>
+              )}
+              {l.x_url && (
+                <a href={l.x_url} target="_blank" rel="noreferrer" aria-label="X profile" className="text-muted-foreground hover:text-foreground">
+                  <XIcon className="size-4" />
                 </a>
               )}
             </div>

@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::explore::{self, EMPLOYEE_RANGES, Profile, RESEARCHER, is_directory, load_project};
 use super::sdk::Call;
+use super::x;
 use super::{Ctx, Outcome};
 use crate::mail;
 use crate::models::{Company, Project, Segment};
@@ -248,6 +249,7 @@ struct FoundPerson {
     email: String,
     email_source: String,
     linkedin_url: String,
+    x_url: String,
     city: String,
     country_code: String,
     hook: String,
@@ -307,6 +309,7 @@ async fn find_people(
                 "email": {"type": "string"},
                 "email_source": {"type": "string", "enum": ["published", "pattern"]},
                 "linkedin_url": {"type": "string"},
+                "x_url": {"type": "string", "description": "their X (Twitter) profile, e.g. https://x.com/handle"},
                 "city": {"type": "string"},
                 "country_code": {"type": "string"},
                 "hook": {"type": "string", "description": "one specific, verifiable fact about their business to open an email with"},
@@ -333,7 +336,7 @@ async fn find_people(
              For each company find up to {max_per_company} decision makers for buying our offer. Preferred roles: {roles}. At small businesses \
              the owner or founder is usually right. Check the company's team, about and contact pages, and search for \
              \"<company name> owner\" or \"site:linkedin.com/in <company name>\". Use 2 to 3 tool calls per company.\n\n\
-             For each person: their name, their job title only (e.g. \"Owner\", no notes or sources), linkedin_url if you saw it (else \"\"), city and country_code, a hook \
+             For each person: their name, their job title only (e.g. \"Owner\", no notes or sources), linkedin_url and x_url (their X profile) if you saw them (else \"\"), city and country_code, a hook \
              (one specific fact about their business that makes a good first line, e.g. a recent project, a specialty, an award) and \
              2 to 4 short facts you saw on the web.\n\
              Email: if you saw this person's address published, use it with email_source \"published\". Otherwise guess it on the \
@@ -375,8 +378,8 @@ async fn find_people(
             }
             let inserted = sqlx::query(
                 "insert into leads (project_id, segment_id, company_id, full_name, first_name, last_name, title, email, email_status,
-                                    linkedin_url, company_name, company_domain, city, country_code, personalization)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                    linkedin_url, x_url, company_name, company_domain, city, country_code, personalization)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                  on conflict (project_id, email) do nothing",
             )
             .bind(project.id)
@@ -389,6 +392,7 @@ async fn find_people(
             .bind(&lead.email)
             .bind(lead.email_status)
             .bind(&lead.linkedin_url)
+            .bind(&lead.x_url)
             .bind(&company.name)
             .bind(&company.domain)
             .bind(&lead.city)
@@ -418,6 +422,7 @@ struct NewLead {
     email: String,
     email_status: &'static str,
     linkedin_url: String,
+    x_url: String,
     city: String,
     country_code: String,
     personalization: Value,
@@ -454,6 +459,7 @@ fn shape_lead(p: FoundPerson, company: &Company) -> Option<NewLead> {
         email,
         email_status: if published { "found" } else { "guessed" },
         linkedin_url: p.linkedin_url.trim().to_string(),
+        x_url: x::profile_url(&p.x_url),
         city: if p.city.trim().is_empty() { company.city.clone() } else { p.city.trim().to_string() },
         country_code: if p.country_code.trim().is_empty() { company.country_code.clone() } else { p.country_code.trim().to_uppercase() },
         personalization: json!({"hook": p.hook.trim(), "facts": p.facts}),
