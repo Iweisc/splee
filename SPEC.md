@@ -81,6 +81,7 @@ All paths below are under `/api`.
 | POST | /auth/login | `{email, password}` | `Me`, sets cookie. 429 after 10 failed attempts for an email (known or not) within 15 minutes. A successful sign-in resets the count. |
 | POST | /auth/logout | | `{ok:true}` |
 | GET | /auth/me | | `Me` or 401 |
+| POST | /auth/password | `{current_password, new_password}` | `{ok}`. 400 when the current password is wrong or the new one is under 8 characters. Deletes the user's other sessions. |
 | POST | /auth/switch-org | `{org_id}` | `Me` |
 | GET | /invites/:token | | `{org_name, email, role}` (public) |
 | POST | /invites/:token/accept | | `Me` (signed-in user joins org) |

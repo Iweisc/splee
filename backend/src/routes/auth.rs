@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(get_me))
+        .route("/auth/password", post(change_password))
         .route("/auth/switch-org", post(switch_org))
         .route("/invites/{token}", get(get_invite))
         .route("/invites/{token}/accept", post(accept_invite))
@@ -261,4 +262,27 @@ async fn accept_invite(State(state): State<AppState>, auth: Auth, Path(token): P
         .await?;
     tx.commit().await?;
     Ok(Json(me(&state, auth.user_id, org_id).await?))
+}
+
+#[derive(Deserialize)]
+struct PasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+/// Signs out every other session too, so changing a leaked password also locks out whoever used it.
+async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): Json<PasswordBody>) -> AppResult<Json<Value>> {
+    let hash: String = sqlx::query_scalar("select password_hash from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
+    if !verify_password(&body.current_password, &hash) {
+        return Err(AppError::BadRequest("Your current password is wrong".into()));
+    }
+    if body.new_password.chars().count() < 8 {
+        return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
+    }
+    let new_hash = hash_password(&body.new_password)?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("update users set password_hash = $2 where id = $1").bind(auth.user_id).bind(&new_hash).execute(&mut *tx).await?;
+    sqlx::query("delete from sessions where user_id = $1 and token_hash <> $2").bind(auth.user_id).bind(&auth.token_hash).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "ok": true })))
 }
