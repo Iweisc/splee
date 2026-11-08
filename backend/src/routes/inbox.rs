@@ -86,6 +86,16 @@ const THREADS: &str = "with t as (
        when 'other' then not (is_hot or is_needs_reply or auto_replied)
        else true end";
 
+/// Threads across the organization in the Needs reply filter, for the digest emails.
+pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
+        .bind(org_id)
+        .bind(None::<Uuid>)
+        .bind("needs_reply")
+        .fetch_one(db)
+        .await
+}
+
 async fn list(
     State(state): State<AppState>,
     auth: Auth,
@@ -311,5 +321,6 @@ mod tests {
         };
         assert_eq!(threads("needs_reply").await, sorted(leads[..2].to_vec()));
         assert_eq!(threads("other").await, sorted(leads[2..].to_vec()));
+        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 2);
     }
 }

@@ -13,8 +13,8 @@ type Pref = Exclude<keyof NotificationPrefs, "user_id">;
 
 const PREFS: { key: Pref; title: string; description: string }[] = [
   { key: "hot_lead_email", title: "Hot leads", description: "An email when a lead replies with interest." },
-  { key: "daily_digest", title: "Daily digest", description: "A daily summary of sends, replies and costs." },
-  { key: "weekly_report", title: "Weekly report", description: "A weekly summary of results per campaign." },
+  { key: "daily_digest", title: "Daily digest", description: "Sends, replies and costs per project, and how many replies wait for an answer." },
+  { key: "weekly_report", title: "Weekly report", description: "The same summary for the past week, on Mondays." },
 ];
 
 export default function NotificationsPage() {

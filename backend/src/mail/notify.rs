@@ -64,6 +64,11 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
                 a.name, a.sent, a.replies, a.hot, usd(a.spend_micros)
             );
         }
+        let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id).await?;
+        if waiting > 0 {
+            let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
+            body += &format!("\n{replies} waiting for an answer.");
+        }
         body += &format!("\nOpen your inbox: {}/app/inbox", state.cfg.public_url);
         let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
 
