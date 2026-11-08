@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Upload, Users } from "lucide-react";
+import { Download, Search, Upload, Users } from "lucide-react";
 import useSWR from "swr";
-import { LinkButton } from "@/components/ui/button";
+import { buttonClass, LinkButton } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
@@ -24,7 +24,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const query = useDebounced(q);
 
   const { data: segments } = useSWR<SegmentWithStats[]>(segmentId ? null : `/projects/${projectId}/segments`, fetcher);
-  const key = `/projects/${projectId}/leads${qs({ segment_id: segmentId ?? segment, status, q: query, page, per_page: PER_PAGE })}`;
+  const filters = { segment_id: segmentId ?? segment, status, q: query };
+  const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
   const filtered = !!(query || segment || status);
 
@@ -58,6 +59,12 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             </option>
           ))}
         </Select>
+        {!!data?.total && (
+          // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
+          <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9")}>
+            <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${data.total} leads`}
+          </a>
+        )}
       </div>
 
       {error ? (
