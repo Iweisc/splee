@@ -37,12 +37,16 @@ export function CopyButton({
   );
 }
 
-/** Read-only mono field with a copy button, for links and secrets. */
-export function CopyField({ value }: { value: string }) {
+/** Read-only mono field with a copy button, for links and secrets. `children` are extra buttons placed after Copy. */
+export function CopyField({ value, children }: { value: string; children?: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2">
-      <code className="min-w-0 flex-1 truncate rounded-lg border border-border-strong bg-muted px-3 py-2 font-mono text-sm select-all">{value}</code>
-      <CopyButton value={value} />
+    // The value is never cut off. When it doesn't fit beside the buttons it takes its own line and wraps, and the buttons go under it.
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <code className="min-w-0 grow-[999] rounded-lg border border-border-strong bg-muted px-3 py-2 font-mono text-sm break-all select-all">{value}</code>
+      <div className="flex gap-2 max-sm:grow max-sm:[&>*]:grow">
+        <CopyButton value={value} />
+        {children}
+      </div>
     </div>
   );
 }

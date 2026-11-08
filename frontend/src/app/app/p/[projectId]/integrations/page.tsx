@@ -179,13 +179,10 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="mt-4 flex flex-col gap-1.5">
               <span className="text-sm font-medium">Signing secret</span>
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <CopyField value={s.webhook_secret} />
-                </div>
+              <CopyField value={s.webhook_secret}>
                 {/* Also patches an unsaved draft, so replacing the secret doesn't look like an unsaved edit. */}
                 <ReplaceSecretButton projectId={projectId} onReplaced={(webhook_secret) => update({ webhook_secret })} />
-              </div>
+              </CopyField>
               <p className="text-xs text-muted-foreground">
                 Every webhook request is signed with this, so your endpoint can reject requests that didn&apos;t come from Splee. Slack messages aren&apos;t
                 signed.
