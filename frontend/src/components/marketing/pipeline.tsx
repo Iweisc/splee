@@ -95,17 +95,18 @@ export function Pipeline() {
             style={{ top: STICKY_TOP + STICKY_STEP * i, zIndex: i + 1 }}
           >
             <div className="relative w-full overflow-hidden rounded-2xl bg-card shadow-plaque">
-              <div className="flex min-h-[260px] flex-col md:flex-row">
-                <div className="flex max-w-[520px] flex-col p-4 md:flex-[55%] md:p-8">
+              <div className="flex min-h-[260px] flex-col lg:flex-row">
+                <div className="flex max-w-[520px] flex-col p-4 lg:flex-[55%] lg:p-8">
                   <h3 className="text-[clamp(24px,4.5vw,36px)] leading-tight font-normal">{c.title}</h3>
                 </div>
                 {c.fits ? (
-                  <div className="flex flex-1 items-center p-4 pt-0 md:p-8">{c.body}</div>
+                  <div className="flex flex-1 items-center p-4 pt-0 lg:p-8">{c.body}</div>
                 ) : (
-                  // On phones the panel is as tall as its content, up to 300px, and the fade starts at a fixed depth,
+                  // Below lg the demo sits under the title, because beside it the demo would only get ~150px on a tablet.
+                  // There the panel is as tall as its content, up to 300px, and the fade starts at a fixed depth,
                   // so a short table shows whole with no blank space and a long one fades out at the cap.
-                  <div className="relative max-h-[300px] overflow-hidden [mask-image:linear-gradient(#000_0_252px,transparent_300px)] md:max-h-none md:flex-1 md:[mask-image:linear-gradient(#000_0_calc(100%-64px),transparent_100%)]">
-                    <div className="px-4 pb-4 md:absolute md:inset-x-8 md:top-8 md:px-0 md:pb-0">{c.body}</div>
+                  <div className="relative max-h-[300px] overflow-hidden [mask-image:linear-gradient(#000_0_252px,transparent_300px)] lg:max-h-none lg:flex-1 lg:[mask-image:linear-gradient(#000_0_calc(100%-64px),transparent_100%)]">
+                    <div className="px-4 pb-4 lg:absolute lg:inset-x-8 lg:top-8 lg:px-0 lg:pb-0">{c.body}</div>
                   </div>
                 )}
               </div>
