@@ -68,20 +68,25 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
 
         for (user_id, to) in recipients(state, org_id, kind).await? {
-            let claimed = sqlx::query("insert into notification_log (user_id, kind, sent_on) values ($1, $2, current_date) on conflict do nothing")
-                .bind(user_id)
-                .bind(kind)
-                .execute(&state.db)
-                .await?
-                .rows_affected()
-                == 1;
-            if claimed && !super::send_system_email(state, org_id, &to, subject, &body).await? {
+            if claim(&state.db, user_id, org_id, kind).await? && !super::send_system_email(state, org_id, &to, subject, &body).await? {
                 // No active mailbox to send from. Nothing else in the org will send either.
                 break;
             }
         }
     }
     Ok(())
+}
+
+/// Records today's digest of this kind for this user and organization. False when it already went out, which keeps the
+/// checks every 15 minutes in the digest hour from sending it twice.
+async fn claim(db: &sqlx::PgPool, user_id: Uuid, org_id: Uuid, kind: &str) -> sqlx::Result<bool> {
+    let inserted = sqlx::query("insert into notification_log (user_id, org_id, kind, sent_on) values ($1, $2, $3, current_date) on conflict do nothing")
+        .bind(user_id)
+        .bind(org_id)
+        .bind(kind)
+        .execute(db)
+        .await?;
+    Ok(inserted.rows_affected() == 1)
 }
 
 fn usd(micros: i64) -> String {
@@ -98,4 +103,26 @@ async fn recipients(state: &AppState, org_id: Uuid, pref: &str) -> sqlx::Result<
     .bind(org_id)
     .fetch_all(&state.db)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_user_in_two_orgs_gets_each_orgs_digest_once(db: sqlx::PgPool) {
+        let user: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('ana@example.com', 'x') returning id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let org = || sqlx::query_scalar::<_, Uuid>("insert into organizations (name) values ('Test') returning id").fetch_one(&db);
+        let (first, second) = (org().await.unwrap(), org().await.unwrap());
+
+        assert!(claim(&db, user, first, "daily_digest").await.unwrap());
+        assert!(claim(&db, user, second, "daily_digest").await.unwrap());
+        assert!(!claim(&db, user, first, "daily_digest").await.unwrap());
+        assert!(claim(&db, user, first, "weekly_report").await.unwrap());
+    }
 }
