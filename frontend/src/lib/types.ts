@@ -302,6 +302,8 @@ export interface EmailMessage {
   error: string;
   cost_micros: number;
   created_at: Ts;
+  /** Inbound only: when you marked the reply as needing no answer. */
+  handled_at: Ts | null;
 }
 
 export interface EmailRow extends EmailMessage {

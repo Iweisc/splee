@@ -228,6 +228,8 @@ pub struct EmailMessage {
     pub error: String,
     pub cost_micros: i64,
     pub created_at: Ts,
+    /// Inbound only: when you marked the reply as needing no answer.
+    pub handled_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
