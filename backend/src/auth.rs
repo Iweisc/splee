@@ -31,7 +31,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 /// Creates a session row and returns the cookie to set on the response.
-pub async fn create_session(db: &PgPool, user_id: Uuid, org_id: Uuid) -> AppResult<Cookie<'static>> {
+/// `secure` comes from Config::secure_cookies, so the cookie is HTTPS-only wherever the app is served over HTTPS.
+pub async fn create_session(db: &PgPool, user_id: Uuid, org_id: Uuid, secure: bool) -> AppResult<Cookie<'static>> {
     let token = random_token();
     sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, $4)")
         .bind(sha256_hex(&token))
@@ -44,12 +45,13 @@ pub async fn create_session(db: &PgPool, user_id: Uuid, org_id: Uuid) -> AppResu
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
+        .secure(secure)
         .max_age(time_days(SESSION_DAYS))
         .build())
 }
 
-pub fn clear_session_cookie() -> Cookie<'static> {
-    Cookie::build((SESSION_COOKIE, "")).path("/").max_age(time_days(0)).build()
+pub fn clear_session_cookie(secure: bool) -> Cookie<'static> {
+    Cookie::build((SESSION_COOKIE, "")).path("/").secure(secure).max_age(time_days(0)).build()
 }
 
 fn time_days(days: i64) -> time::Duration {

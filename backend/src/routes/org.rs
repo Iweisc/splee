@@ -278,5 +278,5 @@ async fn delete_org(State(state): State<AppState>, auth: Auth, jar: CookieJar) -
         return Err(AppError::Conflict(check.reason));
     }
     sqlx::query("delete from organizations where id = $1").bind(auth.org_id).execute(&state.db).await?;
-    Ok((jar.add(clear_session_cookie()), Json(json!({ "ok": true }))))
+    Ok((jar.add(clear_session_cookie(state.cfg.secure_cookies())), Json(json!({ "ok": true }))))
 }

@@ -123,7 +123,7 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
     }
     tx.commit().await?;
 
-    let cookie = create_session(&state.db, user_id, org_id).await?;
+    let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
     Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
 }
 
@@ -171,7 +171,7 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::Forbidden("Your account isn't part of any organization anymore".into()))?;
-    let cookie = create_session(&state.db, user_id, org_id).await?;
+    let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
     Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
 }
 
@@ -179,7 +179,7 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> AppResult<(Coo
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         sqlx::query("delete from sessions where token_hash = $1").bind(sha256_hex(cookie.value())).execute(&state.db).await?;
     }
-    Ok((jar.add(clear_session_cookie()), Json(json!({ "ok": true }))))
+    Ok((jar.add(clear_session_cookie(state.cfg.secure_cookies())), Json(json!({ "ok": true }))))
 }
 
 async fn get_me(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Me>> {

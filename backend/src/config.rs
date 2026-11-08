@@ -28,4 +28,9 @@ impl Config {
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
         })
     }
+
+    /// The browser only gets the session cookie through PUBLIC_URL, so that decides whether it can be HTTPS-only.
+    pub fn secure_cookies(&self) -> bool {
+        self.public_url.starts_with("https://")
+    }
 }
