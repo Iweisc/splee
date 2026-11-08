@@ -75,7 +75,8 @@ export function RunProgress({ run, className }: { run: AgentRun; className?: str
     return "pending";
   };
 
-  const logs = events.filter((e) => (e.kind === "log" || e.kind === "tool") && stepOf(e) === current).slice(-5);
+  // Each tool call also arrives as a `log` event with a readable line, so the raw `tool` events stay out.
+  const logs = events.filter((e) => e.kind === "log" && stepOf(e) === current).slice(-5);
 
   const cancel = async () => {
     try {
@@ -138,7 +139,7 @@ export function RunProgress({ run, className }: { run: AgentRun; className?: str
                   {logs.map((e, j) => (
                     <li key={e.id} className={cn("truncate", j === logs.length - 1 && state === "active" && "text-foreground")}>
                       {j === logs.length - 1 ? "› " : "✓ "}
-                      {e.message || String(e.data.name ?? "")}
+                      {e.message}
                       {j === logs.length - 1 && state === "active" && (
                         <span className="ml-1 inline-block h-3 w-1.5 translate-y-0.5 animate-blink bg-foreground" />
                       )}
