@@ -90,7 +90,7 @@ export default function MailboxesPage() {
       />
       <PageBody className="mx-auto max-w-5xl">
         {error ? (
-          <LoadError error={error} what="mailboxes" />
+          <LoadError error={error} what="mailboxes" retry={() => mutate()} />
         ) : !data ? (
           <SectionsSkeleton />
         ) : data.length === 0 ? (

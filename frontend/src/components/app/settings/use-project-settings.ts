@@ -41,7 +41,7 @@ export function useProjectSettings() {
     }
   };
 
-  return { projectId, settings, error, update, dirty, saving, save, reset: () => setDraft(null) };
+  return { projectId, settings, error, retry: () => mutate(), update, dirty, saving, save, reset: () => setDraft(null) };
 }
 
 export type ProjectSettingsForm = ReturnType<typeof useProjectSettings>;

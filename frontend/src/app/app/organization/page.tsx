@@ -7,7 +7,8 @@ import { toast } from "sonner";
 import { Check, Mail, Trash2, UserPlus } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CopyField } from "@/components/app/settings/copy-button";
-import { LoadError, Section, SettingsColumn } from "@/components/app/settings/layout";
+import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
@@ -134,7 +135,7 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
   return (
     <Section title="Members" description="Admins can invite people and change roles.">
       {error ? (
-        <LoadError error={error} what="members" />
+        <LoadError error={error} what="members" retry={() => mutate()} />
       ) : !data ? (
         <Skeleton className="h-24 w-full" />
       ) : (
@@ -209,7 +210,7 @@ function Invites() {
       }
     >
       {error ? (
-        <LoadError error={error} what="invites" />
+        <LoadError error={error} what="invites" retry={() => mutate()} />
       ) : !pendingInvites ? (
         <Skeleton className="h-12 w-full" />
       ) : pendingInvites.length === 0 ? (

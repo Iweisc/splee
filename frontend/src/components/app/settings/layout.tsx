@@ -1,8 +1,8 @@
 "use client";
 
-import { AlertCircle } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
+import { Card, Skeleton } from "@/components/ui/misc";
+import { LoadError as LoadErrorState } from "@/components/app/work/states";
 import type { ProjectSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { SaveBar } from "./save-bar";
@@ -56,12 +56,11 @@ export function SectionsSkeleton({ count = 2 }: { count?: number }) {
   );
 }
 
-export function LoadError({ error, what = "this page" }: { error: unknown; what?: string }) {
+/** A load error standing in for a whole settings card. Inside an existing card, use the one from work/states. */
+export function LoadError(props: React.ComponentProps<typeof LoadErrorState>) {
   return (
     <Card>
-      <EmptyState icon={<AlertCircle className="size-6" />} title={`Couldn't load ${what}`}>
-        {error instanceof Error ? error.message : null}
-      </EmptyState>
+      <LoadErrorState {...props} />
     </Card>
   );
 }
@@ -85,7 +84,7 @@ export function ProjectSettingsPage({
       <PageHeader title={title} description={description} />
       <PageBody>
         <SettingsColumn>
-          {s ? children(s, form.update, form.dirty) : form.error ? <LoadError error={form.error} what="settings" /> : <SectionsSkeleton />}
+          {s ? children(s, form.update, form.dirty) : form.error ? <LoadError error={form.error} what="settings" retry={form.retry} /> : <SectionsSkeleton />}
           <SaveBar form={form} problem={s && problem ? problem(s) : null} />
         </SettingsColumn>
       </PageBody>

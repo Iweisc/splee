@@ -58,7 +58,7 @@ export default function MaterialsPage() {
       <PageBody>
         <SettingsColumn>
           {error ? (
-            <LoadError error={error} what="materials" />
+            <LoadError error={error} what="materials" retry={() => mutate()} />
           ) : !data ? (
             <SectionsSkeleton />
           ) : data.length === 0 ? (
