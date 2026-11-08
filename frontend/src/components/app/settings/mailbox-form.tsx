@@ -32,11 +32,12 @@ const EMPTY: MailboxInput = {
   imap_username: "",
   imap_password: "",
   daily_limit: 30,
+  cost_per_email_micros: 0,
 };
 
 function toInput(m: Mailbox): MailboxInput {
-  const { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit } = m;
-  return { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password: "", imap_host, imap_port, imap_username, imap_password: "", daily_limit };
+  const { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros } = m;
+  return { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password: "", imap_host, imap_port, imap_username, imap_password: "", daily_limit, cost_per_email_micros };
 }
 
 function presetOf(m: Mailbox): Preset {
@@ -77,7 +78,9 @@ export function MailboxForm({
     (mailbox || m.smtp_password) &&
     m.imap_host &&
     m.imap_port > 0 &&
-    m.daily_limit > 0;
+    m.daily_limit > 0 &&
+    m.cost_per_email_micros >= 0 &&
+    m.cost_per_email_micros <= 1_000_000;
 
   return (
     <form
@@ -198,6 +201,24 @@ export function MailboxForm({
 
       <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
         <Input type="number" min={1} value={m.daily_limit} onChange={(e) => set({ daily_limit: Number(e.target.value) })} className="w-28 tabular-nums" />
+      </Field>
+
+      <Field
+        label="Cost per 1,000 emails"
+        hint="What your email provider charges per email, so your spend stats include it. Leave it at 0 for a flat-rate mailbox like Google Workspace."
+      >
+        <div className="relative w-28">
+          <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+          {/* Stored per email in micro-dollars, so $1 per 1,000 emails is 1,000 micros per email. */}
+          <Input
+            type="number"
+            min={0}
+            step={0.01}
+            value={m.cost_per_email_micros / 1000}
+            onChange={(e) => set({ cost_per_email_micros: Math.round(Number(e.target.value) * 1000) })}
+            className="pl-6 tabular-nums"
+          />
+        </div>
       </Field>
 
       <div className="flex justify-end">

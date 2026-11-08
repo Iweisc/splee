@@ -152,7 +152,7 @@ export interface Targeting {
 
 export interface ProjectSettings {
   project_id: UUID;
-  daily_budget_cents: number;
+  daily_email_limit: number;
   timezone: string;
   send_days: number[]; // 1 = Monday ... 7 = Sunday
   send_start_hour: number;
@@ -198,7 +198,9 @@ export interface ProjectStats {
     replies: number;
     hot: number;
     meetings: number;
-    spend_micros: number;
+    ai_cost_micros: number; // what Claude reports for the agent's runs
+    email_cost_micros: number; // sent emails times each mailbox's cost_per_email_micros
+    spend_micros: number; // ai + email
     cost_per_hot_micros: number | null;
   };
   daily: { date: string; sent: number; replies: number; hot: number }[];
@@ -399,6 +401,7 @@ export interface Mailbox {
   imap_port: number;
   imap_username: string;
   daily_limit: number;
+  cost_per_email_micros: number;
   status: "active" | "paused" | "error";
   last_error: string;
   imap_last_uid: number;
@@ -419,6 +422,7 @@ export interface MailboxInput {
   imap_username: string;
   imap_password: string;
   daily_limit: number;
+  cost_per_email_micros: number;
   status?: "active" | "paused";
 }
 

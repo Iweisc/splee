@@ -1,6 +1,6 @@
 # Splee
 
-Splee is a self-hosted AI outbound agent, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily budget. It also reads the replies over IMAP and answers interested leads with your booking link.
+Splee is a self-hosted AI outbound agent, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily email limit. It also reads the replies over IMAP and answers interested leads with your booking link.
 
 It runs on your machine or server, with your own Claude subscription and mailboxes. Nothing goes through a third-party outbound platform.
 
@@ -9,7 +9,8 @@ It runs on your machine or server, with your own Claude subscription and mailbox
 - **Research.** It profiles your company, maps competitors, proposes buyer segments as campaigns, finds companies and decision makers, and writes personal emails and LinkedIn sequences. Every run streams its progress live and can be cancelled.
 - **Sending.** It sends from any SMTP mailbox, rotating mailboxes under per-mailbox daily limits. Sending respects each project's time zone, send days and hours. Follow-ups thread under the first email. You can choose to review every draft or approve whole campaigns.
 - **Inbox.** It polls IMAP for replies and sorts them into hot, question, not interested, out of office, unsubscribe or bounce. It drafts replies with your booking link and either sends them or holds them for approval.
-- **Safety rails.** It keeps a suppression list of emails and domains, adds an unsubscribe link and `List-Unsubscribe` header to every outreach email, and handles bounces. A daily budget and an org balance cap spend, and the DNS checker covers MX, SPF and DMARC.
+- **Safety rails.** It keeps a suppression list of emails and domains, adds an unsubscribe link and `List-Unsubscribe` header to every outreach email, and handles bounces. A daily email limit per project and an org balance cap sending, and the DNS checker covers MX, SPF and DMARC.
+- **Costs.** Spend and cost per hot lead add up what Claude Code reports for each agent run and the cost per email you set on each mailbox. On a Claude subscription, the AI part is the equivalent API price.
 - **Integrations.** Hot-lead alerts go out by email, Slack or webhook. Leads import from CSV and export to CSV. A public REST API takes API keys.
 - **Teams.** It has organizations, invites, admin roles, a referral program and optional Stripe top-ups.
 

@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CreditCard,
   FileText,
+  Gauge,
   Gift,
   Inbox,
   KeyRound,
@@ -21,7 +22,6 @@ import {
   Target,
   Upload,
   Users,
-  Wallet,
   type LucideIcon,
 } from "lucide-react";
 
@@ -50,7 +50,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
     items: [
       { label: "Targeting", href: (p) => `/app/p/${p}/targeting`, icon: Target }, // D2
       { label: "Competitors", href: (p) => `/app/p/${p}/competitors`, icon: Swords },
-      { label: "Budget", href: (p) => `/app/p/${p}/budget`, icon: Wallet }, // D2
+      { label: "Daily limit", href: (p) => `/app/p/${p}/daily-limit`, icon: Gauge }, // D2
       { label: "Schedule", href: (p) => `/app/p/${p}/schedule`, icon: CalendarClock }, // D2
       { label: "Email templates", href: (p) => `/app/p/${p}/email-templates`, icon: FileText }, // D2
       { label: "Follow-ups", href: (p) => `/app/p/${p}/follow-ups`, icon: Repeat }, // D2

@@ -13,7 +13,7 @@ use crate::billing::{self, EMAIL_COST_MICROS, REFERRAL_BONUS_MICROS, REFERRAL_QU
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 
-/// Replies people are waiting for. They skip the send window, the pause switch and the daily budget.
+/// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
 const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
 
 pub fn new_message_id(sender_email: &str) -> String {
@@ -25,7 +25,7 @@ pub fn new_message_id(sender_email: &str) -> String {
 struct SendingProject {
     id: Uuid,
     org_id: Uuid,
-    daily_budget_cents: i32,
+    daily_email_limit: i32,
     timezone: String,
     send_days: Vec<i32>,
     send_start_hour: i32,
@@ -55,7 +55,7 @@ impl SendingProject {
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     schedule_follow_ups(state).await?;
     let projects = sqlx::query_as::<_, SendingProject>(
-        "select p.id, p.org_id, s.daily_budget_cents, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused
+        "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused
          from projects p join project_settings s on s.project_id = p.id
          where p.org_id is not null and exists (
              select 1 from email_messages e where e.project_id = p.id and e.direction = 'outbound'
@@ -78,15 +78,15 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     }
     let now = Utc::now();
     let cold_slots = if !p.paused && p.in_window(now) {
-        let spent: i64 = sqlx::query_scalar(
-            "select coalesce(sum(cost_micros), 0)::bigint from email_messages where project_id = $1 and status = 'sent' and sent_at >= $2",
+        // Replies count toward the limit too, so a busy inbox slows cold sending rather than adding to it.
+        let sent_today: i64 = sqlx::query_scalar(
+            "select count(*) from email_messages where project_id = $1 and direction = 'outbound' and status = 'sent' and sent_at >= $2",
         )
         .bind(p.id)
         .bind(p.day_start(now))
         .fetch_one(&state.db)
         .await?;
-        let budget = i64::from(p.daily_budget_cents) * 10_000;
-        ((budget - spent) / EMAIL_COST_MICROS).max(0).min((balance + EMAIL_COST_MICROS - 1) / EMAIL_COST_MICROS)
+        (i64::from(p.daily_email_limit) - sent_today).max(0).min((balance + EMAIL_COST_MICROS - 1) / EMAIL_COST_MICROS)
     } else {
         0
     };
@@ -114,11 +114,17 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     .fetch_all(&state.db)
     .await?;
 
+    // Replies sent in this tick also use up the day's room, so cold emails stop at the limit rather than one past it.
+    let mut room = cold_slots;
     for email in due {
         if billing::spendable(state, p.org_id).await? <= 0 {
             break;
         }
+        if room <= 0 && !REPLY_KINDS.contains(&email.kind.as_str()) {
+            continue;
+        }
         deliver(state, p.org_id, email).await?;
+        room -= 1;
     }
     Ok(())
 }
@@ -318,7 +324,7 @@ async fn record_sent(
     .bind(mb.id)
     .bind(&mb.email)
     .bind(to)
-    .bind(EMAIL_COST_MICROS)
+    .bind(mb.cost_per_email_micros)
     .execute(&mut *tx)
     .await?;
     billing::add_entry(&mut *tx, org_id, -EMAIL_COST_MICROS, "email_sent", Some(email.id), &format!("Email to {to}")).await?;
@@ -389,28 +395,29 @@ async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Hourly: campaigns with enough data move between scaling, working and paused by cost per hot lead.
+/// Hourly: campaigns with enough data move between scaling, working and paused by emails sent per hot lead.
 pub async fn optimize(state: &AppState) -> anyhow::Result<()> {
-    let rows: Vec<(Uuid, String, i64, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(Uuid, String, i64, i64)> = sqlx::query_as(
         "select s.id, s.status,
                 (select count(*) from email_messages e where e.segment_id = s.id and e.status = 'sent'),
-                (select coalesce(sum(cost_micros), 0)::bigint from email_messages e where e.segment_id = s.id and e.status = 'sent'),
                 (select count(*) from leads l where l.segment_id = s.id and l.status in ('hot', 'meeting_booked'))
          from segments s join project_settings ps on ps.project_id = s.project_id
          where s.status in ('working', 'scaling') and not ps.paused",
     )
     .fetch_all(&state.db)
     .await?;
-    for (id, status, sent, spend, hot) in rows {
+    for (id, status, sent, hot) in rows {
         if sent < 40 {
             continue;
         }
-        let next = match spend.checked_div(hot) {
-            Some(cost) if cost < 10_000_000 => "scaling",
-            Some(cost) if cost > 25_000_000 => "paused",
-            // No hot lead yet counts as the whole spend for one, the most optimistic reading.
-            None if spend > 25_000_000 => "paused",
-            _ => "working",
+        // These were $10 and $25 per hot lead when every email cost $0.04.
+        // No hot lead yet counts as all the emails sent so far for one, the most optimistic reading.
+        let next = if hot > 0 && sent < 250 * hot {
+            "scaling"
+        } else if sent > 625 * hot.max(1) {
+            "paused"
+        } else {
+            "working"
         };
         if next != status {
             tracing::info!(segment_id = %id, from = %status, to = next, "optimizer moved campaign");

@@ -1,6 +1,6 @@
 # Splee spec
 
-Splee is a functional clone of explee.com: an AI outbound agent. You paste your website, a Claude agent researches your company, competitors and buyer segments, finds companies and decision makers on the web, writes personal cold emails, sends them from your own mailboxes within a daily budget, reads replies over IMAP, classifies them, and auto-replies with your booking link.
+Splee is a functional clone of explee.com: an AI outbound agent. You paste your website, a Claude agent researches your company, competitors and buyer segments, finds companies and decision makers on the web, writes personal cold emails, sends them from your own mailboxes within a daily email limit, reads replies over IMAP, classifies them, and auto-replies with your booking link.
 
 - Backend: Rust, Axum 0.8, sqlx + Postgres, `claude-agent-sdk-rs` (drives the local `claude` CLI). `backend/`
 - Frontend: Next.js 16 App Router, React 19, Tailwind 4. `frontend/`
@@ -12,13 +12,13 @@ Schema: `backend/migrations/`. Rust rows: `backend/src/models.rs`. TS types: `fr
 ## Conventions
 
 - JSON in and out. Errors are `{ "error": "message" }` with a meaningful status (see `backend/src/error.rs`).
-- Money is micro-dollars (`*_micros`, 1 USD = 1_000_000) except `daily_budget_cents`.
+- Money is micro-dollars (`*_micros`, 1 USD = 1_000_000).
 - Timestamps are RFC 3339 strings. IDs are UUIDs.
 - Lists return `{ "items": [...], "total": n }` when paginated (`?page=1&per_page=50`, page is 1-based). Small fixed lists return a bare array.
 - Auth: cookie `splee_session` (extractor `Auth` in `backend/src/auth.rs`). `Auth::project(db, id)` checks org ownership. Admin-only routes call `auth.require_admin()`.
 - Public API v1 uses `Authorization: Bearer splee_...` (extractor `ApiKeyAuth`).
 - Agent work is always `agent::enqueue(db, kind, project_id, org_id, input)` from routes. Never call Claude inside a request handler, except support chat.
-- Pricing: $0.04 per sent email (`billing::EMAIL_COST_MICROS`), $30 signup credits, sending stops at zero balance or when today's spend reaches the project's daily budget.
+- Pricing: $0.04 per sent email (`billing::EMAIL_COST_MICROS`), $30 signup credits, sending stops at zero balance or once the project has sent `daily_email_limit` emails today. Spend in stats is real cost, not credits: `agent_runs.cost_usd` (what Claude Code reports) plus `email_messages.cost_micros`, which is the sending mailbox's `cost_per_email_micros`.
 
 ## Agent pipeline (explore run)
 
@@ -192,9 +192,9 @@ All paths below are under `/api`.
 ## Background workers
 
 - Agent worker: claims `agent_runs` with `for update skip locked`, runs up to `AGENT_CONCURRENCY` at once. Each Claude call uses `claude-agent-sdk-rs` `ClaudeClient` with `setting_sources: []` (never load the host user's Claude settings), `cwd` = a temp dir, `tools`/`allowed_tools` = `WebSearch`, `WebFetch` only (none for classification/writing), JSON-schema `output_format`, model `AGENT_MODEL`. With `BIRD_BIN` set, research calls also get `mcp__x__search` and `mcp__x__read`, an in-process MCP server that runs the `bird` CLI (npm `@steipete/bird`) to search and read X with a logged-in browser's cookies. Tool calls and short text become `tool`/`log` events. Cost is added to `agent_runs.cost_usd`.
-- Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with balance > 0 and today's spend under its daily budget: take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, debit `email_sent`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working. Referral reward when the referred org passes the qualifying spend.
+- Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with balance > 0 and fewer outbound emails sent today than its `daily_email_limit` (replies count but are never held back): take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, debit `email_sent`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working. Referral reward when the referred org passes the qualifying spend.
 - IMAP poller (every 60s): fetch new messages per mailbox (UID > imap_last_uid), match to lead by `In-Reply-To`/`References` then by from address, store `inbound` rows, enqueue `classify_reply`. Bounces (mailer-daemon) mark lead `bounced` + suppression. Classification `hot` → lead `hot`, webhook + Slack notify; `unsubscribe` → suppression; `ooo` → reschedule. For hot/question replies when `auto_reply_mode != off`, enqueue `draft_reply` (includes booking link) → `auto` sends it, `approve` leaves it as draft for the inbox.
-- Optimizer (hourly): per working segment with >= 40 sent emails, cost per hot lead < $10 → `scaling`, > $25 → `paused`, else `working`. Scaling segments get first pick in the sender.
+- Optimizer (hourly): per working segment with >= 40 sent emails, sent emails per hot lead < 250 → `scaling`, > 625 → `paused`, else `working`. Scaling segments get first pick in the sender.
 
 ## Frontend routes
 

@@ -46,6 +46,7 @@ pub struct SegmentWithStats {
 }
 
 /// Segments of a project with their funnel numbers. Pass `segment_id` to get just one.
+/// Agent runs that research the whole project, like explore, have no segment, so their cost only counts in the project's stats.
 pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<Vec<SegmentWithStats>> {
     let mut rows = sqlx::query_as::<_, SegmentWithStats>(
         "select s.*,
@@ -56,9 +57,10 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
            (select count(*) from leads l where l.segment_id = s.id
              and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound')) as replies,
            (select count(*) from leads l where l.segment_id = s.id and l.status in ('hot', 'meeting_booked')) as hot,
-           (select coalesce(-sum(cl.amount_micros), 0)::bigint from credit_ledger cl
-             join email_messages e on e.id = cl.ref_id
-             where cl.kind = 'email_sent' and e.segment_id = s.id) as spend_micros
+           (select (coalesce(sum(r.cost_usd), 0) * 1000000)::bigint from agent_runs r
+             where r.project_id = s.project_id and r.input->>'segment_id' = s.id::text)
+           + (select coalesce(sum(e.cost_micros), 0)::bigint from email_messages e
+             where e.segment_id = s.id and e.direction = 'outbound' and e.status = 'sent') as spend_micros
          from segments s
          where s.project_id = $1 and ($2::uuid is null or s.id = $2)
          order by s.position, s.created_at",

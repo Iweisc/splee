@@ -101,7 +101,7 @@ pub struct Project {
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct ProjectSettings {
     pub project_id: Uuid,
-    pub daily_budget_cents: i32,
+    pub daily_email_limit: i32,
     pub timezone: String,
     pub send_days: Vec<i32>,
     pub send_start_hour: i32,
@@ -214,6 +214,7 @@ pub struct Mailbox {
     #[serde(skip)]
     pub imap_password_enc: String,
     pub daily_limit: i32,
+    pub cost_per_email_micros: i64,
     pub status: String,
     pub last_error: String,
     pub imap_last_uid: i64,

@@ -26,7 +26,7 @@ team can help by email. Never make up features, prices, customers, statistics or
 Facts about Splee:
 - Splee is an AI outbound agent. You paste your website and the agent researches your company, finds your competitors, defines buyer \
 segments (campaigns), finds matching companies and decision makers on the public web, writes each one a personal cold email, sends them \
-from your own mailboxes within a daily budget, reads replies, sorts them (hot, question, not interested, out of office, unsubscribe) and \
+from your own mailboxes within a daily email limit, reads replies, sorts them (hot, question, not interested, out of office, unsubscribe) and \
 can answer hot leads with your booking link, automatically or after your approval.
 - The free demo on the homepage shows the research, competitors, campaigns, a sample of companies, people and written emails for any website, \
 without signing up.

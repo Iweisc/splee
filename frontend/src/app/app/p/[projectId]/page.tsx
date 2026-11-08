@@ -155,13 +155,20 @@ function Stats({ projectId }: { projectId: string }) {
   if (error) return <LoadError error={error} retry={() => mutate()} />;
 
   const t = data?.totals;
-  const kpis = [
+  const kpis: { label: string; value?: string; detail?: string; title?: string }[] = [
     { label: "Leads", value: t && num(t.leads) },
     { label: "Sent", value: t && num(t.sent) },
     { label: "Replies", value: t && num(t.replies) },
     { label: "Hot leads", value: t && num(t.hot) },
     { label: "Meetings", value: t && num(t.meetings) },
-    { label: "Spend", value: t && money(t.spend_micros) },
+    {
+      label: "Spend",
+      value: t && money(t.spend_micros),
+      detail: t && `AI ${money(t.ai_cost_micros)} · Email ${money(t.email_cost_micros)}`,
+      // On a Claude subscription nothing is billed per run, so make clear what the AI figure means.
+      title:
+        "AI is what Claude Code reports for the agent's runs. On a Claude subscription that's the equivalent API price, not a bill. Email is the cost per email you set on each mailbox.",
+    },
     { label: "Cost per hot lead", value: t && (t.cost_per_hot_micros === null ? "—" : money(t.cost_per_hot_micros)) },
   ];
 
@@ -169,9 +176,10 @@ function Stats({ projectId }: { projectId: string }) {
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
         {kpis.map((k) => (
-          <Card key={k.label} className="px-4 py-3.5">
+          <Card key={k.label} className="px-4 py-3.5" title={k.title}>
             <MicroLabel>{k.label}</MicroLabel>
             {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
+            {k.detail && <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">{k.detail}</p>}
           </Card>
         ))}
       </div>
