@@ -197,6 +197,15 @@ async fn pick_mailbox(state: &AppState, org_id: Uuid, email: &EmailMessage) -> a
     if still_usable { Ok(None) } else { Ok(available.into_iter().next()) }
 }
 
+/// Cold emails carry an unsubscribe footer. Replies go without one, like any other message in a conversation.
+pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str) -> String {
+    if kind == "initial" || kind == "follow_up" {
+        format!("{}\n\n--\nNot relevant? Unsubscribe: {unsubscribe_page}", body.trim_end())
+    } else {
+        body.trim_end().to_string()
+    }
+}
+
 async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow::Result<()> {
     let claimed = sqlx::query("update email_messages set status = 'sending' where id = $1 and status in ('approved', 'scheduled')")
         .bind(email.id)
@@ -227,11 +236,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let in_reply_to = email.in_reply_to.clone().or_else(|| if email.kind == "initial" { None } else { references.last().cloned() });
     let unsubscribe_page = format!("{}/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
     let one_click = format!("{}/api/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
-    let body = if email.kind == "initial" || email.kind == "follow_up" {
-        format!("{}\n\n--\nNot relevant? Unsubscribe: {unsubscribe_page}", email.body.trim_end())
-    } else {
-        email.body.trim_end().to_string()
-    };
+    let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
 
     let built = smtp::build(
         &mb,
