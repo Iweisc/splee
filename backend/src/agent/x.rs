@@ -80,6 +80,22 @@ pub fn server(bird: String) -> McpServerConfig {
     McpServerConfig::Sdk(create_sdk_mcp_server("x", "1.0.0", vec![search, read]))
 }
 
+/// An X profile link as the model wrote it ("@acme", "twitter.com/acme", "https://x.com/acme/status/1") as
+/// https://x.com/<handle>, or "" when there is no valid handle in it.
+pub fn profile_url(raw: &str) -> String {
+    let raw = raw.trim();
+    let path = ["https://", "http://"].iter().fold(raw, |s, p| s.strip_prefix(p).unwrap_or(s));
+    let path = path.strip_prefix("www.").unwrap_or(path);
+    let handle = match path.split_once('/') {
+        Some(("x.com" | "twitter.com" | "mobile.twitter.com", rest)) => rest.split(['/', '?', '#']).next().unwrap_or_default(),
+        Some(_) => return String::new(),
+        None => path.strip_prefix('@').unwrap_or(path),
+    };
+    let reserved = ["home", "search", "explore", "i", "intent", "share", "hashtag", "settings"];
+    let valid = (1..=15).contains(&handle.len()) && handle.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid && !reserved.contains(&handle.to_lowercase().as_str()) { format!("https://x.com/{handle}") } else { String::new() }
+}
+
 fn text(text: String, is_error: bool) -> ToolResult {
     ToolResult { content: vec![McpToolResultContent::Text { text }], is_error }
 }
@@ -137,4 +153,19 @@ fn render(post: &Value) -> String {
 
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s.to_string() } else { format!("{}… [cut]", s.chars().take(max).collect::<String>()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_url;
+
+    #[test]
+    fn profile_url_keeps_only_real_handles() {
+        for raw in ["@steffenbew", "steffenbew", "https://x.com/steffenbew", "twitter.com/steffenbew/status/1?s=20", "https://www.twitter.com/steffenbew/"] {
+            assert_eq!(profile_url(raw), "https://x.com/steffenbew", "{raw}");
+        }
+        for raw in ["", "https://linkedin.com/in/someone", "https://x.com/search?q=acme", "x.com/i/web/status/1", "@has-dash", "@waytoolonghandle12345"] {
+            assert_eq!(profile_url(raw), "", "{raw}");
+        }
+    }
 }

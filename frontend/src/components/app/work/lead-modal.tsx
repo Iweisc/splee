@@ -6,6 +6,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
+import { XIcon } from "@/components/marketing/x-icon";
 import { Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailMessage, LeadDetail, LeadStatus } from "@/lib/types";
@@ -97,6 +98,13 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           <Detail icon={<Link2 className="size-3.5" />}>
             <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="hover:underline">
               LinkedIn profile
+            </a>
+          </Detail>
+        )}
+        {lead.x_url && (
+          <Detail icon={<XIcon className="size-3.5" />}>
+            <a href={lead.x_url} target="_blank" rel="noreferrer" className="hover:underline">
+              X profile
             </a>
           </Detail>
         )}

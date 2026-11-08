@@ -283,6 +283,7 @@ export interface Lead {
   email: string | null;
   email_status: "unknown" | "found" | "guessed" | "verified" | "invalid";
   linkedin_url: string;
+  x_url: string;
   company_name: string;
   company_domain: string | null;
   city: string;
