@@ -17,6 +17,14 @@ Run what CI runs:
 (cd frontend && pnpm lint && pnpm typecheck)
 ```
 
+`cargo test` skips the tests that need Postgres. CI runs them too. To run them locally, start the compose database and point `DATABASE_URL` at its `postgres` database:
+
+```sh
+(cd backend && DATABASE_URL=postgres://splee:splee@127.0.0.1:55432/postgres cargo test -- --include-ignored)
+```
+
+These tests create and drop throwaway databases on that server. Without `DATABASE_URL` set they'd use the one in `backend/.env`, so never run them against a server with real data.
+
 Then try the change in the running app. For a UI change, add a screenshot or short clip to the pull request.
 
 ## Conventions

@@ -76,7 +76,7 @@ These are the checks CI runs. Run them before you open a pull request:
 (cd frontend && pnpm lint && pnpm typecheck)
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and [SECURITY.md](SECURITY.md) to report a vulnerability.
+CI also runs the database tests that `cargo test` skips. [CONTRIBUTING.md](CONTRIBUTING.md) shows how to run them. See it for conventions and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Responsible use
 

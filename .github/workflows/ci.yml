@@ -8,6 +8,19 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: splee
+          POSTGRES_PASSWORD: splee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U splee"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: backend
@@ -21,7 +34,10 @@ jobs:
         with:
           workspaces: backend
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Includes the tests that need Postgres. They create and drop their own databases on this service.
+      - run: cargo test -- --include-ignored
+        env:
+          DATABASE_URL: postgres://splee:splee@localhost:5432/postgres
 
   frontend:
     runs-on: ubuntu-latest
