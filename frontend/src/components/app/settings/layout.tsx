@@ -32,8 +32,10 @@ export function Section({
 }) {
   return (
     <Card className={cn("p-6", className)}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
+      {/* Actions wrap under the description when both don't fit. A switch stays beside the title,
+          but a button no longer squeezes the description into a narrow column on phones. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+        <div className="min-w-0 flex-1 basis-56">
           <h2 className="font-semibold">{title}</h2>
           {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
         </div>
