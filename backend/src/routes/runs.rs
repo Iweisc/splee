@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
+use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::events;
@@ -69,8 +70,12 @@ async fn cancel(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
         .execute(&state.db)
         .await?;
     // A running run gets its error event from the worker when it notices. A queued one never reaches the worker.
-    if updated.rows_affected() > 0 && run.status == "queued" {
-        events::emit(&state, id, run.step, "error", "Run cancelled", json!({"cancelled": true})).await?;
+    if updated.rows_affected() > 0 {
+        // Now rather than when the worker notices, so the refresh the app does right after this request sees it.
+        agent::settle_research(&state.db, &run).await;
+        if run.status == "queued" {
+            events::emit(&state, id, run.step, "error", "Run cancelled", json!({"cancelled": true})).await?;
+        }
     }
     Ok(Json(json!({"ok": true})))
 }
