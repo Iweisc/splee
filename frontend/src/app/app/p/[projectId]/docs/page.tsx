@@ -132,6 +132,42 @@ function endpoints(projectId: string): Endpoint[] {
   }
 ]`,
     },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/stats`,
+      summary:
+        "Lifetime results and cost of a project and each of its campaigns. Money is in micro-dollars (1,000,000 = $1). AI cost is what Claude Code reports for the agent's runs, and email cost uses each mailbox's cost per email. Runs that research the whole project count only in totals.",
+      response: `{
+  "totals": {
+    "leads": 240,
+    "drafts": 12,
+    "scheduled": 30,
+    "sent": 410,
+    "replies": 19,
+    "hot": 4,
+    "meetings": 1,
+    "ai_cost_micros": 8420000,
+    "email_cost_micros": 410000,
+    "spend_micros": 8830000,
+    "cost_per_hot_micros": 2207500
+  },
+  "campaigns": [
+    {
+      "id": "5d0a…",
+      "name": "Design studios",
+      "status": "scaling",
+      "companies": 60,
+      "leads": 120,
+      "sent": 230,
+      "replies": 12,
+      "hot": 3,
+      "spend_micros": 3120000,
+      "cost_per_hot_micros": 1040000,
+      "…": "…"
+    }
+  ]
+}`,
+    },
   ];
 }
 

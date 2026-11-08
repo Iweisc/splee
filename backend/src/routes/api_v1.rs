@@ -1,12 +1,14 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::leads::{self, LeadDetail};
+use super::segments::{self, SegmentWithStats};
+use super::stats::{self, Totals};
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_scope;
@@ -21,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
         .route("/v1/leads/{id}", get(get_lead))
         .route("/v1/projects/{id}/replies", get(replies))
+        .route("/v1/projects/{id}/stats", get(project_stats))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -122,4 +125,16 @@ async fn replies(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(messages))
+}
+
+#[derive(Serialize)]
+struct ProjectStats {
+    totals: Totals,
+    campaigns: Vec<SegmentWithStats>,
+}
+
+/// Lifetime funnel and real cost, for reporting tools. Same numbers as the overview and campaign pages.
+async fn project_stats(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectStats>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(ProjectStats { totals: stats::totals(&state.db, id).await?, campaigns: segments::with_stats(&state.db, id, None).await? }))
 }
