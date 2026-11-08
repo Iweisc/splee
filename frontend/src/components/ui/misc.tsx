@@ -119,7 +119,8 @@ export function Modal({
     >
       {open && (
         <div className="p-6">
-          <div className="mb-4 flex items-start justify-between gap-4">
+          {/* Without a title the close button goes in the top-right corner instead of taking a row of its own. Content then leaves room for it, like the lead window's pr-6. */}
+          <div className={cn("flex items-start justify-between gap-4", title ? "mb-4" : "absolute top-6 right-6")}>
             {title && <h2 className="text-lg font-semibold">{title}</h2>}
             <button onClick={onClose} className="-m-1 rounded-md p-1 text-muted-foreground hover:bg-accent" aria-label="Close">
               <X className="size-4" />

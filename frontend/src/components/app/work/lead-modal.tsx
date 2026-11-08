@@ -97,17 +97,19 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         </Select>
         {lead.segment_name && <Badge>{lead.segment_name}</Badge>}
         <Badge className="capitalize">{lead.source}</Badge>
-        <span className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-          <Pencil className="size-3.5" /> Edit
-        </Button>
-        <Button variant="ghost" size="sm" onClick={remove} loading={deleting} className="text-danger">
-          <Trash2 className="size-3.5" /> Delete
-        </Button>
+        {/* Edit and Delete wrap together, so Delete never sits alone on a row. On phones they share a row of their own. */}
+        <div className="ml-auto flex gap-1 max-sm:basis-full max-sm:[&>*]:flex-1">
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            <Pencil className="size-3.5" /> Edit
+          </Button>
+          <Button variant="ghost" size="sm" onClick={remove} loading={deleting} className="text-danger">
+            <Trash2 className="size-3.5" /> Delete
+          </Button>
+        </div>
       </div>
 
       <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        <Detail icon={<Mail className="size-3.5" />}>
+        <Detail icon={<Mail className="size-3.5" />} wide>
           {lead.email ? (
             <>
               {lead.email} <span className="text-xs text-muted-foreground">({lead.email_status})</span>
@@ -240,11 +242,13 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
   );
 }
 
-function Detail({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+/** `wide` is for the email: it takes the whole row and wraps rather than being cut off, since it's the one detail people copy. */
+function Detail({ icon, wide, children }: { icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="text-muted-foreground">{icon}</span>
-      <span className="truncate">{children}</span>
+    <div className={cn("flex min-w-0 items-start gap-2", wide && "sm:col-span-2")}>
+      {/* As tall as one line of text, so the icon lines up with the first line when the text wraps. */}
+      <span className="flex h-5 items-center text-muted-foreground">{icon}</span>
+      <span className={wide ? "break-all" : "truncate"}>{children}</span>
     </div>
   );
 }
