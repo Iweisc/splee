@@ -83,6 +83,13 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
     if body.password.chars().count() < 8 {
         return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
     }
+    // The very first account is always allowed, so a fresh instance can get its owner.
+    if body.invite_token.is_none() && !state.cfg.open_signup {
+        let anyone: bool = sqlx::query_scalar("select exists (select 1 from users)").fetch_one(&state.db).await?;
+        if anyone {
+            return Err(AppError::Forbidden("Sign-ups here are invite-only. Ask someone on your team for an invite.".into()));
+        }
+    }
     let name = body.name.trim().to_string();
     let password_hash = hash_password(&body.password)?;
 

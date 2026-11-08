@@ -16,6 +16,8 @@ pub struct Config {
     pub sending_enabled: bool,
     /// Path to the `bird` CLI. When set, research runs can search and read X as the account bird is logged in as.
     pub bird_bin: Option<String>,
+    /// False makes sign-up invite-only after the first account, so strangers can't run agents on the host's Claude account.
+    pub open_signup: bool,
 }
 
 impl Config {
@@ -29,6 +31,7 @@ impl Config {
             agent_concurrency: env::var("AGENT_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
             sending_enabled: env::var("SENDING_ENABLED").map(|v| v != "false").unwrap_or(true),
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
+            open_signup: env::var("OPEN_SIGNUP").map(|v| v != "false").unwrap_or(true),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -65,6 +68,7 @@ mod tests {
             agent_concurrency: 1,
             sending_enabled: false,
             bird_bin: None,
+            open_signup: true,
         }
     }
 

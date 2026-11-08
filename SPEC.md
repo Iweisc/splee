@@ -78,7 +78,7 @@ All paths below are under `/api`.
 
 | method | path | body | response |
 |---|---|---|---|
-| POST | /auth/signup | `{email, password, name, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. |
+| POST | /auth/signup | `{email, password, name, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. 403 without `invite_token` when `OPEN_SIGNUP=false` and an account already exists. |
 | POST | /auth/login | `{email, password}` | `Me`, sets cookie. 429 after 10 failed attempts for an email (known or not) within 15 minutes. A successful sign-in resets the count. |
 | POST | /auth/logout | | `{ok:true}` |
 | GET | /auth/me | | `Me` or 401 |
