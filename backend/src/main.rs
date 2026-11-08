@@ -5,6 +5,7 @@ mod config;
 mod crypto;
 mod error;
 mod events;
+mod hooks;
 mod mail;
 mod models;
 mod routes;
