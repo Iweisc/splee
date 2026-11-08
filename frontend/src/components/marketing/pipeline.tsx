@@ -216,17 +216,23 @@ function Chat() {
 
 function ResultsTable() {
   return (
-    <div className="overflow-hidden rounded-xl shadow-plaque">
-      <div className="grid grid-cols-[1.4fr_1fr_auto] bg-accent px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+    // Rows are subgrids of one grid, so the header and every row share the same column widths.
+    // On phones, Status hugs its content and the last header breaks after the slash, so names get the room.
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_min-content] gap-x-3 sm:grid-cols-[minmax(0,1.4fr)_1fr_auto] overflow-hidden rounded-xl shadow-plaque">
+      <div className="col-span-3 grid grid-cols-subgrid bg-accent px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
         <span>Campaign</span>
         <span>Status</span>
-        <span>Emails/lead</span>
+        <span className="text-right">
+          Emails/
+          <wbr />
+          lead
+        </span>
       </div>
       {results.map((r) => {
         const paused = r.status === "Paused";
         return (
-          <div key={r.name} className={cn("grid grid-cols-[1.4fr_1fr_auto] border-t border-border px-4 py-2", paused && "text-muted-foreground")}>
-            <span className={cn(!paused && "font-medium")}>{r.name}</span>
+          <div key={r.name} className={cn("col-span-3 grid grid-cols-subgrid border-t border-border px-4 py-2", paused && "text-muted-foreground")}>
+            <span className={cn("truncate", !paused && "font-medium")}>{r.name}</span>
             <span className="flex items-center gap-2 text-muted-foreground">
               {r.status}
               {!paused && <span className="size-1.5 bg-brand-300" />}
