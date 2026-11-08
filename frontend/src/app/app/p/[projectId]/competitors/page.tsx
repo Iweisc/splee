@@ -61,8 +61,9 @@ export default function CompetitorsPage() {
                 <div key={c.id} className="flex items-center gap-4 px-5 py-4">
                   <Favicon domain={c.domain} size={20} />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate font-medium">{c.name || c.domain}</p>
+                    {/* The domain drops under the name when both don't fit, so the name isn't cut off first. */}
+                    <div className="flex flex-wrap items-center gap-x-2">
+                      <p className="min-w-0 truncate font-medium">{c.name || c.domain}</p>
                       <a
                         href={`https://${c.domain}`}
                         target="_blank"
