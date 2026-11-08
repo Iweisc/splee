@@ -71,12 +71,17 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
               <tbody>
                 {runs.map((r) => (
                   <Tr key={r.id}>
-                    <Td className="font-medium whitespace-nowrap">{TITLES[r.kind]}</Td>
+                    <Td>
+                      <div className="font-medium whitespace-nowrap">{TITLES[r.kind]}</div>
+                      {r.status === "failed" && r.error && (
+                        <p className="mt-0.5 line-clamp-2 max-w-80 text-xs text-red-700" title={r.error}>
+                          {r.error}
+                        </p>
+                      )}
+                    </Td>
                     <Td className="max-w-64 truncate text-muted-foreground">{segmentName(r) ?? "—"}</Td>
                     <Td>
-                      <Badge tone={STATUSES[r.status].tone} title={r.error || undefined}>
-                        {STATUSES[r.status].label}
-                      </Badge>
+                      <Badge tone={STATUSES[r.status].tone}>{STATUSES[r.status].label}</Badge>
                     </Td>
                     <Td className="whitespace-nowrap text-muted-foreground" title={r.started_at ? dateTime(r.started_at) : undefined}>
                       {r.started_at ? timeAgo(r.started_at) : "—"}
