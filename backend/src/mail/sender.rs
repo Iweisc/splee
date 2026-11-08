@@ -7,7 +7,7 @@ use chrono_tz::Tz;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::smtp;
+use super::{dns, smtp};
 use crate::agent::{self, kind};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
@@ -146,6 +146,10 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
         .await?;
     if suppressed {
         return Ok(Some(Skip::Cancel("Recipient is on the do-not-contact list")));
+    }
+    // A sure bounce hurts the mailbox's reputation, so don't send what DNS says can't arrive.
+    if dns::undeliverable(&dns::resolver()?, domain).await {
+        return Ok(Some(Skip::Cancel("The recipient's domain can't receive email")));
     }
     Ok(None)
 }

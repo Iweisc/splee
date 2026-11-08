@@ -263,6 +263,10 @@ function ThreadItem({ message: m }: { message: EmailMessage }) {
         </span>
       </div>
       <p className="line-clamp-4 text-sm whitespace-pre-wrap">{m.body}</p>
+      {/* The sender records why it gave up: an SMTP error, the do-not-contact list, a domain that can't take mail. */}
+      {!inbound && m.error && (m.status === "failed" || m.status === "cancelled") && (
+        <p className={cn("mt-2 text-xs", m.status === "failed" ? "text-red-700" : "text-muted-foreground")}>Not sent: {m.error}</p>
+      )}
     </li>
   );
 }
