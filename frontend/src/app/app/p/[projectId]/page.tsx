@@ -154,7 +154,7 @@ function Stats({ projectId }: { projectId: string }) {
   if (error) return <LoadError error={error} retry={() => mutate()} />;
 
   const t = data?.totals;
-  const kpis: { label: string; value?: string; detail?: string[]; title?: string }[] = [
+  const kpis: { label: string; value?: string; title?: string }[] = [
     { label: "Leads", value: t && num(t.leads) },
     { label: "Sent", value: t && num(t.sent) },
     { label: "Replies", value: t && num(t.replies) },
@@ -163,31 +163,24 @@ function Stats({ projectId }: { projectId: string }) {
     {
       label: "Spend",
       value: t && money(t.spend_micros),
-      detail: t && [`AI ${money(t.ai_cost_micros)}`, `Email ${money(t.email_cost_micros)}`],
       // On a Claude subscription nothing is billed per run, so make clear what the AI figure means.
       title:
-        "AI is what Claude Code reports for the agent's runs. On a Claude subscription that's the equivalent API price, not a bill. Email is the cost per email you set on each mailbox.",
+        t &&
+        `AI ${money(t.ai_cost_micros)} · Email ${money(t.email_cost_micros)}\n\nAI is what Claude Code reports for the agent's runs. On a Claude subscription that's the equivalent API price, not a bill. Email is the cost per email you set on each mailbox.`,
     },
     { label: "Cost/hot lead", title: "Spend divided by hot leads.", value: t && (t.cost_per_hot_micros === null ? "—" : money(t.cost_per_hot_micros)) },
   ];
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+      <Card className="grid grid-cols-2 gap-y-1 py-1.5 sm:grid-cols-4 xl:grid-cols-7 xl:divide-x xl:divide-border">
         {kpis.map((k) => (
-          <Card key={k.label} className="px-4 py-3.5" title={k.title}>
+          <div key={k.label} className="px-4 py-2" title={k.title}>
             <MicroLabel>{k.label}</MicroLabel>
             {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
-            {k.detail && (
-              <div className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">
-                {k.detail.map((line) => (
-                  <p key={line}>{line}</p>
-                ))}
-              </div>
-            )}
-          </Card>
+          </div>
         ))}
-      </div>
+      </Card>
       <Card className="p-5">
         <MicroLabel className="mb-3">Last 30 days</MicroLabel>
         {data ? <DailyChart daily={data.daily} /> : <Skeleton className="h-48" />}
