@@ -11,6 +11,7 @@ use super::segments::{self, SegmentWithStats};
 use super::stats::{self, Totals};
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
+use super::util_input::{self, LEAD_STATUSES};
 use super::util_scope;
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
@@ -21,7 +22,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
-        .route("/v1/leads/{id}", get(get_lead))
+        .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/stats", get(project_stats))
 }
@@ -99,6 +100,28 @@ async fn add_leads(
 
 async fn get_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    Ok(Json(leads::detail(&state.db, lead).await?))
+}
+
+#[derive(Deserialize)]
+struct LeadStatusBody {
+    status: String,
+}
+
+/// Lets a CRM or calendar mark a lead, e.g. meeting_booked. Follow-ups only go to contacted leads, so any other status stops them.
+async fn update_lead(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<LeadStatusBody>,
+) -> AppResult<Json<LeadDetail>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    util_input::one_of("status", &body.status, LEAD_STATUSES)?;
+    let lead = sqlx::query_as::<_, Lead>("update leads set status = $2 where id = $1 returning *")
+        .bind(lead.id)
+        .bind(&body.status)
+        .fetch_one(&state.db)
+        .await?;
     Ok(Json(leads::detail(&state.db, lead).await?))
 }
 

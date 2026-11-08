@@ -8,10 +8,10 @@ import { CodeBlock } from "@/components/app/settings/code-block";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { MicroLabel } from "@/components/app/work/states";
 import { LinkButton } from "@/components/ui/button";
-import { Badge } from "@/components/ui/misc";
+import { Badge, type BadgeTone } from "@/components/ui/misc";
 
 interface Endpoint {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH";
   path: string;
   summary: string;
   params?: [name: string, description: string][];
@@ -40,6 +40,8 @@ const LEAD = `{
   "last_contacted_at": "2026-11-03T09:14:00Z",
   "created_at": "2026-11-02T16:40:00Z"
 }`;
+
+const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PATCH: "amber" };
 
 const indent = (json: string, spaces: number) => json.replaceAll("\n", `\n${" ".repeat(spaces)}`);
 
@@ -114,6 +116,19 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "PATCH",
+      path: "/leads/c42e…",
+      summary:
+        "Set a lead's status, for example meeting_booked when your calendar books a call or not_interested from your CRM. Follow-ups only go to contacted leads, so any other status stops them. Returns the lead like GET.",
+      params: [["status", "new, queued, contacted, replied, hot, meeting_booked, not_interested, bounced, unsubscribed or do_not_contact"]],
+      body: `{ "status": "meeting_booked" }`,
+      response: `{
+  "id": "c42e…",
+  "status": "meeting_booked",
+  "…": "…"
+}`,
+    },
+    {
       method: "GET",
       path: `/projects/${projectId}/replies?since=2026-11-01T00:00:00Z`,
       summary:
@@ -184,7 +199,7 @@ export default function DocsPage() {
     <>
       <PageHeader
         title="API"
-        description="Read leads and replies, and push your own leads into Splee from your CRM or scripts."
+        description="Read leads, replies and results, push your own leads into Splee, and mark leads from your CRM or scripts."
         actions={
           <LinkButton href="/app/api-keys" variant="outline">
             <KeyRound className="size-4" /> API keys
@@ -209,7 +224,7 @@ export default function DocsPage() {
 
           {endpoints(projectId).map((e) => {
             const curl = [
-              `curl${e.method === "POST" ? " -X POST" : ""} "${base}${e.path}"`,
+              `curl${e.method === "GET" ? "" : ` -X ${e.method}`} "${base}${e.path}"`,
               `  -H "Authorization: Bearer $SPLEE_API_KEY"`,
               ...(e.body ? [`  -H "Content-Type: application/json"`, `  -d '${e.body}'`] : []),
             ].join(" \\\n");
@@ -218,7 +233,7 @@ export default function DocsPage() {
                 key={e.method + e.path}
                 title={
                   <span className="flex items-center gap-2 font-mono text-sm">
-                    <Badge tone={e.method === "GET" ? "blue" : "green"}>{e.method}</Badge>
+                    <Badge tone={METHOD_TONES[e.method]}>{e.method}</Badge>
                     {e.path.split("?")[0]}
                   </span>
                 }
