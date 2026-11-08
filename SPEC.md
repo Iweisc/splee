@@ -7,7 +7,7 @@ Splee is a functional clone of explee.com: an AI outbound agent. You paste your 
 - Next rewrites `/api/*` to the backend (`http://127.0.0.1:8787/api/*`), so cookies are same-origin.
 - Postgres: `docker compose up -d` (port 55432). Backend: `cd backend && cargo run`. Frontend: `cd frontend && pnpm dev` (port 3333).
 
-Schema: `backend/migrations/0001_init.sql`. Rust rows: `backend/src/models.rs`. TS types: `frontend/src/lib/types.ts`. Those three are the contract. Change all three together.
+Schema: `backend/migrations/`. Rust rows: `backend/src/models.rs`. TS types: `frontend/src/lib/types.ts`. Those three are the contract. Change all three together.
 
 ## Conventions
 
@@ -39,7 +39,7 @@ Event kinds: `phase` (data `{step, title, status: "started"|"finished"}`), `log`
 
 `companies.employees` is a display string like `11-50`.
 
-### Run inputs (`agent_runs.input`), enqueued by B1 routes, consumed by B2
+### Run inputs (`agent_runs.input`), enqueued by routes, consumed by the agent worker
 
 | kind | input |
 |---|---|
@@ -57,23 +57,23 @@ Event kinds: `phase` (data `{step, title, status: "started"|"finished"}`), `log`
 
 ## Endpoints
 
-All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend agent/mail agent.
+All paths below are under `/api`.
 
 ### Public (no auth)
 
-| method | path | owner | body / query | response |
-|---|---|---|---|---|
-| GET | /public/stats | B1 | | `{hot_leads, companies}` (counts of leads with status hot/meeting_booked and orgs; add 0 offsets, no fake numbers) |
-| POST | /demo | B2 | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (`X-Forwarded-For` or peer). |
-| GET | /demo/:project_id?token= | B2 | | `DemoState` |
-| GET | /demo/:project_id/events?token=&after=<event id> | B2 | | SSE. Each message `data: AgentEvent` JSON. Sends backlog after `after`, then live. Ends after `done`/`error`. |
-| POST | /demo/:project_id/correct?token= | B2 | `{note}` | re-runs from step 1 with the user's correction ("Details look off?"). `{ok:true}` |
-| POST | /support/messages | B2 | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. |
-| POST | /explorer | B2 | `{query, country?}` | `{run_id}` (Segments Explorer, public, rate limited) |
-| GET | /explorer/:run_id | B2 | | `{run: AgentRun, results: ExplorerCompany[]}` |
-| GET | /unsubscribe/:token | B2 | | marks lead unsubscribed + suppression, returns `{ok:true, email}` (frontend page `/unsubscribe/[token]` calls it) |
+| method | path | body / query | response |
+|---|---|---|---|
+| GET | /public/stats | | `{hot_leads, companies}` (counts of leads with status hot/meeting_booked and orgs; add 0 offsets, no fake numbers) |
+| POST | /demo | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (`X-Forwarded-For` or peer). |
+| GET | /demo/:project_id?token= | | `DemoState` |
+| GET | /demo/:project_id/events?token=&after=<event id> | | SSE. Each message `data: AgentEvent` JSON. Sends backlog after `after`, then live. Ends after `done`/`error`. |
+| POST | /demo/:project_id/correct?token= | `{note}` | re-runs from step 1 with the user's correction ("Details look off?"). `{ok:true}` |
+| POST | /support/messages | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. |
+| POST | /explorer | `{query, country?}` | `{run_id}` (Segments Explorer, public, rate limited) |
+| GET | /explorer/:run_id | | `{run: AgentRun, results: ExplorerCompany[]}` |
+| GET | /unsubscribe/:token | | marks lead unsubscribed + suppression, returns `{ok:true, email}` (frontend page `/unsubscribe/[token]` calls it) |
 
-### Auth (B1)
+### Auth
 
 | method | path | body | response |
 |---|---|---|---|
@@ -85,7 +85,7 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | GET | /invites/:token | | `{org_name, email, role}` (public) |
 | POST | /invites/:token/accept | | `Me` (signed-in user joins org) |
 
-### Organization (B1)
+### Organization
 
 | method | path | body | response |
 |---|---|---|---|
@@ -103,7 +103,7 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | GET/PUT | /notification-preferences | `NotificationPrefs` | `NotificationPrefs` |
 | GET | /referral | | `{code, link, referred: [{org_name, created_at, rewarded}], earned_micros}` |
 
-### Billing (B1)
+### Billing
 
 | method | path | body | response |
 |---|---|---|---|
@@ -112,7 +112,7 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | POST | /billing/topup | `{amount_cents}` min 1000 | `{checkout_url}` via Stripe Checkout, or 501 when STRIPE_SECRET_KEY is unset |
 | POST | /billing/stripe-webhook | raw Stripe event | verifies signature, credits `topup` on `checkout.session.completed` |
 
-### Projects and campaigns (B1)
+### Projects and campaigns
 
 | method | path | body | response |
 |---|---|---|---|
@@ -137,8 +137,10 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | GET | /projects/:id/companies?segment_id&status&q&page | | paginated `Company` |
 | PATCH | /companies/:id | `{status}` | `Company` |
 | GET | /projects/:id/leads?segment_id&status&q&page | | paginated `LeadRow` |
+| GET | /projects/:id/leads/export?segment_id&status&q | | `text/csv` download of every matching lead. Cells that start with `= + - @` get a leading `'`. |
 | GET/PATCH/DELETE | /leads/:id | `{status?, email?, title?...}` | `LeadDetail` |
 | GET/PUT | /projects/:id/settings | `ProjectSettings` fields | `ProjectSettings` |
+| POST | /projects/:id/integrations/test | `{target: "slack"\|"webhook", url}` | `{ok}`. Posts a sample alert to the URL as typed. The webhook gets the `hot_lead` shape with `"event": "test"` and a sample lead. Slack gets `{text}` naming the project. 400 with the reason when it fails. |
 | POST | /projects/:id/start | | unpauses the project (requires balance > 0 and at least one active mailbox, else 402/400 with a clear message) `{ok}` |
 | POST | /projects/:id/pause | | `{ok}` |
 | GET/POST | /projects/:id/materials | `{kind,title,content,url}` | `Material[]` / `Material` |
@@ -147,7 +149,7 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | GET | /projects/:id/imports | | `Import[]` |
 | POST | /projects/:id/import/preview | multipart `file` | `{headers: string[], rows: string[][] (first 5), suggested_mapping}` |
 
-### Emails and inbox (B1)
+### Emails and inbox
 
 | method | path | body | response |
 |---|---|---|---|
@@ -165,17 +167,17 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 
 ### Mailboxes and suppressions
 
-| method | path | owner | body | response |
-|---|---|---|---|---|
-| GET/POST | /mailboxes | B1 | `MailboxInput` | `Mailbox[]` / `Mailbox` (passwords encrypted with `crypto::encrypt`) |
-| PATCH/DELETE | /mailboxes/:id | B1 | partial `MailboxInput` (empty password = keep) | `Mailbox` |
-| POST | /mailboxes/:id/test | B1 route, calls `mail::test_mailbox` (B2) | | `{ok, error?}`; sets status/last_error |
-| POST | /mailboxes/:id/check-dns | B1 route, calls `mail::check_dns` (B2) | | `Mailbox` with `dns` |
-| GET | /suppressions?q&page | B1 | | paginated `Suppression` |
-| POST | /suppressions | B1 | `{values: string}` newline/comma separated emails or domains | `{added}` |
-| DELETE | /suppressions/:id | B1 | | `{ok}` |
+| method | path | body | response |
+|---|---|---|---|
+| GET/POST | /mailboxes | `MailboxInput` | `Mailbox[]` / `Mailbox` (passwords encrypted with `crypto::encrypt`) |
+| PATCH/DELETE | /mailboxes/:id | partial `MailboxInput` (empty password = keep) | `Mailbox` |
+| POST | /mailboxes/:id/test | | `{ok, error?}`; sets status/last_error |
+| POST | /mailboxes/:id/check-dns | | `Mailbox` with `dns` |
+| GET | /suppressions?q&page | | paginated `Suppression` |
+| POST | /suppressions | `{values: string}` newline/comma separated emails or domains | `{added}` |
+| DELETE | /suppressions/:id | | `{ok}` |
 
-### Runs (B2)
+### Runs
 
 | method | path | response |
 |---|---|---|
@@ -183,11 +185,11 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 | GET | /runs/:id/events?after= | SSE like the demo stream (auth) |
 | POST | /runs/:id/cancel | `{ok}` |
 
-### Public API v1 (B1, ApiKeyAuth)
+### Public API v1 (ApiKeyAuth)
 
 `GET /v1/projects`, `GET /v1/projects/:id/leads?status&page`, `POST /v1/projects/:id/leads` (`{leads: [{email, full_name?, title?, company_name?, company_domain?, linkedin_url?, segment_id?}]}` → `{imported, skipped}`), `GET /v1/leads/:id`, `GET /v1/projects/:id/replies?since=` (inbound messages).
 
-## Background workers (B2)
+## Background workers
 
 - Agent worker: claims `agent_runs` with `for update skip locked`, runs up to `AGENT_CONCURRENCY` at once. Each Claude call uses `claude-agent-sdk-rs` `ClaudeClient` with `setting_sources: []` (never load the host user's Claude settings), `cwd` = a temp dir, `tools`/`allowed_tools` = `WebSearch`, `WebFetch` only (none for classification/writing), JSON-schema `output_format`, model `AGENT_MODEL`. With `BIRD_BIN` set, research calls also get `mcp__x__search` and `mcp__x__read`, an in-process MCP server that runs the `bird` CLI (npm `@steipete/bird`) to search and read X with a logged-in browser's cookies. Tool calls and short text become `tool`/`log` events. Cost is added to `agent_runs.cost_usd`.
 - Sender (every 30s): for each unpaused project inside its send window (timezone, days, hours), with balance > 0 and today's spend under its daily budget: take due `approved`/`scheduled` emails, pick an active mailbox under its daily limit (round robin), send via SMTP with `Message-ID`, `List-Unsubscribe` header and an unsubscribe footer link (`PUBLIC_URL/unsubscribe/<lead.unsubscribe_token>`), skip suppressed recipients, debit `email_sent`, mark lead `contacted`. Follow-ups: when a lead has no inbound reply, create the next follow-up draft per `project_settings.follow_ups` (written by the agent, threaded with `In-Reply-To`) and approve it automatically when the segment is working. Referral reward when the referred org passes the qualifying spend.
@@ -196,6 +198,6 @@ All paths below are under `/api`. Owner: B1 = backend core agent, B2 = backend a
 
 ## Frontend routes
 
-Marketing (C): `/`, `/pricing`, `/about`, `/affiliate`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
+Marketing: `/`, `/pricing`, `/about`, `/affiliate`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
 
-App (D1, D2) under `/app`: see `frontend/src/components/app/nav.ts`.
+App under `/app`: see `frontend/src/components/app/nav.ts`.

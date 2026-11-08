@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: splee
       POSTGRES_DB: splee
     ports:
-      - "55432:5432"
+      # Loopback only: the password above is public. Never publish this port on a server.
+      - "127.0.0.1:55432:5432"
     volumes:
       - splee-db:/var/lib/postgresql/data
 volumes:

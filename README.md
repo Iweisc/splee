@@ -1,26 +1,89 @@
 # Splee
 
-A self-hosted clone of [explee.com](https://explee.com): paste your website, a Claude agent researches your company, competitors and buyer segments, finds companies and decision makers on the web, writes personal cold emails, sends them from your own mailboxes within a daily budget, reads replies over IMAP and answers interested leads with your booking link.
+Splee is a self-hosted AI outbound agent, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily budget. It also reads the replies over IMAP and answers interested leads with your booking link.
 
-- `backend/`: Rust (Axum, sqlx, Postgres). The agent runs on the local `claude` CLI through `claude-agent-sdk-rs`.
-- `frontend/`: Next.js 16. It proxies `/api/*` to the backend.
-- `SPEC.md`: endpoints, data contract, agent pipeline and background workers.
+It runs on your machine or server, with your own Claude subscription and mailboxes. Nothing goes through a third-party outbound platform.
 
-## Run it
+## Features
 
-Requirements: Docker, Rust, pnpm, and the `claude` CLI signed in (`claude` must work in your shell).
+- **Research.** It profiles your company, maps competitors, proposes buyer segments as campaigns, finds companies and decision makers, and writes personal emails and LinkedIn sequences. Every run streams its progress live and can be cancelled.
+- **Sending.** It sends from any SMTP mailbox, rotating mailboxes under per-mailbox daily limits. Sending respects each project's time zone, send days and hours. Follow-ups thread under the first email. You can choose to review every draft or approve whole campaigns.
+- **Inbox.** It polls IMAP for replies and sorts them into hot, question, not interested, out of office, unsubscribe or bounce. It drafts replies with your booking link and either sends them or holds them for approval.
+- **Safety rails.** It keeps a suppression list of emails and domains, adds an unsubscribe link and `List-Unsubscribe` header to every outreach email, and handles bounces. A daily budget and an org balance cap spend, and the DNS checker covers MX, SPF and DMARC.
+- **Integrations.** Hot-lead alerts go out by email, Slack or webhook. Leads import from CSV and export to CSV. A public REST API takes API keys.
+- **Teams.** It has organizations, invites, admin roles, a referral program and optional Stripe top-ups.
 
-From the repo root, each in its own terminal:
+## Quick start
+
+You need:
+
+- Docker, for Postgres.
+- [Rust](https://rustup.rs) 1.93 or newer.
+- Node.js 20 or newer and [pnpm](https://pnpm.io).
+- The [Claude Code CLI](https://docs.claude.com/en/docs/claude-code), signed in. Running `claude` in your shell must work.
+
+From the repo root, run each of these in its own terminal:
 
 ```sh
-docker compose up -d                                  # Postgres on 127.0.0.1:55432
-(cd backend && cp -n .env.example .env && cargo run)  # API on 127.0.0.1:8787, runs migrations
-(cd frontend && pnpm install && pnpm dev)             # http://localhost:3333
+docker compose up -d                                  # Postgres on 127.0.0.1:55432 (dev password, loopback only)
+(cd backend && cp -n .env.example .env && cargo run)  # API on 127.0.0.1:8787, runs migrations on start
+(cd frontend && pnpm install && pnpm dev)             # app on http://localhost:3333
 ```
 
-Set a real `APP_SECRET` in `backend/.env` before connecting mailboxes. It encrypts their passwords. `AGENT_MODEL` picks the Claude model (default `claude-sonnet-5-5`). Card top-ups need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. `PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and top-ups for local testing. Usage is still recorded in the ledger. `SENDING_ENABLED=false` stops the sender, so approved emails, follow-ups and auto-replies wait. Use it for a test backend on a database with live campaigns, since every backend process runs the sender. `BIRD_BIN` points at the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`) and lets research runs search and read X. bird uses the cookies of a browser that is logged into x.com, so the agent reads X as that account. Pick the browser in `~/.config/bird/config.json5`.
+Open http://localhost:3333, sign up and paste a website. The first account in an organization is its owner.
 
-## Notes
+`PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and card top-ups, so you can use everything locally. Usage is still recorded in the ledger.
 
-- `backend/vendor/claude-agent-sdk-rs` is crates.io 0.6.4 with two patches. `src/query.rs` skips message types the crate doesn't know (newer CLIs emit `tool_progress`), which used to end the whole run. `src/internal/transport/subprocess.rs` spawns the CLI with `kill_on_drop`, so a timed-out call can't leave it running. Drop the `[patch.crates-io]` entry once upstream handles both.
-- Every server process runs the background workers (agent runs, sender, IMAP poller). Run one backend per database.
+## Configuration
+
+The backend reads `backend/.env`, and the frontend reads its own environment.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DATABASE_URL` | required | Postgres connection string. |
+| `APP_SECRET` | required | Encrypts mailbox passwords. Set a long random value before you connect a real mailbox, and keep it, because changing it makes the saved passwords unreadable. |
+| `PUBLIC_URL` | `http://localhost:3333` | Where the app is served. Used for unsubscribe, invite and inbox links in emails. |
+| `BIND_ADDR` | `127.0.0.1:8787` | Address the API listens on. |
+| `AGENT_MODEL` | `claude-sonnet-5-5` | Claude model for every agent run. |
+| `AGENT_CONCURRENCY` | `2` | How many agent runs execute at once. |
+| `PAYMENTS_ENABLED` | `true` | `false` stops the org balance from blocking sending and turns off card top-ups. |
+| `SENDING_ENABLED` | `true` | `false` stops the sender, so approved emails, follow-ups and auto-replies wait. IMAP polling, agent runs and notification emails to your team still run. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | Card top-ups through Stripe Checkout. Point the Stripe webhook at `/api/billing/stripe-webhook`. |
+| `BIRD_BIN` | unset | Path to the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`). When set, research runs can search and read X. |
+| `RUST_LOG` | unset | Log filter, e.g. `splee=debug,tower_http=info`. |
+| `API_URL` (frontend) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. |
+
+bird reads X with the cookies of a browser that is logged into x.com, so the agent sees X as that account. Pick the browser in `~/.config/bird/config.json5`.
+
+## How it works
+
+```
+frontend/  Next.js 16, React 19, Tailwind 4. Proxies /api/* to the backend, so the session cookie is same-origin.
+backend/   Rust: Axum 0.8, sqlx, Postgres. Runs the API and the background workers in one process.
+SPEC.md    Endpoints, data contract, agent pipeline and workers.
+```
+
+The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://github.com/tyrchen/claude-agent-sdk-rs). Each call runs in a temp directory without your Claude settings. Research calls can only use web search and fetch, plus the X tools when `BIRD_BIN` is set. Writing and classification calls get no tools.
+
+Every backend process runs the workers: the agent queue, the sender every 30 seconds, the IMAP poller every 60 seconds, the hourly campaign optimizer and the notification digests. Run one backend per database. `SENDING_ENABLED=false` only stops the sender, so a second backend would still poll mailboxes and process replies.
+
+`backend/vendor/claude-agent-sdk-rs` is the crates.io 0.6.4 release with two patches. `src/query.rs` skips message types the crate doesn't know yet, because newer CLIs emit `tool_progress`. `src/internal/transport/subprocess.rs` spawns the CLI with `kill_on_drop`, so a timed-out call can't leave it running. Drop the `[patch.crates-io]` entry once upstream handles both.
+
+## Development
+
+These are the checks CI runs. Run them before you open a pull request:
+
+```sh
+(cd backend && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd frontend && pnpm lint && pnpm typecheck)
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## Responsible use
+
+Splee sends real email to real people. You're responsible for following the law where you and your recipients are, including CAN-SPAM, GDPR, PECR and CASL. Splee gives you the tools for that: an unsubscribe link and header on every outreach email, a suppression list, bounce handling and daily limits. Send only to people with a legitimate business reason to hear from you.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE). You can self-host, modify and share Splee. If you run a modified version as a service for other people, you must offer them its source code.
