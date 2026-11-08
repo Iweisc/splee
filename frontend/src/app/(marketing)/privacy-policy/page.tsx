@@ -18,11 +18,12 @@ export default function PrivacyPolicy() {
           ),
         },
         {
-          heading: "Trying it without an account",
+          heading: "Demo, explorer and support chat",
           body: (
             <p>
-              When you use the demo or the explorer tool while signed out, we store what they find and your IP address, which limits how
-              many you can start each hour. Both are deleted after 7 days. Sign up from the demo to keep it.
+              The demo, the explorer tool and the support chat store what you send them, what they answer and your IP address, which
+              limits how often you can use them. A demo or explorer search you start while signed out is deleted after 7 days, and a chat
+              7 days after its last message. Sign up from the demo to keep it.
             </p>
           ),
         },

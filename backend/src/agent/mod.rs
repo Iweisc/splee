@@ -121,7 +121,7 @@ impl Ctx {
 
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
-    tokio::spawn(async move { crate::mail::every(Duration::from_secs(3600), || expire_public_runs(&s.db), "public run cleanup").await });
+    tokio::spawn(async move { crate::mail::every(Duration::from_secs(3600), || expire_visitor_data(&s.db), "visitor data cleanup").await });
 
     tokio::spawn(async move {
         // A previous process died mid-run. Its Claude subprocesses are gone, so start those runs over.
@@ -157,11 +157,18 @@ pub fn spawn_workers(state: AppState) {
     });
 }
 
-/// Deletes signed-out demos and explorer runs a week after they start, with the visitor IP kept in their input.
-/// Only the tab that started a demo holds its claim token, in sessionStorage, so a week leaves plenty of time to sign up.
-async fn expire_public_runs(db: &PgPool) -> anyhow::Result<()> {
+/// Deletes signed-out demos and explorer runs a week after they start, and support chats a week after their last message.
+/// All of them keep the visitor's IP. Only the tab that started a demo holds its claim token, in sessionStorage, so a week
+/// leaves plenty of time to sign up. The chat widget starts a new conversation when its stored one is gone.
+async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("delete from projects where org_id is null and created_at < now() - interval '7 days'").execute(db).await?;
     sqlx::query("delete from agent_runs where kind = 'explorer' and project_id is null and created_at < now() - interval '7 days'").execute(db).await?;
+    sqlx::query(
+        "delete from support_conversations c where c.created_at < now() - interval '7 days'
+           and not exists (select 1 from support_messages m where m.conversation_id = c.id and m.created_at >= now() - interval '7 days')",
+    )
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -285,7 +292,7 @@ mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
-    async fn expire_public_runs_only_deletes_week_old_signed_out_work(db: PgPool) {
+    async fn expire_visitor_data_only_deletes_week_old_visitor_work(db: PgPool) {
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
         let project = |org: Option<Uuid>, age: &'static str| {
             sqlx::query_scalar::<_, Uuid>("insert into projects (org_id, created_at) values ($1, now() - $2::interval) returning id")
@@ -303,8 +310,28 @@ mod tests {
         };
         let old_explorer = explorer("8 days").await.unwrap();
         let new_explorer = explorer("6 days").await.unwrap();
+        let chat = |last_message: &'static str| {
+            let db = db.clone();
+            async move {
+                let id: Uuid = sqlx::query_scalar(
+                    "insert into support_conversations (visitor_token, ip, created_at) values ('v', '203.0.113.9', now() - interval '8 days') returning id",
+                )
+                .fetch_one(&db)
+                .await
+                .unwrap();
+                sqlx::query("insert into support_messages (conversation_id, role, content, created_at) values ($1, 'user', 'hi', now() - $2::interval)")
+                    .bind(id)
+                    .bind(last_message)
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                id
+            }
+        };
+        let idle_chat = chat("8 days").await;
+        let active_chat = chat("1 day").await;
 
-        expire_public_runs(&db).await.unwrap();
+        expire_visitor_data(&db).await.unwrap();
 
         let projects: Vec<Uuid> = sqlx::query_scalar("select id from projects").fetch_all(&db).await.unwrap();
         assert!(!projects.contains(&old_demo));
@@ -312,5 +339,7 @@ mod tests {
         let runs: Vec<Uuid> = sqlx::query_scalar("select id from agent_runs").fetch_all(&db).await.unwrap();
         assert!(!runs.contains(&old_explorer));
         assert!(runs.contains(&new_explorer));
+        let chats: Vec<Uuid> = sqlx::query_scalar("select id from support_conversations").fetch_all(&db).await.unwrap();
+        assert!(!chats.contains(&idle_chat) && chats.contains(&active_chat));
     }
 }

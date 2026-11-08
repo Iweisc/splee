@@ -69,7 +69,7 @@ All paths below are under `/api`.
 | GET | /demo/:project_id?token= | | `DemoState` |
 | GET | /demo/:project_id/events?token=&after=<event id> | | SSE. Each message `data: AgentEvent` JSON. Sends backlog after `after`, then live. Ends after `done`/`error`. |
 | POST | /demo/:project_id/correct?token= | `{note}` | re-runs from step 1 with the user's correction ("Details look off?"). `{ok:true}` |
-| POST | /support/messages | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. |
+| POST | /support/messages | `{conversation_id?, visitor_token, content}` | `{conversation_id, messages: SupportMessage[]}` with the assistant reply appended. Claude answers from the FAQ + pricing facts in SPEC. Conversations are deleted 7 days after their last message, and the widget starts a new one when its stored conversation 404s. |
 | POST | /explorer | `{query, country?}` | `{run_id}` (Segments Explorer, public, rate limited) |
 | GET | /explorer/:run_id | | `{run: AgentRun, results: ExplorerCompany[]}` |
 | GET | /unsubscribe/:token | | `{email, unsubscribed}`. Read-only, because mail security scanners open links in a browser. |
