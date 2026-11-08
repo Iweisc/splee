@@ -98,7 +98,7 @@ function WebsiteForm() {
             data-1p-ignore
             data-lpignore="true"
             aria-label="Your website"
-            placeholder="Paste your website, e.g., consolto.com"
+            placeholder="Your website, e.g. consolto.com"
             value={value}
             onChange={(e) => {
               setValue(e.target.value);
