@@ -91,6 +91,13 @@ pub async fn send_system_email(state: &AppState, org_id: Uuid, to: &str, subject
     Ok(true)
 }
 
+/// An email as its lead would get it, sent to `to` from the org's first active mailbox. Returns false without one.
+/// The footer's unsubscribe link goes nowhere, so clicking it in the test can't unsubscribe the real lead.
+pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, kind: &str, subject: &str, body: &str) -> anyhow::Result<bool> {
+    let body = sender::with_footer(kind, body, &format!("{}/unsubscribe/test", state.cfg.public_url));
+    send_system_email(state, org_id, to, subject, &body).await
+}
+
 /// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails.
 pub async fn suppress_lead(db: &PgPool, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {
     let mut tx = db.begin().await?;

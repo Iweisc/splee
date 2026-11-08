@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, RefreshCw, Sparkles, X } from "lucide-react";
+import { Check, RefreshCw, Send, Sparkles, X } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
   const { mutate } = useSWRConfig();
   const [subject, setSubject] = useState(email.subject);
   const [body, setBody] = useState(email.body);
-  const [busy, setBusy] = useState<"save" | "approve" | "cancel" | "regenerate" | null>(null);
+  const [busy, setBusy] = useState<"save" | "approve" | "cancel" | "regenerate" | "test" | null>(null);
   const [instructions, setInstructions] = useState<string | null>(null);
   const [rewriteRun, setRewriteRun] = useState<string | null>(null);
 
@@ -72,6 +72,18 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
 
   const edits = dirty ? { subject, body } : {};
 
+  const sendTest = async () => {
+    setBusy("test");
+    try {
+      const { sent_to } = await api<{ sent_to: string }>(`/emails/${email.id}/test`, { body: edits });
+      toast.success(`Test sent to ${sent_to}`);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
@@ -86,29 +98,37 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
         <EmailStatusBadge status={email.status} />
       </div>
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <dt>Type</dt>
-        <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : KINDS[email.kind]}</dd>
-        {email.from_email && (
-          <>
-            <dt>From</dt>
-            <dd className="text-foreground">{email.from_email}</dd>
-          </>
-        )}
-        {email.sent_at ? (
-          <>
-            <dt>Sent</dt>
-            <dd className="text-foreground">{dateTime(email.sent_at)}</dd>
-          </>
-        ) : (
-          email.scheduled_for && (
+      {/* The test button sits by the details, not with the actions below, which already fill their row on laptops. */}
+      <div className="flex items-start justify-between gap-3">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <dt>Type</dt>
+          <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : KINDS[email.kind]}</dd>
+          {email.from_email && (
             <>
-              <dt>Scheduled</dt>
-              <dd className="text-foreground">{dateTime(email.scheduled_for)}</dd>
+              <dt>From</dt>
+              <dd className="text-foreground">{email.from_email}</dd>
             </>
-          )
+          )}
+          {email.sent_at ? (
+            <>
+              <dt>Sent</dt>
+              <dd className="text-foreground">{dateTime(email.sent_at)}</dd>
+            </>
+          ) : (
+            email.scheduled_for && (
+              <>
+                <dt>Scheduled</dt>
+                <dd className="text-foreground">{dateTime(email.scheduled_for)}</dd>
+              </>
+            )
+          )}
+        </dl>
+        {isDraft && !rewriteRun && (
+          <Button size="sm" variant="ghost" className="-my-2 shrink-0" onClick={sendTest} loading={busy === "test"}>
+            {busy !== "test" && <Send className="size-3.5" />} Send me a test
+          </Button>
         )}
-      </dl>
+      </div>
 
       {email.status === "failed" && email.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{email.error}</p>}
 

@@ -150,6 +150,7 @@ All paths below are under `/api`.
 | GET | /emails?project_id&segment_id&status&kind&q&page | | paginated `EmailRow` (outbound only). `status` and `kind` take comma lists. |
 | GET/PATCH | /emails/:id | `{subject?, body?, status?: "approved"|"cancelled"}` | `EmailRow` |
 | POST | /emails/:id/regenerate | `{instructions?}` | `{run_id}` (write_emails in rewrite mode for that one lead) |
+| POST | /emails/:id/test | `{subject?, body?}` (unsaved edits) | `{sent_to}`. Sends the email with its unsubscribe footer to the signed-in user from the org's first active mailbox. The footer link is `PUBLIC_URL/unsubscribe/test`, so it can't unsubscribe the lead. 400 without an active mailbox or when SMTP fails. |
 | GET | /inbox?project_id&filter=all|hot|needs_reply|auto_replied|other&page | | paginated `InboxThread` |
 | GET | /inbox/threads/:lead_id | | `{lead: LeadDetail, messages: EmailMessage[] (both directions, oldest first)}` |
 | POST | /inbox/threads/:lead_id/reply | `{body}` | queues a `manual_reply` (status scheduled, now) `EmailMessage` |
