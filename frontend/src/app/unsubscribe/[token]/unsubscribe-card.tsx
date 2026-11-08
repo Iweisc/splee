@@ -28,10 +28,25 @@ export function UnsubscribeCard({ token }: { token: string }) {
     }
   };
 
-  const address = data?.email ? <strong className="font-medium text-foreground">{data.email}</strong> : "This address";
+  // A long address is wider than the card on phones. It breaks after the @ first, and anywhere only if a part is still too long.
+  const [user, domain] = data?.email?.split(/@(.*)/) ?? [];
+  const address = data?.email ? (
+    <strong className="font-medium break-words text-foreground">
+      {user}
+      {domain && (
+        <>
+          @<wbr />
+          {domain}
+        </>
+      )}
+    </strong>
+  ) : (
+    "This address"
+  );
 
   return (
-    <Card className="flex w-full max-w-[420px] flex-col items-center gap-3 p-8 text-center">
+    // Balanced lines, so a heading that just misses one line on a phone doesn't leave a word alone on the second.
+    <Card className="flex w-full max-w-[420px] flex-col items-center gap-3 p-8 text-center text-balance">
       {error ? (
         <>
           <CircleAlert className="size-6 text-danger" />
