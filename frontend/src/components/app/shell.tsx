@@ -9,7 +9,7 @@ import { Toaster } from "sonner";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Favicon, Spinner } from "@/components/ui/misc";
-import { api } from "@/lib/api";
+import { api, qs } from "@/lib/api";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -50,6 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     params.projectId ?? projects?.find((p) => p.id === lastProject)?.id ?? projects?.[0]?.id ?? null;
   const project = projects?.find((p) => p.id === projectId);
   const pageTitle = titleFor(pathname, projectId, project);
+  const projectInbox = projectId ? `/app/p/${projectId}/inbox` : null;
 
   const logout = async () => {
     await api("/auth/logout", { method: "POST" });
@@ -91,14 +92,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {group.items.map((item) => {
                   const href = item.href(projectId);
                   const active = href === `/app/p/${projectId}` ? pathname === href : pathname.startsWith(href);
-                  return <NavLink key={item.label} href={href} icon={item.icon} label={item.label} active={active} />;
+                  const count = href === projectInbox ? <NeedsReplyCount projectId={projectId} /> : null;
+                  return <NavLink key={item.label} href={href} icon={item.icon} label={item.label} active={active} count={count} />;
                 })}
               </div>
             ))}
 
           <div className="mt-4">
             <p className="px-2 pb-1 font-mono text-[11px] tracking-wide text-muted-foreground uppercase">All projects</p>
-            <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} />
+            <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<NeedsReplyCount />} />
             <NavLink href="/app/emails" icon={Mail} label="Emails" active={pathname === "/app/emails"} />
           </div>
 
@@ -166,7 +168,19 @@ function PageTitle({ title }: { title: string }) {
   return <title>{title}</title>;
 }
 
-function NavLink({ href, icon: Icon, label, active }: { href: string; icon: React.ElementType; label: string; active: boolean }) {
+function NavLink({
+  href,
+  icon: Icon,
+  label,
+  active,
+  count,
+}: {
+  href: string;
+  icon: React.ElementType;
+  label: string;
+  active: boolean;
+  count?: React.ReactNode;
+}) {
   return (
     <Link
       href={href}
@@ -177,7 +191,22 @@ function NavLink({ href, icon: Icon, label, active }: { href: string; icon: Reac
     >
       <Icon className="size-4 shrink-0" />
       {label}
+      {count}
     </Link>
+  );
+}
+
+/** Threads in the inbox's "Needs reply" filter, so a new reply is visible from any page. Polled like the mailboxes. */
+function NeedsReplyCount({ projectId }: { projectId?: string }) {
+  const { data } = useSWR<{ total: number }>(`/inbox${qs({ project_id: projectId, filter: "needs_reply", per_page: 1 })}`, fetcher, {
+    refreshInterval: 60_000,
+  });
+  if (!data?.total) return null;
+  return (
+    <span className="ml-auto rounded-full bg-foreground px-1.5 text-[11px] leading-[18px] font-medium text-background tabular-nums">
+      {data.total > 99 ? "99+" : data.total}
+      <span className="sr-only"> need a reply</span>
+    </span>
   );
 }
 
