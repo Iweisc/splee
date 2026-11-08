@@ -48,6 +48,10 @@ your own suppression list and import leads from CSV.
 gives the referrer $30 in credits once the referred account has spent $10 on emails.
 - The Segments Explorer is a free tool that finds companies matching a description, on demand from the web.";
 
+/// Only true where the operator set BIRD_BIN, so the assistant never promises X research a deployment doesn't have.
+const X_FACT: &str = "\n- The agent also searches X (Twitter): it finds people posting about the problem you solve, uses a \
+person's recent posts to open their email, and links each lead's X profile next to LinkedIn.";
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/support/messages", post(send))
 }
@@ -125,8 +129,12 @@ async fn send(
         .map(|m| format!("{}: {}", if m.role == "user" { "Visitor" } else { "You" }, m.content))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let mut system = SUPPORT_PROMPT.to_string();
+    if state.cfg.bird_bin.is_some() {
+        system.push_str(X_FACT);
+    }
     let call = Call::writing(
-        SUPPORT_PROMPT,
+        system,
         format!("The conversation so far:\n\n{transcript}\n\nWrite your reply to the visitor's last message."),
         json!({"type": "object", "properties": {"reply": {"type": "string"}}, "required": ["reply"]}),
     );
