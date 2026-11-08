@@ -31,8 +31,9 @@ export default function ComplianceFaq() {
           heading: "How do people opt out?",
           body: (
             <p>
-              Every email has an unsubscribe link and a List-Unsubscribe header. Clicking it stops all further emails from that workspace
-              and adds the address to its suppression list. Replies asking to stop are detected and suppressed the same way.
+              Every email has an unsubscribe link and a List-Unsubscribe header. The link opens a page with a single Unsubscribe button, and
+              mail apps that read the header unsubscribe in one click. Either one stops all further emails from that workspace and adds the
+              address to its suppression list. Replies asking to stop are detected and suppressed the same way.
             </p>
           ),
         },
