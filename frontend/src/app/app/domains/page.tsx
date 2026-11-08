@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Pause, Pencil, Play, Plug, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
@@ -10,7 +10,7 @@ import { MailboxForm } from "@/components/app/settings/mailbox-form";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/misc";
-import { fetcher } from "@/hooks/use-me";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput } from "@/lib/types";
 import { timeAgo } from "@/lib/utils";
@@ -22,6 +22,31 @@ const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
 };
 
 type TestResult = { ok: boolean; error?: string };
+
+const isLoopback = (url: string) => {
+  try {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+};
+
+const noSubscription = () => () => {};
+
+/** Unsubscribe and invite links in emails use the backend's PUBLIC_URL. Left on its localhost default on a server, nobody can open them. */
+function PublicUrlWarning() {
+  const { me } = useMe();
+  // null on the server, so the warning only renders in the browser, where the address is known.
+  const here = useSyncExternalStore(noSubscription, () => window.location.origin, () => null);
+  if (!me || !here || !isLoopback(me.public_url) || isLoopback(here)) return null;
+  return (
+    <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      Unsubscribe and invite links in your emails go to <span className="font-medium">{me.public_url}</span>, which only works on the
+      server itself. Set <code className="font-mono text-xs">PUBLIC_URL={here}</code> in the backend&apos;s environment and restart it
+      before you send.
+    </p>
+  );
+}
 
 export default function MailboxesPage() {
   const { data, error, mutate } = useSWR<Mailbox[]>("/mailboxes", fetcher);
@@ -89,6 +114,7 @@ export default function MailboxesPage() {
         actions={data && data.length > 0 && connect}
       />
       <PageBody className="mx-auto max-w-5xl">
+        <PublicUrlWarning />
         {error ? (
           <LoadError error={error} what="mailboxes" retry={() => mutate()} />
         ) : !data ? (
