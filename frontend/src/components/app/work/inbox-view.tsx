@@ -47,7 +47,7 @@ export function InboxView({ projectId }: { projectId?: string }) {
               { value: "auto_replied", label: "Auto-replied" },
               { value: "other", label: "Other" },
             ]}
-            className="w-full [&>button]:flex-1 [&>button]:px-1.5 [&>button]:text-xs"
+            className="w-full [&>button]:flex-auto [&>button]:px-1.5 [&>button]:text-xs"
           />
           {!projectId && (
             <Select
