@@ -18,6 +18,15 @@ export default function PrivacyPolicy() {
           ),
         },
         {
+          heading: "Trying it without an account",
+          body: (
+            <p>
+              When you use the demo or the explorer tool while signed out, we store what they find and your IP address, which limits how
+              many you can start each hour. Both are deleted after 7 days. Sign up from the demo to keep it.
+            </p>
+          ),
+        },
+        {
           heading: "Lead data",
           body: (
             <p>

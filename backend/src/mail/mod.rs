@@ -36,7 +36,7 @@ pub fn spawn_workers(state: AppState) {
     tokio::spawn(async move { every(Duration::from_secs(900), || notify::digests(&state), "digests").await });
 }
 
-async fn every<F, Fut>(period: Duration, mut job: F, name: &str)
+pub(crate) async fn every<F, Fut>(period: Duration, mut job: F, name: &str)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,

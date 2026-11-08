@@ -120,6 +120,9 @@ impl Ctx {
 }
 
 pub fn spawn_workers(state: AppState) {
+    let s = state.clone();
+    tokio::spawn(async move { crate::mail::every(Duration::from_secs(3600), || expire_public_runs(&s.db), "public run cleanup").await });
+
     tokio::spawn(async move {
         // A previous process died mid-run. Its Claude subprocesses are gone, so start those runs over.
         if let Err(e) = sqlx::query("update agent_runs set status = 'queued', started_at = null where status = 'running'")
@@ -152,6 +155,14 @@ pub fn spawn_workers(state: AppState) {
             }
         }
     });
+}
+
+/// Deletes signed-out demos and explorer runs a week after they start, with the visitor IP kept in their input.
+/// Only the tab that started a demo holds its claim token, in sessionStorage, so a week leaves plenty of time to sign up.
+async fn expire_public_runs(db: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("delete from projects where org_id is null and created_at < now() - interval '7 days'").execute(db).await?;
+    sqlx::query("delete from agent_runs where kind = 'explorer' and project_id is null and created_at < now() - interval '7 days'").execute(db).await?;
+    Ok(())
 }
 
 async fn claim(db: &PgPool) -> sqlx::Result<Option<AgentRun>> {
@@ -264,5 +275,42 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::EXPLORER => prospect::explorer_run(ctx).await,
         kind::SEGMENT_FROM_PROMPT => explore::segment_from_prompt_run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn expire_public_runs_only_deletes_week_old_signed_out_work(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project = |org: Option<Uuid>, age: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into projects (org_id, created_at) values ($1, now() - $2::interval) returning id")
+                .bind(org)
+                .bind(age)
+                .fetch_one(&db)
+        };
+        let old_demo = project(None, "8 days").await.unwrap();
+        let new_demo = project(None, "6 days").await.unwrap();
+        let old_claimed = project(Some(org), "8 days").await.unwrap();
+        let explorer = |age: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into agent_runs (kind, input, created_at) values ('explorer', '{}', now() - $1::interval) returning id")
+                .bind(age)
+                .fetch_one(&db)
+        };
+        let old_explorer = explorer("8 days").await.unwrap();
+        let new_explorer = explorer("6 days").await.unwrap();
+
+        expire_public_runs(&db).await.unwrap();
+
+        let projects: Vec<Uuid> = sqlx::query_scalar("select id from projects").fetch_all(&db).await.unwrap();
+        assert!(!projects.contains(&old_demo));
+        assert!(projects.contains(&new_demo) && projects.contains(&old_claimed));
+        let runs: Vec<Uuid> = sqlx::query_scalar("select id from agent_runs").fetch_all(&db).await.unwrap();
+        assert!(!runs.contains(&old_explorer));
+        assert!(runs.contains(&new_explorer));
     }
 }
