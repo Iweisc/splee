@@ -38,6 +38,8 @@ jobs:
       - run: cargo test -- --include-ignored
         env:
           DATABASE_URL: postgres://splee:splee@localhost:5432/postgres
+      # Splee patches the vendored Claude SDK, and its own tests cover those patches.
+      - run: cargo test -p claude-agent-sdk-rs --lib
 
   frontend:
     runs-on: ubuntu-latest
