@@ -18,7 +18,7 @@ docker compose up -d                                  # Postgres on 127.0.0.1:55
 (cd frontend && pnpm install && pnpm dev)             # http://localhost:3333
 ```
 
-Set a real `APP_SECRET` in `backend/.env` before connecting mailboxes. It encrypts their passwords. `AGENT_MODEL` picks the Claude model (default `claude-sonnet-5-5`). Card top-ups need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. `PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and top-ups for local testing. Usage is still recorded in the ledger. `BIRD_BIN` points at the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`) and lets research runs search and read X. bird uses the cookies of a browser that is logged into x.com, so the agent reads X as that account. Pick the browser in `~/.config/bird/config.json5`.
+Set a real `APP_SECRET` in `backend/.env` before connecting mailboxes. It encrypts their passwords. `AGENT_MODEL` picks the Claude model (default `claude-sonnet-5-5`). Card top-ups need `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`. `PAYMENTS_ENABLED=false` (the `.env.example` default) turns off balance checks and top-ups for local testing. Usage is still recorded in the ledger. `SENDING_ENABLED=false` stops the sender, so approved emails, follow-ups and auto-replies wait. Use it for a test backend on a database with live campaigns, since every backend process runs the sender. `BIRD_BIN` points at the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`) and lets research runs search and read X. bird uses the cookies of a browser that is logged into x.com, so the agent reads X as that account. Pick the browser in `~/.config/bird/config.json5`.
 
 ## Notes
 

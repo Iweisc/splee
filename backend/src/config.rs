@@ -11,6 +11,8 @@ pub struct Config {
     pub agent_concurrency: usize,
     /// Off for local testing: the balance never blocks sending. Usage is still recorded in the ledger.
     pub payments_enabled: bool,
+    /// Off for a test backend on a database with live campaigns: approved emails wait instead of going out.
+    pub sending_enabled: bool,
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
     /// Path to the `bird` CLI. When set, research runs can search and read X as the account bird is logged in as.
@@ -27,6 +29,7 @@ impl Config {
             agent_model: env::var("AGENT_MODEL").unwrap_or_else(|_| "claude-sonnet-5-5".into()),
             agent_concurrency: env::var("AGENT_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
             payments_enabled: env::var("PAYMENTS_ENABLED").map(|v| v != "false").unwrap_or(true),
+            sending_enabled: env::var("SENDING_ENABLED").map(|v| v != "false").unwrap_or(true),
             stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|v| !v.is_empty()),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok().filter(|v| !v.is_empty()),
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),

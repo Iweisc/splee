@@ -17,13 +17,17 @@ use crate::state::AppState;
 
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
-    tokio::spawn(async move {
-        // A send that was interrupted by a restart never got its SMTP answer. Try it again.
-        if let Err(e) = sqlx::query("update email_messages set status = 'approved' where status = 'sending'").execute(&s.db).await {
-            tracing::error!(error = ?e, "could not reset interrupted sends");
-        }
-        every(Duration::from_secs(30), || sender::tick(&s), "sender").await;
-    });
+    if !s.cfg.sending_enabled {
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups and auto-replies wait");
+    } else {
+        tokio::spawn(async move {
+            // A send that was interrupted by a restart never got its SMTP answer. Try it again.
+            if let Err(e) = sqlx::query("update email_messages set status = 'approved' where status = 'sending'").execute(&s.db).await {
+                tracing::error!(error = ?e, "could not reset interrupted sends");
+            }
+            every(Duration::from_secs(30), || sender::tick(&s), "sender").await;
+        });
+    }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });
     let s = state.clone();
