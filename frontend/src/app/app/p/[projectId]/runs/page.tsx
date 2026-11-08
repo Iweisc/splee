@@ -1,11 +1,12 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import { Bot } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { ListSkeleton, LoadError, Td, Th, Tr } from "@/components/app/work/states";
+import { ListSkeleton, LoadError, Td, Th, Tr, toastError } from "@/components/app/work/states";
 import { Badge, Card, EmptyState, type BadgeTone } from "@/components/ui/misc";
+import { api } from "@/lib/api";
 import type { AgentRun, RunKind, SegmentWithStats } from "@/lib/types";
 import { dateTime, money, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
@@ -39,6 +40,19 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
   });
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
   const segmentName = (run: AgentRun) => segments?.find((s) => s.id === run.input.segment_id)?.name;
+  // Runs already queued again, so a second click doesn't queue a duplicate.
+  const [retried, setRetried] = useState<string[]>([]);
+
+  const retry = async (run: AgentRun) => {
+    setRetried((ids) => [...ids, run.id]);
+    try {
+      await api(`/runs/${run.id}/retry`, { method: "POST" });
+      await mutate();
+    } catch (e) {
+      setRetried((ids) => ids.filter((id) => id !== run.id));
+      toastError(e);
+    }
+  };
 
   return (
     <>
@@ -77,6 +91,11 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
                         <p className="mt-0.5 line-clamp-2 max-w-80 text-xs text-red-700" title={r.error}>
                           {r.error}
                         </p>
+                      )}
+                      {(r.status === "failed" || r.status === "cancelled") && !retried.includes(r.id) && (
+                        <button onClick={() => retry(r)} className="mt-1 text-xs font-medium text-foreground/75 underline-offset-2 hover:text-foreground hover:underline">
+                          Run again
+                        </button>
                       )}
                     </Td>
                     <Td className="max-w-64 truncate text-muted-foreground">{segmentName(r) ?? "—"}</Td>
