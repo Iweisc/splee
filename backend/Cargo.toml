@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
+# A member so CI runs the vendored SDK's tests, which cover Splee's patches to it. Plain cargo commands here
+# still only build and lint splee itself.
+[workspace]
+members = ["vendor/claude-agent-sdk-rs"]
+
 [dependencies]
 aes-gcm = "0.10"
 anyhow = "1.0.104"

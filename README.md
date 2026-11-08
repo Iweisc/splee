@@ -65,14 +65,14 @@ The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://gi
 
 Every backend process runs the workers: the agent queue, the sender every 30 seconds, the IMAP poller every 60 seconds, the hourly campaign optimizer and the notification digests. Run one backend per database. `SENDING_ENABLED=false` only stops the sender, so a second backend would still poll mailboxes and process replies.
 
-`backend/vendor/claude-agent-sdk-rs` is the crates.io 0.6.4 release with two patches. `src/query.rs` skips message types the crate doesn't know yet, because newer CLIs emit `tool_progress`. `src/internal/transport/subprocess.rs` spawns the CLI with `kill_on_drop`, so a timed-out call can't leave it running. Drop the `[patch.crates-io]` entry once upstream handles both.
+`backend/vendor/claude-agent-sdk-rs` is the crates.io 0.6.4 release with two patches. `MessageParser::parse_known` in `src/internal/message_parser.rs` lets every reader skip message types the crate doesn't know yet, because newer CLIs emit `tool_progress` and `rate_limit_event`. `src/internal/transport/subprocess.rs` spawns the CLI with `kill_on_drop`, so a timed-out call can't leave it running. Drop the `[patch.crates-io]` entry once upstream handles both.
 
 ## Development
 
 These are the checks CI runs. Run them before you open a pull request:
 
 ```sh
-(cd backend && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd backend && cargo clippy --all-targets -- -D warnings && cargo test && cargo test -p claude-agent-sdk-rs --lib)
 (cd frontend && pnpm lint && pnpm typecheck)
 ```
 

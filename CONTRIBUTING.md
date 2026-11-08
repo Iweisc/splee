@@ -13,7 +13,7 @@ Splee sends real email. Before you connect a real mailbox, use test addresses or
 Run what CI runs:
 
 ```sh
-(cd backend && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd backend && cargo clippy --all-targets -- -D warnings && cargo test && cargo test -p claude-agent-sdk-rs --lib)
 (cd frontend && pnpm lint && pnpm typecheck)
 ```
 
