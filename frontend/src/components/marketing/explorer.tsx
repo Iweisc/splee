@@ -40,7 +40,7 @@ function statusLine(query: string, data: ExplorerResult | null): string {
 }
 
 /** Segments Explorer: describe companies, the agent searches the web live, results stream in by polling. */
-export function Explorer({ defaultCountry = "", placeholder = "e.g. independent coffee roasters that sell wholesale" }: { defaultCountry?: string; placeholder?: string }) {
+export function Explorer({ defaultCountry = "", placeholder = "e.g. wholesale coffee roasters" }: { defaultCountry?: string; placeholder?: string }) {
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState(defaultCountry);
   const [runId, setRunId] = useState<string | null>(null);
