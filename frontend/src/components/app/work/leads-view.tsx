@@ -98,7 +98,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   <Th>Email</Th>
                   {!segmentId && <Th>Campaign</Th>}
                   <Th>Status</Th>
-                  <Th className="text-right">Last contacted</Th>
+                  <Th className="text-right whitespace-nowrap">Last contacted</Th>
                 </tr>
               </thead>
               <tbody>
@@ -106,10 +106,10 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   <Tr key={l.id} onClick={() => setOpenLead(l.id)}>
                     <Td>
                       <p className="font-medium">{l.full_name || "—"}</p>
-                      <p className="max-w-56 truncate text-xs text-muted-foreground">{l.title}</p>
+                      <p className="max-w-44 truncate text-xs text-muted-foreground">{l.title}</p>
                     </Td>
-                    <Td className="max-w-48 truncate">{l.company_name}</Td>
-                    <Td className="max-w-56 truncate text-muted-foreground">{l.email ?? "—"}</Td>
+                    <Td className="max-w-40 truncate">{l.company_name}</Td>
+                    <Td className="max-w-44 truncate text-muted-foreground">{l.email ?? "—"}</Td>
                     {!segmentId && <Td className="max-w-40 truncate text-muted-foreground">{l.segment_name ?? "—"}</Td>}
                     <Td>
                       <LeadStatusBadge status={l.status} />
