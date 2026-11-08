@@ -175,6 +175,7 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
             "lead": {
                 "id": Uuid::nil(), "full_name": "Sarah Chen", "email": "sarah@northwind.example", "title": "Founder",
                 "company_name": "Northwind Studio", "company_domain": "northwind.example",
+                "linkedin_url": "https://www.linkedin.com/in/sarah-chen-example", "x_url": "https://x.com/sarahchen_example",
             },
             "reply": {"id": Uuid::nil(), "subject": "Re: Northwind Studio x Splee", "body": "This is a test alert from Splee.", "reason": "Test"},
             "url": link,
