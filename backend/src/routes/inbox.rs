@@ -73,7 +73,9 @@ const THREADS: &str = "with t as (
      ), f as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
-         last_direction = 'inbound' and not pending_auto_reply as is_needs_reply
+         -- Declines, out-of-office notes, unsubscribes and bounces are answered by the classifier, not by you.
+         last_direction = 'inbound' and not pending_auto_reply
+           and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce') as is_needs_reply
        from t
      )
      select * from f where case $3
@@ -237,4 +239,68 @@ async fn set_status(
     util_input::one_of("status", &body.status, LEAD_STATUSES)?;
     sqlx::query("update leads set status = $2 where id = $1").bind(lead.id).bind(&body.status).execute(&state.db).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::THREADS;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn needs_reply_skips_replies_the_classifier_handled(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mut leads = vec![];
+        // None is a reply the classifier hasn't read yet.
+        for classification in [None, Some("question"), Some("not_interested"), Some("ooo"), Some("unsubscribe"), Some("bounce")] {
+            let lead: Uuid =
+                sqlx::query_scalar("insert into leads (project_id, status) values ($1, 'replied') returning id").bind(project).fetch_one(&db).await.unwrap();
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, direction, kind, status, sent_at, created_at)
+                 values ($1, $2, 'outbound', 'initial', 'sent', now() - interval '1 day', now() - interval '1 day')",
+            )
+            .bind(project)
+            .bind(lead)
+            .execute(&db)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, direction, kind, status, classification)
+                 values ($1, $2, 'inbound', 'inbound', 'received', $3)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(classification)
+            .execute(&db)
+            .await
+            .unwrap();
+            leads.push(lead);
+        }
+
+        let threads = |filter: &'static str| {
+            let db = db.clone();
+            async move {
+                let mut ids: Vec<Uuid> = sqlx::query_scalar(&format!("select lead_id from ({THREADS}) x"))
+                    .bind(org)
+                    .bind(None::<Uuid>)
+                    .bind(filter)
+                    .fetch_all(&db)
+                    .await
+                    .unwrap();
+                ids.sort();
+                ids
+            }
+        };
+        let sorted = |mut ids: Vec<Uuid>| {
+            ids.sort();
+            ids
+        };
+        assert_eq!(threads("needs_reply").await, sorted(leads[..2].to_vec()));
+        assert_eq!(threads("other").await, sorted(leads[2..].to_vec()));
+    }
 }
