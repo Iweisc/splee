@@ -84,12 +84,12 @@ export default function FollowUpsPage() {
                           </Button>
                         </div>
                       </div>
+                      {/* At least two lines, and taller when the hint or the instructions need it, as the hint does on phones. 1.125rem is the padding plus border. */}
                       <Textarea
                         value={f.instructions}
                         onChange={(e) => patch(i, { instructions: e.target.value })}
                         placeholder="Optional: what this follow-up should say, e.g. share a case study, or ask if someone else handles this."
-                        rows={2}
-                        className="mt-3 min-h-0 bg-card"
+                        className="mt-3 min-h-[calc(2lh+1.125rem)] bg-card field-sizing-content"
                       />
                     </Card>
                   </li>
