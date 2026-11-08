@@ -189,7 +189,7 @@ function Pipeline({ segment, busy }: { segment: SegmentWithStats; busy: boolean 
   return (
     <Card className="grid divide-y divide-border md:grid-cols-4 md:divide-x md:divide-y-0">
       {steps.map((s, i) => (
-        <div key={s.title} className="flex flex-col gap-3 p-4">
+        <div key={s.title} className="@container flex flex-col gap-3 p-4">
           <div className="flex items-center gap-2">
             <span
               className={cn(
@@ -200,7 +200,8 @@ function Pipeline({ segment, busy }: { segment: SegmentWithStats; busy: boolean 
               {i + 1}
             </span>
             <span className="text-sm font-medium">{s.title}</span>
-            <span className="ml-auto text-muted-foreground">{s.icon}</span>
+            {/* The icon is decoration, so it gives way before a title would wrap in the four-across row on tablets. */}
+            <span className="ml-auto hidden text-muted-foreground @[10rem]:block">{s.icon}</span>
           </div>
           <MicroLabel>{s.stat}</MicroLabel>
           <div>{s.action}</div>
