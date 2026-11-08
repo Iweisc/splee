@@ -1,0 +1,20 @@
+# Example unit for the Splee API. Assumes the repo is at /opt/splee and runs as the user "splee",
+# whose `claude` CLI is signed in. Copy it to /etc/systemd/system/ and adjust the paths and user.
+[Unit]
+Description=Splee API and background workers
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=splee
+# The API reads .env from the directory it starts in.
+WorkingDirectory=/opt/splee/backend
+ExecStart=/opt/splee/backend/target/release/splee
+# The agent starts the `claude` CLI, which the native installer puts in ~/.local/bin.
+Environment=PATH=/home/splee/.local/bin:/usr/local/bin:/usr/bin
+Restart=on-failure
+RestartSec=5
+# The default KillMode=control-group matters: stopping the service also stops any `claude` processes it started.
+
+[Install]
+WantedBy=multi-user.target
