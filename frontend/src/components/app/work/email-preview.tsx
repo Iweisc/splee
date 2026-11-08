@@ -153,7 +153,8 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
       )}
 
       {isDraft && !rewriteRun && (
-        <div className="flex flex-wrap justify-end gap-2">
+        // On phones the buttons stretch to fill their row and Approve gets a full row, so it never sits alone at the edge.
+        <div className="flex flex-wrap justify-end gap-2 max-sm:[&>*]:grow">
           <Button size="sm" variant="ghost" onClick={() => patch("cancel", { status: "cancelled" }, "Draft cancelled")} loading={busy === "cancel"}>
             <X className="size-3.5" /> Cancel email
           </Button>
@@ -167,7 +168,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
               Save
             </Button>
           )}
-          <Button size="sm" onClick={() => patch("approve", { ...edits, status: "approved" }, "Approved for sending")} loading={busy === "approve"}>
+          <Button size="sm" className="max-sm:basis-full" onClick={() => patch("approve", { ...edits, status: "approved" }, "Approved for sending")} loading={busy === "approve"}>
             <Check className="size-3.5" /> Approve
           </Button>
         </div>
