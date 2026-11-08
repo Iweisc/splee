@@ -148,7 +148,7 @@ function MaterialForm({ initial, onSubmit, saving }: { initial: Draft; onSubmit:
           </Select>
         </Field>
         <Field label="Title">
-          <Input value={d.title} onChange={(e) => setD({ ...d, title: e.target.value })} placeholder="e.g. How Acme cut onboarding time in half" autoFocus />
+          <Input value={d.title} onChange={(e) => setD({ ...d, title: e.target.value })} placeholder="e.g. How Acme halved churn" autoFocus />
         </Field>
       </div>
       <Field label={isLink ? "URL" : "URL (optional)"}>
