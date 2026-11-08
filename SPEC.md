@@ -188,6 +188,6 @@ All paths below are under `/api`.
 
 ## Frontend routes
 
-Marketing: `/`, `/pricing`, `/about`, `/affiliate`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
+Marketing: `/`, `/about`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
 
 App under `/app`: see `frontend/src/components/app/nav.ts`.
