@@ -43,6 +43,27 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
     Ok(())
 }
 
+const RETRY_AFTER: Duration = Duration::from_secs(10);
+
+/// Like post_json, with one more try after a short wait when the failure may pass: a timeout, a refused connection,
+/// 429 or a 5xx. Each try is signed afresh, so receivers that dedupe should use the payload's ids.
+pub async fn post_json_retrying(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
+    match post_json(raw, body, secret).await {
+        Err(e) if transient(&e) => {
+            tracing::info!(error = %e, "alert failed, retrying once");
+            tokio::time::sleep(RETRY_AFTER).await;
+            post_json(raw, body, secret).await
+        }
+        result => result,
+    }
+}
+
+fn transient(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<reqwest::Error>().is_some_and(|e| {
+        e.is_timeout() || e.is_connect() || e.status().is_some_and(|s| s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    })
+}
+
 #[derive(Clone, Copy)]
 pub enum Alert {
     Webhook,
@@ -119,6 +140,21 @@ mod tests {
             assert!(err.ends_with("is not a public address"), "{url}: {err}");
         }
         assert!(post_json("ftp://example.com/x", &Value::Null, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_failures_that_may_pass_are_retried() {
+        let status = |code: u16| -> anyhow::Error {
+            let response = axum::http::Response::builder().status(code).body("").unwrap();
+            reqwest::Response::from(response).error_for_status().unwrap_err().into()
+        };
+        assert!(transient(&status(503)));
+        assert!(transient(&status(429)));
+        assert!(!transient(&status(404)));
+        // Port 9 (discard) is closed on loopback, so this is a refused connection.
+        let refused = reqwest::Client::new().get("http://127.0.0.1:9/").send().await.unwrap_err();
+        assert!(transient(&refused.into()));
+        assert!(!transient(&post_json("http://127.0.0.1/hook", &Value::Null, None).await.unwrap_err()));
     }
 
     #[test]

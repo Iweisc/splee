@@ -203,7 +203,7 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
             "reply": {"id": t.inbound.id, "subject": t.inbound.subject, "body": t.inbound.body, "reason": reason},
             "url": link,
         });
-        let result = hooks::post_json(&webhook, &payload, Some(&secret)).await;
+        let result = hooks::post_json_retrying(&webhook, &payload, Some(&secret)).await;
         if let Err(e) = &result {
             tracing::warn!(error = %e, "hot lead webhook failed");
         }
@@ -212,7 +212,7 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     if !slack.trim().is_empty() {
         let snippet: String = t.inbound.body.trim().chars().take(300).collect();
         let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
-        let result = hooks::post_json(&slack, &json!({"text": text}), None).await;
+        let result = hooks::post_json_retrying(&slack, &json!({"text": text}), None).await;
         if let Err(e) = &result {
             tracing::warn!(error = %e, "slack notification failed");
         }
