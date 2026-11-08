@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
-import { Clock, Layers, Pause, Play, Plus } from "lucide-react";
+import { Clock, Layers, MailWarning, Pause, Play, Plus } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -16,7 +16,7 @@ import { ProjectStatusBadge } from "@/components/app/work/status";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
-import type { ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
+import type { Mailbox, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
 import { money, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -59,6 +59,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
       />
       <PageBody className="flex flex-col gap-4">
         {active && <RunProgress key={active.id} run={active} />}
+        {sending && <MailboxNotice />}
         {sending && <SendWindowNotice projectId={projectId} settings={settings} />}
         <Stats projectId={projectId} />
         <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -101,6 +102,35 @@ function SendingToggle({ projectId, sending }: { projectId: string; sending: boo
       {!busy && (sending ? <Pause className="size-4" /> : <Play className="size-4" />)}
       {sending ? "Pause sending" : "Start sending"}
     </Button>
+  );
+}
+
+/** A mailbox that stops connecting stops sending or reading replies, and otherwise only the Mailboxes page says so. */
+function MailboxNotice() {
+  // Polled like the reply poller (every minute), so a mailbox that breaks while this page is open shows up.
+  const { data } = useSWR<Mailbox[]>("/mailboxes", fetcher, { refreshInterval: 60_000 });
+  // The sender marks a mailbox "error" when SMTP fails. The reply poller only records last_error, and clears it on its next
+  // good poll. Without IMAP, an active mailbox's last_error is a stale SMTP error from before it was resumed.
+  const broken = data?.filter((m) => m.status === "error" || (m.status === "active" && m.imap_host && m.last_error)) ?? [];
+  if (!data || broken.length === 0) return null;
+  const sendingStopped = !data.some((m) => m.status === "active");
+  return (
+    <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+      <MailWarning className="size-4 text-red-600" />
+      {/* The basis pushes the button onto its own row on phones, so the addresses aren't squeezed into a narrow column. */}
+      <div className="min-w-0 flex-1 basis-64 space-y-1">
+        {broken.map((m) => (
+          <p key={m.id} className="break-words">
+            <span className="font-medium">{m.email}</span> {m.status === "error" ? "can't send" : "can't read replies"}:{" "}
+            <span className="text-muted-foreground">{m.last_error}</span>
+          </p>
+        ))}
+        {sendingStopped && <p className="font-medium text-red-700">Nothing is going out until a mailbox works again.</p>}
+      </div>
+      <LinkButton href="/app/domains" variant="outline" size="sm" className="max-sm:grow">
+        Fix mailbox
+      </LinkButton>
+    </Card>
   );
 }
 
