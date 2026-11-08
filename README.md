@@ -48,10 +48,22 @@ The backend reads `backend/.env`, and the frontend reads its own environment.
 | `SENDING_ENABLED` | `true` | `false` stops the sender, so approved emails, follow-ups and auto-replies wait. IMAP polling, agent runs and notification emails to your team still run. |
 | `BIRD_BIN` | unset | Path to the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`). When set, research runs can search and read X. |
 | `RUST_LOG` | unset | Log filter, e.g. `splee=debug,tower_http=info`. |
-| `API_URL` (frontend) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. |
+| `API_URL` (frontend, build time) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. `next build` bakes it in, so set it when you build, not when you start. |
 | `NEXT_PUBLIC_SOURCE_URL` (frontend, build time) | `https://github.com/Iweisc/splee` | Where the "Source code" links in the footer and sidebar point. If you run a modified version for other people, the AGPL requires you to point this at your source. |
 
 bird reads X with the cookies of a browser that is logged into x.com, so the agent sees X as that account. Pick the browser in `~/.config/bird/config.json5`.
+
+## Running it for real
+
+The quick start is for your own machine. To run Splee for a team:
+
+1. **Postgres.** Use a database with its own strong password. The compose file's password is public and only meant for local development.
+2. **Backend.** Build it with `(cd backend && cargo build --release)` and start it with `(cd backend && ./target/release/splee)` as a user whose `claude` CLI is signed in. It reads `.env` from the directory it starts in and applies migrations on start. Set `DATABASE_URL` to that database, `PUBLIC_URL` to the `https://` address people will use and `APP_SECRET` to the output of `openssl rand -hex 32`. With an `https://` `PUBLIC_URL` the API refuses the example secret and makes the sign-in cookie HTTPS-only. Keep `BIND_ADDR` on loopback or a private network, because browsers only need to reach the frontend.
+3. **Frontend.** Build it with `API_URL` pointing at the backend, `(cd frontend && pnpm install && API_URL=http://127.0.0.1:8787 pnpm build)`, then start it with `(cd frontend && pnpm start)` on port 3333.
+4. **HTTPS.** Put a reverse proxy such as Caddy or nginx in front of port 3333 for `PUBLIC_URL`'s host. Only the frontend needs to be public, because it proxies `/api/*` to the backend.
+5. **Backups.** Back up the database and keep `APP_SECRET` with it. Mailbox passwords in a backup can't be decrypted without the secret they were saved with.
+
+Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
 
 ## How it works
 
