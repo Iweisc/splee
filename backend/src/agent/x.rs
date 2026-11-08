@@ -16,6 +16,16 @@ use tokio::process::Command;
 pub const SEARCH: &str = "mcp__x__search";
 pub const READ: &str = "mcp__x__read";
 
+/// Appended to the task prompt of calls that have the X tools. Without it Claude never picks them over web search.
+pub const GUIDANCE: &str = "\n\nYou can also search X (Twitter) with mcp__x__search and read a post with mcp__x__read. \
+Founders and operators post there, and web search does not reach it.\n\
+- When you look for people at companies, run one mcp__x__search per company for its name or founder. A recent post by \
+the person is the best hook, and their bio often confirms their role.\n\
+- When you look for prospect businesses, run one mcp__x__search for people complaining about the problem the offer solves \
+(for example `\"looking for\" <category> -is:retweet`) and include businesses you find that way.\n\
+- Profiling a single website or finding competitors does not need X.\n\
+Use mcp__x__read for x.com links because fetching x.com pages does not work.";
+
 const TIMEOUT: Duration = Duration::from_secs(60);
 // Posts are written by strangers. Some are long prompts aimed at AI agents, so cap what reaches Claude.
 const MAX_TEXT: usize = 600;

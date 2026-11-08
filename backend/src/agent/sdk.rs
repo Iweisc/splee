@@ -91,13 +91,15 @@ pub async fn ask<T: DeserializeOwned>(state: &AppState, run: Option<&Ctx>, call:
     Err(anyhow!("Claude did not return a usable answer ({problem})"))
 }
 
-async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, prompt: String) -> anyhow::Result<Attempt> {
+async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: String) -> anyhow::Result<Attempt> {
     let tools: Vec<String> = if call.web { WEB_TOOLS.iter().map(|t| t.to_string()).collect() } else { vec![] };
     let mut allowed = tools.clone();
     let mut servers = HashMap::new();
     if let (true, Some(bird)) = (call.web, &state.cfg.bird_bin) {
         servers.insert("x".to_string(), x::server(bird.clone()));
         allowed.extend([x::SEARCH.to_string(), x::READ.to_string()]);
+        // In the task prompt, not the system prompt: the tasks' own step lists win over system guidance.
+        prompt.push_str(x::GUIDANCE);
     }
     let opts = ClaudeAgentOptions::builder()
         // `tools` only picks built-in tools. MCP tools such as the X ones just need to be allowed.
