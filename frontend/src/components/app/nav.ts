@@ -2,6 +2,7 @@ import {
   BarChart3,
   Bell,
   BookOpen,
+  Bot,
   CalendarClock,
   FileText,
   Gauge,
@@ -41,6 +42,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Inbox", href: (p) => `/app/p/${p}/inbox`, icon: Inbox }, // D1
       { label: "LinkedIn", href: (p) => `/app/p/${p}/linkedin-sequence`, icon: UserPlus }, // D1
       { label: "Import", href: (p) => `/app/p/${p}/import`, icon: Upload }, // D1
+      { label: "Agent runs", href: (p) => `/app/p/${p}/runs`, icon: Bot },
     ],
   },
   {
