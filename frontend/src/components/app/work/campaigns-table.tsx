@@ -13,6 +13,7 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
   const sorted = [...segments].sort((a, b) => order[a.status] - order[b.status] || a.position - b.position);
 
   return (
+    <div className="overflow-x-auto">
     <table className="w-full text-sm">
       <thead>
         <tr>
@@ -30,7 +31,7 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
             <Td>
               <span className="flex items-center gap-2.5">
                 <SegmentIcon name={s.icon} className="size-6" />
-                <span className="truncate font-medium">{s.name}</span>
+                <span className="font-medium">{s.name}</span>
               </span>
             </Td>
             <Td>
@@ -44,5 +45,6 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
