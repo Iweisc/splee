@@ -10,7 +10,7 @@ use super::explore::load_project;
 use super::sdk::Call;
 use super::write::WriterSettings;
 use super::{Ctx, Outcome, kind};
-use crate::mail;
+use crate::{hooks, mail};
 use crate::models::{EmailMessage, Lead, Project};
 use crate::state::AppState;
 
@@ -201,14 +201,14 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
             "reply": {"id": t.inbound.id, "subject": t.inbound.subject, "body": t.inbound.body, "reason": reason},
             "url": link,
         });
-        if let Err(e) = state.http.post(webhook.trim()).json(&payload).send().await.and_then(|r| r.error_for_status()) {
+        if let Err(e) = hooks::post_json(&webhook, &payload).await {
             tracing::warn!(error = %e, "hot lead webhook failed");
         }
     }
     if !slack.trim().is_empty() {
         let snippet: String = t.inbound.body.trim().chars().take(300).collect();
         let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
-        if let Err(e) = state.http.post(slack.trim()).json(&json!({"text": text})).send().await.and_then(|r| r.error_for_status()) {
+        if let Err(e) = hooks::post_json(&slack, &json!({"text": text})).await {
             tracing::warn!(error = %e, "slack notification failed");
         }
     }
