@@ -139,7 +139,8 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
       ) : isDraft ? (
         <div className="flex flex-col gap-2">
           <Input value={subject} onChange={(e) => setSubject(e.target.value)} aria-label="Subject" className="font-medium" />
-          <Textarea value={body} onChange={(e) => setBody(e.target.value)} aria-label="Body" className="min-h-72" />
+          {/* Grows to show the whole email. The 20-line cap keeps the card, which is sticky on laptops, inside an 800px-tall screen. */}
+          <Textarea value={body} onChange={(e) => setBody(e.target.value)} aria-label="Body" className="max-h-[calc(20lh+1.125rem)] min-h-72 field-sizing-content" />
         </div>
       ) : (
         <div className="rounded-xl border border-border">
