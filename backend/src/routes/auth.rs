@@ -153,10 +153,30 @@ struct LoginBody {
 // Verifying against a throwaway hash keeps login timing the same whether or not the email exists.
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_password("splee-timing-dummy").expect("argon2 hashing works"));
 
+/// Per email, not per IP: guessing one account's password is the attack, and the IP behind the proxy can be spoofed.
+/// Unknown emails count the same, so the limit doesn't reveal which accounts exist.
+const MAX_LOGIN_ATTEMPTS: i64 = 10;
+const LOGIN_WINDOW: &str = "15 minutes";
+
 async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<LoginBody>) -> AppResult<(CookieJar, Json<Me>)> {
+    let email = body.email.trim();
+    // Recorded before checking the password, so a burst of parallel guesses can't all slip under the limit.
+    // A successful sign-in clears the email's rows, so only failures accumulate.
+    sqlx::query(&format!("delete from login_failures where created_at < now() - interval '{LOGIN_WINDOW}'")).execute(&state.db).await?;
+    let attempts: i64 = sqlx::query_scalar(&format!(
+        "with added as (insert into login_failures (email) values ($1::citext))
+         select count(*) + 1 from login_failures where email = $1::citext and created_at > now() - interval '{LOGIN_WINDOW}'"
+    ))
+    .bind(email)
+    .fetch_one(&state.db)
+    .await?;
+    if attempts > MAX_LOGIN_ATTEMPTS {
+        return Err(AppError::TooManyRequests("Too many failed sign-ins for this email. Try again in 15 minutes.".into()));
+    }
+
     let invalid = || AppError::BadRequest("Invalid email or password".into());
     let user: Option<(Uuid, String)> = sqlx::query_as("select id, password_hash from users where email = $1::citext")
-        .bind(body.email.trim())
+        .bind(email)
         .fetch_optional(&state.db)
         .await?;
     let Some((user_id, hash)) = user else {
@@ -166,6 +186,7 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
     if !verify_password(&body.password, &hash) {
         return Err(invalid());
     }
+    sqlx::query("delete from login_failures where email = $1::citext").bind(email).execute(&state.db).await?;
     let org_id: Uuid = sqlx::query_scalar("select org_id from memberships where user_id = $1 order by created_at limit 1")
         .bind(user_id)
         .fetch_optional(&state.db)
