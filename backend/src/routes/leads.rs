@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/companies", get(list_companies))
         .route("/companies/{id}", patch(update_company))
         .route("/projects/{id}/leads", get(list_leads))
+        .route("/projects/{id}/leads/export", get(export_leads))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
         .route("/projects/{id}/linkedin", get(list_linkedin))
         .route("/leads/{id}/linkedin", post(generate_linkedin))
@@ -146,6 +149,66 @@ async fn list_leads(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(Paginated { items, total }))
+}
+
+/// Every lead matching the list filters, as a CSV download.
+async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<ListQuery>) -> AppResult<Response> {
+    let project = auth.project(&state.db, id).await?;
+    let like = util_input::like_pattern(q.q.as_deref());
+    let status = q.status.filter(|s| !s.is_empty());
+    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc"))
+        .bind(id)
+        .bind(q.segment_id)
+        .bind(&status)
+        .bind(&like)
+        .fetch_all(&state.db)
+        .await?;
+
+    let invalid = |e: csv::Error| AppError::Internal(e.into());
+    let mut out = csv::Writer::from_writer(Vec::new());
+    out.write_record([
+        "full_name", "first_name", "last_name", "title", "email", "email_status", "company_name", "company_domain", "linkedin_url",
+        "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at",
+    ])
+    .map_err(invalid)?;
+    for r in &rows {
+        let l = &r.lead;
+        let last_contacted = l.last_contacted_at.map(|t| t.to_rfc3339()).unwrap_or_default();
+        let created = l.created_at.to_rfc3339();
+        let record = [
+            l.full_name.as_str(),
+            &l.first_name,
+            &l.last_name,
+            &l.title,
+            l.email.as_deref().unwrap_or_default(),
+            &l.email_status,
+            &l.company_name,
+            l.company_domain.as_deref().unwrap_or_default(),
+            &l.linkedin_url,
+            &l.x_url,
+            &l.city,
+            &l.country_code,
+            r.segment_name.as_deref().unwrap_or_default(),
+            &l.status,
+            r.last_email_status.as_deref().unwrap_or_default(),
+            &last_contacted,
+            &created,
+        ];
+        out.write_record(record.map(spreadsheet_safe)).map_err(invalid)?;
+    }
+    let body = out.into_inner().map_err(|e| AppError::Internal(e.into_error().into()))?;
+
+    let slug: String = project.domain.as_deref().unwrap_or(&project.name).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect();
+    let disposition = format!("attachment; filename=\"{}-leads.csv\"", slug.trim_matches('-'));
+    Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()), (header::CONTENT_DISPOSITION, disposition)], body).into_response())
+}
+
+/// Lead fields come from the web and from imports. A cell starting with one of these runs as a formula in Excel or Sheets.
+fn spreadsheet_safe(cell: &str) -> String {
+    match cell.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{cell}"),
+        _ => cell.to_string(),
+    }
 }
 
 #[derive(Serialize)]
@@ -319,4 +382,17 @@ async fn update_linkedin(
     .fetch_one(&state.db)
     .await?;
     Ok(Json(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spreadsheet_safe;
+
+    #[test]
+    fn formula_cells_are_quoted() {
+        assert_eq!(spreadsheet_safe("=HYPERLINK(\"x\")"), "'=HYPERLINK(\"x\")");
+        assert_eq!(spreadsheet_safe("-1+2"), "'-1+2");
+        assert_eq!(spreadsheet_safe("Head of @Growth"), "Head of @Growth");
+        assert_eq!(spreadsheet_safe(""), "");
+    }
 }
