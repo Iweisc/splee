@@ -29,7 +29,7 @@ export function InboxView({ projectId }: { projectId?: string }) {
   const selected = data?.items.find((t) => t.lead.id === selectedLead) ?? data?.items[0];
 
   return (
-    <Card className="grid h-[calc(100vh-11rem)] min-h-[520px] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
+    <Card className="grid h-[calc(100vh-11rem)] min-h-[520px] grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
       {/* Phones show one pane at a time: the list, or the thread you tapped. */}
       <div className={cn("min-h-0 flex-col border-border md:flex md:border-r", selectedLead ? "hidden" : "flex")}>
         <div className="flex flex-col gap-2 border-b border-border p-3">
@@ -171,8 +171,9 @@ function ThreadPane({ leadId }: { leadId: string }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* The status buttons drop under the name rather than squeezing it. When they wrap among themselves, each row fills. */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-60">
           <p className="flex items-center gap-2 font-medium">
             {lead.full_name || lead.email} <LeadStatusBadge status={lead.status} />
           </p>
@@ -180,7 +181,7 @@ function ThreadPane({ leadId }: { leadId: string }) {
             {[lead.title, lead.company_name, lead.email].filter(Boolean).join(" · ")}
           </p>
         </div>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 [&>*]:grow">
           {statusActions.map((a) => (
             <Button
               key={a.status}
