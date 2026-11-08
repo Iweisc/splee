@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::leads::{self, LeadDetail};
+use super::runs;
 use super::segments::{self, SegmentWithStats};
 use super::stats::{self, Totals};
 use super::suppressions;
@@ -17,7 +18,7 @@ use super::util_scope;
 use crate::agent::{self, kind};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
-use crate::models::{EmailMessage, Lead, Project, Segment, Ts};
+use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/suppressions", post(add_suppressions))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
+        .route("/v1/runs/{id}", get(get_run))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -212,4 +214,9 @@ async fn write_emails(State(state): State<AppState>, auth: ApiKeyAuth, Path(id):
     segments::ensure_unwritten_leads(&state.db, &segment).await?;
     let run_id = agent::enqueue(&state.db, kind::WRITE_EMAILS, Some(segment.project_id), Some(auth.org_id), json!({ "segment_id": id })).await?;
     Ok(Json(json!({ "run_id": run_id })))
+}
+
+/// For waiting on a run started with write-emails: status goes queued, running, then succeeded, failed or cancelled.
+async fn get_run(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<AgentRun>> {
+    Ok(Json(runs::load(&state.db, auth.org_id, id).await?))
 }

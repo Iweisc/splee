@@ -114,6 +114,22 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: "/runs/9b4f…",
+      summary:
+        "A run's progress, for example one started by write-emails. status goes from queued to running, then succeeded, failed or cancelled. error says why a run failed, and cost_usd is what Claude Code reported for it.",
+      response: `{
+  "id": "9b4f…",
+  "kind": "write_emails",
+  "status": "succeeded",
+  "error": "",
+  "cost_usd": 0.42,
+  "created_at": "2026-11-04T10:00:00Z",
+  "finished_at": "2026-11-04T10:03:12Z",
+  "…": "…"
+}`,
+    },
+    {
+      method: "GET",
       path: "/leads?email=sarah@northwind.studio",
       summary:
         "Find leads by email across all your projects, for tools that only know the address, such as a calendar booking. Newest first, up to 100. Then use the id with PATCH below.",

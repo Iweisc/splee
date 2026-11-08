@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
@@ -26,14 +27,15 @@ pub fn router() -> Router<AppState> {
         .route("/runs/{id}/cancel", post(cancel))
 }
 
-async fn load(state: &AppState, auth: &Auth, id: Uuid) -> AppResult<AgentRun> {
+/// A run of the organization, including runs for one of its projects.
+pub(super) async fn load(db: &PgPool, org_id: Uuid, id: Uuid) -> AppResult<AgentRun> {
     sqlx::query_as::<_, AgentRun>(
         "select r.* from agent_runs r left join projects p on p.id = r.project_id
          where r.id = $1 and (r.org_id = $2 or p.org_id = $2)",
     )
     .bind(id)
-    .bind(auth.org_id)
-    .fetch_optional(&state.db)
+    .bind(org_id)
+    .fetch_optional(db)
     .await?
     .ok_or(AppError::NotFound)
 }
@@ -43,7 +45,7 @@ pub async fn run_events(state: &AppState, run_id: Uuid) -> AppResult<Vec<AgentEv
 }
 
 async fn detail(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let run = load(&state, &auth, id).await?;
+    let run = load(&state.db, auth.org_id, id).await?;
     let events = run_events(&state, id).await?;
     Ok(Json(json!({"run": run, "events": events})))
 }
@@ -59,12 +61,12 @@ async fn stream(
     Path(id): Path<Uuid>,
     Query(q): Query<AfterQuery>,
 ) -> AppResult<Response> {
-    load(&state, &auth, id).await?;
+    load(&state.db, auth.org_id, id).await?;
     event_stream(state, id, q.after.unwrap_or(0)).await
 }
 
 async fn cancel(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let run = load(&state, &auth, id).await?;
+    let run = load(&state.db, auth.org_id, id).await?;
     let updated = sqlx::query("update agent_runs set status = 'cancelled', finished_at = now() where id = $1 and status in ('queued', 'running')")
         .bind(id)
         .execute(&state.db)
