@@ -160,16 +160,19 @@ const LOGIN_WINDOW: &str = "15 minutes";
 
 async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<LoginBody>) -> AppResult<(CookieJar, Json<Me>)> {
     let email = body.email.trim();
-    // Recorded before checking the password, so a burst of parallel guesses can't all slip under the limit.
-    // A successful sign-in clears the email's rows, so only failures accumulate.
+    // Recorded before checking the password, under a per-email lock, so a burst of parallel guesses can't slip past
+    // the limit. A successful sign-in clears the email's rows, so only failures accumulate.
     sqlx::query(&format!("delete from login_failures where created_at < now() - interval '{LOGIN_WINDOW}'")).execute(&state.db).await?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext('login:' || lower($1)))").bind(email).execute(&mut *tx).await?;
+    sqlx::query("insert into login_failures (email) values ($1::citext)").bind(email).execute(&mut *tx).await?;
     let attempts: i64 = sqlx::query_scalar(&format!(
-        "with added as (insert into login_failures (email) values ($1::citext))
-         select count(*) + 1 from login_failures where email = $1::citext and created_at > now() - interval '{LOGIN_WINDOW}'"
+        "select count(*) from login_failures where email = $1::citext and created_at > now() - interval '{LOGIN_WINDOW}'"
     ))
     .bind(email)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     if attempts > MAX_LOGIN_ATTEMPTS {
         return Err(AppError::TooManyRequests("Too many failed sign-ins for this email. Try again in 15 minutes.".into()));
     }
