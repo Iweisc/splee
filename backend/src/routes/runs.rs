@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/runs/{id}", get(detail))
         .route("/runs/{id}/events", get(stream))
         .route("/runs/{id}/cancel", post(cancel))
+        .route("/runs/{id}/retry", post(retry))
 }
 
 /// A run of the organization, including runs for one of its projects.
@@ -80,6 +81,25 @@ async fn cancel(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
         }
     }
     Ok(Json(json!({"ok": true})))
+}
+
+/// Queues a failed or cancelled project run again with the same input. Classifying and drafting replies have no other
+/// button, so this is the only way to redo them after, say, hitting a Claude usage limit.
+async fn retry(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let run = load(&state.db, auth.org_id, id).await?;
+    if !matches!(run.status.as_str(), "failed" | "cancelled") {
+        return Err(AppError::Conflict("Only a failed or cancelled run can run again.".into()));
+    }
+    // Explorer runs belong to the public tool, not a project.
+    let Some(project_id) = run.project_id.filter(|_| run.kind != agent::kind::EXPLORER) else {
+        return Err(AppError::BadRequest("This run can't run again from here.".into()));
+    };
+    if run.kind == agent::kind::EXPLORE {
+        // Like POST /projects/:id/research, so the project shows as researching straight away.
+        sqlx::query("update projects set status = 'researching' where id = $1").bind(project_id).execute(&state.db).await?;
+    }
+    let run_id = agent::enqueue(&state.db, &run.kind, Some(project_id), Some(auth.org_id), run.input).await?;
+    Ok(Json(json!({ "run_id": run_id })))
 }
 
 fn is_final(e: &AgentEvent) -> bool {

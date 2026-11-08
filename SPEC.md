@@ -179,6 +179,7 @@ All paths below are under `/api`.
 | GET | /runs/:id | `{run: AgentRun, events: AgentEvent[]}` (auth, org scoped) |
 | GET | /runs/:id/events?after= | SSE like the demo stream (auth) |
 | POST | /runs/:id/cancel | `{ok}` |
+| POST | /runs/:id/retry | `{run_id}`. Queues a failed or cancelled project run again with the same input (an explore run marks the project researching). 409 for any other status. |
 
 ### Public API v1 (ApiKeyAuth)
 

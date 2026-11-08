@@ -369,7 +369,11 @@ pub async fn write_emails_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     }
     let leads = match input.lead_ids {
         Some(ids) => {
-            sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and id = any($2) and email is not null")
+            // A lead whose first email went out never gets a second one, e.g. when a half-finished run runs again.
+            sqlx::query_as::<_, Lead>(
+                "select * from leads l where project_id = $1 and id = any($2) and email is not null
+                   and not exists (select 1 from email_messages e where e.lead_id = l.id and e.kind = 'initial' and e.status in ('sending', 'sent'))",
+            )
                 .bind(project_id)
                 .bind(&ids)
                 .fetch_all(ctx.db())
