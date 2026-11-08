@@ -82,7 +82,7 @@ All paths below are under `/api`.
 | POST | /auth/signup | `{email, password, name, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. 403 without `invite_token` when `OPEN_SIGNUP=false` and an account already exists. |
 | POST | /auth/login | `{email, password}` | `Me`, sets cookie. 429 after 10 failed attempts for an email (known or not) within 15 minutes. A successful sign-in resets the count. |
 | POST | /auth/logout | | `{ok:true}` |
-| GET | /auth/me | | `Me` or 401 |
+| GET | /auth/me | | `Me` or 401. `Me` is `{user, org, role, orgs, public_url}`. `public_url` is `PUBLIC_URL`, which the mailboxes page checks against the address the app is open at. |
 | POST | /auth/password | `{current_password, new_password}` | `{ok}`. 400 when the current password is wrong or the new one is under 8 characters. Deletes the user's other sessions. |
 | POST | /auth/switch-org | `{org_id}` | `Me` |
 | GET | /invites/:token | | `{org_name, email, role}` (public). 404 once the invite is used, revoked or 7 days old. |
