@@ -81,7 +81,7 @@ export function Pipeline() {
 
   return (
     <section className="mx-auto w-full max-w-[1240px] px-5 pt-40">
-      <h2 className="sticky top-20 z-0 pb-5 text-center text-4xl font-normal">It runs the entire pipeline</h2>
+      <h2 className="pb-5 text-center text-4xl font-normal md:sticky md:top-20 md:z-0">It runs the entire pipeline</h2>
       <div className="relative mt-6 pb-16">
         {cards.map((c, i) => (
           <div
@@ -100,8 +100,10 @@ export function Pipeline() {
                 {c.fits ? (
                   <div className="flex flex-1 items-center p-4 pt-0 md:p-8">{c.body}</div>
                 ) : (
-                  <div className="relative h-[300px] flex-1 overflow-hidden [mask-image:linear-gradient(#000_0_calc(100%-64px),transparent_100%)] md:h-auto">
-                    <div className="absolute inset-x-4 top-0 md:inset-x-8 md:top-8">{c.body}</div>
+                  // On phones the panel is as tall as its content, up to 300px, and the fade starts at a fixed depth,
+                  // so a short table shows whole with no blank space and a long one fades out at the cap.
+                  <div className="relative max-h-[300px] overflow-hidden [mask-image:linear-gradient(#000_0_252px,transparent_300px)] md:max-h-none md:flex-1 md:[mask-image:linear-gradient(#000_0_calc(100%-64px),transparent_100%)]">
+                    <div className="px-4 pb-4 md:absolute md:inset-x-8 md:top-8 md:px-0 md:pb-0">{c.body}</div>
                   </div>
                 )}
               </div>
