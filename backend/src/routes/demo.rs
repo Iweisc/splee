@@ -40,8 +40,18 @@ pub fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
         .unwrap_or_else(|| peer.ip().to_string())
 }
 
-/// Public runs store the requester's IP in `input.ip` so they can be counted here.
+/// Signed-out visitors run the agent on the host's Claude account, so a host can turn that off with PUBLIC_AGENT=false.
+pub fn check_public_agent(state: &AppState) -> AppResult<()> {
+    if state.cfg.public_agent {
+        return Ok(());
+    }
+    Err(AppError::Forbidden("The agent isn't available to signed-out visitors here. Sign in to use it.".into()))
+}
+
+/// Public runs store the requester's IP in `input.ip` so they can be counted here. Every public run passes through,
+/// so this also applies PUBLIC_AGENT.
 pub async fn check_rate(state: &AppState, run_kind: &str, ip: &str, per_hour: i64) -> AppResult<()> {
+    check_public_agent(state)?;
     let recent: i64 = sqlx::query_scalar(
         "select count(*) from agent_runs where kind = $1 and input ->> 'ip' = $2 and created_at > now() - interval '1 hour'",
     )

@@ -65,7 +65,7 @@ All paths below are under `/api`.
 |---|---|---|---|
 | GET | /health | | `{ok:true}` when Postgres answers, else 503 with no body. For uptime monitors. |
 | GET | /public/stats | | `{hot_leads, companies}` (counts of leads with status hot/meeting_booked and orgs; add 0 offsets, no fake numbers) |
-| POST | /demo | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (the last `X-Forwarded-For` entry, which the HTTPS proxy sets, or the peer). |
+| POST | /demo | `{domain?: string, description?: string}` exactly one | `{project_id, token}`. Reuses an anonymous project for the same domain from the last 24h. Rate limit 10/hour per IP (the last `X-Forwarded-For` entry, which the HTTPS proxy sets, or the peer). With `PUBLIC_AGENT=false`, every request that would start a run gets 403 (a reused project still returns 200), as do `/demo/:id/correct`, `/explorer` and signed-out `/support/messages`. |
 | GET | /demo/:project_id?token= | | `DemoState` |
 | GET | /demo/:project_id/events?token=&after=<event id> | | SSE. Each message `data: AgentEvent` JSON. Sends backlog after `after`, then live. Ends after `done`/`error`. |
 | POST | /demo/:project_id/correct?token= | `{note}` | re-runs from step 1 with the user's correction ("Details look off?"). `{ok:true}` |
