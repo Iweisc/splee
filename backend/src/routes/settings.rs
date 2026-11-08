@@ -1,19 +1,22 @@
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::util_input;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
+use crate::hooks;
 use crate::models::ProjectSettings;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/projects/{id}/settings", get(get_settings).put(update_settings))
+    Router::new()
+        .route("/projects/{id}/settings", get(get_settings).put(update_settings))
+        .route("/projects/{id}/integrations/test", post(test_integration))
 }
 
 /// Settings rows are created with the project, but older demo projects may not have one yet.
@@ -148,4 +151,35 @@ async fn update_settings(
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct TestBody {
+    target: String,
+    url: String,
+}
+
+/// Posts a sample alert to the URL in the form, saved or not, so a team can check the hookup without waiting for a hot lead.
+async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<TestBody>) -> AppResult<Json<Value>> {
+    let project = auth.project(&state.db, id).await?;
+    util_input::one_of("target", &body.target, &["webhook", "slack"])?;
+    let name = if project.name.is_empty() { project.domain.clone().unwrap_or_default() } else { project.name.clone() };
+    let link = format!("{}/app/p/{}/inbox", state.cfg.public_url, project.id);
+    // Same shape as the hot_lead payload in agent::replies::notify_hot, so tools like Zapier can map fields from it.
+    let payload = if body.target == "slack" {
+        json!({"text": format!("*Splee test:* hot-lead alerts for {name} will post in this channel.\n<{link}|Open the inbox>")})
+    } else {
+        json!({
+            "event": "test",
+            "project": {"id": project.id, "name": name},
+            "lead": {
+                "id": Uuid::nil(), "full_name": "Sarah Chen", "email": "sarah@northwind.example", "title": "Founder",
+                "company_name": "Northwind Studio", "company_domain": "northwind.example",
+            },
+            "reply": {"id": Uuid::nil(), "subject": "Re: Northwind Studio x Splee", "body": "This is a test alert from Splee.", "reason": "Test"},
+            "url": link,
+        })
+    };
+    hooks::post_json(&body.url, &payload).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
+    Ok(Json(json!({ "ok": true })))
 }
