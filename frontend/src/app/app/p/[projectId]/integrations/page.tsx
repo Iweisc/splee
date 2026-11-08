@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { api } from "@/lib/api";
 import type { ProjectSettings } from "@/lib/types";
+import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
 Content-Type: application/json
@@ -63,11 +64,14 @@ const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `
 
 /** Posts a sample alert to the URL as typed, saved or not. */
 function TestButton({ projectId, target, url }: { projectId: string; target: "slack" | "webhook"; url: string }) {
+  const { mutate } = useSWRConfig();
   const [busy, setBusy] = useState(false);
   const send = async () => {
     setBusy(true);
     try {
       await api(`/projects/${projectId}/integrations/test`, { body: { target, url } });
+      // A test that passes on the saved URL clears its last failure.
+      mutate(`/projects/${projectId}/settings`);
       toast.success(target === "slack" ? "Test sent. Check the Slack channel." : "Test sent. Your endpoint accepted it.");
     } catch (e) {
       toastError(e);
@@ -79,6 +83,19 @@ function TestButton({ projectId, target, url }: { projectId: string; target: "sl
     <Button size="sm" variant="outline" onClick={send} loading={busy} disabled={!isUrl(url)}>
       {!busy && <Send className="size-3.5" />} Send a test
     </Button>
+  );
+}
+
+/** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
+function LastFailure({ error, at }: { error: string | null; at: string | null }) {
+  if (!error || !at) return null;
+  return (
+    <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+      <p className="font-medium">
+        The last hot-lead alert didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
+      </p>
+      <p className="mt-1 font-mono break-words">{error}</p>
+    </div>
   );
 }
 
@@ -138,6 +155,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 placeholder="https://hooks.slack.com/services/…"
               />
             </Field>
+            <LastFailure error={s.slack_error} at={s.slack_failed_at} />
           </Section>
 
           <Section
@@ -157,6 +175,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 placeholder="https://example.com/hooks/splee"
               />
             </Field>
+            <LastFailure error={s.webhook_error} at={s.webhook_failed_at} />
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="mt-4 flex flex-col gap-1.5">
               <span className="text-sm font-medium">Signing secret</span>
