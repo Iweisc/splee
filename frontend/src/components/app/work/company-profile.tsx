@@ -48,7 +48,11 @@ export function CompanyProfile({ project, className }: { project: Project; class
                 <MapPin className="size-3" /> {[c.city, c.country_code].filter(Boolean).join(", ")}
               </Badge>
             )}
-            {c.industry && <Badge>{c.industry}</Badge>}
+            {c.industry && (
+              <Badge className="max-w-full" title={c.industry}>
+                <span className="truncate">{c.industry}</span>
+              </Badge>
+            )}
           </div>
           {details && !!c.products?.length && <ProfileList label="Products" items={c.products} />}
           {details && !!c.value_props?.length && <ProfileList label="Value propositions" items={c.value_props} />}
