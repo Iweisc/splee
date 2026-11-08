@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 const field =
@@ -5,6 +6,35 @@ const field =
 
 export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn(field, "h-10", className)} {...props} />;
+}
+
+/**
+ * A number field you can clear and retype. The text being typed lives here until blur, so an empty box or a
+ * half-typed "1." doesn't snap to 0 or get clamped mid-word. The parent only hears about values that parse.
+ * The wheel blurs it, because browsers otherwise change a focused number field when you scroll the page over it.
+ */
+export function NumberInput({
+  value,
+  onValueChange,
+  ...props
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange" | "onBlur" | "onWheel"> & {
+  value: number;
+  onValueChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <Input
+      {...props}
+      type="number"
+      value={draft ?? String(value)}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(e.target.valueAsNumber)) onValueChange(e.target.valueAsNumber);
+      }}
+      onBlur={() => setDraft(null)}
+      onWheel={(e) => e.currentTarget.blur()}
+    />
+  );
 }
 
 export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {

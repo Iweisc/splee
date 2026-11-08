@@ -3,7 +3,7 @@
 import { ArrowDown, ArrowUp, Plus, Repeat, Trash2 } from "lucide-react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { Button } from "@/components/ui/button";
-import { Input, Switch, Textarea } from "@/components/ui/form";
+import { NumberInput, Switch, Textarea } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import type { FollowUp } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -62,12 +62,11 @@ export default function FollowUpsPage() {
                         <span className="font-medium">Follow-up {i + 1}</span>
                         <span className="flex items-center gap-2 text-sm text-muted-foreground">
                           after
-                          <Input
-                            type="number"
+                          <NumberInput
                             min={1}
                             max={MAX_DELAY_DAYS}
                             value={f.delay_days}
-                            onChange={(e) => patch(i, { delay_days: Number(e.target.value) })}
+                            onValueChange={(delay_days) => patch(i, { delay_days })}
                             className="h-8 w-16 text-center tabular-nums"
                             aria-label={`Delay for follow-up ${i + 1} in days`}
                           />

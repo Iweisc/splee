@@ -3,7 +3,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { MicroLabel, ProjectSettingsPage, Section } from "@/components/app/settings/layout";
-import { Input } from "@/components/ui/form";
+import { NumberInput } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import type { Mailbox } from "@/lib/types";
@@ -41,13 +41,12 @@ export default function DailyLimitPage() {
               aria-label="Daily limit"
             />
             <div className="relative w-32">
-              <Input
-                type="number"
+              <NumberInput
                 min={MIN}
                 max={MAX}
                 step={1}
                 value={s.daily_email_limit}
-                onChange={(e) => update({ daily_email_limit: Math.round(Number(e.target.value)) })}
+                onValueChange={(n) => update({ daily_email_limit: Math.round(n) })}
                 className="pr-12 tabular-nums"
                 aria-label="Emails per day"
               />
