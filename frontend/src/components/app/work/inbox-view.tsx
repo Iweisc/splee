@@ -29,7 +29,7 @@ export function InboxView({ projectId }: { projectId?: string }) {
   const selected = data?.items.find((t) => t.lead.id === selectedLead) ?? data?.items[0];
 
   return (
-    <Card className="grid h-[calc(100vh-11rem)] min-h-[520px] grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
+    <Card className="grid min-h-[520px] flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
       {/* Phones show one pane at a time: the list, or the thread you tapped. */}
       <div className={cn("min-h-0 flex-col border-border md:flex md:border-r", selectedLead ? "hidden" : "flex")}>
         <div className="flex flex-col gap-2 border-b border-border p-3">

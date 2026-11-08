@@ -26,3 +26,8 @@ export function PageHeader({
 export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("px-4 py-6 sm:px-8", className)} {...props} />;
 }
+
+/** For pages whose body fills the rest of the screen and scrolls inside, like the inbox. 3.5rem is the shell's mobile top bar. */
+export function ScreenPage({ children }: { children: React.ReactNode }) {
+  return <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">{children}</div>;
+}
