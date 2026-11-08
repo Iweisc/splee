@@ -260,7 +260,8 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
     <li className="flex w-[80%] flex-col gap-2 self-end rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-3">
       <MicroLabel className="text-amber-700">Auto-reply draft · waiting for approval</MicroLabel>
       {editing ? (
-        <Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-32" autoFocus />
+        // No max height: like the draft text it replaces, it scrolls with the conversation instead of inside itself.
+        <Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-32 field-sizing-content" autoFocus />
       ) : (
         <p className="text-sm leading-relaxed whitespace-pre-wrap">{draft.body}</p>
       )}
