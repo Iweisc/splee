@@ -3,12 +3,12 @@
 import { useDeferredValue, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Search, ShieldBan, Trash2 } from "lucide-react";
+import { Download, Search, ShieldBan, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Skeleton, type BadgeTone } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
@@ -93,7 +93,17 @@ export default function DoNotContactPage() {
                   aria-label="Search the list"
                 />
               </div>
-              {data && <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>}
+              {data && (
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>
+                  {data.total > 0 && (
+                    // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
+                    <a href={`/api/suppressions/export${qs({ q })}`} download className={buttonClass("outline", "sm", "h-9")}>
+                      <Download className="size-3.5" /> Export
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
 
             {error ? (

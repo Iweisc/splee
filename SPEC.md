@@ -172,6 +172,7 @@ All paths below are under `/api`.
 | POST | /mailboxes/:id/test | | `{ok, error?}`; sets status/last_error |
 | POST | /mailboxes/:id/check-dns | | `Mailbox` with `dns` |
 | GET | /suppressions?q&page | | paginated `Suppression` |
+| GET | /suppressions/export?q | | `text/csv` download of every matching entry, newest first: `value, kind, reason, created_at`. Cells that start with `= + - @` get a leading `'`. |
 | POST | /suppressions | `{values: string}` newline/comma separated emails or domains | `{added}` |
 | DELETE | /suppressions/:id | | `{ok}` |
 
