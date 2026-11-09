@@ -14,6 +14,7 @@ import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
+import { LoadError } from "./work/states";
 import { orgNav, projectNav } from "./nav";
 
 const LAST_PROJECT_KEY = "splee:last-project";
@@ -22,7 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useParams<{ projectId?: string }>();
-  const { me, isLoading } = useMe();
+  const { me, error, isLoading, mutate } = useMe();
   const { data: projects } = useSWR<ProjectSummary[]>(me ? "/projects" : null, fetcher);
   // The phone menu remembers the page it was opened on, so following any link closes it without an effect.
   const [menuPath, setMenuPath] = useState<string | null>(null);
@@ -70,6 +71,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (me === null) router.replace(`/signin?next=${encodeURIComponent(pathname)}`);
   }, [me, pathname, router]);
+
+  // Without this, a server error or an unreachable backend left the spinner below up forever.
+  if (!me && error) return <LoadError error={error} what="your account" retry={() => mutate()} className="min-h-screen" />;
 
   if (isLoading || !me) {
     return (
