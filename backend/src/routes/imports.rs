@@ -9,6 +9,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::util_input;
+use super::util_sheet as sheet;
 use super::util_lead_import::{self, NewLead};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
@@ -51,6 +52,8 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 struct Upload {
     filename: String,
     file: Option<Vec<u8>>,
+    /// A Google Sheet to read instead of a file.
+    sheet_url: Option<String>,
     segment_id: Option<Uuid>,
     mapping: Option<HashMap<String, String>>,
 }
@@ -63,6 +66,10 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
             Some("file") => {
                 upload.filename = field.file_name().unwrap_or("import.csv").to_string();
                 upload.file = Some(field.bytes().await.map_err(|e| AppError::BadRequest(e.body_text()))?.to_vec());
+            }
+            Some("sheet_url") => {
+                let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
+                upload.sheet_url = Some(text.trim().to_string()).filter(|t| !t.is_empty());
             }
             Some("segment_id") => {
                 let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
@@ -78,6 +85,18 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
         }
     }
     Ok(upload)
+}
+
+impl Upload {
+    /// The uploaded file, or the Google Sheet's tab read as CSV, and its name.
+    async fn csv(&mut self) -> AppResult<(String, Csv)> {
+        if let Some(link) = &self.sheet_url {
+            let (name, bytes) = sheet::fetch(link).await?;
+            return Ok((name, parse_csv(&bytes)?));
+        }
+        let file = self.file.take().ok_or_else(|| AppError::BadRequest("Attach a CSV file".into()))?;
+        Ok((std::mem::take(&mut self.filename), parse_csv(&file)?))
+    }
 }
 
 struct Csv {
@@ -123,6 +142,7 @@ fn suggest_field(header: &str) -> Option<&'static str> {
 
 #[derive(Serialize)]
 struct Preview {
+    filename: String,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     suggested_mapping: HashMap<&'static str, String>,
@@ -130,8 +150,7 @@ struct Preview {
 
 async fn preview(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, multipart: Multipart) -> AppResult<Json<Preview>> {
     auth.project(&state.db, id).await?;
-    let upload = read_upload(multipart).await?;
-    let csv = parse_csv(&upload.file.ok_or_else(|| AppError::BadRequest("Attach a CSV file".into()))?)?;
+    let (filename, csv) = read_upload(multipart).await?.csv().await?;
     let mut suggested_mapping = HashMap::new();
     for header in &csv.headers {
         if let Some(field) = suggest_field(header) {
@@ -139,13 +158,13 @@ async fn preview(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
         }
     }
     let rows = csv.rows.into_iter().take(5).map(|(_, cells)| cells).collect();
-    Ok(Json(Preview { headers: csv.headers, rows, suggested_mapping }))
+    Ok(Json(Preview { filename, headers: csv.headers, rows, suggested_mapping }))
 }
 
 async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, multipart: Multipart) -> AppResult<Json<Import>> {
     auth.project(&state.db, id).await?;
-    let upload = read_upload(multipart).await?;
-    let csv = parse_csv(&upload.file.ok_or_else(|| AppError::BadRequest("Attach a CSV file".into()))?)?;
+    let mut upload = read_upload(multipart).await?;
+    let (filename, csv) = upload.csv().await?;
     let mapping = upload.mapping.ok_or_else(|| AppError::BadRequest("Map your columns first".into()))?;
     check_segment(&state, id, upload.segment_id).await?;
 
@@ -187,7 +206,7 @@ async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
             (line, lead)
         })
         .collect();
-    Ok(Json(record(&state, &auth, id, upload.segment_id, &upload.filename, rows).await?))
+    Ok(Json(record(&state, &auth, id, upload.segment_id, &filename, rows).await?))
 }
 
 pub(super) async fn check_segment(state: &AppState, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<()> {

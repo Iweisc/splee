@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CircleCheck, FileUp, Search, Upload } from "lucide-react";
+import { CircleCheck, FileUp, Search, Sheet, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CampaignField } from "@/components/app/settings/campaign-field";
@@ -14,7 +14,13 @@ import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { dateTime, num, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
-type Preview = { headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
+type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
+
+/** Where the rows come from: an uploaded file or a Google Sheet's link. Sent again on import, since the server keeps neither. */
+type Source = { file: File } | { sheet_url: string };
+
+const appendSource = (form: FormData, source: Source) =>
+  "file" in source ? form.append("file", source.file) : form.append("sheet_url", source.sheet_url);
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -32,30 +38,31 @@ const FIELDS: { key: string; label: string }[] = [
 
 export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/import">) {
   const { projectId } = use(params);
-  const [file, setFile] = useState<File | null>(null);
+  const [source, setSource] = useState<Source | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [result, setResult] = useState<Import | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<"file" | "sheet" | null>(null);
+  const [sheetUrl, setSheetUrl] = useState("");
 
-  const choose = async (f: File | undefined) => {
-    if (!f) return;
+  const choose = async (next: Source) => {
     setResult(null);
-    setLoading(true);
+    setLoading("file" in next ? "file" : "sheet");
     try {
       const form = new FormData();
-      form.append("file", f);
+      appendSource(form, next);
       const p = await api<Preview>(`/projects/${projectId}/import/preview`, { body: form });
-      setFile(f);
+      setSource(next);
       setPreview(p);
+      setSheetUrl("");
     } catch (e) {
       toastError(e);
     } finally {
-      setLoading(false);
+      setLoading(null);
     }
   };
 
   const reset = () => {
-    setFile(null);
+    setSource(null);
     setPreview(null);
   };
 
@@ -63,14 +70,14 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="Upload a CSV or find people with Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV, a Google Sheet or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
-        {file && preview ? (
+        {source && preview ? (
           <MappingStep
             projectId={projectId}
-            file={file}
+            source={source}
             preview={preview}
             onCancel={reset}
             onImported={(r) => {
@@ -80,21 +87,37 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
           />
         ) : (
           <Card>
-            <label className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-dashed border-border-strong px-6 py-12 text-center hover:bg-accent">
-              {loading ? <Spinner className="size-5" /> : <FileUp className="size-5 text-muted-foreground" />}
-              <span className="font-medium">{loading ? "Reading file…" : "Choose a CSV file"}</span>
+            <label className="flex cursor-pointer flex-col items-center gap-2 rounded-t-2xl border-b border-dashed border-border-strong px-6 py-12 text-center hover:bg-accent">
+              {loading === "file" ? <Spinner className="size-5" /> : <FileUp className="size-5 text-muted-foreground" />}
+              <span className="font-medium">{loading === "file" ? "Reading file…" : "Choose a CSV file"}</span>
               <span className="text-sm text-muted-foreground">You map the columns in the next step.</span>
               <input
                 type="file"
                 accept=".csv,text/csv"
                 className="sr-only"
-                disabled={loading}
+                disabled={!!loading}
                 onChange={(e) => {
-                  choose(e.target.files?.[0]);
+                  const f = e.target.files?.[0];
+                  if (f) choose({ file: f });
                   e.target.value = "";
                 }}
               />
             </label>
+            <form
+              className="flex flex-wrap items-start gap-4 p-6"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (sheetUrl.trim()) choose({ sheet_url: sheetUrl.trim() });
+              }}
+            >
+              <Field label="Or a Google Sheet" hint="Shared with Anyone with the link. The tab that was open is the one read." className="min-w-56 flex-1">
+                <Input value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" />
+              </Field>
+              {/* Level with the field. On phones it sits under it. */}
+              <Button type="submit" variant="outline" className="sm:mt-6" loading={loading === "sheet"} disabled={!sheetUrl.trim() || !!loading}>
+                <Sheet className="size-4" /> Read sheet
+              </Button>
+            </form>
           </Card>
         )}
         {!preview && <HunterImport projectId={projectId} onImported={setResult} />}
@@ -106,13 +129,13 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
 
 function MappingStep({
   projectId,
-  file,
+  source,
   preview,
   onCancel,
   onImported,
 }: {
   projectId: string;
-  file: File;
+  source: Source;
   preview: Preview;
   onCancel: () => void;
   onImported: (r: Import) => void;
@@ -126,7 +149,7 @@ function MappingStep({
     setImporting(true);
     try {
       const form = new FormData();
-      form.append("file", file);
+      appendSource(form, source);
       if (segmentId) form.append("segment_id", segmentId);
       form.append("mapping", JSON.stringify(Object.fromEntries(Object.entries(mapping).filter(([, header]) => header))));
       const result = await api<Import>(`/projects/${projectId}/import`, { body: form });
@@ -141,11 +164,14 @@ function MappingStep({
   return (
     <Card className="p-6">
       <div className="flex items-center justify-between gap-3">
-        <p className="truncate font-medium" title={file.name}>
-          {file.name}
+        {/* Sheet titles run long, so the name wraps instead of hiding behind the button on phones. */}
+        <p className="min-w-0 font-medium wrap-anywhere">
+          {preview.filename}
         </p>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Choose another file
+        <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
+          {/* Short on phones, so a long sheet name keeps the width. */}
+          <span className="sm:hidden">Change</span>
+          <span className="max-sm:hidden">{"file" in source ? "Choose another file" : "Choose another sheet"}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
