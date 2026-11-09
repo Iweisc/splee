@@ -38,7 +38,7 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
                     (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'outbound'
                        and e.status = 'sent' and e.sent_at > now() - make_interval(days => $2)) as sent,
                     (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
-                       and e.created_at > now() - make_interval(days => $2)) as replies,
+                       and e.classification is distinct from 'bounce' and e.created_at > now() - make_interval(days => $2)) as replies,
                     (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
                        and e.classification = 'hot' and e.created_at > now() - make_interval(days => $2)) as hot,
                     (select coalesce(sum(e.cost_micros), 0)::bigint from email_messages e where e.project_id = p.id

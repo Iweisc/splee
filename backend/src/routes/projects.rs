@@ -73,7 +73,8 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<P
            (select count(*) from email_messages e
              where e.project_id = p.id and e.direction = 'outbound' and e.status = 'sent') as sent,
            (select count(*) from leads l where l.project_id = p.id
-             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound')) as replies,
+             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
+                         and e.classification is distinct from 'bounce')) as replies,
            (select count(*) from leads l where l.project_id = p.id and l.status in ('hot', 'meeting_booked')) as hot,
            (select count(*) from segments s where s.project_id = p.id and s.status in ('working', 'scaling')) as active_segments,
            coalesce((select ps.paused from project_settings ps where ps.project_id = p.id), true) as paused
