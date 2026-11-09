@@ -9,11 +9,9 @@ import { api } from "@/lib/api";
 import { CRM_NAMES, type ProjectSettings } from "@/lib/types";
 import { toastError } from "./use-action";
 
-// The backend sets the alert failures and the CRM, verifier and Unipile connections itself, so these come from the latest fetch even
+// The backend sets the CRM, verifier and Unipile connections and their failures itself, so these come from the latest fetch even
 // under an unsaved draft.
 const FROM_SERVER: (keyof ProjectSettings)[] = [
-  "webhook_error",
-  "webhook_failed_at",
   ...CRM_NAMES.flatMap((crm) => [`${crm}_connected`, `${crm}_error`, `${crm}_failed_at`] as const),
   "verifier",
   "verifier_error",

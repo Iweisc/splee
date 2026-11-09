@@ -67,7 +67,6 @@ struct SettingsBody {
     max_words: Option<i32>,
     channels: Option<Value>,
     targeting: Option<Value>,
-    webhook_url: Option<String>,
     webhook_events: Option<Vec<String>>,
     chat_weekly_report: Option<bool>,
 }
@@ -138,12 +137,8 @@ async fn update_settings(
            max_words = coalesce($17, max_words),
            channels = coalesce($18, channels),
            targeting = coalesce($19, targeting),
-           webhook_url = coalesce($20, webhook_url),
-           webhook_events = coalesce($21, webhook_events),
-           chat_weekly_report = coalesce($22, chat_weekly_report),
-           -- The right-hand sides see the old row, so a new URL drops the old URL's failure.
-           webhook_error = case when coalesce($20, webhook_url) = webhook_url then webhook_error end,
-           webhook_failed_at = case when coalesce($20, webhook_url) = webhook_url then webhook_failed_at end
+           webhook_events = coalesce($20, webhook_events),
+           chat_weekly_report = coalesce($21, chat_weekly_report)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -165,7 +160,6 @@ async fn update_settings(
     .bind(body.max_words)
     .bind(body.channels)
     .bind(body.targeting)
-    .bind(body.webhook_url.as_deref().map(str::trim))
     .bind(body.webhook_events)
     .bind(body.chat_weekly_report)
     .fetch_one(&state.db)
@@ -223,7 +217,7 @@ async fn list_deliveries(State(state): State<AppState>, auth: Auth, Path(id): Pa
     Ok(Json(deliveries))
 }
 
-/// Posts a past delivery's payload again, signed afresh, to the webhook URL saved now. It's logged as a new delivery.
+/// Posts a past delivery's payload again, signed afresh, to the endpoint it went to. It's logged as a new delivery.
 async fn resend_delivery(
     State(state): State<AppState>,
     auth: Auth,
@@ -236,13 +230,18 @@ async fn resend_delivery(
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
-    let settings = load_or_create(&state.db, id).await?;
-    if settings.webhook_url.trim().is_empty() {
-        return Err(AppError::BadRequest("Add a webhook URL first".into()));
+    let listed: bool = sqlx::query_scalar("select exists (select 1 from webhook_endpoints where project_id = $1 and url = $2)")
+        .bind(id)
+        .bind(&past.url)
+        .fetch_one(&state.db)
+        .await?;
+    if !listed {
+        return Err(AppError::BadRequest("That endpoint isn't in the list any more".into()));
     }
-    let result = hooks::post_json(&settings.webhook_url, &past.payload, Some(&settings.webhook_secret)).await;
-    hooks::record(&state.db, id, hooks::Alert::Webhook, &settings.webhook_url, &result).await;
-    Ok(Json(hooks::log_delivery(&state.db, id, &past.event, &past.payload, &result).await?))
+    let settings = load_or_create(&state.db, id).await?;
+    let result = hooks::post_json(&past.url, &past.payload, Some(&settings.webhook_secret)).await;
+    hooks::record(&state.db, id, hooks::Alert::Webhook, &past.url, &result).await;
+    Ok(Json(hooks::log_delivery(&state.db, id, &past.event, &past.url, &past.payload, &result).await?))
 }
 
 /// For a secret that leaked. Requests signed with the old one stop verifying right away.
