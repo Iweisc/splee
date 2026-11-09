@@ -71,6 +71,7 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "hot_lead", label: "Hot lead", hint: "A reply that shows interest, like asking for a call." },
   { value: "lead_replied", label: "Every reply", hint: "Any reply a person wrote, with how Splee classified it." },
   { value: "meeting_booked", label: "Meeting booked", hint: "The lead booked a call, or your team marked them Meeting booked." },
+  { value: "meeting_rescheduled", label: "Meeting moved", hint: "The lead moved the call they booked to a new time." },
   { value: "meeting_cancelled", label: "Meeting cancelled", hint: "The lead cancelled the call they booked through your scheduling tool." },
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
@@ -510,7 +511,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>&quot;reply&quot;: null</code>. <code>email_sent</code> sends <code>&quot;reply&quot;: null</code> and an <code>email</code> with its{" "}
                   <code>id</code>, <code>kind</code> (initial, follow_up, auto_reply or manual_reply), <code>step</code>, <code>subject</code>, <code>body</code>,{" "}
                   <code>from</code>, <code>to</code> and <code>message_id</code>. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
-                  <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. <code>form_submitted</code> sends{" "}
+                  <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. <code>meeting_rescheduled</code> sends{" "}
+                  <code>&quot;reply&quot;: null</code> and the old time as <code>previous_meeting_at</code>. <code>form_submitted</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and a <code>form</code> whose <code>answers</code> each have a <code>question</code> and an{" "}
                   <code>answer</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
                   <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once

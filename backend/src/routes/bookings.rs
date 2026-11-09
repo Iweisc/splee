@@ -80,11 +80,27 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
     let at = meeting_start(&body);
     let rescheduled = body["triggerEvent"] == "BOOKING_RESCHEDULED" || body["type"] == "event.rescheduled";
     for lead in &leads {
-        // Set before the move below, so its alerts carry the time.
-        if at.is_some() {
-            sqlx::query("update leads set meeting_at = $2 where id = $1").bind(lead.id).bind(at).execute(&state.db).await?;
+        // Set before the move below, so its alerts carry the time. Only the request that changes the time gets the lead
+        // back, if the tool retries.
+        let retimed: Option<Lead> = match at {
+            Some(at) => {
+                sqlx::query_as("update leads set meeting_at = $2 where id = $1 and meeting_at is distinct from $2 returning *")
+                    .bind(lead.id)
+                    .bind(at)
+                    .fetch_optional(&state.db)
+                    .await?
+            }
+            None => None,
+        };
+        // A booked call at a new time was moved. Cal.com and SavvyCal say so, Calendly books a new invitee.
+        if lead.status == "meeting_booked"
+            && lead.meeting_at.is_some()
+            && let Some(retimed) = retimed
+        {
+            hooks::announce_rescheduled(&state, &retimed, lead.meeting_at);
+            continue;
         }
-        // A reschedule only moves the time. Its lead was marked when the call was first booked.
+        // Otherwise a reschedule only moves the time. Its lead was marked when the call was first booked.
         if rescheduled {
             continue;
         }
