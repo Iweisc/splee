@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, RefreshCw, Send, Sparkles, X } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -21,11 +21,25 @@ const KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string> = {
   inbound: "Lead's reply",
 };
 
+function keptEdits(key: string, email: EmailRow): { subject: string; body: string } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const kept = JSON.parse(sessionStorage.getItem(key) ?? "null");
+    return kept?.was?.[0] === email.subject && kept.was[1] === email.body ? kept : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read-only preview for sent/scheduled emails, inline editor for drafts. Remount it (key) when the email changes. */
 export function EmailPreview({ email, showProject }: { email: EmailRow; showProject?: boolean }) {
   const { mutate } = useSWRConfig();
-  const [subject, setSubject] = useState(email.subject);
-  const [body, setBody] = useState(email.body);
+  // Unsaved edits stay with the email in this tab, so opening another email or leaving the page doesn't throw them away.
+  // They only come back while the email still reads as it did when you edited it, so a save or a rewrite starts fresh.
+  const editsKey = `splee:email-edits:${email.id}`;
+  const [kept] = useState(() => keptEdits(editsKey, email));
+  const [subject, setSubject] = useState(kept?.subject ?? email.subject);
+  const [body, setBody] = useState(kept?.body ?? email.body);
   const [busy, setBusy] = useState<"save" | "approve" | "cancel" | "regenerate" | "test" | null>(null);
   const [instructions, setInstructions] = useState<string | null>(null);
   const [rewriteRun, setRewriteRun] = useState<string | null>(null);
@@ -40,6 +54,10 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
 
   const isDraft = email.status === "draft";
   const dirty = subject !== email.subject || body !== email.body;
+  useEffect(() => {
+    if (dirty) sessionStorage.setItem(editsKey, JSON.stringify({ was: [email.subject, email.body], subject, body }));
+    else sessionStorage.removeItem(editsKey);
+  }, [dirty, editsKey, email.subject, email.body, subject, body]);
   const pending = email.status === "approved" || email.status === "scheduled";
 
   const patch = async (kind: "save" | "approve" | "cancel", changes: Record<string, unknown>, done: string) => {
