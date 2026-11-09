@@ -18,6 +18,7 @@ async-stream = "0.3.6"
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie", "typed-header"] }
 base64 = "0.23.1"
+calamine = "0.38.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = "0.10"
 claude-agent-sdk-rs = "0.6.4"
@@ -44,6 +45,7 @@ tower-http = { version = "0.7.1", features = ["cors", "trace", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
+zip = { version = "9.5.0", default-features = false }
 
 [patch.crates-io]
 claude-agent-sdk-rs = { path = "vendor/claude-agent-sdk-rs" }

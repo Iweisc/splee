@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use calamine::Reader;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -94,8 +96,11 @@ impl Upload {
             let (name, bytes) = sheet::fetch(link).await?;
             return Ok((name, parse_csv(&bytes)?));
         }
-        let file = self.file.take().ok_or_else(|| AppError::BadRequest("Attach a CSV file".into()))?;
-        Ok((std::mem::take(&mut self.filename), parse_csv(&file)?))
+        let file = self.file.take().ok_or_else(|| AppError::BadRequest("Attach a CSV or Excel file".into()))?;
+        let name = std::mem::take(&mut self.filename);
+        let lower = name.to_lowercase();
+        let spreadsheet = [".xlsx", ".xlsm", ".xls", ".ods"].iter().any(|ext| lower.ends_with(ext));
+        Ok((name, if spreadsheet { parse_spreadsheet(file)? } else { parse_csv(&file)? }))
     }
 }
 
@@ -121,6 +126,33 @@ fn parse_csv(bytes: &[u8]) -> AppResult<Csv> {
         rows.push((line, to_strings(&record)));
     }
     Ok(Csv { headers, rows })
+}
+
+/// How much an .xlsx or .ods may unzip to. Its sheet is read into memory whole, and a small file can unzip to gigabytes.
+const MAX_UNZIPPED: u64 = 200 * 1024 * 1024;
+
+/// The first sheet of an Excel or OpenDocument file, read like a CSV: its first row is the header and line numbers are
+/// the sheet's row numbers. Blank rows are skipped, as the CSV reader skips blank lines.
+fn parse_spreadsheet(bytes: Vec<u8>) -> AppResult<Csv> {
+    let unreadable = |e: &dyn std::fmt::Display| AppError::BadRequest(format!("Couldn't read the spreadsheet: {e}"));
+    // .xls isn't a zip, and only a zip can unzip to more than it is.
+    if let Ok(mut zip) = zip::ZipArchive::new(Cursor::new(&bytes)) {
+        let unzipped: u64 = (0..zip.len()).filter_map(|i| zip.by_index_raw(i).ok().map(|f| f.size())).sum();
+        if unzipped > MAX_UNZIPPED {
+            return Err(AppError::BadRequest("The spreadsheet is too big. Save its first sheet as a CSV and import that.".into()));
+        }
+    }
+    let mut book = calamine::open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| unreadable(&e))?;
+    let sheet = book.worksheet_range_at(0).ok_or_else(|| AppError::BadRequest("The spreadsheet has no sheets".into()))?;
+    let sheet = sheet.map_err(|e| unreadable(&e))?;
+    let first_row = sheet.start().map_or(0, |(row, _)| row as usize);
+    let mut rows = sheet
+        .rows()
+        .enumerate()
+        .map(|(i, cells)| (first_row + i + 1, cells.iter().map(|c| c.to_string().trim().to_string()).collect::<Vec<_>>()))
+        .filter(|(_, cells)| cells.iter().any(|c| !c.is_empty()));
+    let (_, headers) = rows.next().ok_or_else(|| AppError::BadRequest("The spreadsheet has no header row".into()))?;
+    Ok(Csv { headers, rows: rows.collect() })
 }
 
 fn suggest_field(header: &str) -> Option<&'static str> {
@@ -290,7 +322,17 @@ fn hunter_leads(body: &Value, segment_id: Option<Uuid>) -> Vec<NewLead> {
 mod tests {
     use serde_json::json;
 
-    use super::hunter_leads;
+    use super::{hunter_leads, parse_spreadsheet};
+
+    #[test]
+    fn reads_the_first_sheet_of_a_spreadsheet() {
+        // A blank row 1, the header on row 2, a phone number saved as a number, a blank row 4, and a second sheet.
+        let csv = parse_spreadsheet(include_bytes!("testdata/leads.xlsx").to_vec()).unwrap();
+        assert_eq!(csv.headers, ["Email", "First name", "Company", "Phone"]);
+        let rows: Vec<_> = csv.rows.iter().map(|(line, cells)| (*line, cells.join("|"))).collect();
+        assert_eq!(rows, [(3, "ada@acme.com|Ada|Acme|15551234567".to_string()), (5, "bob@acme.com|Bob|Acme|".to_string())]);
+        assert!(parse_spreadsheet(b"not a spreadsheet".to_vec()).is_err());
+    }
 
     #[test]
     fn keeps_the_people_hunter_is_sure_of() {
