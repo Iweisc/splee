@@ -48,7 +48,7 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
   }
   if (!detail) {
     return (
-      <PageBody className="grid gap-4 pt-10 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <PageBody className="grid gap-4 pt-10 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Skeleton className="h-96 rounded-2xl" />
         <Skeleton className="h-64 rounded-2xl" />
       </PageBody>
@@ -83,7 +83,8 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
           </LinkButton>
         }
       />
-      <PageBody className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      {/* Side by side only from xl. At lg the sidebar leaves 720px, so the run log and campaigns got less room than the profile. */}
+      <PageBody className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">
           {run && <RunProgress key={run.id} run={run} />}
           <Campaigns projectId={project.id} />
