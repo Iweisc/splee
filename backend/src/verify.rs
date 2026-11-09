@@ -1,6 +1,7 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier and Kickbox
-//! take the key in the URL, so every error drops its URL before it's logged or shown. Hunter and Bouncer take it in a header.
+//! take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer and Emailable take it in a
+//! header.
 
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ pub enum Verifier {
     Hunter,
     Kickbox,
     Bouncer,
+    Emailable,
 }
 
 impl Verifier {
@@ -41,6 +43,7 @@ impl Verifier {
             "hunter" => Some(Verifier::Hunter),
             "kickbox" => Some(Verifier::Kickbox),
             "bouncer" => Some(Verifier::Bouncer),
+            "emailable" => Some(Verifier::Emailable),
             _ => None,
         }
     }
@@ -52,6 +55,7 @@ impl Verifier {
             Verifier::Hunter => "Hunter",
             Verifier::Kickbox => "Kickbox",
             Verifier::Bouncer => "Bouncer",
+            Verifier::Emailable => "Emailable",
         }
     }
 
@@ -67,6 +71,7 @@ impl Verifier {
             Verifier::Kickbox => kickbox_get(Url::parse_with_params("https://api.kickbox.com/v2/balance", [("apikey", key)])?).await.map(|_| ()),
             // Like Kickbox's balance, the credits cost nothing.
             Verifier::Bouncer => bouncer_get(Url::parse("https://api.usebouncer.com/v1.1/credits")?, key).await.map(|_| ()),
+            Verifier::Emailable => emailable_get(Url::parse("https://api.emailable.com/v1/account")?, key).await.map(|_| ()),
         }
     }
 
@@ -95,6 +100,10 @@ impl Verifier {
             Verifier::Bouncer => {
                 let url = Url::parse_with_params("https://api.usebouncer.com/v1.1/email/verify", [("email", email), ("timeout", "10")])?;
                 Ok(bouncer_verdict(&bouncer_get(url, key).await?))
+            }
+            Verifier::Emailable => {
+                let url = Url::parse_with_params("https://api.emailable.com/v1/verify", [("email", email), ("timeout", "10")])?;
+                Ok(emailable_verdict(&emailable_get(url, key).await?))
             }
         }
     }
@@ -293,6 +302,27 @@ fn bouncer_verdict(body: &Value) -> Verdict {
     }
 }
 
+/// Emailable's errors come as `{"message": ...}`, like "Invalid API key or access token." A verification that runs past
+/// the timeout answers 249 with only a message, which has no state and so reads as unsure.
+async fn emailable_get(url: Url, key: &str) -> anyhow::Result<Value> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let res = client.get(url).bearer_auth(key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Emailable calls a disposable address risky, but like the other services it counts as invalid here.
+fn emailable_verdict(body: &Value) -> Verdict {
+    match body["state"].as_str() {
+        _ if body["disposable"] == true => Verdict::Invalid,
+        Some("deliverable") => Verdict::Valid,
+        Some("undeliverable") => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -330,6 +360,12 @@ mod tests {
         assert_eq!(bouncer_verdict(&json!({"status": "risky", "reason": "low_quality", "domain": {"disposable": "yes"}})), Verdict::Invalid);
         assert_eq!(bouncer_verdict(&json!({"status": "risky", "domain": {"acceptAll": "yes", "disposable": "no"}})), Verdict::Unsure);
         assert_eq!(bouncer_verdict(&json!({"status": "unknown", "reason": "timeout"})), Verdict::Unsure);
+        // Emailable's documented answers, and the 249 it sends when a check runs long.
+        assert_eq!(emailable_verdict(&json!({"state": "deliverable", "disposable": false})), Verdict::Valid);
+        assert_eq!(emailable_verdict(&json!({"state": "undeliverable", "reason": "rejected_email"})), Verdict::Invalid);
+        assert_eq!(emailable_verdict(&json!({"state": "risky", "reason": "low_quality", "disposable": true})), Verdict::Invalid);
+        assert_eq!(emailable_verdict(&json!({"state": "risky", "accept_all": true, "disposable": false})), Verdict::Unsure);
+        assert_eq!(emailable_verdict(&json!({"message": "Your request is taking longer than normal. Please send your request again."})), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
