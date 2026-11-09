@@ -298,7 +298,17 @@ const CRMS = {
     field: "API key",
     hint: "In Affinity: Settings → API, then Generate an API key.",
   },
-} as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
+  freshsales: {
+    name: "Freshsales",
+    record: "contacts",
+    field: "API key",
+    account: { label: "Bundle alias", placeholder: "acme.myfreshworks.com" },
+    hint: "In Freshsales: your profile → Profile Settings → API Settings, which shows both.",
+  },
+} as const satisfies Record<CrmName, Crm>;
+
+/** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
+type Crm = { name: string; record: string; field: string; hint: string; account?: { label: string; placeholder: string } };
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
 function useConnection(projectId: string, path: string) {
@@ -329,11 +339,12 @@ const submit = (run: () => void) => (e: React.FormEvent) => {
 
 /** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
 function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
-  const { name, record, field, hint } = CRMS[crm];
+  const { name, record, field, hint, account }: Crm = CRMS[crm];
   const [token, setToken] = useState("");
+  const [accountId, setAccountId] = useState("");
   const { busy, call } = useConnection(projectId, crm);
   const connect = async () => {
-    if (await call({ token }, `Connected to ${name}`)) setToken("");
+    if (await call({ token, account: accountId }, `Connected to ${name}`)) setToken("");
   };
   const disconnect = () => {
     if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call(undefined, `${name} disconnected`);
@@ -358,12 +369,17 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
       {connected ? (
         <p className="text-sm">Connected. Splee matches by email, so people already in {name} get updated, not duplicated.</p>
       ) : (
-        <form onSubmit={submit(connect)}>
-          <Field label={field} hint={hint}>
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
+          {account && (
+            <Field label={account.label} className="sm:w-56">
+              <Input placeholder={account.placeholder} autoComplete="off" value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} />
+            </Field>
+          )}
+          <Field label={field} hint={hint} className="flex-1">
             <div className="flex gap-2">
               {/* The label also wraps Connect, so name the input itself. */}
               <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-              <Button type="submit" loading={busy} disabled={!token}>
+              <Button type="submit" loading={busy} disabled={!token || (!!account && !accountId)}>
                 Connect
               </Button>
             </div>
