@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import { EmptyState, Skeleton } from "@/components/ui/misc";
+import { ApiError } from "@/lib/api";
 import { cn, num } from "@/lib/utils";
 
 export const PER_PAGE = 50;
@@ -18,20 +19,28 @@ export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLPar
 }
 
 export function LoadError({ error, retry, what = "this", className }: { error: unknown; retry?: () => void; what?: string; className?: string }) {
+  // A deleted project or campaign, or an old link to one. Trying again can't help, so offer a way back instead.
+  const notFound = error instanceof ApiError && error.status === 404;
   return (
     <EmptyState
       className={className}
       icon={<TriangleAlert className="size-5 text-danger" />}
-      title={`Couldn't load ${what}`}
+      title={notFound ? `Couldn't find ${what}` : `Couldn't load ${what}`}
       action={
-        retry && (
-          <Button variant="outline" size="sm" onClick={retry}>
-            Try again
-          </Button>
+        notFound ? (
+          <LinkButton href="/app" variant="outline" size="sm">
+            Go to your projects
+          </LinkButton>
+        ) : (
+          retry && (
+            <Button variant="outline" size="sm" onClick={retry}>
+              Try again
+            </Button>
+          )
         )
       }
     >
-      {error instanceof Error ? error.message : "The server didn't respond."}
+      {notFound ? "It may have been deleted, or the link is out of date." : error instanceof Error ? error.message : "The server didn't respond."}
     </EmptyState>
   );
 }
