@@ -2,6 +2,25 @@
 
 import { useEffect, useRef } from "react";
 
+/** The key pressed, or null when it belongs to something else: a field you're typing in, a dialog, or a modifier shortcut. */
+function shortcut(e: KeyboardEvent): string | null {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return null;
+  if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable], dialog, [role=dialog]")) return null;
+  return e.key;
+}
+
+/** Calls `run` when `key` is pressed, with the same rules as j and k. Null turns it off. */
+export function useShortcut(key: string, run: (() => void) | null) {
+  useEffect(() => {
+    if (!run) return;
+    const listener = (e: KeyboardEvent) => {
+      if (shortcut(e) === key) run();
+    };
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, [key, run]);
+}
+
 /**
  * j and k move the selection through a list like Gmail, unless you're typing or in a dialog. Below `minWidth` the
  * list and the open item don't sit side by side, so the keys do nothing there. Put the returned ref on the list and
@@ -10,30 +29,33 @@ import { useEffect, useRef } from "react";
 export function useListKeys(ids: string[] | undefined, selectedId: string | undefined, select: (id: string) => void, minWidth: string) {
   const listRef = useRef<HTMLUListElement>(null);
   useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if ((e.key !== "j" && e.key !== "k") || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
-      if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable], dialog, [role=dialog]")) return;
-      if (!ids?.length || !matchMedia(`(min-width: ${minWidth})`).matches) return;
+    const listener = (e: KeyboardEvent) => {
+      const key = shortcut(e);
+      if ((key !== "j" && key !== "k") || !ids?.length || !matchMedia(`(min-width: ${minWidth})`).matches) return;
       const at = ids.indexOf(selectedId ?? "");
-      const next = ids[Math.min(ids.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))];
+      const next = ids[Math.min(ids.length - 1, Math.max(0, at + (key === "j" ? 1 : -1)))];
       select(next);
       listRef.current?.querySelector(`[data-key="${next}"]`)?.scrollIntoView({ block: "nearest" });
     };
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
   }, [ids, selectedId, select, minWidth]);
   return listRef;
 }
 
-/** The line under a list that tells people about j and k. Hide it where useListKeys does nothing. */
-export function ListKeysHint({ what, className }: { what: string; className: string }) {
+/**
+ * The line under a list that tells people about j and k, and any other keys in `children`. Leave out `what` when
+ * there are other keys, so the line still fits the list. Hide it where useListKeys does nothing.
+ */
+export function ListKeysHint({ what, className, children }: { what?: string; className: string; children?: React.ReactNode }) {
   return (
     <p className={className}>
-      Press <Kbd>j</Kbd> and <Kbd>k</Kbd> to move between {what}
+      Press <Kbd>j</Kbd> and <Kbd>k</Kbd> to move{what && ` between ${what}`}
+      {children}
     </p>
   );
 }
 
-function Kbd({ children }: { children: React.ReactNode }) {
+export function Kbd({ children }: { children: React.ReactNode }) {
   return <kbd className="rounded border border-border bg-muted px-1 font-mono text-[11px] text-foreground">{children}</kbd>;
 }
