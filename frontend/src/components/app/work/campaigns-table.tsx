@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { SegmentWithStats } from "@/lib/types";
 import { cn, money, num } from "@/lib/utils";
@@ -15,6 +16,7 @@ const COST = "hidden @xl:table-cell";
 export function CampaignsTable({ projectId, segments }: { projectId: string; segments: SegmentWithStats[] }) {
   const router = useRouter();
   const order = { scaling: 0, working: 1, draft: 2, paused: 3 };
+  const href = (s: SegmentWithStats) => `/app/p/${projectId}/segments/${s.id}`;
   const sorted = [...segments].sort((a, b) => order[a.status] - order[b.status] || a.position - b.position);
 
   return (
@@ -33,12 +35,14 @@ export function CampaignsTable({ projectId, segments }: { projectId: string; seg
         </thead>
         <tbody>
           {sorted.map((s) => (
-            <Tr key={s.id} onClick={() => router.push(`/app/p/${projectId}/segments/${s.id}`)} className={cn(s.status === "paused" && "text-muted-foreground")}>
+            <Tr key={s.id} onClick={() => router.push(href(s))} className={cn(s.status === "paused" && "text-muted-foreground")}>
               <Td>
                 <span className="flex items-center gap-2.5">
                   <SegmentIcon name={s.icon} className="size-6" />
                   <span>
-                    <span className="block font-medium">{s.name}</span>
+                    <Link href={href(s)} className="block font-medium">
+                      {s.name}
+                    </Link>
                     <span className="@md:hidden">
                       <SegmentStatusDot status={s.status} />
                     </span>

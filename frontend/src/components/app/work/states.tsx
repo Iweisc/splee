@@ -88,6 +88,14 @@ export function Td({ className, ...props }: React.TdHTMLAttributes<HTMLTableCell
   return <td className={cn("px-4 py-2.5 align-middle", className)} {...props} />;
 }
 
-export function Tr({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className={cn("border-t border-border", props.onClick && "cursor-pointer hover:bg-accent", className)} {...props} />;
+/** A clickable row also needs a button or link in it, because a keyboard can't reach the row itself. */
+export function Tr({ className, onClick, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
+  return (
+    <tr
+      className={cn("border-t border-border", onClick && "cursor-pointer hover:bg-accent", className)}
+      // A link in the row navigates by itself. Handling its click here too would also navigate this tab on a Ctrl+click.
+      onClick={onClick && ((e) => (e.target as Element).closest("a") || onClick(e))}
+      {...props}
+    />
+  );
 }

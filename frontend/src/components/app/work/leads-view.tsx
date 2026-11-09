@@ -119,7 +119,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                 {data.items.map((l) => (
                   <Tr key={l.id} onClick={() => setOpenLead(l.id)}>
                     <Td className={cn(FILL, "w-[30%]")}>
-                      <p className="font-medium">{l.full_name || "—"}</p>
+                      {/* Its click bubbles to the row, which opens the lead. */}
+                      <button className="block text-left font-medium">{l.full_name || "—"}</button>
                       <p className="truncate text-xs text-muted-foreground">{l.title}</p>
                     </Td>
                     <Td className={cn(COMPANY, FILL, "w-[25%] truncate")}>{l.company_name}</Td>
