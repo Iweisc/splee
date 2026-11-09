@@ -294,7 +294,7 @@ function Campaigns({ projectId }: { projectId: string }) {
   );
 }
 
-/** Calls leads booked through Calendly or Cal.com, soonest first. Hidden until there is one. */
+/** Calls leads booked through a scheduling tool, soonest first. Hidden until there is one. */
 function UpcomingCalls({ projectId }: { projectId: string }) {
   const { data, mutate } = useSWR<Lead[]>(`/projects/${projectId}/meetings`, fetcher);
   const [open, setOpen] = useState<string | null>(null);

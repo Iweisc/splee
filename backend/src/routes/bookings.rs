@@ -18,16 +18,21 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/bookings/{token}", post(booked))
 }
 
+/// The emails in `payload.attendees`, leaving out the host. SavvyCal lists the organizer there too, Cal.com doesn't.
+fn attendees(body: &Value) -> Vec<&Value> {
+    let list = body["payload"]["attendees"].as_array();
+    list.map(|a| a.iter().filter(|x| x["is_organizer"] != true).map(|x| &x["email"]).collect()).unwrap_or_default()
+}
+
 /// The invitee emails in a new or moved booking, or none for other events (cancellations, pings).
 /// Calendly sends `invitee.created` with `payload.email` (a reschedule is a new invitee), Cal.com `BOOKING_CREATED` or
-/// `BOOKING_RESCHEDULED` with `payload.attendees[].email`, and anything else, like a Zapier step, can send `{"email": ...}`.
+/// `BOOKING_RESCHEDULED` and SavvyCal `event.created` or `event.rescheduled` with `payload.attendees[].email`, and anything
+/// else, like a Zapier step, can send `{"email": ...}`.
 fn booked_emails(body: &Value) -> Vec<String> {
-    let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str()) {
-        (Some("invitee.created"), _) => vec![&body["payload"]["email"]],
-        (_, Some("BOOKING_CREATED" | "BOOKING_RESCHEDULED")) => {
-            body["payload"]["attendees"].as_array().map(|a| a.iter().map(|x| &x["email"]).collect()).unwrap_or_default()
-        }
-        (None, None) => vec![&body["email"]],
+    let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
+        (Some("invitee.created"), _, _) => vec![&body["payload"]["email"]],
+        (_, Some("BOOKING_CREATED" | "BOOKING_RESCHEDULED"), _) | (_, _, Some("event.created" | "event.rescheduled")) => attendees(body),
+        (None, None, None) => vec![&body["email"]],
         _ => vec![],
     };
     found.into_iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect()
@@ -36,20 +41,18 @@ fn booked_emails(body: &Value) -> Vec<String> {
 /// The invitee emails in a cancelled booking. Calendly cancels the old invitee when someone reschedules, with
 /// `payload.rescheduled` set, so that one isn't a cancellation.
 fn cancelled_emails(body: &Value) -> Vec<String> {
-    let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str()) {
-        (Some("invitee.canceled"), _) if body["payload"]["rescheduled"] != true => vec![&body["payload"]["email"]],
-        (_, Some("BOOKING_CANCELLED")) => {
-            body["payload"]["attendees"].as_array().map(|a| a.iter().map(|x| &x["email"]).collect()).unwrap_or_default()
-        }
+    let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
+        (Some("invitee.canceled"), _, _) if body["payload"]["rescheduled"] != true => vec![&body["payload"]["email"]],
+        (_, Some("BOOKING_CANCELLED"), _) | (_, _, Some("event.canceled")) => attendees(body),
         _ => vec![],
     };
     found.into_iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect()
 }
 
-/// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`, or a
-/// plain `start_time`. None when the tool didn't say.
+/// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`,
+/// SavvyCal's `payload.start_at`, or a plain `start_time`. None when the tool didn't say.
 fn meeting_start(body: &Value) -> Option<Ts> {
-    [&body["payload"]["scheduled_event"]["start_time"], &body["payload"]["startTime"], &body["start_time"]]
+    [&body["payload"]["scheduled_event"]["start_time"], &body["payload"]["startTime"], &body["payload"]["start_at"], &body["start_time"]]
         .into_iter()
         .find_map(|v| DateTime::parse_from_rfc3339(v.as_str()?).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -75,7 +78,7 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
         .fetch_all(&state.db)
         .await?;
     let at = meeting_start(&body);
-    let rescheduled = body["triggerEvent"] == "BOOKING_RESCHEDULED";
+    let rescheduled = body["triggerEvent"] == "BOOKING_RESCHEDULED" || body["type"] == "event.rescheduled";
     for lead in &leads {
         // Set before the move below, so its alerts carry the time.
         if at.is_some() {
@@ -137,6 +140,14 @@ mod tests {
         assert!(booked_emails(&json!({"triggerEvent": "PING"})).is_empty());
         let moved = json!({"triggerEvent": "BOOKING_RESCHEDULED", "payload": {"attendees": [{"email": "a@x.com"}]}});
         assert_eq!(booked_emails(&moved), ["a@x.com"]);
+        // SavvyCal lists the host among the attendees.
+        let attendees = json!([{"email": "host@us.com", "is_organizer": true}, {"email": "Jane@Acme.com", "is_organizer": false}]);
+        let savvycal = json!({"type": "event.created", "id": "payload_1", "payload": {"attendees": attendees, "start_at": "2026-11-10T14:00:00Z"}});
+        assert_eq!(booked_emails(&savvycal), ["jane@acme.com"]);
+        assert_eq!(booked_emails(&json!({"type": "event.rescheduled", "payload": {"attendees": attendees}})), ["jane@acme.com"]);
+        assert!(booked_emails(&json!({"type": "event.requested", "payload": {"attendees": attendees}})).is_empty());
+        assert!(booked_emails(&json!({"type": "event.canceled", "payload": {"attendees": attendees}})).is_empty());
+        assert_eq!(meeting_start(&savvycal).map(|t| t.to_rfc3339()), Some("2026-11-10T14:00:00+00:00".into()));
     }
 
     #[test]
@@ -149,6 +160,8 @@ mod tests {
         assert_eq!(cancelled_emails(&cal), ["b@y.com"]);
         assert!(cancelled_emails(&json!({"triggerEvent": "BOOKING_CREATED", "payload": {"attendees": [{"email": "b@y.com"}]}})).is_empty());
         assert!(cancelled_emails(&json!({"email": "c@z.com"})).is_empty());
+        let savvycal = json!({"type": "event.canceled", "payload": {"attendees": [{"email": "host@us.com", "is_organizer": true}, {"email": "d@w.com"}]}});
+        assert_eq!(cancelled_emails(&savvycal), ["d@w.com"]);
     }
 
     #[test]

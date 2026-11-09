@@ -71,7 +71,7 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "hot_lead", label: "Hot lead", hint: "A reply that shows interest, like asking for a call." },
   { value: "lead_replied", label: "Every reply", hint: "Any reply a person wrote, with how Splee classified it." },
   { value: "meeting_booked", label: "Meeting booked", hint: "The lead booked a call, or your team marked them Meeting booked." },
-  { value: "meeting_cancelled", label: "Meeting cancelled", hint: "The lead cancelled the call they booked in Calendly or Cal.com." },
+  { value: "meeting_cancelled", label: "Meeting cancelled", hint: "The lead cancelled the call they booked through your scheduling tool." },
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
   { value: "email_sent", label: "Email sent", hint: "Every email Splee sends a lead, to log it in your CRM." },
@@ -514,7 +514,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>&quot;reply&quot;: null</code> and a <code>form</code> whose <code>answers</code> each have a <code>question</code> and an{" "}
                   <code>answer</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
                   <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once
-                  Calendly or Cal.com sent it.
+                  their scheduling tool sent it.
                 </p>
                 <div className="mt-4">
                   <CodeBlock code={VERIFY} label="Check the signature (Node)" />
@@ -531,7 +531,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <Section
             title={
               <span className="flex items-center gap-2">
-                <CalendarCheck className="size-4" /> Calendly and Cal.com
+                <CalendarCheck className="size-4" /> Calendly, Cal.com and SavvyCal
               </span>
             }
             description="When a lead books a call, Splee marks them Meeting booked and stops emailing them. If they cancel, they go back to Hot. Your chat channel and webhook hear about both."
@@ -542,7 +542,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
               <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
               <p className="text-xs text-pretty text-muted-foreground">
                 In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled. In
-                Calendly, subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
+                SavvyCal: Settings → Integrations, then + next to Webhooks. In Calendly, subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
                 <code>{`{"email": "...", "start_time": "..."}`}</code>. Splee finds the lead by email and shows the call&apos;s time on it.
               </p>
             </div>
