@@ -13,7 +13,7 @@ import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
-import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
+import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
 import { LeadNotes } from "./lead-modal";
 import { ListKeysHint, useListKeys, useShortcut } from "./list-keys";
 import { SearchField } from "./search-field";
@@ -33,6 +33,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
   const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
+  useLastPageGuard(data?.total, page, setPage);
   // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
   // filter hides falls back to the first thread.
   const linked = selectedLead !== null && selectedLead === initialLead;

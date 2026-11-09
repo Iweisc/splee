@@ -13,7 +13,7 @@ import { cn, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
 import { SearchField } from "./search-field";
-import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced } from "./states";
+import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
 import { LEAD_STATUS, LeadStatusBadge } from "./status";
 
 /** Leads table with filters. Pass `segmentId` to pin it to one campaign (hides the campaign filter). */
@@ -40,6 +40,11 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const filters = { segment_id: segmentId ?? segment, status, q: query };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
+  const turnPage = (p: number) => {
+    setPage(p);
+    setPicked(new Set());
+  };
+  useLastPageGuard(data?.total, page, turnPage);
   const filtered = !!(query || segment || status);
 
   const filter = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -63,11 +68,9 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           projectId={projectId}
           ids={[...picked]}
           segments={segments ?? []}
-          onDone={async () => {
+          onDone={() => {
             setPicked(new Set());
-            // Emptying the last page would strand you past the end, where the empty state hides the pager.
-            const fresh = await mutate();
-            if (fresh && fresh.items.length === 0 && page > 1) setPage(Math.max(1, Math.ceil(fresh.total / PER_PAGE)));
+            return mutate();
           }}
           onClear={() => setPicked(new Set())}
         />
@@ -189,14 +192,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
               </tbody>
             </table>
           </div>
-          <Pager
-            page={page}
-            total={data.total}
-            onChange={(p) => {
-              setPage(p);
-              setPicked(new Set());
-            }}
-          />
+          <Pager page={page} total={data.total} onChange={turnPage} />
         </>
       )}
       <LeadModal leadId={openLead} onClose={() => setOpenLead(null)} />
