@@ -13,7 +13,7 @@ import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput } from "@/lib/types";
-import { timeAgo } from "@/lib/utils";
+import { dateTime, isPast, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
   active: { tone: "green", label: "Active" },
@@ -49,7 +49,8 @@ function PublicUrlWarning() {
 }
 
 export default function MailboxesPage() {
-  const { data, error, mutate } = useSWR<Mailbox[]>("/mailboxes", fetcher);
+  // Polled every minute like the sender's recheck, so a stopped mailbox that starts sending again shows it.
+  const { data, error, mutate } = useSWR<Mailbox[]>("/mailboxes", fetcher, { refreshInterval: 60_000 });
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Mailbox | "new" | null>(null);
 
@@ -185,6 +186,7 @@ export default function MailboxesPage() {
                 {m.last_error && (
                   <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs text-red-700">{m.last_error}</p>
                 )}
+                {m.status === "error" && <p className="mt-2 text-xs text-muted-foreground">{nextStep(m)}</p>}
               </Card>
             ))}
           </div>
@@ -208,6 +210,13 @@ export default function MailboxesPage() {
       </Modal>
     </>
   );
+}
+
+/** What happens next to a stopped mailbox. The sender tests an unreachable server or a used-up daily limit again itself. */
+function nextStep(m: Mailbox): string {
+  if (!m.recheck_at) return "Fix the settings, then press Test connection to start sending again.";
+  if (isPast(m.recheck_at)) return "Splee is testing it again now.";
+  return `Splee tests it again at ${dateTime(m.recheck_at)} and starts sending once it works.`;
 }
 
 function DnsBadge({ name, check }: { name: string; check?: DnsCheck }) {
