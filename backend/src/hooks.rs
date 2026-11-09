@@ -134,7 +134,8 @@ fn transient(e: &anyhow::Error) -> bool {
 #[derive(Clone, Copy)]
 pub enum Alert {
     Webhook,
-    Slack,
+    /// Matched on chat_channels.url.
+    Chat,
     /// Matched on {name}_token_enc, the stored ciphertext.
     Crm(crate::crm::Crm),
     /// Matched on verifier_key_enc.
@@ -147,7 +148,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
     // The names are fixed strings, never user input.
     let (prefix, column) = match alert {
         Alert::Webhook => ("webhook", "webhook_url".to_string()),
-        Alert::Slack => ("slack", "slack_webhook_url".to_string()),
+        Alert::Chat => return record_chat(db, project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
     };
@@ -157,6 +158,14 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
     );
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
     if let Err(e) = sqlx::query(&sql).bind(project_id).bind(url).bind(error).execute(db).await {
+        tracing::warn!(error = %e, "couldn't save the alert outcome");
+    }
+}
+
+async fn record_chat(db: &sqlx::PgPool, project_id: Uuid, url: &str, result: &anyhow::Result<()>) {
+    let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
+    let sql = "update chat_channels set error = $3, failed_at = case when $3::text is null then null else now() end where project_id = $1 and url = $2";
+    if let Err(e) = sqlx::query(sql).bind(project_id).bind(url).bind(error).execute(db).await {
         tracing::warn!(error = %e, "couldn't save the alert outcome");
     }
 }
@@ -361,24 +370,21 @@ fn html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams, Google Chat, Telegram,
-/// ntfy and Pushover) when it has one, and records how it went for the integrations page.
+/// Posts an alert to each of the project's chats at once, so a slow or broken one doesn't hold up the rest, and records
+/// how each went for the integrations page.
 pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_>) {
-    let url: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if url.trim().is_empty() {
-        return;
-    }
-    let result = post_json_retrying(&chat_endpoint(&url), &chat_payload(&url, alert), None).await;
-    if let Err(e) = &result {
-        tracing::warn!(error = %e, "chat notification failed");
-    }
-    record(db, project_id, Alert::Slack, &url, &result).await;
+    let urls: Vec<String> = match sqlx::query_scalar("select url from chat_channels where project_id = $1").bind(project_id).fetch_all(db).await {
+        Ok(urls) => urls,
+        Err(e) => return tracing::warn!(error = %e, "couldn't load the chat channels"),
+    };
+    futures::future::join_all(urls.iter().map(|url| async move {
+        let result = post_json_retrying(&chat_endpoint(url), &chat_payload(url, alert), None).await;
+        if let Err(e) = &result {
+            tracing::warn!(error = %e, "chat notification failed");
+        }
+        record(db, project_id, Alert::Chat, url, &result).await;
+    }))
+    .await;
 }
 
 /// Whether an update moved the lead to meeting_booked. `before` is its status before the update.
@@ -655,6 +661,25 @@ mod tests {
         let refused = reqwest::Client::new().get("http://127.0.0.1:9/").send().await.unwrap_err();
         assert!(transient(&refused.into()));
         assert!(!transient(&post_json("http://127.0.0.1/hook", &Value::Null, None).await.unwrap_err()));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_failed_post_marks_only_its_own_chat(db: sqlx::PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        for url in ["https://hooks.slack.com/services/T/B/x", "https://ntfy.sh/acme"] {
+            sqlx::query("insert into chat_channels (project_id, url) values ($1, $2)").bind(project).bind(url).execute(&db).await.unwrap();
+        }
+        let errors = || {
+            sqlx::query_as::<_, (String, Option<String>)>("select url, error from chat_channels order by url").fetch_all(&db)
+        };
+        record(&db, project, Alert::Chat, "https://ntfy.sh/acme", &Err(anyhow::anyhow!("404 Not Found"))).await;
+        let failed = errors().await.unwrap();
+        assert_eq!(failed[0], ("https://hooks.slack.com/services/T/B/x".to_string(), None));
+        assert_eq!(failed[1], ("https://ntfy.sh/acme".to_string(), Some("404 Not Found".to_string())));
+        record(&db, project, Alert::Chat, "https://ntfy.sh/acme", &Ok(())).await;
+        assert!(errors().await.unwrap().iter().all(|(_, e)| e.is_none()));
     }
 
     #[test]

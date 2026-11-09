@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -9,6 +9,7 @@ import { CampaignField } from "@/components/app/settings/campaign-field";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { useAction } from "@/components/app/settings/use-action";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
@@ -16,7 +17,7 @@ import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import { CRM_NAMES, type CrmName, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
+import { CRM_NAMES, type ChatChannel, type CrmName, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -95,16 +96,35 @@ const CHAT_APPS = [
   ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
 ];
 
-/** Posts a sample alert to the URL as typed, saved or not. */
-function TestButton({ projectId, target, url }: { projectId: string; target: "slack" | "webhook"; url: string }) {
+/** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */
+function chatApp(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return url;
+  }
+  const on = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (on("slack.com")) return "Slack";
+  if (on("discord.com") || on("discordapp.com")) return "Discord";
+  if (on("logic.azure.com") || on("powerplatform.com") || on("webhook.office.com")) return "Teams";
+  if (host === "chat.googleapis.com") return "Google Chat";
+  if (host === "api.telegram.org") return "Telegram";
+  if (host === "ntfy.sh") return "ntfy";
+  if (host === "api.pushover.net") return "Pushover";
+  return host;
+}
+
+/** Posts a sample alert to the URL as typed, saved or not. `compact` shows just the icon on phones, for list rows. */
+function TestButton({ projectId, target, url, compact }: { projectId: string; target: "slack" | "webhook"; url: string; compact?: boolean }) {
   const { mutate } = useSWRConfig();
   const [busy, setBusy] = useState(false);
   const send = async () => {
     setBusy(true);
     try {
       await api(`/projects/${projectId}/integrations/test`, { body: { target, url } });
-      // A test that passes on the saved URL clears its last failure.
-      mutate(`/projects/${projectId}/settings`);
+      // A test that passes on a saved URL clears its last failure.
+      mutate(target === "slack" ? `/projects/${projectId}/chat-channels` : `/projects/${projectId}/settings`);
       toast.success(target === "slack" ? "Test sent. Check the channel." : "Test sent. Your endpoint accepted it.");
     } catch (e) {
       toastError(e);
@@ -113,8 +133,8 @@ function TestButton({ projectId, target, url }: { projectId: string; target: "sl
     }
   };
   return (
-    <Button size="sm" variant="outline" onClick={send} loading={busy} disabled={!isUrl(url)}>
-      {!busy && <Send className="size-3.5" />} Send a test
+    <Button size="sm" variant="outline" onClick={send} loading={busy} disabled={!isUrl(url)} aria-label="Send a test">
+      {!busy && <Send className="size-3.5" />} <span className={compact ? "max-sm:hidden" : undefined}>Send a test</span>
     </Button>
   );
 }
@@ -298,6 +318,90 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
   );
 }
 
+/** The chats that get the project's alerts. Each is added or removed on its own, not with the page's Save. */
+function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; weekly: boolean; setWeekly: (on: boolean) => void }) {
+  const key = `/projects/${projectId}/chat-channels`;
+  const { data, mutate } = useSWR<ChatChannel[]>(key, fetcher);
+  const { pending, run } = useAction();
+  const [url, setUrl] = useState("");
+  const add = async () => {
+    const added = await run("add", async () => {
+      await api(key, { body: { url } });
+      await mutate();
+    }, `Alerts will post to ${chatApp(url)} too`);
+    if (added) setUrl("");
+  };
+  const remove = (c: ChatChannel) => {
+    if (!confirm(`Stop posting alerts to this ${chatApp(c.url)} chat?`)) return;
+    run(c.id, async () => {
+      await api(`/chat-channels/${c.id}`, { method: "DELETE" });
+      await mutate();
+    }, `Removed ${chatApp(c.url)}`);
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Hash className="size-4" /> Chat alerts
+        </span>
+      }
+      description="Posts to every chat you add, in Slack, Discord, Teams, Google Chat or Telegram, or on your phone with ntfy or Pushover, about hot leads, booked meetings and follow-ups that come due."
+    >
+      {!!data?.length && (
+        <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          {data.map((c) => (
+            <li key={c.id} className="px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{chatApp(c.url)}</p>
+                  {/* Two lines without the scheme, so two chats in the same app still read apart on a phone. */}
+                  <p className="line-clamp-2 font-mono text-xs break-all text-muted-foreground" title={c.url}>
+                    {c.url.replace(/^https:\/\//, "")}
+                  </p>
+                </div>
+                <TestButton projectId={projectId} target="slack" url={c.url} compact />
+                <Button size="sm" variant="ghost" onClick={() => remove(c)} loading={pending === c.id} aria-label={`Remove ${chatApp(c.url)}`}>
+                  {pending !== c.id && <Trash2 className="size-3.5" />}
+                </Button>
+              </div>
+              <LastFailure error={c.error} at={c.failed_at} />
+            </li>
+          ))}
+        </ul>
+      )}
+      <Field
+        label={data?.length ? "Add another chat" : "Incoming webhook URL"}
+        hint={CHAT_APPS.map(([app, where]) => (
+          <span key={app} className="block">
+            {app}: {where}
+          </span>
+        ))}
+      >
+        <div className="flex gap-2">
+          {/* The label also wraps Add, so name the input itself. */}
+          <Input
+            aria-label="Chat webhook URL"
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value.trim())}
+            placeholder="https://hooks.slack.com/…"
+          />
+          <Button onClick={add} loading={pending === "add"} disabled={!isUrl(url)}>
+            Add
+          </Button>
+        </div>
+      </Field>
+      <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
+        <span>
+          <span className="block text-sm font-medium">Weekly report</span>
+          <span className="block text-xs text-muted-foreground">Mondays at 08:00 UTC: emails, replies, hot leads and spend.</span>
+        </span>
+        <Switch checked={weekly} onChange={setWeekly} disabled={!data?.length} label="Weekly report" />
+      </div>
+    </Section>
+  );
+}
+
 const VERIFIERS = {
   neverbounce: "NeverBounce",
   millionverifier: "MillionVerifier",
@@ -426,49 +530,11 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
     <ProjectSettingsPage
       title="Integrations"
       description="Get told the moment a lead replies, in your own tools."
-      problem={(s) => problemFor("Webhook URL", s.webhook_url) ?? problemFor("Chat webhook URL", s.slack_webhook_url)}
+      problem={(s) => problemFor("Webhook URL", s.webhook_url)}
     >
       {(s, update) => (
         <>
-          <Section
-            title={
-              <span className="flex items-center gap-2">
-                <Hash className="size-4" /> Chat alerts
-              </span>
-            }
-            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy or Pushover, about hot leads, booked meetings and follow-ups that come due."
-            actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
-          >
-            <Field
-              label="Incoming webhook URL"
-              error={problemFor("Chat webhook URL", s.slack_webhook_url)}
-              hint={CHAT_APPS.map(([app, where]) => (
-                <span key={app} className="block">
-                  {app}: {where}
-                </span>
-              ))}
-            >
-              <Input
-                type="url"
-                value={s.slack_webhook_url}
-                onChange={(e) => update({ slack_webhook_url: e.target.value.trim() })}
-                placeholder="https://hooks.slack.com/services/…"
-              />
-            </Field>
-            <LastFailure error={s.slack_error} at={s.slack_failed_at} />
-            <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
-              <span>
-                <span className="block text-sm font-medium">Weekly report</span>
-                <span className="block text-xs text-muted-foreground">Mondays at 08:00 UTC: emails, replies, hot leads and spend.</span>
-              </span>
-              <Switch
-                checked={s.chat_weekly_report}
-                onChange={(chat_weekly_report) => update({ chat_weekly_report })}
-                disabled={!s.slack_webhook_url}
-                label="Weekly report"
-              />
-            </div>
-          </Section>
+          <ChatSection projectId={projectId} weekly={s.chat_weekly_report} setWeekly={(chat_weekly_report) => update({ chat_weekly_report })} />
 
           {CRM_NAMES.map((crm) => (
             <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />

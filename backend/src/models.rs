@@ -97,13 +97,10 @@ pub struct ProjectSettings {
     pub channels: Value,
     pub targeting: Value,
     pub webhook_url: String,
-    pub slack_webhook_url: String,
     pub webhook_secret: String,
     pub webhook_error: Option<String>,
     pub webhook_failed_at: Option<Ts>,
-    pub slack_error: Option<String>,
-    pub slack_failed_at: Option<Ts>,
-    /// Posts the last 7 days' numbers to the chat channel every Monday.
+    /// Posts the last 7 days' numbers to the project's chats every Monday.
     pub chat_weekly_report: bool,
     pub paused: bool,
     /// Which of hooks::EVENTS the webhook gets.
@@ -160,6 +157,17 @@ pub struct WebhookDelivery {
     pub payload: Value,
     /// None when the endpoint answered 2xx.
     pub error: Option<String>,
+    pub created_at: Ts,
+}
+
+/// A chat that gets the project's alerts: a Slack, Discord, Teams, Google Chat or Telegram webhook, or ntfy or Pushover.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct ChatChannel {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub url: String,
+    pub error: Option<String>,
+    pub failed_at: Option<Ts>,
     pub created_at: Ts,
 }
 
