@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::hooks::{self, Alert};
-use crate::models::{LinkedinMessage, Ts};
+use crate::models::{Lead, LinkedinMessage, Ts};
 use crate::routes::linkedin::mark;
 use crate::state::AppState;
 
@@ -96,6 +96,32 @@ pub async fn find_account(base: &str, token: &str) -> anyhow::Result<(String, St
     Ok((id.to_string(), account["name"].as_str().unwrap_or_default().to_string()))
 }
 
+/// Has Unipile post the account's LinkedIn messages and new connections to `url`. Returns the webhooks' ids.
+pub async fn add_webhooks(base: &str, token: &str, account: &str, url: &str) -> anyhow::Result<Vec<String>> {
+    let u = Unipile::new(base, token, account)?;
+    let mut ids = Vec::new();
+    for (source, event) in [("messaging", "message_received"), ("users", "new_relation")] {
+        // Without the header Unipile posts without a JSON content type, which the route turns away.
+        let hook = json!({
+            "request_url": url, "name": "Splee", "source": source, "events": [event], "account_ids": [account], "format": "json", "enabled": true,
+            "headers": [{ "key": "Content-Type", "value": "application/json" }],
+        });
+        let made = u.call(u.client.post(format!("{base}/webhooks")).json(&hook)).await.map_err(Failure::into_error)?;
+        ids.push(made["webhook_id"].as_str().context("Unipile didn't return the webhook's id")?.to_string());
+    }
+    Ok(ids)
+}
+
+/// Removes the webhooks add_webhooks made. A failure only leaves posts Splee answers with a 404.
+pub async fn remove_webhooks(base: &str, token: &str, ids: &[String]) {
+    let Ok(u) = Unipile::new(base, token, "") else { return };
+    for id in ids {
+        if let Err(e) = u.call(u.client.delete(format!("{base}/webhooks/{id}"))).await.map_err(Failure::into_error) {
+            tracing::warn!(error = %e, "couldn't remove a Unipile webhook");
+        }
+    }
+}
+
 impl Unipile {
     pub fn new(base: &str, token: &str, account: &str) -> reqwest::Result<Self> {
         let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
@@ -121,11 +147,19 @@ impl Unipile {
         Err(if about_lead { Failure::Lead { kind, reason } } else { Failure::Account(anyhow::anyhow!("{reason}")) })
     }
 
-    /// `invited_at` is when the lead's connect note went out, for a message step.
-    async fn send(&self, step: &LinkedinMessage, url: &str, invited_at: Option<Ts>) -> Result<Step, Failure> {
+    /// The lead's LinkedIn profile, with their `provider_id`.
+    async fn profile(&self, url: &str) -> Result<Value, Failure> {
         let id = profile_id(url).ok_or_else(|| Failure::lead("The LinkedIn URL isn't a profile link"))?;
         let profile = self.call(self.client.get(format!("{}/users/{id}?account_id={}", self.base, self.account))).await?;
-        let provider_id = profile["provider_id"].as_str().ok_or_else(|| Failure::Account(anyhow::anyhow!("Unipile didn't return the profile's id")))?;
+        if profile["provider_id"].as_str().is_none_or(str::is_empty) {
+            return Err(Failure::Account(anyhow::anyhow!("Unipile didn't return the profile's id")));
+        }
+        Ok(profile)
+    }
+
+    /// `invited_at` is when the lead's connect note went out, for a message step.
+    async fn send(&self, step: &LinkedinMessage, profile: &Value, invited_at: Option<Ts>) -> Result<Step, Failure> {
+        let provider_id = profile["provider_id"].as_str().unwrap_or_default();
         let connected = profile["network_distance"] == "FIRST_DEGREE" || profile["is_relationship"] == true;
 
         if step.kind == "connect" {
@@ -167,6 +201,70 @@ struct Sender {
     send_days: Vec<i32>,
     send_start_hour: i32,
     send_end_hour: i32,
+}
+
+/// What a webhook post from Unipile means for the project's leads: someone writing back stops their sequence and emails,
+/// like an email reply, and someone accepting the connect note has their first message come due. Returns the lead who
+/// wrote back, and what they wrote, when it stopped them.
+pub async fn on_event(db: &PgPool, project: Uuid, account: &str, body: &Value) -> sqlx::Result<Option<(Lead, String)>> {
+    if body["account_id"] != account {
+        return Ok(None);
+    }
+    match body["event"].as_str() {
+        Some("message_received") => {
+            let sender = &body["sender"];
+            let from = sender["attendee_provider_id"].as_str().unwrap_or_default();
+            // The account's own messages come through too, sent by Splee or from LinkedIn.
+            if from.is_empty() || body["account_info"]["user_id"] == from {
+                return Ok(None);
+            }
+            let Some(lead) = find_lead(db, project, from, sender["attendee_profile_url"].as_str().and_then(profile_id)).await? else {
+                return Ok(None);
+            };
+            if !["new", "queued", "contacted"].contains(&lead.status.as_str()) {
+                return Ok(None);
+            }
+            let stopped = crate::routes::linkedin::stop_for_reply(db, &lead).await?;
+            Ok(Some((stopped, body["message"].as_str().unwrap_or_default().to_string())))
+        }
+        Some("new_relation") => {
+            let (from, public_id) = (body["user_provider_id"].as_str().unwrap_or_default(), body["user_public_identifier"].as_str());
+            if let Some(lead) = find_lead(db, project, from, public_id).await? {
+                sqlx::query(
+                    "update linkedin_messages set due_at = now()
+                     where id = (select id from linkedin_messages where lead_id = $1 and status = 'todo' order by step limit 1)
+                       and kind = 'message' and due_at > now()",
+                )
+                .bind(lead.id)
+                .execute(db)
+                .await?;
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The project's lead with this LinkedIn id, else the one whose profile URL has this public id.
+async fn find_lead(db: &PgPool, project: Uuid, provider_id: &str, public_id: Option<&str>) -> sqlx::Result<Option<Lead>> {
+    if !provider_id.is_empty() {
+        let lead = sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and linkedin_provider_id = $2 order by created_at limit 1")
+            .bind(project)
+            .bind(provider_id)
+            .fetch_optional(db)
+            .await?;
+        if lead.is_some() {
+            return Ok(lead);
+        }
+    }
+    let Some(public_id) = public_id else { return Ok(None) };
+    let leads = sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and linkedin_url ilike '%/in/' || $2 || '%' order by created_at")
+        .bind(project)
+        .bind(public_id)
+        .fetch_all(db)
+        .await?;
+    // The match above also takes sam-lee for sam.
+    Ok(leads.into_iter().find(|l| profile_id(&l.linkedin_url).is_some_and(|id| id.eq_ignore_ascii_case(public_id))))
 }
 
 /// Connected, unpaused projects whose LinkedIn account hasn't had a Unipile failure in the last hour.
@@ -250,7 +348,19 @@ async fn send_next(db: &PgPool, unipile: &Unipile, project: Uuid) -> anyhow::Res
             .fetch_one(db)
             .await?;
 
-    match unipile.send(&step, &url, invited_at).await {
+    let sent = match unipile.profile(&url).await {
+        Ok(profile) => {
+            // How Unipile names the lead when they write back.
+            sqlx::query("update leads set linkedin_provider_id = $2 where id = $1")
+                .bind(step.lead_id)
+                .bind(profile["provider_id"].as_str())
+                .execute(db)
+                .await?;
+            unipile.send(&step, &profile, invited_at).await
+        }
+        Err(e) => Err(e),
+    };
+    match sent {
         Ok(Step::Sent) => {
             mark(db, &step, "done", None).await?;
             sqlx::query("update linkedin_messages set sent_via = 'unipile' where id = $1").bind(step.id).execute(db).await?;
@@ -327,11 +437,22 @@ mod tests {
             calls.lock().unwrap().push(format!("chat {}", fields.join(" ")));
             Json(json!({ "object": "ChatStarted", "chat_id": "c1" }))
         }
+        async fn webhook(State(calls): State<Calls>, Json(body): Json<Value>) -> Json<Value> {
+            let mut calls = calls.lock().unwrap();
+            calls.push(format!("webhook {} {} {} {} {}", body["source"], body["events"], body["account_ids"], body["request_url"], body["headers"]));
+            Json(json!({ "object": "WebhookCreated", "webhook_id": format!("wh{}", calls.len()) }))
+        }
+        async fn unhook(State(calls): State<Calls>, Path(id): Path<String>) -> Json<Value> {
+            calls.lock().unwrap().push(format!("unhook {id}"));
+            Json(json!({ "object": "WebhookDeleted" }))
+        }
         let calls = Calls::default();
         let app = Router::new()
             .route("/api/v1/users/{id}", get(user))
             .route("/api/v1/users/invite", post(invite))
             .route("/api/v1/chats", post(chat))
+            .route("/api/v1/webhooks", post(webhook))
+            .route("/api/v1/webhooks/{id}", axum::routing::delete(unhook))
             .with_state(calls.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
@@ -428,5 +549,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sending().await, [projects[2]]);
+    }
+
+    #[tokio::test]
+    async fn webhooks_cover_replies_and_new_connections_on_the_one_account() {
+        let (base, calls) = fake_unipile().await;
+        let ids = add_webhooks(&base, "TOKEN", "ACC", "https://app.example/api/unipile/abc").await.unwrap();
+        remove_webhooks(&base, "TOKEN", &ids).await;
+        assert_eq!(*calls.lock().unwrap(), [
+            r#"webhook "messaging" ["message_received"] ["ACC"] "https://app.example/api/unipile/abc" [{"key":"Content-Type","value":"application/json"}]"#,
+            r#"webhook "users" ["new_relation"] ["ACC"] "https://app.example/api/unipile/abc" [{"key":"Content-Type","value":"application/json"}]"#,
+            "unhook wh1",
+            "unhook wh2",
+        ]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_linkedin_reply_stops_the_lead_and_a_new_connection_brings_the_message_due(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let sam = lead_with_sequence(&db, project, "sam").await;
+        let lead: Uuid = sqlx::query_scalar("select lead_id from linkedin_messages where id = $1").bind(sam[0]).fetch_one(&db).await.unwrap();
+        sqlx::query("update linkedin_messages set status = 'done', done_at = now() where id = $1").bind(sam[0]).execute(&db).await.unwrap();
+        sqlx::query("update linkedin_messages set due_at = now() + interval '3 days' where id = $1").bind(sam[1]).execute(&db).await.unwrap();
+
+        // Accepting the connect note: Unipile names them by public id, before Splee has their LinkedIn id.
+        let accepted = json!({ "event": "new_relation", "account_id": "ACC", "user_provider_id": "P-SAM", "user_public_identifier": "Sam" });
+        assert!(on_event(&db, project, "ACC", &accepted).await.unwrap().is_none());
+        assert!(step(&db, sam[1]).await.due_at.unwrap() <= Utc::now());
+
+        sqlx::query("update leads set linkedin_provider_id = 'P-SAM' where id = $1").bind(lead).execute(&db).await.unwrap();
+        let message = |from: &str, account: &str| {
+            json!({ "event": "message_received", "account_id": account, "account_info": { "user_id": "P-ME" },
+                    "sender": { "attendee_provider_id": from, "attendee_profile_url": "https://www.linkedin.com/in/ACoAAB" },
+                    "message": "Sure, send it over" })
+        };
+        // The account's own messages, and posts for another account, change nothing.
+        for (from, account) in [("P-ME", "ACC"), ("P-SAM", "OTHER")] {
+            assert!(on_event(&db, project, "ACC", &message(from, account)).await.unwrap().is_none());
+        }
+        assert_eq!(step(&db, sam[1]).await.status, "todo");
+
+        let (stopped, text) = on_event(&db, project, "ACC", &message("P-SAM", "ACC")).await.unwrap().unwrap();
+        assert_eq!((stopped.status.as_str(), text.as_str()), ("replied", "Sure, send it over"));
+        assert_eq!((step(&db, sam[1]).await.status, step(&db, sam[2]).await.status), ("skipped".into(), "skipped".into()));
+        // A second message from someone who already replied doesn't alert again.
+        assert!(on_event(&db, project, "ACC", &message("P-SAM", "ACC")).await.unwrap().is_none());
     }
 }

@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/leads/{id}/linkedin", post(generate))
         .route("/leads/{id}/linkedin/replied", post(replied))
         .route("/linkedin/{id}", patch(update))
+        .route("/unipile/{token}", post(unipile_event))
 }
 
 /// Days from sending a step to the next one coming due: a connect note leaves time to accept, a message time to answer.
@@ -145,7 +146,7 @@ async fn replied(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
 }
 
 /// They answered on LinkedIn, which Splee can't see: the lead moves to Replied and both sequences stop, like an email reply.
-async fn stop_for_reply(db: &PgPool, lead: &Lead) -> sqlx::Result<Lead> {
+pub async fn stop_for_reply(db: &PgPool, lead: &Lead) -> sqlx::Result<Lead> {
     let mut tx = db.begin().await?;
     let updated = sqlx::query_as::<_, Lead>(
         "update leads set status = case when status in ('new', 'queued', 'contacted') then 'replied' else status end where id = $1 returning *",
@@ -163,6 +164,20 @@ async fn stop_for_reply(db: &PgPool, lead: &Lead) -> sqlx::Result<Lead> {
     sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(updated)
+}
+
+/// Unipile's posts for the project's LinkedIn account. The token in the URL picks the project, like a booking webhook.
+async fn unipile_event(State(state): State<AppState>, Path(token): Path<String>, Json(body): Json<Value>) -> AppResult<Json<Value>> {
+    let (project_id, account): (Uuid, String) =
+        sqlx::query_as("select project_id, unipile_account_id from project_settings where unipile_webhook_token = $1 and unipile_token_enc <> ''")
+            .bind(&token)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    if let Some((lead, text)) = crate::unipile::on_event(&state.db, project_id, &account, &body).await? {
+        hooks::announce_linkedin_reply(&state, &lead, &text);
+    }
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[cfg(test)]
