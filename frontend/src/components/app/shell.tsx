@@ -8,7 +8,7 @@ import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from
 import { Toaster } from "sonner";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
-import { Favicon, Spinner } from "@/components/ui/misc";
+import { Address, Favicon, Spinner } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
@@ -170,7 +170,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mt-1 flex items-center justify-between gap-2 px-2 py-1.5">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">{me.user.name || me.user.email}</p>
-              <p className="truncate text-xs text-muted-foreground">{me.user.email}</p>
+              <p className="text-xs text-muted-foreground"><Address email={me.user.email} /></p>
             </div>
             <button onClick={logout} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Sign out">
               <LogOut className="size-4" />
