@@ -1,14 +1,15 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, MessageSquareText, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, ProjectSummary } from "@/lib/types";
+import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
@@ -366,6 +367,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
           placeholder={`Reply to ${lead.first_name || lead.full_name || "lead"}…`}
           className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content"
         />
+        <SavedReplyMenu
+          lead={lead}
+          onPick={(text) => {
+            setReply((r) => (r.trim() ? `${r.trimEnd()}\n\n${text}` : text));
+            replyBox.current?.focus();
+          }}
+        />
         {canDraft && !reply.trim() && (
           <Button variant="outline" onClick={draftReply} loading={requesting} aria-label="Draft reply" title="Have the agent write a reply for you to check and send">
             {!requesting && <Sparkles className="size-4" />} <span className="@max-lg:hidden">Draft reply</span>
@@ -376,6 +384,46 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         </Button>
       </div>
     </div>
+  );
+}
+
+/** Fills a saved reply's {first_name} and {company} with the lead's, or a neutral word when the lead has none. */
+function fillReply(body: string, lead: Lead) {
+  return body.replaceAll("{first_name}", lead.first_name || "there").replaceAll("{company}", lead.company_name || "your company");
+}
+
+/** A button that opens a native menu of saved replies, like the reminder bell. */
+function SavedReplyMenu({ lead, onPick }: { lead: Lead; onPick: (text: string) => void }) {
+  const router = useRouter();
+  const manage = `/app/p/${lead.project_id}/saved-replies`;
+  const { data } = useSWR<SavedReply[]>(`/projects/${lead.project_id}/saved-replies`, fetcher);
+  const pick = (value: string) => {
+    if (value === "manage") return router.push(manage);
+    const saved = data?.find((r) => r.id === value);
+    if (saved) onPick(fillReply(saved.body, lead));
+  };
+  return (
+    <label
+      title="Saved replies"
+      className={buttonClass(
+        "outline",
+        "md",
+        "relative shrink-0 px-3 has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-brand-600",
+      )}
+    >
+      <MessageSquareText className="size-4" />
+      <select aria-label="Saved replies" value="" onChange={(e) => pick(e.target.value)} className="absolute inset-0 cursor-pointer opacity-0">
+        <option value="" disabled>
+          {data?.length ? "Insert a saved reply" : "No saved replies yet"}
+        </option>
+        {data?.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.title}
+          </option>
+        ))}
+        <option value="manage">{data?.length ? "Manage saved replies…" : "Add saved replies…"}</option>
+      </select>
+    </label>
   );
 }
 

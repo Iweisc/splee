@@ -188,6 +188,14 @@ export interface ProjectStats {
   segments: SegmentWithStats[];
 }
 
+export interface SavedReply {
+  id: UUID;
+  project_id: UUID;
+  title: string;
+  body: string;
+  created_at: Ts;
+}
+
 export interface Competitor {
   id: UUID;
   project_id: UUID;

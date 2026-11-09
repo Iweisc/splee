@@ -123,6 +123,8 @@ All paths below are under `/api`.
 | POST | /projects/:id/rewrite-emails | | `{run_id}`. One write_emails run in rewrite mode for every lead with an unsent (draft/approved/scheduled) first email or follow-up. 409 when there are none or a write run is already going. The sender holds those leads until the run ends. |
 | GET/POST | /projects/:id/competitors | `{domain, name?, note?}` | `Competitor[]` / `Competitor`. 409 when the domain is already listed. The explore run's competitor step replaces the whole list. |
 | DELETE | /competitors/:id | | `{ok}` |
+| GET/POST | /projects/:id/saved-replies | `{title, body}` | `SavedReply[]` sorted by title / `SavedReply`. Title 1-80 characters, body 1-5,000. The inbox's saved-replies menu inserts a body into the reply box, with `{first_name}` and `{company}` filled from the lead. |
+| DELETE | /saved-replies/:id | | `{ok}` |
 | GET | /projects/:id/segments | | `SegmentWithStats[]` |
 | POST | /projects/:id/segments | `{prompt}` or full segment fields | `Segment`. With `prompt`, enqueues `segment_from_prompt` and returns the draft segment immediately |
 | GET/PATCH/DELETE | /segments/:id | Segment fields | `SegmentWithStats` |
