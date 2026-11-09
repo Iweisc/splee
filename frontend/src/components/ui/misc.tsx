@@ -154,7 +154,8 @@ export function Tabs<T extends string>({
           onClick={() => onChange(o.value)}
           className={cn(
             "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
-            value === o.value ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
+            // Not text-muted-foreground: on the grey track it's 3.9:1, under the 4.5:1 that text this size needs.
+            value === o.value ? "bg-card text-foreground shadow-card" : "text-foreground/60 hover:text-foreground",
           )}
         >
           {o.label}
