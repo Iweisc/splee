@@ -154,6 +154,7 @@ export interface ProjectStats {
     drafts: number;
     scheduled: number;
     sent: number;
+    contacted: number; // leads with at least one email sent
     replies: number;
     hot: number;
     meetings: number;
@@ -199,6 +200,7 @@ export interface SegmentWithStats extends Segment {
   companies: number;
   leads: number;
   sent: number;
+  contacted: number;
   replies: number;
   hot: number;
   spend_micros: number;

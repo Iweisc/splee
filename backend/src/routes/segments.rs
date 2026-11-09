@@ -38,6 +38,7 @@ pub struct SegmentWithStats {
     companies: i64,
     leads: i64,
     sent: i64,
+    contacted: i64,
     replies: i64,
     hot: i64,
     spend_micros: i64,
@@ -54,6 +55,7 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
            (select count(*) from leads l where l.segment_id = s.id) as leads,
            (select count(*) from email_messages e
              where e.segment_id = s.id and e.direction = 'outbound' and e.status = 'sent') as sent,
+           (select count(*) from leads l where l.segment_id = s.id and l.last_contacted_at is not null) as contacted,
            (select count(*) from leads l where l.segment_id = s.id
              and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
                          and e.classification is distinct from 'bounce')) as replies,

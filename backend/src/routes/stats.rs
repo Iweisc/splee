@@ -28,6 +28,7 @@ pub(super) struct Totals {
     drafts: i64,
     scheduled: i64,
     sent: i64,
+    contacted: i64,
     replies: i64,
     hot: i64,
     meetings: i64,
@@ -65,6 +66,8 @@ pub(super) async fn totals(db: &PgPool, id: Uuid) -> sqlx::Result<Totals> {
              where project_id = $1 and direction = 'outbound' and status in ('approved', 'scheduled')) as scheduled,
            (select count(*) from email_messages
              where project_id = $1 and direction = 'outbound' and status = 'sent') as sent,
+           -- Leads with at least one email sent. The sender sets last_contacted_at with every send.
+           (select count(*) from leads where project_id = $1 and last_contacted_at is not null) as contacted,
            (select count(*) from leads l where l.project_id = $1
              and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
                          and e.classification is distinct from 'bounce')) as replies,
@@ -189,6 +192,9 @@ pub(crate) mod tests {
         // The other emails seed_costs sends have no sent_at, so they never count.
         assert_eq!(counts, vec![(0, 0, 0), (1, 0, 0), (0, 1, 1)]);
         assert_eq!(totals(&db, seeded.project).await.unwrap().replies, 1);
+
+        sqlx::query("update leads set last_contacted_at = now() where id = $1").bind(lead).execute(&db).await.unwrap();
+        assert_eq!(totals(&db, seeded.project).await.unwrap().contacted, 1);
     }
 
     use super::totals;

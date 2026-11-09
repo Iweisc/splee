@@ -17,7 +17,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import type { Mailbox, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
-import { money, num } from "@/lib/utils";
+import { money, num, percent } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">) {
@@ -184,10 +184,15 @@ function Stats({ projectId }: { projectId: string }) {
   if (error) return <LoadError error={error} retry={() => mutate()} />;
 
   const t = data?.totals;
-  const kpis: { label: string; value?: string; title?: string }[] = [
+  const kpis: { label: string; value?: string; title?: string; note?: string }[] = [
     { label: "Leads", value: t && num(t.leads) },
     { label: "Sent", value: t && num(t.sent) },
-    { label: "Replies", value: t && num(t.replies) },
+    {
+      label: "Replies",
+      value: t && num(t.replies),
+      title: "Leads who wrote back, out of the leads you've emailed. Bounces don't count.",
+      note: t && t.contacted > 0 ? `${percent(t.replies / t.contacted)} reply rate` : undefined,
+    },
     { label: "Hot leads", value: t && num(t.hot) },
     { label: "Meetings", value: t && num(t.meetings) },
     {
@@ -208,6 +213,7 @@ function Stats({ projectId }: { projectId: string }) {
           <div key={k.label} className="px-4 py-2" title={k.title}>
             <MicroLabel>{k.label}</MicroLabel>
             {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
+            {k.note && <p className="text-xs text-muted-foreground tabular-nums">{k.note}</p>}
           </div>
         ))}
       </Card>
