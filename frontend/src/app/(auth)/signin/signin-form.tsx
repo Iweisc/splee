@@ -52,7 +52,7 @@ export function SigninForm({ next }: { next: string | null }) {
       </p>
       <p className="mt-4 text-center text-sm text-muted-foreground">
         New to Splee?{" "}
-        <Link href={`/signup${qs({ next })}`} className="font-medium text-foreground hover:underline">
+        <Link href={`/signup${qs({ next })}`} className="font-medium whitespace-nowrap text-foreground hover:underline">
           Create an account
         </Link>
       </p>
