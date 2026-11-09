@@ -245,9 +245,10 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let result = mail::test_mailbox(&state, &mailbox).await;
-    // A passing test clears an error state but never unpauses a mailbox the user paused. Either way a person has now seen
-    // the result, so the sender stops testing it on its own.
+    // A passing test clears an error state but never unpauses a mailbox, and keeps why it's paused, like too many bounces.
+    // Either way a person has now seen the result, so the sender stops testing it on its own.
     let (status, error) = match &result {
+        Ok(()) if mailbox.status == "paused" => ("paused", mailbox.last_error.clone()),
         Ok(()) => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, String::new()),
         Err(e) => ("error", format!("{e:#}")),
     };
