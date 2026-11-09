@@ -10,7 +10,7 @@ import { XIcon } from "@/components/marketing/x-icon";
 import { Address, Avatar, Badge, Favicon, Message, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
-import { cn, dateTime } from "@/lib/utils";
+import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
@@ -148,7 +148,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         )}
         {lead.meeting_at && (
           <Detail label="Meeting" icon={<CalendarCheck className="size-3.5" />}>
-            Meeting on {dateTime(lead.meeting_at)}
+            Meeting on {dayTime(lead.meeting_at)}
           </Detail>
         )}
       </dl>
