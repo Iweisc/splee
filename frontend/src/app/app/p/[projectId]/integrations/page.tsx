@@ -97,13 +97,19 @@ const CHAT_APPS = [
   ["DingTalk", "group Bots → Custom, with IP security"],
   ["WeCom", "the group chat's ⋯ → Add Group Robot"],
   ["Webex", "Incoming Webhooks on the Webex App Hub"],
+  ["Mattermost", "Integrations → Incoming Webhooks"],
+  ["Rocket.Chat", "Integrations → New → Incoming"],
+  ["Zulip", "an incoming webhook bot's Slack compatible URL"],
 ];
 
 /** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */
 function chatApp(url: string): string {
   let host: string;
+  let path: string[];
   try {
-    host = new URL(url).hostname.toLowerCase();
+    const parsed = new URL(url);
+    host = parsed.hostname.toLowerCase();
+    path = parsed.pathname.split("/").filter(Boolean);
   } catch {
     return url;
   }
@@ -120,6 +126,10 @@ function chatApp(url: string): string {
   if (host === "oapi.dingtalk.com") return "DingTalk";
   if (host === "qyapi.weixin.qq.com") return "WeCom";
   if (host === "webexapis.com") return "Webex";
+  // Self-hosted chats can be on any host, so their webhook paths tell them apart. Mattermost's is hooks::mattermost.
+  if (path.at(-2) === "hooks" && /^[a-z0-9]{26}$/.test(path.at(-1) ?? "")) return "Mattermost";
+  if (path.at(-3) === "hooks") return "Rocket.Chat";
+  if (path.join("/").includes("api/v1/external/slack_incoming")) return "Zulip";
   return host;
 }
 
