@@ -14,7 +14,7 @@ import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
 import { bouncing, todayLimit, wholePercent } from "@/lib/mailbox";
-import { dateTime, isPast, timeAgo } from "@/lib/utils";
+import { dateTime, isPast, num, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
   active: { tone: "green", label: "Active" },
@@ -244,7 +244,7 @@ function Health({ stats }: { stats?: MailboxStats }) {
     <>
       {/* Each part stays whole, so a narrow phone wraps between them rather than leaving a word alone. */}
       <p className="mt-3 flex flex-wrap gap-x-1.5 text-xs text-muted-foreground [&>span]:whitespace-nowrap">
-        <span>30 days: {stats.emailed} emailed ·</span>
+        <span>30 days: {num(stats.emailed)} emailed ·</span>
         <span>
           <span className={risky ? "font-medium text-amber-700" : undefined}>{pct(stats.bounced)} bounced</span> ·
         </span>

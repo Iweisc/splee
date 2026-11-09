@@ -8,7 +8,7 @@ import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { LeadRow, Paginated, SegmentWithStats } from "@/lib/types";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, Tr, useDebounced } from "./states";
@@ -74,7 +74,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           {!!data?.total && (
             // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
             <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
-              <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${data.total} leads`}
+              <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${num(data.total)} leads`}
             </a>
           )}
         </div>
