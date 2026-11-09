@@ -94,7 +94,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 4] = ["hot_lead", "lead_replied", "lead_unsubscribed", "lead_bounced"];
+pub const EVENTS: [&str; 5] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced"];
 
 /// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
 async fn lead_event(
@@ -148,6 +148,13 @@ pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static
         }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, event, "couldn't load the webhook settings"),
+    }
+}
+
+/// Sends meeting_booked when someone moves a lead there from another status. `before` is its status before the update.
+pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
+    if lead.status == "meeting_booked" && before != "meeting_booked" {
+        send_lead_event(state, lead.project_id, "meeting_booked", lead, None).await;
     }
 }
 
@@ -247,7 +254,7 @@ mod tests {
         assert_eq!(payload["project"]["name"], "Acme");
         assert_eq!(payload["lead"]["email"], "sarah@northwind.example");
         assert_eq!(payload["url"], format!("https://app.test/app/p/{project}/inbox?lead={}", lead.id));
-        for name in ["lead_replied", "lead_unsubscribed", "lead_bounced"] {
+        for name in ["lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced"] {
             assert!(event(name).await.unwrap().is_none(), "{name}");
         }
 

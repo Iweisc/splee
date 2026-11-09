@@ -283,6 +283,7 @@ async fn update_lead(
         None => None,
     };
     let notes = util_input::notes(body.notes.as_deref())?;
+    let before = lead.status;
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
            status = coalesce($2, status),
@@ -312,6 +313,7 @@ async fn update_lead(
     .bind(notes)
     .fetch_one(&state.db)
     .await?;
+    crate::hooks::status_changed(&state, &before, &lead).await;
     Ok(Json(detail(&state.db, lead).await?))
 }
 

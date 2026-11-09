@@ -322,7 +322,12 @@ async fn set_status(
 ) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
     util_input::one_of("status", &body.status, LEAD_STATUSES)?;
-    sqlx::query("update leads set status = $2 where id = $1").bind(lead.id).bind(&body.status).execute(&state.db).await?;
+    let updated = sqlx::query_as::<_, Lead>("update leads set status = $2 where id = $1 returning *")
+        .bind(lead.id)
+        .bind(&body.status)
+        .fetch_one(&state.db)
+        .await?;
+    crate::hooks::status_changed(&state, &lead.status, &updated).await;
     Ok(Json(json!({ "ok": true })))
 }
 
