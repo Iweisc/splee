@@ -256,11 +256,13 @@ function PickedBar({
       <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
         <Trash2 className="size-3.5" /> Delete
       </Button>
+      {/* It always shows "Move to campaign…", so it gets that label's width rather than the longest campaign name's,
+          which pushed it onto a row of its own on a tablet. The open list still fits the names. */}
       <Select
         value=""
         onChange={(e) => move(e.target.value)}
         disabled={busy}
-        className="h-9 w-auto flex-auto sm:flex-none"
+        className="h-9 w-auto flex-auto sm:w-52 sm:flex-none"
         aria-label="Move to campaign"
       >
         <option value="">Move to campaign…</option>
