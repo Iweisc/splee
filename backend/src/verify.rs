@@ -1,6 +1,6 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
-//! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox and
-//! Reoon take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
+//! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
+//! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
 //! Clearout take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail or Prospeo.
 
 use std::time::Duration;
@@ -35,6 +35,7 @@ pub enum Verifier {
     Emailable,
     Clearout,
     Reoon,
+    DeBounce,
 }
 
 impl Verifier {
@@ -48,6 +49,7 @@ impl Verifier {
             "emailable" => Some(Verifier::Emailable),
             "clearout" => Some(Verifier::Clearout),
             "reoon" => Some(Verifier::Reoon),
+            "debounce" => Some(Verifier::DeBounce),
             _ => None,
         }
     }
@@ -62,6 +64,7 @@ impl Verifier {
             Verifier::Emailable => "Emailable",
             Verifier::Clearout => "Clearout",
             Verifier::Reoon => "Reoon",
+            Verifier::DeBounce => "DeBounce",
         }
     }
 
@@ -82,6 +85,7 @@ impl Verifier {
             Verifier::Reoon => {
                 reoon_get(Url::parse_with_params("https://emailverifier.reoon.com/api/v1/check-account-balance/", [("key", key)])?).await.map(|_| ())
             }
+            Verifier::DeBounce => debounce_get(Url::parse_with_params("https://api.debounce.io/v1/balance/", [("api", key)])?).await.map(|_| ()),
         }
     }
 
@@ -127,6 +131,10 @@ impl Verifier {
                     Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(Verdict::Unsure),
                     body => Ok(reoon_verdict(body?["status"].as_str().unwrap_or_default())),
                 }
+            }
+            Verifier::DeBounce => {
+                let body = debounce_get(Url::parse_with_params("https://api.debounce.io/v1/", [("api", key), ("email", email)])?).await?;
+                Ok(debounce_verdict(body["debounce"]["code"].as_str().unwrap_or_default()))
             }
         }
     }
@@ -503,6 +511,27 @@ fn reoon_verdict(status: &str) -> Verdict {
     }
 }
 
+/// A failure comes back as `{"debounce": {"error": ...}, "success": "0"}`. A wrong key's error is "Wrong API", so that
+/// one gets the same message as NeverBounce's.
+async fn debounce_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success() && body["success"] != "0", "{}", body["debounce"]["error"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// DeBounce's result codes: 5 is deliverable, and syntax (1), spam trap (2), disposable (3) and invalid (6) aren't worth
+/// sending to. Accept-all (4) and unknown (7) send like a catch-all.
+fn debounce_verdict(code: &str) -> Verdict {
+    match code {
+        "5" => Verdict::Valid,
+        "1" | "2" | "3" | "6" => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -556,6 +585,11 @@ mod tests {
         assert_eq!(reoon_verdict("spamtrap"), Verdict::Invalid);
         assert_eq!(reoon_verdict("catch_all"), Verdict::Unsure);
         assert_eq!(reoon_verdict("role_account"), Verdict::Unsure);
+        assert_eq!(debounce_verdict("5"), Verdict::Valid);
+        assert_eq!(debounce_verdict("6"), Verdict::Invalid);
+        assert_eq!(debounce_verdict("2"), Verdict::Invalid);
+        assert_eq!(debounce_verdict("4"), Verdict::Unsure);
+        assert_eq!(debounce_verdict("7"), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));

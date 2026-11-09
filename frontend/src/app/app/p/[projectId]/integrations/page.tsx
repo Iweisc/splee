@@ -500,6 +500,7 @@ const VERIFIERS = {
   emailable: "Emailable",
   clearout: "Clearout",
   reoon: "Reoon",
+  debounce: "DeBounce",
 } as const;
 
 const FINDERS = {
