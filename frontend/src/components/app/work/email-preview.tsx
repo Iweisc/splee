@@ -98,8 +98,9 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
         <EmailStatusBadge status={email.status} />
       </div>
 
-      {/* The test button sits by the details, not with the actions below, which already fill their row on laptops. */}
-      <div className="flex items-start justify-between gap-3">
+      {/* The test button sits by the details, not with the actions below, which already fill their row on laptops. On a
+          small phone there's no room beside them, so it wraps under them instead of running out of the card. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <dt>Type</dt>
           <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : KINDS[email.kind]}</dd>
@@ -124,7 +125,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
           )}
         </dl>
         {isDraft && !rewriteRun && (
-          <Button size="sm" variant="ghost" className="-my-2 shrink-0" onClick={sendTest} loading={busy === "test"}>
+          <Button size="sm" variant="ghost" className="-my-2 ml-auto shrink-0" onClick={sendTest} loading={busy === "test"}>
             {busy !== "test" && <Send className="size-3.5" />} Send me a test
           </Button>
         )}
