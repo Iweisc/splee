@@ -10,6 +10,7 @@ pub mod auth;
 mod bookings;
 mod chat_channels;
 mod forms;
+mod linkedin;
 mod calendar;
 mod saved_replies;
 pub mod org;
@@ -51,6 +52,7 @@ pub fn router() -> Router<AppState> {
         .merge(inbox::router())
         .merge(saved_replies::router())
         .merge(chat_channels::router())
+        .merge(linkedin::router())
         .merge(mailboxes::router())
         .merge(settings::router())
         .merge(materials::router())

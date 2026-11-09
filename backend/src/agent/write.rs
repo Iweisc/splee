@@ -569,8 +569,12 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
 
     let mut tx = ctx.db().begin().await?;
     sqlx::query("delete from linkedin_messages where lead_id = $1 and status = 'todo'").bind(lead.id).execute(&mut *tx).await?;
+    // The connect note is due now. Each message comes due once the step before it is sent (routes::linkedin::update).
     for (step, kind, body) in [(1, "connect", connect.as_str()), (2, "message", seq.message_1.trim()), (3, "message", seq.message_2.trim())] {
-        sqlx::query("insert into linkedin_messages (lead_id, project_id, step, kind, body) values ($1, $2, $3, $4, $5)")
+        sqlx::query(
+            "insert into linkedin_messages (lead_id, project_id, step, kind, body, due_at)
+             values ($1, $2, $3, $4, $5, case when $3 = 1 then now() end)",
+        )
             .bind(lead.id)
             .bind(project_id)
             .bind(step)

@@ -134,6 +134,11 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
             .bind(back)
             .execute(db)
             .await?;
+            sqlx::query("update linkedin_messages set due_at = greatest(due_at, $2) where lead_id = $1 and status = 'todo' and due_at is not null")
+                .bind(lead_id)
+                .bind(back)
+                .execute(db)
+                .await?;
             return Ok(());
         }
         "unsubscribe" => {
@@ -157,11 +162,12 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
         .bind(status)
         .execute(db)
         .await?;
-    // A person answered, so the automated sequence stops here.
+    // A person answered, so the automated sequence stops here, on LinkedIn too.
     sqlx::query("update email_messages set status = 'cancelled' where lead_id = $1 and kind = 'follow_up' and status in ('draft', 'approved', 'scheduled')")
         .bind(lead_id)
         .execute(db)
         .await?;
+    sqlx::query(mail::STOP_LINKEDIN).bind(lead_id).execute(db).await?;
 
     let reply = |classification: &str| {
         json!({

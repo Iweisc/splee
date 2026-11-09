@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use axum::routing::{get, patch, post};
@@ -14,10 +12,10 @@ use super::util_csv;
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_scope;
-use crate::agent::{self, kind};
+use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
-use crate::models::{Company, EmailMessage, Lead, LinkedinMessage};
+use crate::models::{Company, EmailMessage, Lead};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -31,9 +29,6 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/leads/status", post(set_status))
         .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
-        .route("/projects/{id}/linkedin", get(list_linkedin))
-        .route("/leads/{id}/linkedin", post(generate_linkedin))
-        .route("/linkedin/{id}", patch(update_linkedin))
 }
 
 #[derive(Deserialize)]
@@ -422,89 +417,6 @@ async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppRe
     sqlx::query("delete from leads where id = any($1)").bind(&ids).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
-}
-
-#[derive(Deserialize)]
-struct LinkedinQuery {
-    segment_id: Option<Uuid>,
-}
-
-#[derive(Serialize)]
-struct LinkedinThread {
-    lead: LeadRow,
-    messages: Vec<LinkedinMessage>,
-}
-
-/// Leads with a LinkedIn profile or a generated sequence, so the page can offer "generate" for the rest.
-async fn list_linkedin(
-    State(state): State<AppState>,
-    auth: Auth,
-    Path(id): Path<Uuid>,
-    Query(q): Query<LinkedinQuery>,
-) -> AppResult<Json<Vec<LinkedinThread>>> {
-    auth.project(&state.db, id).await?;
-    let leads = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT}
-         where l.project_id = $1 and ($2::uuid is null or l.segment_id = $2)
-           and (l.linkedin_url <> '' or exists (select 1 from linkedin_messages m where m.lead_id = l.id))
-         order by l.created_at desc limit 500"
-    ))
-    .bind(id)
-    .bind(q.segment_id)
-    .fetch_all(&state.db)
-    .await?;
-    let ids: Vec<Uuid> = leads.iter().map(|l| l.lead.id).collect();
-    let messages = sqlx::query_as::<_, LinkedinMessage>(
-        "select * from linkedin_messages where lead_id = any($1) order by step, created_at",
-    )
-    .bind(&ids)
-    .fetch_all(&state.db)
-    .await?;
-    let mut by_lead: HashMap<Uuid, Vec<LinkedinMessage>> = HashMap::new();
-    for message in messages {
-        by_lead.entry(message.lead_id).or_default().push(message);
-    }
-    let threads = leads
-        .into_iter()
-        .map(|lead| {
-            let messages = by_lead.remove(&lead.lead.id).unwrap_or_default();
-            LinkedinThread { lead, messages }
-        })
-        .collect();
-    Ok(Json(threads))
-}
-
-async fn generate_linkedin(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    let run_id =
-        agent::enqueue(&state.db, kind::LINKEDIN_SEQUENCE, Some(lead.project_id), Some(auth.org_id), json!({ "lead_id": lead.id }))
-            .await?;
-    Ok(Json(json!({ "run_id": run_id })))
-}
-
-#[derive(Deserialize)]
-struct LinkedinBody {
-    status: String,
-    body: Option<String>,
-}
-
-async fn update_linkedin(
-    State(state): State<AppState>,
-    auth: Auth,
-    Path(id): Path<Uuid>,
-    Json(body): Json<LinkedinBody>,
-) -> AppResult<Json<LinkedinMessage>> {
-    let message: LinkedinMessage = util_scope::load(&state.db, "linkedin_messages", id, auth.org_id).await?;
-    util_input::one_of("status", &body.status, &["todo", "done", "skipped"])?;
-    let message = sqlx::query_as::<_, LinkedinMessage>(
-        "update linkedin_messages set status = $2, body = coalesce($3, body) where id = $1 returning *",
-    )
-    .bind(message.id)
-    .bind(&body.status)
-    .bind(body.body)
-    .fetch_one(&state.db)
-    .await?;
-    Ok(Json(message))
 }
 
 #[cfg(test)]

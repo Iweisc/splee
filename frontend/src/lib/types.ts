@@ -422,6 +422,9 @@ export interface LinkedinMessage {
   kind: "connect" | "message";
   body: string;
   status: "todo" | "done" | "skipped";
+  /** When to send it: the connect note once written, each message a few days after the step before was sent. */
+  due_at: Ts | null;
+  done_at: Ts | null;
   created_at: Ts;
 }
 
