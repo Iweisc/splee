@@ -35,8 +35,12 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
   if (!lead) return <ListSkeleton rows={5} />;
 
+  // Shows the change at once and puts it back if the save fails, so a picked status doesn't snap back while it saves.
   const update = async (changes: Record<string, string>) => {
-    await mutate(api<LeadDetail>(`/leads/${leadId}`, { method: "PATCH", body: changes }), { revalidate: false });
+    await mutate(api<LeadDetail>(`/leads/${leadId}`, { method: "PATCH", body: changes }), {
+      optimisticData: { ...lead, ...changes },
+      revalidate: false,
+    });
     mutateAll((k) => typeof k === "string" && k.includes("/leads"));
   };
 
