@@ -85,36 +85,41 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                 </tr>
               </thead>
               <tbody>
-                {data.items.map((c) => (
-                  <Tr key={c.id} className={cn(c.status === "excluded" && "text-muted-foreground")}>
-                    <Td className="max-w-0">
-                      <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
-                        <Favicon domain={c.domain} />
-                        <span className="min-w-0">
-                          <span className="block truncate font-medium">{c.name || c.domain}</span>
-                          <span className="block truncate text-xs text-muted-foreground">{c.domain}</span>
-                        </span>
-                      </a>
-                    </Td>
-                    <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>
-                    <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap")}>{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>
-                    {/* The reason doubles as a tooltip for when its own column is hidden. */}
-                    <Td title={c.fit_reason}>
-                      <FitScore value={c.fit_score} />
-                    </Td>
-                    <Td className={cn(REASON, "min-w-60")}>
-                      <p className="line-clamp-2 text-xs text-muted-foreground">{c.fit_reason}</p>
-                    </Td>
-                    <Td className={STATUS}>
-                      <Badge tone={c.status === "people_found" ? "green" : "neutral"}>{STATUS_LABEL[c.status]}</Badge>
-                    </Td>
-                    <Td className={cn(ACTION, "text-right")}>
-                      <Button size="sm" variant="ghost" onClick={() => toggleExcluded(c)}>
-                        {c.status === "excluded" ? "Include" : "Exclude"}
-                      </Button>
-                    </Td>
-                  </Tr>
-                ))}
+                {data.items.map((c) => {
+                  const toggle = (className?: string) => (
+                    <Button size="sm" variant="ghost" className={className} onClick={() => toggleExcluded(c)}>
+                      {c.status === "excluded" ? "Include" : "Exclude"}
+                    </Button>
+                  );
+                  return (
+                    <Tr key={c.id} className={cn(c.status === "excluded" && "text-muted-foreground")}>
+                      <Td className="max-w-0">
+                        <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
+                          <Favicon domain={c.domain} />
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium">{c.name || c.domain}</span>
+                            <span className="block truncate text-xs text-muted-foreground">{c.domain}</span>
+                          </span>
+                        </a>
+                      </Td>
+                      <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>
+                      <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap")}>{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>
+                      {/* The reason doubles as a tooltip for when its own column is hidden. */}
+                      <Td title={c.fit_reason}>
+                        <FitScore value={c.fit_score} />
+                        {/* A narrow table has no room for the Exclude column, so its button sits under the score instead. */}
+                        {toggle("-ml-3 flex @lg:hidden")}
+                      </Td>
+                      <Td className={cn(REASON, "min-w-60")}>
+                        <p className="line-clamp-2 text-xs text-muted-foreground">{c.fit_reason}</p>
+                      </Td>
+                      <Td className={STATUS}>
+                        <Badge tone={c.status === "people_found" ? "green" : "neutral"}>{STATUS_LABEL[c.status]}</Badge>
+                      </Td>
+                      <Td className={cn(ACTION, "text-right")}>{toggle()}</Td>
+                    </Tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
