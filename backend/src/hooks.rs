@@ -49,8 +49,18 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
     if status.is_client_error() || status.is_server_error() {
         return Err(Refused::new(status, &first_bytes(res).await).into());
     }
+    // Lark and Feishu answer 200 to every post and put a failure, like a wrong token, in the body's code.
+    if LARK.contains(&host.to_ascii_lowercase().as_str()) {
+        let reply: Value = serde_json::from_slice(&first_bytes(res).await).unwrap_or_default();
+        if let Some(code) = reply["code"].as_i64().filter(|&code| code != 0) {
+            anyhow::bail!("{}", reply["msg"].as_str().filter(|m| !m.is_empty()).map_or_else(|| format!("code {code}"), str::to_string));
+        }
+    }
     Ok(())
 }
+
+/// Lark and its China edition Feishu: the same bot webhooks on two hosts.
+const LARK: [&str; 2] = ["open.larksuite.com", "open.feishu.cn"];
 
 /// An endpoint that answered with an error status, and the reason it gave, like Discord's "Unknown Webhook".
 #[derive(Debug)]
@@ -335,8 +345,8 @@ fn query(url: &str, key: &str) -> Option<String> {
 }
 
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
-/// URL with `?chat_id=`), ntfy (a topic URL) and Pushover (its messages.json URL with `?token=` and `&user=`) have their
-/// own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
+/// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`) and Lark or
+/// Feishu (a custom bot's URL) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
@@ -362,6 +372,13 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
             "token": query(url, "token"), "user": query(url, "user"), "title": a.label, "message": message,
             "url": a.link, "url_title": a.link_text,
         })
+    } else if LARK.contains(&host.as_str()) {
+        let mut lines = vec![json!([{"tag": "text", "text": a.summary}])];
+        if let Some(q) = a.quote {
+            lines.push(json!([{"tag": "text", "text": q}]));
+        }
+        lines.push(json!([{"tag": "a", "text": a.link_text, "href": a.link}]));
+        json!({"msg_type": "post", "content": {"post": {"en_us": {"title": a.label, "content": lines}}}})
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
@@ -609,6 +626,14 @@ mod tests {
         let fits = "é".repeat(1024 - "Sarah replied to Acme\n\n".len());
         assert_eq!(chat_payload(pushover_url, &ChatAlert { quote: Some(&fits), ..a })["message"].as_str().unwrap().chars().last(), Some('é'));
         // A lookalike host isn't Discord.
+        let lark = chat_payload("https://open.larksuite.com/open-apis/bot/v2/hook/abc", &a);
+        assert_eq!(lark["msg_type"], "post");
+        let post = &lark["content"]["post"]["en_us"];
+        assert_eq!(post["title"], "Hot lead");
+        assert_eq!(post["content"][0][0]["text"], "Sarah replied to Acme");
+        assert_eq!(post["content"][1][0]["text"], "Sounds good\nTuesday?");
+        assert_eq!((post["content"][2][0]["tag"].as_str(), post["content"][2][0]["href"].as_str()), (Some("a"), Some("https://app/x")));
+        assert_eq!(chat_payload("https://open.feishu.cn/open-apis/bot/v2/hook/abc", &a)["msg_type"], "post");
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }
 
