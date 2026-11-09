@@ -44,11 +44,11 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
         description="Splee writes the connect note and follow-ups and brings each one due a few days after the last. You send them from your own profile and tick them off. A reply on LinkedIn or by email stops both."
         actions={
           <>
-            <Select value={view} onChange={(e) => setPicked(e.target.value as "due" | "all")} className="w-auto" aria-label="Show">
+            <Select value={view} onChange={(e) => setPicked(e.target.value as "due" | "all")} className="w-auto flex-auto" aria-label="Show">
               <option value="due">Due now ({due.length})</option>
               <option value="all">All leads</option>
             </Select>
-            <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto" aria-label="Campaign">
+            <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto flex-auto" aria-label="Campaign">
               <option value="">All campaigns</option>
               {segments?.map((s) => (
                 <option key={s.id} value={s.id}>
