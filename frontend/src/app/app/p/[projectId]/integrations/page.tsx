@@ -578,6 +578,7 @@ const VERIFIERS = {
   clearout: "Clearout",
   reoon: "Reoon",
   debounce: "DeBounce",
+  emaillistverify: "EmailListVerify",
 } as const;
 
 const FINDERS = {

@@ -1,7 +1,7 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
-//! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
-//! Clearout take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
+//! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
+//! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
 //! Anymail Finder.
 
 use std::time::Duration;
@@ -37,6 +37,7 @@ pub enum Verifier {
     Clearout,
     Reoon,
     DeBounce,
+    EmailListVerify,
 }
 
 impl Verifier {
@@ -51,6 +52,7 @@ impl Verifier {
             "clearout" => Some(Verifier::Clearout),
             "reoon" => Some(Verifier::Reoon),
             "debounce" => Some(Verifier::DeBounce),
+            "emaillistverify" => Some(Verifier::EmailListVerify),
             _ => None,
         }
     }
@@ -66,6 +68,7 @@ impl Verifier {
             Verifier::Clearout => "Clearout",
             Verifier::Reoon => "Reoon",
             Verifier::DeBounce => "DeBounce",
+            Verifier::EmailListVerify => "EmailListVerify",
         }
     }
 
@@ -87,6 +90,7 @@ impl Verifier {
                 reoon_get(Url::parse_with_params("https://emailverifier.reoon.com/api/v1/check-account-balance/", [("key", key)])?).await.map(|_| ())
             }
             Verifier::DeBounce => debounce_get(Url::parse_with_params("https://api.debounce.io/v1/balance/", [("api", key)])?).await.map(|_| ()),
+            Verifier::EmailListVerify => elv_get(Url::parse(&format!("{ELV}/credits"))?, key).await.map(|_| ()),
         }
     }
 
@@ -136,6 +140,11 @@ impl Verifier {
             Verifier::DeBounce => {
                 let body = debounce_get(Url::parse_with_params("https://api.debounce.io/v1/", [("api", key), ("email", email)])?).await?;
                 Ok(debounce_verdict(body["debounce"]["code"].as_str().unwrap_or_default()))
+            }
+            Verifier::EmailListVerify => {
+                let result = elv_get(Url::parse_with_params(&format!("{ELV}/verifyEmail"), [("email", email)])?, key).await?;
+                anyhow::ensure!(result != "error_credit", "the account is out of credits");
+                Ok(elv_verdict(&result))
             }
         }
     }
@@ -562,6 +571,31 @@ fn debounce_verdict(code: &str) -> Verdict {
     }
 }
 
+const ELV: &str = "https://api.emaillistverify.com/api";
+
+/// The answer as text: a verification answers with its result alone, like `ok`. A failure is `{statusCode, message}`.
+async fn elv_get(url: Url, key: &str) -> anyhow::Result<String> {
+    let res = client()?.get(url).header("x-api-key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let text = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let body: Value = serde_json::from_str(&text).unwrap_or_default();
+        anyhow::bail!("{}", body["message"].as_str().unwrap_or(status.as_str()));
+    }
+    Ok(text.trim().to_string())
+}
+
+/// A dead server, a missing or disabled inbox, bad syntax, a throwaway inbox or a spam trap isn't worth sending to.
+/// Accept-all (`ok_for_all`), a server that blocked the check or an unknown sends like a catch-all.
+fn elv_verdict(result: &str) -> Verdict {
+    match result {
+        "ok" => Verdict::Valid,
+        "dead_server" | "invalid_mx" | "email_disabled" | "invalid_syntax" | "disposable" | "spamtrap" => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -620,6 +654,12 @@ mod tests {
         assert_eq!(debounce_verdict("2"), Verdict::Invalid);
         assert_eq!(debounce_verdict("4"), Verdict::Unsure);
         assert_eq!(debounce_verdict("7"), Verdict::Unsure);
+        // EmailListVerify's documented results.
+        assert_eq!(elv_verdict("ok"), Verdict::Valid);
+        assert_eq!(elv_verdict("email_disabled"), Verdict::Invalid);
+        assert_eq!(elv_verdict("disposable"), Verdict::Invalid);
+        assert_eq!(elv_verdict("ok_for_all"), Verdict::Unsure);
+        assert_eq!(elv_verdict("antispam_system"), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
