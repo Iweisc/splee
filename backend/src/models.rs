@@ -137,6 +137,15 @@ pub struct Competitor {
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SavedReply {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub title: String,
+    pub body: String,
+    pub created_at: Ts,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Segment {
     pub id: Uuid,
     pub project_id: Uuid,

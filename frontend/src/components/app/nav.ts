@@ -13,6 +13,7 @@ import {
   UserPlus,
   Mail,
   MessageSquareReply,
+  MessageSquareText,
   Plug,
   Radio,
   Repeat,
@@ -56,6 +57,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Email templates", href: (p) => `/app/p/${p}/email-templates`, icon: FileText }, // D2
       { label: "Follow-ups", href: (p) => `/app/p/${p}/follow-ups`, icon: Repeat }, // D2
       { label: "Auto-replies", href: (p) => `/app/p/${p}/auto-replies`, icon: MessageSquareReply }, // D2
+      { label: "Saved replies", href: (p) => `/app/p/${p}/saved-replies`, icon: MessageSquareText },
       { label: "Materials", href: (p) => `/app/p/${p}/materials`, icon: BookOpen }, // D2
       { label: "Channels", href: (p) => `/app/p/${p}/channels`, icon: Radio }, // D2
       { label: "Integrations", href: (p) => `/app/p/${p}/integrations`, icon: Plug }, // D2
