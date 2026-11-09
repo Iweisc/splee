@@ -28,6 +28,9 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
   const { data: lead, error, mutate } = useSWR<LeadDetail>(`/leads/${leadId}`, fetcher);
   const [removing, setRemoving] = useState(false);
   const [editing, setEditing] = useState(false);
+  // Editing and deleting replace the whole window's content, which dropped keyboard focus on the page. Coming back, the
+  // button that opened them takes it again.
+  const [back, setBack] = useState<"edit" | "remove" | null>(null);
 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
   if (!lead) return <ListSkeleton rows={5} />;
@@ -49,11 +52,15 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
     return (
       <LeadForm
         lead={lead}
-        onCancel={() => setEditing(false)}
+        onCancel={() => {
+          setEditing(false);
+          setBack("edit");
+        }}
         onSave={async (changes) => {
           await update(changes);
           toast.success("Lead updated");
           setEditing(false);
+          setBack("edit");
         }}
       />
     );
@@ -63,7 +70,10 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
     return (
       <RemoveLead
         lead={lead}
-        onCancel={() => setRemoving(false)}
+        onCancel={() => {
+          setRemoving(false);
+          setBack("remove");
+        }}
         onRemoved={() => {
           mutateAll(() => true);
           onClose();
@@ -101,10 +111,10 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         </div>
         {/* Edit and Delete wrap together, so Delete never sits alone on a row. On phones they share a row of their own. */}
         <div className="ml-auto flex gap-1 max-sm:basis-full max-sm:[&>*]:flex-1">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)} autoFocus={back === "edit"}>
             <Pencil className="size-3.5" /> Edit
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setRemoving(true)} className="text-danger">
+          <Button variant="ghost" size="sm" onClick={() => setRemoving(true)} autoFocus={back === "remove"} className="text-danger">
             <Trash2 className="size-3.5" /> Delete
           </Button>
         </div>
@@ -234,9 +244,10 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
     <form onSubmit={submit} className="flex flex-col gap-5">
       <p className="pr-6 text-lg font-semibold">Edit {lead.full_name || lead.email}</p>
       <div className="grid gap-4 sm:grid-cols-2">
-        {FORM_FIELDS.map((f) => (
+        {FORM_FIELDS.map((f, i) => (
           <Field key={f.key} label={f.label}>
             <Input
+              autoFocus={i === 0}
               type={"type" in f ? f.type : "text"}
               value={values[f.key]}
               placeholder={"placeholder" in f ? f.placeholder : undefined}
@@ -294,7 +305,8 @@ function RemoveLead({ lead, onCancel, onRemoved }: { lead: LeadDetail; onCancel:
         </label>
       )}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onCancel}>
+        {/* Focus starts on Cancel, so Enter right after opening this doesn't delete. */}
+        <Button variant="ghost" onClick={onCancel} autoFocus>
           Cancel
         </Button>
         <Button variant="danger" onClick={remove} loading={deleting}>
