@@ -164,21 +164,26 @@ function FitTable() {
 
 function PeopleGrid() {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      {people.map((p) => (
-        <div key={p.email} className={cn(panel, "p-4")}>
-          <div className="flex items-center gap-2.5">
-            <Avatar name={p.name} className="bg-card" />
-            <div className="min-w-0">
-              <p className="truncate font-medium">{p.name}</p>
-              <p className="truncate text-sm text-muted-foreground">
-                {p.title} · {p.company}
-              </p>
+    // A role breaks after its "·" rather than being cut off, so a tile only needs to fit the longest email (about 180px).
+    // Two columns start where both do. Narrower, like beside the title on a 1024px laptop, it's one column and the fade
+    // cuts it off.
+    <div className="@container">
+      <div className="grid grid-cols-1 gap-3 @[28rem]:grid-cols-2">
+        {people.map((p) => (
+          <div key={p.email} className={cn(panel, "p-4")}>
+            <div className="flex items-center gap-2.5">
+              <Avatar name={p.name} className="bg-card" />
+              <div className="min-w-0">
+                <p className="truncate font-medium">{p.name}</p>
+                <p className="text-sm text-muted-foreground">
+                  <span className="whitespace-nowrap">{p.title} ·</span> <span className="whitespace-nowrap">{p.company}</span>
+                </p>
+              </div>
             </div>
+            <p className="mt-3 truncate text-sm text-muted-foreground">{p.email}</p>
           </div>
-          <p className="mt-3 truncate text-sm text-muted-foreground">{p.email}</p>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
