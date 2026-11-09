@@ -72,6 +72,7 @@ export default function SchedulePage() {
                         key={day}
                         type="button"
                         aria-pressed={on}
+                        aria-label={label}
                         onClick={() =>
                           update({ send_days: on ? s.send_days.filter((d) => d !== day) : [...s.send_days, day].sort((a, b) => a - b) })
                         }
@@ -80,7 +81,9 @@ export default function SchedulePage() {
                           on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card hover:bg-accent",
                         )}
                       >
-                        {label}
+                        {/* A column is only about 30px wide on a 320px phone, which splits "Wed" in two, so phones get two letters. */}
+                        <span className="sm:hidden">{label.slice(0, 2)}</span>
+                        <span className="max-sm:hidden">{label}</span>
                       </button>
                     );
                   })}
