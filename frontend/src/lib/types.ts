@@ -135,7 +135,7 @@ export interface ProjectSettings {
   webhook_events: WebhookEvent[];
 }
 
-export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced";
+export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";
 
 export interface ProjectSummary extends Project {
   sent: number;
