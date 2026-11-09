@@ -2,6 +2,7 @@
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
 mod attio;
+mod capsule;
 mod close;
 mod folk;
 mod hubspot;
@@ -23,11 +24,12 @@ pub enum Crm {
     Attio,
     Close,
     Folk,
+    Capsule,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 5] = [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk];
+    pub const ALL: [Crm; 6] = [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk, Crm::Capsule];
 
     pub fn parse(name: &str) -> Option<Crm> {
         Crm::ALL.into_iter().find(|crm| crm.name() == name)
@@ -41,6 +43,7 @@ impl Crm {
             Crm::Attio => "attio",
             Crm::Close => "close",
             Crm::Folk => "folk",
+            Crm::Capsule => "capsule",
         }
     }
 
@@ -51,6 +54,7 @@ impl Crm {
             Crm::Attio => "Attio",
             Crm::Close => "Close",
             Crm::Folk => "folk",
+            Crm::Capsule => "Capsule",
         }
     }
 
@@ -62,6 +66,7 @@ impl Crm {
             Crm::Attio => attio::check(token).await,
             Crm::Close => close::check(token).await,
             Crm::Folk => folk::check(token).await,
+            Crm::Capsule => capsule::check(token).await,
         }
     }
 
@@ -72,6 +77,7 @@ impl Crm {
             Crm::Attio => attio::push(token, email, lead, note).await,
             Crm::Close => close::push(token, email, lead, note).await,
             Crm::Folk => folk::push(token, email, lead, note).await,
+            Crm::Capsule => capsule::push(token, email, lead, note).await,
         }
     }
 }
