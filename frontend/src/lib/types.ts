@@ -466,6 +466,8 @@ export interface Mailbox {
   /** Used instead of the project's in the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
   signature: string;
   booking_link: string;
+  /** Tried first by Check DNS, for a provider that signs with a selector of its own. Empty for none. */
+  dkim_selector: string;
   smtp_host: string;
   smtp_port: number;
   smtp_security: "tls" | "starttls" | "none";
@@ -502,6 +504,8 @@ export interface MailboxInput {
   /** Used instead of the project's in the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
   signature: string;
   booking_link: string;
+  /** Tried first by Check DNS, for a provider that signs with a selector of its own. Empty for none. */
+  dkim_selector: string;
   smtp_host: string;
   smtp_port: number;
   smtp_security: "tls" | "starttls" | "none";
