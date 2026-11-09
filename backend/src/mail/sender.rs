@@ -263,7 +263,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     };
     let transport = match smtp::transport(state, &mb) {
         Ok(t) => t,
-        Err(e) => return mailbox_failed(state, &mb, &email, &e.to_string()).await,
+        Err(e) => return mailbox_failed(state, &mb, &email, &e.to_string(), false).await,
     };
 
     match smtp::send(&transport, message).await {
@@ -283,7 +283,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             } else if e.is_transient() {
                 defer(&state.db, &email, &e.to_string()).await
             } else {
-                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}")).await
+                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}"), smtp::unreachable(&e)).await
             }
         }
     }
@@ -332,10 +332,55 @@ async fn defer(db: &sqlx::PgPool, email: &EmailMessage, error: &str) -> anyhow::
     Ok(())
 }
 
-async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, error: &str) -> anyhow::Result<()> {
+/// How long a mailbox whose server couldn't be reached waits before the sender tests it again.
+const RECHECK_MINUTES: i32 = 15;
+
+/// Stops a mailbox. An unreachable server is often a short outage, so the sender tests it again later. Anything else, like
+/// a rejected login, waits for someone to fix it and press Test, since retrying a bad password can lock the account.
+async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, error: &str, recheck: bool) -> anyhow::Result<()> {
     tracing::warn!(mailbox = %mb.email, %error, "mailbox failed, pausing it");
-    sqlx::query("update mailboxes set status = 'error', last_error = $2 where id = $1").bind(mb.id).bind(error).execute(&state.db).await?;
+    sqlx::query(
+        "update mailboxes set status = 'error', last_error = $2,
+           recheck_at = case when $3 then now() + make_interval(mins => $4) end
+         where id = $1",
+    )
+    .bind(mb.id)
+    .bind(error)
+    .bind(recheck)
+    .bind(RECHECK_MINUTES)
+    .execute(&state.db)
+    .await?;
     sqlx::query("update email_messages set status = 'approved', error = $2 where id = $1").bind(email.id).bind(error).execute(&state.db).await?;
+    Ok(())
+}
+
+/// Tests the mailboxes stopped by an unreachable server and puts each one back to work once its server answers again.
+pub async fn recheck_mailboxes(state: &AppState) -> anyhow::Result<()> {
+    let due = sqlx::query_as::<_, Mailbox>("select * from mailboxes where status = 'error' and recheck_at <= now()").fetch_all(&state.db).await?;
+    for mb in due {
+        let (status, error, recheck) = match smtp::transport(state, &mb) {
+            Err(e) => ("error", e.to_string(), false),
+            Ok(t) => match t.test_connection().await {
+                Ok(true) => ("active", String::new(), false),
+                // Lettre hides why NOOP failed, but the login had already worked, so testing again can't lock the account.
+                Ok(false) => ("error", "SMTP: the server did not answer NOOP".to_string(), true),
+                Err(e) => ("error", format!("SMTP: {e}"), smtp::unreachable(&e)),
+            },
+        };
+        tracing::info!(mailbox = %mb.email, %status, "rechecked a stopped mailbox");
+        // The status check leaves alone a mailbox someone fixed or paused while the test ran.
+        sqlx::query(
+            "update mailboxes set status = $2, last_error = $3, recheck_at = case when $4 then now() + make_interval(mins => $5) end
+             where id = $1 and status = 'error'",
+        )
+        .bind(mb.id)
+        .bind(status)
+        .bind(&error)
+        .bind(recheck)
+        .bind(RECHECK_MINUTES)
+        .execute(&state.db)
+        .await?;
+    }
     Ok(())
 }
 

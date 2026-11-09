@@ -376,6 +376,7 @@ export interface Mailbox {
   imap_uid_validity: number | null;
   dns: { mx?: DnsCheck; spf?: DnsCheck; dmarc?: DnsCheck; checked_at?: Ts };
   created_at: Ts;
+  recheck_at: Ts | null;
 }
 
 export interface MailboxInput {
