@@ -9,7 +9,7 @@ import { LoadError, SectionsSkeleton } from "@/components/app/settings/layout";
 import { MailboxForm } from "@/components/app/settings/mailbox-form";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/misc";
+import { Address, Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
@@ -135,8 +135,10 @@ export default function MailboxesPage() {
               <Card key={m.id} className="min-w-0 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate font-medium">{m.email}</p>
+                    <div className="flex items-baseline gap-2">
+                      <p className="min-w-0 font-medium">
+                        <Address email={m.email} />
+                      </p>
                       <Badge tone={STATUS[m.status].tone}>{STATUS[m.status].label}</Badge>
                     </div>
                     <p className="mt-0.5 text-sm text-muted-foreground">
