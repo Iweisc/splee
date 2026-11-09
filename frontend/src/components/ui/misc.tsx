@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
+import { Toaster } from "sonner";
 import { cn, favicon, initials } from "@/lib/utils";
 
 export function Card({ className, ...props }: React.ComponentProps<"div">) {
@@ -113,6 +114,11 @@ export function Avatar({ name, className }: { name: string; className?: string }
   );
 }
 
+/** Where toasts show. A modal renders its own, see Modal. */
+export function Toasts() {
+  return <Toaster position="bottom-right" />;
+}
+
 /** Native <dialog> modal. Closes on Escape and backdrop click. */
 export function Modal({
   open,
@@ -154,6 +160,9 @@ export function Modal({
             </button>
           </div>
           {children}
+          {/* An open modal sits in the browser's top layer, above the page's toasts, so an error from a button in here
+              showed blurred behind the backdrop. This second toaster shows the same toasts in the same spot, on top. */}
+          <Toasts />
         </div>
       )}
     </dialog>
