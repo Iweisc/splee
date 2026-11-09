@@ -312,6 +312,13 @@ const CRMS = {
     account: { label: "Your Copper email", placeholder: "you@company.com" },
     hint: "In Copper: Settings → Integrations → API Keys → Generate API Key.",
   },
+  insightly: {
+    name: "Insightly",
+    record: "contacts",
+    field: "API key",
+    account: { label: "API URL", placeholder: "https://api.na1.insightly.com/v3.1/" },
+    hint: "In Insightly: your profile → User Settings → API, which shows both.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
@@ -378,7 +385,7 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
           {account && (
-            <Field label={account.label} className="sm:w-56">
+            <Field label={account.label} className="sm:w-72">
               <Input placeholder={account.placeholder} autoComplete="off" value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} />
             </Field>
           )}
