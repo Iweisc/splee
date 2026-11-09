@@ -1,10 +1,12 @@
 use axum::extract::{Path, Query, State};
+use axum::response::Response;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use super::util_csv;
 use super::util_input;
 use super::util_pagination::{PageQuery, Paginated};
 use crate::auth::Auth;
@@ -15,8 +17,11 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/suppressions", get(list).post(add))
+        .route("/suppressions/export", get(export))
         .route("/suppressions/{id}", delete(remove))
 }
+
+const FILTER: &str = "from suppressions where org_id = $1 and ($2::text is null or value::text ilike $2)";
 
 #[derive(Deserialize)]
 struct ListQuery {
@@ -30,13 +35,12 @@ async fn list(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<Suppression>>> {
     let like = util_input::like_pattern(q.q.as_deref());
-    let filter = "from suppressions where org_id = $1 and ($2::text is null or value::text ilike $2)";
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) {filter}"))
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) {FILTER}"))
         .bind(auth.org_id)
         .bind(&like)
         .fetch_one(&state.db)
         .await?;
-    let items = sqlx::query_as::<_, Suppression>(&format!("select * {filter} order by created_at desc limit $3 offset $4"))
+    let items = sqlx::query_as::<_, Suppression>(&format!("select * {FILTER} order by created_at desc limit $3 offset $4"))
         .bind(auth.org_id)
         .bind(&like)
         .bind(page.limit())
@@ -44,6 +48,18 @@ async fn list(
         .fetch_all(&state.db)
         .await?;
     Ok(Json(Paginated { items, total }))
+}
+
+/// Every entry matching the search, newest first, as a CSV download for other sending tools or a record of opt-outs.
+async fn export(State(state): State<AppState>, auth: Auth, Query(q): Query<ListQuery>) -> AppResult<Response> {
+    let like = util_input::like_pattern(q.q.as_deref());
+    let rows = sqlx::query_as::<_, Suppression>(&format!("select * {FILTER} order by created_at desc"))
+        .bind(auth.org_id)
+        .bind(&like)
+        .fetch_all(&state.db)
+        .await?;
+    let records = rows.iter().map(|s| [s.value.clone(), s.kind.clone(), s.reason.clone(), s.created_at.to_rfc3339()]);
+    util_csv::download("do-not-contact.csv", &["value", "kind", "reason", "created_at"], records)
 }
 
 #[derive(Deserialize)]
