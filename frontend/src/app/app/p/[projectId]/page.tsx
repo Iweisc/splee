@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
-import { Clock, Layers, MailWarning, Pause, Play, Plus } from "lucide-react";
+import { Clock, Layers, MailWarning, Pause, Play, Plus, TriangleAlert } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -17,7 +17,8 @@ import { ProjectStatusBadge } from "@/components/app/work/status";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
-import type { Mailbox, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
+import { bouncing, wholePercent } from "@/lib/mailbox";
+import type { Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
 import { money, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -63,6 +64,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
       <PageBody className="flex flex-col gap-4">
         {active && <RunProgress key={active.id} run={active} />}
         {sending && <MailboxNotice />}
+        <BounceNotice />
         {sending && <SendWindowNotice projectId={projectId} settings={settings} />}
         <Stats projectId={projectId} />
         <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -135,6 +137,32 @@ function MailboxNotice() {
       </div>
       <LinkButton href="/app/domains" variant="outline" size="sm" className="max-sm:grow">
         {needsFixing ? "Fix mailbox" : "View mailboxes"}
+      </LinkButton>
+    </Card>
+  );
+}
+
+/** The Mailboxes page's bounce warning, here because this is the page people check every day. */
+function BounceNotice() {
+  const { data } = useSWR<MailboxStats[]>("/mailboxes/stats", fetcher);
+  const bad = data?.filter((s) => bouncing(s.emailed, s.bounced)) ?? [];
+  if (bad.length === 0) return null;
+  return (
+    <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+      <TriangleAlert className="size-4 text-amber-600" />
+      <div className="min-w-0 flex-1 basis-64 space-y-1">
+        {bad.map((s) => (
+          <p key={s.mailbox_id}>
+            <span className="font-medium">{s.email}</span> bounced {wholePercent(s.bounced, s.emailed)} of the {num(s.emailed)} leads it
+            emailed in the last 30 days.
+          </p>
+        ))}
+        <p className="text-muted-foreground">
+          Past 5%, providers start sending its mail to spam. Each campaign shows its bounce rate.
+        </p>
+      </div>
+      <LinkButton href="/app/domains" variant="outline" size="sm" className="max-sm:grow">
+        View mailboxes
       </LinkButton>
     </Card>
   );
