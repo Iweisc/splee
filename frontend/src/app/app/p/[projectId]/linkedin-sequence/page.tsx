@@ -280,7 +280,7 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
         ) : (
           // A step Splee sent is out on LinkedIn, so there's nothing to undo.
           !sentBySplee && (
-            <Button size="sm" variant="ghost" onClick={() => setStatus("todo")} loading={saving === "todo"}>
+            <Button size="sm" variant="ghost" onClick={() => setStatus("todo")} loading={saving === "todo"} disabled={!!saving}>
               Undo
             </Button>
           )
