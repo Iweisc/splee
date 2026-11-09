@@ -1,17 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, CalendarCheck, Check, Flame, Inbox, Pencil, Send, ThumbsDown } from "lucide-react";
+import { ArrowLeft, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, ThumbsDown } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Select, Textarea } from "@/components/ui/form";
+import { Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, ProjectSummary } from "@/lib/types";
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
-import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError } from "./states";
+import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
@@ -20,11 +20,13 @@ type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
 export function InboxView({ projectId, initialLead }: { projectId?: string; initialLead?: string }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [project, setProject] = useState("");
+  const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [selectedLead, setSelectedLead] = useState<string | null>(initialLead ?? null);
+  const query = useDebounced(q);
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
-  const key = `/inbox${qs({ project_id: projectId ?? project, filter, page, per_page: PER_PAGE })}`;
+  const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
   // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
   // filter hides falls back to the first thread.
@@ -52,6 +54,20 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
             ]}
             className="w-full [&>button]:flex-auto [&>button]:px-1.5 [&>button]:text-xs"
           />
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setPage(1);
+                setSelectedLead(null);
+              }}
+              placeholder="Search name, email or company"
+              aria-label="Search replies"
+              className="h-9 pl-9"
+            />
+          </div>
           {!projectId && (
             <Select
               value={project}
@@ -77,8 +93,11 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           ) : !data ? (
             <ListSkeleton />
           ) : data.items.length === 0 ? (
-            <EmptyState icon={<Inbox className="size-5" />} title={filter === "all" ? "No replies yet" : "Nothing here"}>
-              {filter === "all" && "Replies to your emails land here. Splee checks your mailboxes every minute."}
+            <EmptyState
+              icon={query ? <Search className="size-5" /> : <Inbox className="size-5" />}
+              title={query ? "No replies match your search" : filter === "all" ? "No replies yet" : "Nothing here"}
+            >
+              {!query && filter === "all" && "Replies to your emails land here. Splee checks your mailboxes every minute."}
             </EmptyState>
           ) : (
             <ul>
