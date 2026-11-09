@@ -12,7 +12,7 @@ use crate::crm::Crm;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
-use crate::models::ProjectSettings;
+use crate::models::{ProjectSettings, WebhookDelivery};
 use crate::state::AppState;
 use crate::verify::Verifier;
 
@@ -21,6 +21,8 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/settings", get(get_settings).put(update_settings))
         .route("/projects/{id}/integrations/test", post(test_integration))
         .route("/projects/{id}/integrations/webhook-secret", post(replace_webhook_secret))
+        .route("/projects/{id}/integrations/webhook-deliveries", get(list_deliveries))
+        .route("/projects/{id}/integrations/webhook-deliveries/{delivery_id}/resend", post(resend_delivery))
         .route("/projects/{id}/integrations/{crm}", put(connect_crm).delete(disconnect_crm))
         // Static, so it wins over {crm} above.
         .route("/projects/{id}/integrations/verifier", put(connect_verifier).delete(disconnect_verifier))
@@ -210,6 +212,37 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
     // A passing test on the saved URL clears its last failure, so fixing an endpoint and testing it is enough. A failed test only shows in the toast.
     hooks::record(&state.db, project.id, alert, &body.url, &Ok(())).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_deliveries(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<WebhookDelivery>>> {
+    auth.project(&state.db, id).await?;
+    let deliveries = sqlx::query_as::<_, WebhookDelivery>("select * from webhook_deliveries where project_id = $1 order by created_at desc")
+        .bind(id)
+        .fetch_all(&state.db)
+        .await?;
+    Ok(Json(deliveries))
+}
+
+/// Posts a past delivery's payload again, signed afresh, to the webhook URL saved now. It's logged as a new delivery.
+async fn resend_delivery(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, delivery_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<WebhookDelivery>> {
+    auth.project(&state.db, id).await?;
+    let past = sqlx::query_as::<_, WebhookDelivery>("select * from webhook_deliveries where id = $1 and project_id = $2")
+        .bind(delivery_id)
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let settings = load_or_create(&state.db, id).await?;
+    if settings.webhook_url.trim().is_empty() {
+        return Err(AppError::BadRequest("Add a webhook URL first".into()));
+    }
+    let result = hooks::post_json(&settings.webhook_url, &past.payload, Some(&settings.webhook_secret)).await;
+    hooks::record(&state.db, id, hooks::Alert::Webhook, &settings.webhook_url, &result).await;
+    Ok(Json(hooks::log_delivery(&state.db, id, &past.event, &past.payload, &result).await?))
 }
 
 /// For a secret that leaked. Requests signed with the old one stop verifying right away.

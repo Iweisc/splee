@@ -137,6 +137,17 @@ pub struct Competitor {
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
+pub struct WebhookDelivery {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub event: String,
+    pub payload: Value,
+    /// None when the endpoint answered 2xx.
+    pub error: Option<String>,
+    pub created_at: Ts,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SavedReply {
     pub id: Uuid,
     pub project_id: Uuid,
