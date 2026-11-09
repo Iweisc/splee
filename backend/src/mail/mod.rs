@@ -7,6 +7,8 @@ mod notify;
 mod sender;
 mod smtp;
 
+pub use sender::in_window;
+
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -17,7 +19,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups and auto-replies wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies and LinkedIn steps wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -29,6 +31,9 @@ pub fn spawn_workers(state: AppState) {
         // Its own loop, because testing a server that never answers takes 30 seconds and sending shouldn't wait on it.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(60), || sender::recheck_mailboxes(&s), "mailbox recheck").await });
+        // Every 10 minutes, one step per project, which keeps the profile lookups under LinkedIn's daily limit too.
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(600), || crate::unipile::tick(&s), "linkedin sender").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });

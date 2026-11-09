@@ -29,7 +29,7 @@ hmac = "0.13"
 hickory-resolver = { version = "0.26.3", features = ["tokio"] }
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1", "tokio1-rustls", "builder", "smtp-transport", "hostname", "ring", "rustls-native-certs"] }
 mail-parser = "0.11.9"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "multipart", "rustls"] }
 rustls-native-certs = "0.8.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

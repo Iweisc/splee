@@ -33,7 +33,7 @@ export default function ChannelsPage() {
                 <UserPlus className="size-4" /> LinkedIn
               </span>
             }
-            description="When a lead with a LinkedIn profile gets their first email, the agent writes them a connection note and two follow-up messages. You send these from your own profile. Splee never logs into LinkedIn."
+            description="When a lead with a LinkedIn profile gets their first email, the agent writes them a connection note and two follow-up messages. You send these from your own profile, or connect Unipile in Integrations and Splee sends them for you."
             actions={
               <Switch
                 checked={s.channels.linkedin}
