@@ -245,20 +245,25 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let result = mail::test_mailbox(&state, &mailbox).await;
-    // A passing test clears an error state but never unpauses a mailbox, and keeps why it's paused, like too many bounces.
-    // Either way a person has now seen the result, so the sender stops testing it on its own.
-    let (status, error) = match &result {
-        Ok(()) if mailbox.status == "paused" => ("paused", mailbox.last_error.clone()),
-        Ok(()) => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, String::new()),
-        Err(e) => ("error", format!("{e:#}")),
+    // A test never changes a paused mailbox: only Resume does, and its last_error keeps why it's paused, like too many
+    // bounces. Otherwise a passing test clears an error state. Either way a person has now seen the result, so the sender
+    // stops testing it on its own.
+    let error = result.as_ref().err().map(|e| format!("{e:#}"));
+    let (status, last_error) = match &error {
+        _ if mailbox.status == "paused" => ("paused", mailbox.last_error.as_str()),
+        None => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, ""),
+        Some(e) => ("error", e.as_str()),
     };
     sqlx::query("update mailboxes set status = $2, last_error = $3, recheck_at = null where id = $1")
         .bind(mailbox.id)
         .bind(status)
-        .bind(&error)
+        .bind(last_error)
         .execute(&state.db)
         .await?;
-    Ok(Json(if result.is_ok() { json!({ "ok": true }) } else { json!({ "ok": false, "error": error }) }))
+    Ok(Json(match error {
+        None => json!({ "ok": true }),
+        Some(e) => json!({ "ok": false, "error": e }),
+    }))
 }
 
 async fn check_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Mailbox>> {
