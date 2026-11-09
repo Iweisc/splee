@@ -12,7 +12,7 @@ import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/misc";
+import { Badge, Host } from "@/components/ui/misc";
 import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
@@ -378,7 +378,9 @@ function EndpointList({
             <li key={e.id} className="px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{name(e.url)}</p>
+                  <p className="text-sm font-medium">
+                    <Host host={name(e.url)} />
+                  </p>
                   {/* Two lines without the scheme, so two URLs on the same host still read apart on a phone. */}
                   <p className="line-clamp-2 font-mono text-xs break-all text-muted-foreground" title={e.url}>
                     {e.url.replace(/^https:\/\//, "")}
