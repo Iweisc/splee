@@ -46,14 +46,13 @@ export function useListKeys(ids: string[] | undefined, selectedId: string | unde
 }
 
 /**
- * The line under a list that tells people about j and k, and any other keys in `children`. Leave out `what` when
- * there are other keys, so the line still fits the list. Hide it where useListKeys does nothing.
+ * The line under a list that tells people about j and k, and ? for the other keys. Any more and it wraps in the inbox's
+ * list on tablets. Hide it where useListKeys does nothing.
  */
-export function ListKeysHint({ what, className, children }: { what?: string; className: string; children?: React.ReactNode }) {
+export function ListKeysHint({ className }: { className: string }) {
   return (
     <p className={className}>
-      Press <Kbd>j</Kbd> and <Kbd>k</Kbd> to move{what && ` between ${what}`}
-      {children}
+      Press <Kbd>j</Kbd> and <Kbd>k</Kbd> to move, <Kbd>?</Kbd> for more
     </p>
   );
 }

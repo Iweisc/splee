@@ -14,6 +14,7 @@ import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
+import { ShortcutsDialog } from "./work/shortcuts-dialog";
 import { LoadError } from "./work/states";
 import { orgNav, projectNav } from "./nav";
 
@@ -101,6 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
       <PageTitle title={pageTitle} />
+      <ShortcutsDialog />
       <header inert={menuOpen} className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background px-4 lg:hidden">
         <button ref={openRef} onClick={() => setMenuPath(pathname)} className="-ml-1.5 rounded-md p-1.5 hover:bg-accent" aria-label="Open menu">
           <Menu className="size-5" />

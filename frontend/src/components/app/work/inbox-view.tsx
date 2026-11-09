@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -14,7 +14,7 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
-import { Kbd, ListKeysHint, useListKeys, useShortcut } from "./list-keys";
+import { ListKeysHint, useListKeys, useShortcut } from "./list-keys";
 import { SearchField } from "./search-field";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
@@ -142,9 +142,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
         </div>
         {data && <Pager page={page} total={data.total} onChange={setPage} />}
         {!!data?.items.length && (
-          <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block">
-            , <Kbd>e</Kbd> to mark done
-          </ListKeysHint>
+          <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block" />
         )}
       </div>
       <div className={cn("min-h-0 flex-col md:flex", selectedLead ? "flex" : "hidden")}>
@@ -172,6 +170,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     fetcher,
   );
   const [reply, setReply] = useState("");
+  const replyBox = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const [draftRun, setDraftRun] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -213,6 +212,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         }
       : null,
   );
+  useShortcut("r", () => replyBox.current?.focus());
 
   if (error) return <LoadError error={error} retry={() => mutate()} className="flex-1" />;
   if (!data) return <ListSkeleton className="flex-1" />;
@@ -357,6 +357,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       <div className="@container flex items-end gap-2 border-t border-border p-3">
         {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
+          ref={replyBox}
           value={reply}
           onChange={(e) => setReply(e.target.value)}
           onKeyDown={(e) => {

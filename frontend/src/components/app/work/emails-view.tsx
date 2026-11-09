@@ -148,7 +148,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
               ))}
             </ul>
             <Pager page={page} total={data.total} onChange={setPage} />
-            <ListKeysHint what="emails" className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground lg:block" />
+            <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground lg:block" />
           </Card>
           {selected && (
             <Card className="p-5 lg:sticky lg:top-6">
