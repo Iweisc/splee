@@ -438,6 +438,12 @@ async fn record_sent(
     sqlx::query("update mailboxes set first_sent_on = current_date where id = $1 and first_sent_on is null").bind(mb.id).execute(&mut *tx).await?;
 
     tx.commit().await?;
+    // The body as written, without the unsubscribe footer. Keep in sync with the email_sent note on the integrations page.
+    let sent = json!({
+        "id": email.id, "kind": email.kind, "step": email.step, "subject": email.subject, "body": email.body,
+        "from": mb.email, "to": to, "message_id": message_id,
+    });
+    crate::hooks::send_lead_event(state, lead.project_id, "email_sent", lead, Some(("email", sent))).await;
     Ok(())
 }
 

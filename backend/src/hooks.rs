@@ -94,7 +94,11 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 5] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced"];
+pub const EVENTS: [&str; 6] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced", "email_sent"];
+
+/// What an event carries besides the lead: the reply that set it off, or the email Splee sent.
+/// Its key is "reply" or "email", and "reply" stays in every payload, null when there's none.
+pub type Detail = Option<(&'static str, Value)>;
 
 /// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
 async fn lead_event(
@@ -103,7 +107,7 @@ async fn lead_event(
     project_id: Uuid,
     event: &str,
     lead: &Lead,
-    reply: Option<Value>,
+    detail: Detail,
 ) -> sqlx::Result<Option<(String, String, Value)>> {
     let settings: Option<(String, String, Vec<String>, String)> = sqlx::query_as(
         "select s.webhook_url, s.webhook_secret, s.webhook_events, p.name from project_settings s join projects p on p.id = s.project_id
@@ -117,7 +121,7 @@ async fn lead_event(
         return Ok(None);
     }
     // Keep in sync with PAYLOAD on the integrations page.
-    let payload = json!({
+    let mut payload = json!({
         "event": event,
         "project": {"id": project_id, "name": name},
         "lead": {
@@ -125,17 +129,20 @@ async fn lead_event(
             "company_name": lead.company_name, "company_domain": lead.company_domain,
             "linkedin_url": lead.linkedin_url, "x_url": lead.x_url,
         },
-        "reply": reply,
+        "reply": null,
         // Opens this lead's conversation, not just the inbox.
         "url": format!("{public_url}/app/p/{project_id}/inbox?lead={}", lead.id),
     });
+    if let Some((key, value)) = detail {
+        payload[key] = value;
+    }
     Ok(Some((url, secret, payload)))
 }
 
 /// Posts a lead event to the project's webhook when it subscribes to it. Delivery runs in the background, so a slow
 /// receiver never holds up a run or a request. Failures are logged and shown on the integrations page.
-pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, reply: Option<Value>) {
-    match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, reply).await {
+pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, detail: Detail) {
+    match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, detail).await {
         Ok(Some((url, secret, payload))) => {
             let db = state.db.clone();
             tokio::spawn(async move {
@@ -254,7 +261,7 @@ mod tests {
         assert_eq!(payload["project"]["name"], "Acme");
         assert_eq!(payload["lead"]["email"], "sarah@northwind.example");
         assert_eq!(payload["url"], format!("https://app.test/app/p/{project}/inbox?lead={}", lead.id));
-        for name in ["lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced"] {
+        for name in ["lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced", "email_sent"] {
             assert!(event(name).await.unwrap().is_none(), "{name}");
         }
 
@@ -265,6 +272,11 @@ mod tests {
             .unwrap();
         assert!(event("hot_lead").await.unwrap().is_none());
         assert_eq!(event("lead_bounced").await.unwrap().unwrap().2["reply"], Value::Null);
+
+        sqlx::query("update project_settings set webhook_events = '{email_sent}' where project_id = $1").bind(project).execute(&db).await.unwrap();
+        let sent = lead_event(&db, "https://app.test", project, "email_sent", &lead, Some(("email", json!({"subject": "Hi Sarah"})))).await.unwrap().unwrap().2;
+        assert_eq!(sent["email"]["subject"], "Hi Sarah");
+        assert_eq!(sent["reply"], Value::Null);
 
         sqlx::query("update project_settings set webhook_url = '' where project_id = $1").bind(project).execute(&db).await.unwrap();
         assert!(event("lead_bounced").await.unwrap().is_none());

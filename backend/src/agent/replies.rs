@@ -169,9 +169,9 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
             "classification": classification, "reason": verdict.reason,
         })
     };
-    hooks::send_lead_event(&ctx.state, t.project.id, "lead_replied", &t.lead, Some(reply(&verdict.classification))).await;
+    hooks::send_lead_event(&ctx.state, t.project.id, "lead_replied", &t.lead, Some(("reply", reply(&verdict.classification)))).await;
     if verdict.classification == "hot" {
-        hooks::send_lead_event(&ctx.state, t.project.id, "hot_lead", &t.lead, Some(reply("hot"))).await;
+        hooks::send_lead_event(&ctx.state, t.project.id, "hot_lead", &t.lead, Some(("reply", reply("hot")))).await;
         notify_hot(&ctx.state, t, &verdict.reason).await;
     }
     if matches!(verdict.classification.as_str(), "hot" | "question") {
