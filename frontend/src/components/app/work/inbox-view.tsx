@@ -1,15 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, ThumbsDown } from "lucide-react";
+import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, ThumbsDown } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, ProjectSummary } from "@/lib/types";
-import { cn, dateTime, timeAgo } from "@/lib/utils";
+import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
@@ -121,6 +121,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
                       <span className="mt-1.5 flex flex-wrap gap-1">
                         {t.classification && <ClassificationBadge value={t.classification} />}
                         {t.pending_auto_reply && <Badge tone="amber">Reply draft</Badge>}
+                        {t.lead.remind_at && <ReminderBadge at={t.lead.remind_at} />}
                       </span>
                     </span>
                   </button>
@@ -164,12 +165,23 @@ function ThreadPane({ leadId }: { leadId: string }) {
   const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
   // The lead wrote last and nobody has dealt with it yet.
   const last = conversation.at(-1);
-  const awaiting = last?.direction === "inbound" && !last.handled_at;
+  const reminderDue = !!lead.remind_at && isPast(lead.remind_at);
+  const awaiting = (last?.direction === "inbound" && !last.handled_at) || reminderDue;
 
   const markDone = async () => {
     try {
       await api(`/inbox/threads/${leadId}/done`, { method: "POST" });
       await refresh();
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  const remind = async (days: number | null) => {
+    try {
+      await api(`/inbox/threads/${leadId}/remind`, { body: { days } });
+      await refresh();
+      toast.success(days ? "We'll bring this back to Needs reply then" : "Reminder cleared");
     } catch (e) {
       toastError(e);
     }
@@ -215,6 +227,11 @@ function ThreadPane({ leadId }: { leadId: string }) {
           <p className="truncate text-xs text-muted-foreground">
             {[lead.title, lead.company_name, lead.email].filter(Boolean).join(" · ")}
           </p>
+          {lead.remind_at && (
+            <p className="mt-1 flex items-center gap-1 text-xs text-amber-700">
+              <Bell className="size-3" /> {reminderDue ? "Reminder: follow up now" : `Reminder ${dateTime(lead.remind_at)}`}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-1 [&>*]:grow">
           {statusActions.map((a) => (
@@ -233,6 +250,32 @@ function ThreadPane({ leadId }: { leadId: string }) {
               <Check className="size-3.5" /> Done
             </Button>
           )}
+          {/* A bell button that opens a native menu: the select covers it unseen and resets after each pick. A bell keeps
+              it on the row with the status buttons. */}
+          <label
+            title="Remind me"
+            className={buttonClass(
+              "outline",
+              "sm",
+              cn("relative px-2.5 has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-brand-600", lead.remind_at && "text-amber-700"),
+            )}
+          >
+            <Bell className="size-3.5" />
+            <select
+              aria-label="Remind me"
+              value=""
+              onChange={(e) => remind(e.target.value === "clear" ? null : Number(e.target.value))}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            >
+              <option value="" disabled>
+                Remind me
+              </option>
+              <option value="1">Tomorrow</option>
+              <option value="3">In 3 days</option>
+              <option value="7">In a week</option>
+              {lead.remind_at && <option value="clear">Clear reminder</option>}
+            </select>
+          </label>
         </div>
       </div>
       <div className="border-b border-border px-5 py-2">
@@ -262,6 +305,18 @@ function ThreadPane({ leadId }: { leadId: string }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+function ReminderBadge({ at }: { at: string }) {
+  return isPast(at) ? (
+    <Badge tone="amber">
+      <Bell className="size-3" /> Follow up
+    </Badge>
+  ) : (
+    <Badge>
+      <Bell className="size-3" /> {dateTime(at)}
+    </Badge>
   );
 }
 

@@ -255,6 +255,7 @@ export interface Lead {
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;
+  remind_at: Ts | null;
   last_contacted_at: Ts | null;
   created_at: Ts;
 }

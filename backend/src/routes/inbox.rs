@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/inbox/threads/{lead_id}/reply", post(reply))
         .route("/inbox/threads/{lead_id}/status", post(set_status))
         .route("/inbox/threads/{lead_id}/done", post(mark_done))
+        .route("/inbox/threads/{lead_id}/remind", post(remind))
         .route("/inbox/messages/{id}/approve", post(approve))
 }
 
@@ -55,7 +56,7 @@ struct ThreadRef {
 // One thread per lead with at least one inbound message. Drafts and cancelled emails never count as the
 // last message, so a pending auto-reply doesn't hide that the lead is waiting for an answer.
 const THREADS: &str = "with t as (
-       select l.id as lead_id, l.status as lead_status, p.name as project_name,
+       select l.id as lead_id, l.status as lead_status, l.remind_at, p.name as project_name,
          last.id as last_message_id, last.direction as last_direction, last.at as last_at,
          reply.classification, reply.handled_at is not null as handled,
          exists (select 1 from email_messages d where d.lead_id = l.id and d.kind = 'auto_reply'
@@ -85,9 +86,11 @@ const THREADS: &str = "with t as (
          -- Declines, out-of-office notes, unsubscribes and bounces are answered by the classifier, not by you.
          -- A pending auto-reply draft still waits on you to approve it, so it counts. Marking the lead as booked or
          -- not interested, or marking the thread done, is how you clear a reply you handled outside Splee.
-         last_direction = 'inbound' and not handled
+         -- A reminder you set brings the thread back whoever wrote last and whatever the lead's status.
+         (last_direction = 'inbound' and not handled
            and coalesce(classification, '') not in ('not_interested', 'ooo', 'unsubscribe', 'bounce')
-           and lead_status not in ('meeting_booked', 'not_interested', 'bounced', 'unsubscribed', 'do_not_contact') as is_needs_reply
+           and lead_status not in ('meeting_booked', 'not_interested', 'bounced', 'unsubscribed', 'do_not_contact'))
+           or coalesce(remind_at <= now(), false) as is_needs_reply
        from t
      )
      select * from f where case $3
@@ -220,6 +223,8 @@ async fn reply(
     .bind(to_email)
     .fetch_one(&state.db)
     .await?;
+    // Following up is what a due reminder asked for. One still ahead stays, to check back if they don't answer.
+    sqlx::query("update leads set remind_at = null where id = $1 and remind_at <= now()").bind(lead.id).execute(&state.db).await?;
     Ok(Json(message))
 }
 
@@ -270,10 +275,40 @@ async fn set_status(
 /// For a reply that needs no answer. It stays in the thread and leaves Needs reply until the lead writes again.
 async fn mark_done(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
+    let mut tx = state.db.begin().await?;
     sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
         .bind(lead.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    sqlx::query("update leads set remind_at = null where id = $1").bind(lead.id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct RemindBody {
+    days: Option<i32>,
+}
+
+/// Takes the thread out of Needs reply like Done, and brings it back after `days`. No days clears the reminder.
+async fn remind(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>, Json(body): Json<RemindBody>) -> AppResult<Json<Value>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
+    if body.days.is_some_and(|d| !(1..=30).contains(&d)) {
+        return Err(AppError::BadRequest("Pick a reminder between 1 and 30 days away".into()));
+    }
+    let mut tx = state.db.begin().await?;
+    sqlx::query("update leads set remind_at = now() + $2 * interval '1 day' where id = $1")
+        .bind(lead.id)
+        .bind(body.days)
+        .execute(&mut *tx)
+        .await?;
+    if body.days.is_some() {
+        sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
+            .bind(lead.id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -380,14 +415,18 @@ mod tests {
             ids.sort();
             ids
         };
-        assert_eq!(threads("needs_reply").await, sorted(vec![leads[0], leads[1], leads[9]]));
-        assert_eq!(threads("other").await, sorted([&leads[2..7], &leads[8..9]].concat()));
+        // A due reminder brings back a thread you'd otherwise never answer. One still ahead doesn't.
+        sqlx::query("update leads set remind_at = now() - interval '1 minute' where id = $1").bind(leads[2]).execute(&db).await.unwrap();
+        sqlx::query("update leads set remind_at = now() + interval '1 day' where id = $1").bind(leads[3]).execute(&db).await.unwrap();
+
+        assert_eq!(threads("needs_reply").await, sorted(vec![leads[0], leads[1], leads[2], leads[9]]));
+        assert_eq!(threads("other").await, sorted([&leads[3..7], &leads[8..9]].concat()));
         assert_eq!(threads("hot").await, vec![leads[7]]);
-        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 3);
+        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 4);
         // Search matches the lead's name, email or company and keeps the filter.
         assert_eq!(search("all", Some("lead 3")).await, vec![leads[3]]);
         assert_eq!(search("all", Some("LEAD1@")).await, vec![leads[1]]);
         assert_eq!(search("needs_reply", Some("company 9")).await, vec![leads[9]]);
-        assert!(search("needs_reply", Some("company 2")).await.is_empty());
+        assert!(search("needs_reply", Some("company 4")).await.is_empty());
     }
 }
