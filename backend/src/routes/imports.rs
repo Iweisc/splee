@@ -34,6 +34,8 @@ const FIELDS: &[&str] = &[
     "company_name",
     "company_domain",
     "linkedin_url",
+    "city",
+    "country_code",
 ];
 
 async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Import>>> {
@@ -113,6 +115,8 @@ fn suggest_field(header: &str) -> Option<&'static str> {
         "company" | "company name" => "company_name",
         "website" | "domain" | "company domain" => "company_domain",
         "linkedin" | "linkedin url" => "linkedin_url",
+        "city" => "city",
+        "country" | "country code" => "country_code",
         _ => return None,
     })
 }
@@ -176,6 +180,8 @@ async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
                 company_name: get("company_name"),
                 company_domain: get("company_domain"),
                 linkedin_url: get("linkedin_url"),
+                city: get("city"),
+                country_code: get("country_code"),
                 segment_id: upload.segment_id,
             };
             (line, lead)
