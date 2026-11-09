@@ -149,7 +149,7 @@ export interface ProjectSettings extends CrmStatus {
   /** The secret in the form webhook URL, /api/forms/{form_token}. */
   form_token: string;
   /** Its key is write-only, through PUT /integrations/verifier. */
-  verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable" | "clearout" | "reoon" | "debounce";
+  verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable" | "clearout" | "reoon" | "debounce" | "emaillistverify";
   verifier_error: string | null;
   verifier_failed_at: string | null;
   /** Looks up the real address behind a guessed one. Its key is write-only, through PUT /integrations/finder. */
