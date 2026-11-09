@@ -281,7 +281,9 @@ function RemoveLead({ lead, onCancel, onRemoved }: { lead: LeadDetail; onCancel:
         <label className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5">
           <input type="checkbox" checked={forget} onChange={(e) => setForget(e.target.checked)} className="mt-0.5 accent-black" />
           <span>
-            <span className="block text-sm font-medium">Never contact {lead.email} again</span>
+            <span className="block text-sm font-medium">
+              Never contact <Address email={lead.email} /> again
+            </span>
             <span className="block text-xs text-muted-foreground">Adds them to Do-not-contact, so no import or search brings them back.</span>
           </span>
         </label>
