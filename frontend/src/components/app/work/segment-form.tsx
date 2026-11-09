@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { X } from "lucide-react";
+import { ChipInput } from "@/components/app/settings/chip-input";
 import { Field, Input, Textarea } from "@/components/ui/form";
 import type { Segment, Targeting } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -28,7 +27,7 @@ export function SegmentFields({ value, onChange }: { value: SegmentDraft; onChan
         <Input value={value.name} onChange={(e) => set("name", e.target.value)} placeholder="Wedding planners" />
       </Field>
       {/* Its own row: beside the name, three rows of icons left a gap under the input. */}
-      <Field label="Icon">
+      <Field label="Icon" group>
         <div className="flex flex-wrap gap-1">
           {Object.entries(SEGMENT_ICONS).map(([name, Icon]) => (
             <button
@@ -57,8 +56,8 @@ export function SegmentFields({ value, onChange }: { value: SegmentDraft; onChan
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         {TARGETING_FIELDS.map((f) => (
-          <Field key={f.key} label={f.label}>
-            <ChipsInput
+          <Field key={f.key} label={f.label} group>
+            <ChipInput
               value={value.targeting[f.key] ?? []}
               onChange={(v) => set("targeting", { ...value.targeting, [f.key]: v })}
               placeholder={f.placeholder}
@@ -66,53 +65,6 @@ export function SegmentFields({ value, onChange }: { value: SegmentDraft; onChan
           </Field>
         ))}
       </div>
-    </div>
-  );
-}
-
-/** Enter or comma adds a chip, Backspace on an empty input removes the last one. */
-function ChipsInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
-  const [text, setText] = useState("");
-
-  const add = () => {
-    const parts = text
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p && !value.includes(p));
-    if (parts.length) onChange([...value, ...parts]);
-    setText("");
-  };
-
-  return (
-    <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-lg border border-border-strong bg-card px-2 py-1.5 focus-within:border-foreground/40 focus-within:ring-4 focus-within:ring-black/5">
-      {value.map((chip) => (
-        <span key={chip} className="inline-flex items-center gap-1 rounded-md bg-black/5 py-0.5 pr-1 pl-2 text-xs">
-          {chip}
-          <button
-            type="button"
-            onClick={() => onChange(value.filter((c) => c !== chip))}
-            className="rounded p-0.5 hover:bg-black/10"
-            aria-label={`Remove ${chip}`}
-          >
-            <X className="size-3" />
-          </button>
-        </span>
-      ))}
-      <input
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === ",") {
-            e.preventDefault();
-            add();
-          } else if (e.key === "Backspace" && !text && value.length) {
-            onChange(value.slice(0, -1));
-          }
-        }}
-        onBlur={add}
-        placeholder={value.length ? "" : placeholder}
-        className="min-w-24 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-subtle-foreground"
-      />
     </div>
   );
 }
