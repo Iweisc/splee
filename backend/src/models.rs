@@ -220,6 +220,8 @@ pub struct Lead {
     pub personalization: Value,
     pub notes: String,
     pub remind_at: Option<Ts>,
+    /// When the call they booked starts, if their scheduling tool said.
+    pub meeting_at: Option<Ts>,
     #[serde(skip)]
     pub unsubscribe_token: String,
     pub last_contacted_at: Option<Ts>,

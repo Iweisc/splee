@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::models::{Lead, WebhookDelivery};
+use crate::models::{Lead, Ts, WebhookDelivery};
 use crate::state::AppState;
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
@@ -133,7 +133,7 @@ async fn lead_event(
         "lead": {
             "id": lead.id, "full_name": lead.full_name, "email": lead.email, "title": lead.title,
             "company_name": lead.company_name, "company_domain": lead.company_domain,
-            "linkedin_url": lead.linkedin_url, "x_url": lead.x_url,
+            "linkedin_url": lead.linkedin_url, "x_url": lead.x_url, "meeting_at": lead.meeting_at,
         },
         "reply": null,
         "url": lead_url(public_url, project_id, lead.id),
@@ -290,15 +290,29 @@ pub fn booked(before: &str, lead: &Lead) -> bool {
     lead.status == "meeting_booked" && before != "meeting_booked"
 }
 
+/// A meeting's start in the project's timezone, like "Tue 10 Nov at 14:00 GMT". An unknown timezone falls back to UTC.
+fn meeting_time(at: Ts, timezone: &str) -> String {
+    let tz: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
+    at.with_timezone(&tz).format("%a %-d %b at %H:%M %Z").to_string()
+}
+
 /// Tells the team in chat and HubSpot that a lead booked a meeting. It runs in the background, so the request that set
 /// the status doesn't wait on either.
 pub fn announce_booked(state: &AppState, lead: &Lead) {
     let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
     let (who, link) = (format!("{} ({})", lead.full_name, lead.company_name), lead_url(&state.cfg.public_url, project_id, lead.id));
     tokio::spawn(async move {
-        let project: String =
-            sqlx::query_scalar("select name from projects where id = $1").bind(project_id).fetch_one(&state.db).await.unwrap_or_default();
-        let summary = format!("{who} for {project}");
+        let (project, timezone): (String, String) = sqlx::query_as(
+            "select p.name, coalesce(s.timezone, 'UTC') from projects p left join project_settings s on s.project_id = p.id where p.id = $1",
+        )
+        .bind(project_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or_default();
+        let summary = match lead.meeting_at {
+            Some(at) => format!("{who} for {project}, {}", meeting_time(at, &timezone)),
+            None => format!("{who} for {project}"),
+        };
         let alert = ChatAlert { label: "Meeting booked", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
         post_chat(&state.db, project_id, &alert).await;
         crate::crm::sync(&state, project_id, &lead, &format!("Booked a meeting through Splee.\n{link}")).await;
@@ -453,6 +467,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(kept, (2..DELIVERIES_KEPT + 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn meeting_times_read_in_the_projects_timezone() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-10T14:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(meeting_time(at, "Europe/Berlin"), "Tue 10 Nov at 15:00 CET");
+        assert_eq!(meeting_time(at, "America/New_York"), "Tue 10 Nov at 09:00 EST");
+        assert_eq!(meeting_time(at, "Not/AZone"), "Tue 10 Nov at 14:00 UTC");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
+import { CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -144,6 +144,11 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         {location && (
           <Detail label="Location" icon={<MapPin className="size-3.5" />}>
             {location}
+          </Detail>
+        )}
+        {lead.meeting_at && (
+          <Detail label="Meeting" icon={<CalendarCheck className="size-3.5" />}>
+            Meeting on {dateTime(lead.meeting_at)}
           </Detail>
         )}
       </dl>
