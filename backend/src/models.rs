@@ -127,7 +127,7 @@ pub struct ProjectSettings {
     pub close_connected: bool,
     pub close_error: Option<String>,
     pub close_failed_at: Option<Ts>,
-    /// "neverbounce", "millionverifier", "hunter" or "" for none. Its key (verifier_key_enc) stays out of this struct.
+    /// "neverbounce", "millionverifier", "hunter", "kickbox" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,

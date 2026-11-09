@@ -155,7 +155,7 @@ export interface ProjectSettings {
   close_error: string | null;
   close_failed_at: string | null;
   /** Its key is write-only, through PUT /integrations/verifier. */
-  verifier: "" | "neverbounce" | "millionverifier" | "hunter";
+  verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox";
   verifier_error: string | null;
   verifier_failed_at: string | null;
 }
