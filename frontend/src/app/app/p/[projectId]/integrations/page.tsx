@@ -119,15 +119,31 @@ function LastFailure({ error, at }: { error: string | null; at: string | null })
   );
 }
 
-/** The token is write-only, so once connected this only offers Disconnect. Connecting checks the token with HubSpot first. */
-function HubSpotSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+const CRMS = {
+  hubspot: {
+    name: "HubSpot",
+    record: "contacts",
+    field: "Service key",
+    hint: "In HubSpot: Settings → Integrations → Service Keys → Create, with the crm.objects.contacts.read and crm.objects.contacts.write scopes. An older private app's token works too.",
+  },
+  pipedrive: {
+    name: "Pipedrive",
+    record: "people",
+    field: "API token",
+    hint: "In Pipedrive: your profile → Personal preferences → API, then copy your personal API token.",
+  },
+} as const;
+
+/** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
+function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: keyof typeof CRMS }) {
+  const { name, record, field, hint } = CRMS[crm];
   const { mutate } = useSWRConfig();
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const call = async (method: "PUT" | "DELETE", done: string) => {
     setBusy(true);
     try {
-      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/hubspot`, { method, body: method === "PUT" ? { token } : undefined });
+      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/${crm}`, { method, body: method === "PUT" ? { token } : undefined });
       await mutate(`/projects/${projectId}/settings`, fresh, { revalidate: false });
       setToken("");
       toast.success(done);
@@ -138,40 +154,38 @@ function HubSpotSection({ projectId, settings }: { projectId: string; settings: 
     }
   };
   const disconnect = () => {
-    if (confirm("Disconnect HubSpot? New hot leads and meetings won't be added to it.")) call("DELETE", "HubSpot disconnected");
+    if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call("DELETE", `${name} disconnected`);
   };
+  const connected = settings[`${crm}_connected`];
   return (
     <Section
       title={
         <span className="flex items-center gap-2">
-          <Contact className="size-4" /> HubSpot
+          <Contact className="size-4" /> {name}
         </span>
       }
-      description="Adds hot leads and booked meetings to HubSpot as contacts, with a note holding their reply."
+      description={`Adds hot leads and booked meetings to ${name} as ${record}, with a note holding their reply.`}
       actions={
-        settings.hubspot_connected ? (
+        connected ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
             Disconnect
           </Button>
         ) : undefined
       }
     >
-      {settings.hubspot_connected ? (
-        <p className="text-sm">Connected. Splee matches contacts by email, so it updates people already in HubSpot.</p>
+      {connected ? (
+        <p className="text-sm">Connected. Splee matches by email, so people already in {name} get updated, not duplicated.</p>
       ) : (
-        <Field
-          label="Service key"
-          hint="In HubSpot: Settings → Integrations → Service Keys → Create, with the crm.objects.contacts.read and crm.objects.contacts.write scopes. An older private app's token works too."
-        >
+        <Field label={field} hint={hint}>
           <div className="flex gap-2">
             <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-            <Button onClick={() => call("PUT", "Connected to HubSpot")} loading={busy} disabled={!token}>
+            <Button onClick={() => call("PUT", `Connected to ${name}`)} loading={busy} disabled={!token}>
               Connect
             </Button>
           </div>
         </Field>
       )}
-      <LastFailure error={settings.hubspot_error} at={settings.hubspot_failed_at} />
+      <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} />
     </Section>
   );
 }
@@ -240,7 +254,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             <LastFailure error={s.slack_error} at={s.slack_failed_at} />
           </Section>
 
-          <HubSpotSection projectId={projectId} settings={s} />
+          <CrmSection projectId={projectId} settings={s} crm="hubspot" />
+          <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
 
           <Section
             title={
