@@ -60,11 +60,16 @@ export default function OnboardingPage() {
                 <Input autoFocus value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="acme.com" />
               </Field>
             )}
-            <div className="flex items-center justify-between gap-3">
-              <button type="button" onClick={() => setNoWebsite((v) => !v)} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            {/* Where the two don't fit side by side, on the narrowest phones, Start research takes the full row on top. */}
+            <div className="flex flex-wrap-reverse items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setNoWebsite((v) => !v)}
+                className="text-sm whitespace-nowrap text-muted-foreground underline-offset-4 hover:underline"
+              >
                 {noWebsite ? "I have a website" : "I don't have a website"}
               </button>
-              <Button type="submit" loading={submitting} disabled={invalid}>
+              <Button type="submit" loading={submitting} disabled={invalid} className="max-sm:grow">
                 Start research <ArrowRight className="size-4" />
               </Button>
             </div>
