@@ -258,7 +258,7 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
       </div>
       <p className={cn("flex-1 text-sm whitespace-pre-wrap", m.status !== "todo" && "text-muted-foreground")}>{m.body}</p>
       {m.status === "todo" && m.send_error && (
-        <p className="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs text-red-700">Splee couldn&apos;t send this: {m.send_error}. Send it yourself.</p>
+        <p className="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs text-red-700">Splee couldn&apos;t send this: {m.send_error.replace(/\.+$/, "")}. Send it yourself.</p>
       )}
       <div className="flex gap-1">
         <Button size="sm" variant="ghost" onClick={copy}>
