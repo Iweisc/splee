@@ -199,11 +199,20 @@ export interface Segment {
   auto_paused_at: Ts | null;
 }
 
-/** One email of the sequence: step 0 is the first email, step n is follow-up n. `replied` counts leads whose first reply came after it. */
-export interface StepStats {
-  step: number;
+/** Emails sent and the leads whose first reply came after one of them. See RepliesSection. */
+export interface ReplyCounts {
   sent: number;
   replied: number;
+}
+
+/** One email of the sequence: step 0 is the first email, step n is follow-up n. */
+export interface StepStats extends ReplyCounts {
+  step: number;
+}
+
+/** One day of the week in the project's time zone, 1 for Monday to 7 for Sunday. */
+export interface WeekdayStats extends ReplyCounts {
+  weekday: number;
 }
 
 export interface SegmentWithStats extends Segment {

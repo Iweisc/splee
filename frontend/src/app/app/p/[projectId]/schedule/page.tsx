@@ -2,8 +2,10 @@
 
 import { CalendarClock } from "lucide-react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
 import { Field, Select } from "@/components/ui/form";
+import type { WeekdayStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -111,6 +113,7 @@ export default function SchedulePage() {
                 </p>
               )}
             </Section>
+            <RepliesSection<WeekdayStats> stat="weekdays" title="Replies by send day" column="Day" label={(r) => DAYS[r.weekday - 1]!} />
           </>
         );
       }}

@@ -15,6 +15,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/stats", get(project_stats))
         .route("/projects/{id}/stats/steps", get(step_stats))
+        .route("/projects/{id}/stats/weekdays", get(weekday_stats))
         .route("/public/stats", get(public_stats))
 }
 
@@ -132,36 +133,60 @@ pub(super) struct StepStats {
     replied: i64,
 }
 
-/// Which email in the sequence leads answer, to judge whether another follow-up is worth sending. A lead's first real reply
-/// counts for the last first email or follow-up sent to them before it. Later replies, and bounces, don't count.
-pub(super) async fn steps(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<StepStats>> {
-    sqlx::query_as::<_, StepStats>(
+/// The first emails and follow-ups sent, and the leads who answered one, grouped by `key`, an expression over the sent
+/// email `e` and the project's settings `ps`, returned as the column `name`. A lead's first real reply counts for the last
+/// first email or follow-up sent to them before it. Later replies, and bounces, don't count.
+fn replies_by(key: &str, name: &str) -> String {
+    format!(
         "with sent as (
-           select step, count(*) as sent from email_messages
-           where project_id = $1 and direction = 'outbound' and status = 'sent' and kind in ('initial', 'follow_up')
-           group by step
+           select {key} as k, count(*) as sent from email_messages e left join project_settings ps on ps.project_id = e.project_id
+           where e.project_id = $1 and e.direction = 'outbound' and e.status = 'sent' and e.kind in ('initial', 'follow_up')
+           group by 1
          ), first_reply as (
            select distinct on (lead_id) lead_id, created_at from email_messages
            where project_id = $1 and direction = 'inbound' and classification is distinct from 'bounce'
            order by lead_id, created_at
          ), replied as (
-           select o.step, count(*) as replied from first_reply r
-           join lateral (select e.step from email_messages e
+           select o.k, count(*) as replied from first_reply r
+           join lateral (select {key} as k from email_messages e left join project_settings ps on ps.project_id = e.project_id
                          where e.lead_id = r.lead_id and e.direction = 'outbound' and e.status = 'sent'
                            and e.kind in ('initial', 'follow_up') and e.sent_at <= r.created_at
                          order by e.sent_at desc limit 1) o on true
-           group by o.step
+           group by o.k
          )
-         select s.step, s.sent, coalesce(r.replied, 0) as replied from sent s left join replied r using (step) order by s.step",
+         select s.k as {name}, s.sent, coalesce(r.replied, 0) as replied from sent s left join replied r using (k) order by 1"
     )
-    .bind(id)
-    .fetch_all(db)
-    .await
+}
+
+/// Which email in the sequence leads answer, to judge whether another follow-up is worth sending.
+pub(super) async fn steps(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<StepStats>> {
+    sqlx::query_as::<_, StepStats>(&replies_by("e.step", "step")).bind(id).fetch_all(db).await
+}
+
+/// One day of the week in the project's time zone, 1 for Monday to 7 for Sunday.
+#[derive(Serialize, FromRow)]
+pub(super) struct WeekdayStats {
+    weekday: i32,
+    sent: i64,
+    /// Leads whose first reply came after an email sent that day, counted for the last email before the reply.
+    replied: i64,
+}
+
+/// Which send days get answers, next to the days the Schedule page lets people pick. Days use the project's current time
+/// zone, the one the send window uses.
+pub(super) async fn weekdays(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<WeekdayStats>> {
+    let key = "extract(isodow from e.sent_at at time zone coalesce(ps.timezone, 'UTC'))::int";
+    sqlx::query_as::<_, WeekdayStats>(&replies_by(key, "weekday")).bind(id).fetch_all(db).await
 }
 
 async fn step_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<StepStats>>> {
     auth.project(&state.db, id).await?;
     Ok(Json(steps(&state.db, id).await?))
+}
+
+async fn weekday_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<WeekdayStats>>> {
+    auth.project(&state.db, id).await?;
+    Ok(Json(weekdays(&state.db, id).await?))
 }
 
 async fn project_stats(
@@ -241,6 +266,42 @@ pub(crate) mod tests {
         }
         let steps: Vec<_> = super::steps(&db, project).await.unwrap().into_iter().map(|s| (s.step, s.sent, s.replied)).collect();
         assert_eq!(steps, vec![(0, 4, 1), (1, 2, 2), (2, 1, 0)]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn weekdays_use_the_project_time_zone(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, timezone) values ($1, 'Asia/Tokyo')").bind(project).execute(&db).await.unwrap();
+        let lead = || sqlx::query_scalar::<_, Uuid>("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db);
+        let (answered, quiet) = (lead().await.unwrap(), lead().await.unwrap());
+        // Monday 20:00 UTC is Tuesday morning in Tokyo.
+        let rows = [
+            (answered, "outbound", "initial", "sent", "2026-11-09 20:00Z"),
+            (answered, "inbound", "inbound", "received", "2026-11-10 01:00Z"),
+            (quiet, "outbound", "initial", "sent", "2026-11-11 03:00Z"),
+        ];
+        for (lead, direction, kind, status, at) in rows {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, direction, kind, step, status, classification, sent_at, created_at)
+                 values ($1, $2, $3, $4, 0, $5, case when $3 = 'inbound' then 'question' end,
+                         case when $3 = 'outbound' then $6::timestamptz end, $6::timestamptz)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(direction)
+            .bind(kind)
+            .bind(status)
+            .bind(at)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let days: Vec<_> = super::weekdays(&db, project).await.unwrap().into_iter().map(|d| (d.weekday, d.sent, d.replied)).collect();
+        assert_eq!(days, vec![(2, 1, 1), (3, 1, 0)]);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
