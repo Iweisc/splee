@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
+import useSWR, { SWRConfig } from "swr";
 import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
@@ -12,12 +12,15 @@ import { api, qs } from "@/lib/api";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { keepLoadedOnError } from "@/hooks/keep-loaded";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { ShortcutsDialog } from "./work/shortcuts-dialog";
 import { LoadError } from "./work/states";
 import { orgNav, projectNav } from "./nav";
 
 const LAST_PROJECT_KEY = "splee:last-project";
+
+const swrConfig = { use: [keepLoadedOnError] };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -179,7 +182,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main inert={menuOpen} className="min-w-0 flex-1">{children}</main>
+      <main inert={menuOpen} className="min-w-0 flex-1">
+        <SWRConfig value={swrConfig}>{children}</SWRConfig>
+      </main>
       <Toasts />
     </div>
   );
