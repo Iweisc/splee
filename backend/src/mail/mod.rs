@@ -4,6 +4,7 @@ pub mod dns;
 mod imap;
 mod inbound;
 mod notify;
+pub mod providers;
 mod sender;
 mod smtp;
 

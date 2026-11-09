@@ -12,7 +12,16 @@ fn fqdn(domain: &str) -> String {
     format!("{}.", domain.trim().trim_end_matches('.'))
 }
 
+/// The domain's MX hosts, most preferred first, like "aspmx.l.google.com".
+pub async fn mx_exchanges(resolver: &TokioResolver, domain: &str) -> Vec<String> {
+    mx_records(resolver, domain).await.into_iter().map(|(_, host)| host).collect()
+}
+
 async fn mx_hosts(resolver: &TokioResolver, domain: &str) -> Vec<String> {
+    mx_records(resolver, domain).await.into_iter().map(|(pref, host)| format!("{pref} {host}")).collect()
+}
+
+async fn mx_records(resolver: &TokioResolver, domain: &str) -> Vec<(u16, String)> {
     let Ok(lookup) = resolver.mx_lookup(fqdn(domain)).await else { return vec![] };
     let mut hosts: Vec<(u16, String)> = lookup
         .answers()
@@ -23,7 +32,7 @@ async fn mx_hosts(resolver: &TokioResolver, domain: &str) -> Vec<String> {
         })
         .collect();
     hosts.sort();
-    hosts.into_iter().map(|(pref, host)| format!("{pref} {host}")).collect()
+    hosts
 }
 
 pub async fn has_mx(resolver: &TokioResolver, domain: &str) -> bool {

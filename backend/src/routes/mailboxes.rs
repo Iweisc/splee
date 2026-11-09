@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use reqwest::Url;
@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/mailboxes", get(list).post(create))
         .route("/mailboxes/stats", get(stats))
+        .route("/mailboxes/settings", get(settings))
         .route("/mailboxes/{id}", patch(update).delete(remove))
         .route("/mailboxes/{id}/test", post(test))
         .route("/mailboxes/{id}/check-dns", post(check_dns))
@@ -233,6 +234,20 @@ async fn update(
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))
+}
+
+#[derive(Deserialize)]
+struct SettingsQuery {
+    email: String,
+}
+
+/// The SMTP and IMAP settings for an address, from the provider its domain's mail goes to, or null for one Splee
+/// doesn't recognize. The mailbox form fills them in once the address is typed.
+async fn settings(State(_): State<AppState>, _: Auth, Query(q): Query<SettingsQuery>) -> AppResult<Json<Option<mail::providers::Settings>>> {
+    let domain = q.email.trim().rsplit_once('@').map(|(_, d)| d.trim_end_matches('.')).filter(|d| d.contains('.'));
+    let Some(domain) = domain else { return Ok(Json(None)) };
+    let resolver = mail::dns::resolver().map_err(AppError::Internal)?;
+    Ok(Json(mail::providers::from_mx(&mail::dns::mx_exchanges(&resolver, domain).await)))
 }
 
 async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
