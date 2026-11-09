@@ -5,10 +5,9 @@ import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
-import { Toaster } from "sonner";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
-import { Address, Favicon, Spinner } from "@/components/ui/misc";
+import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
@@ -181,7 +180,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main inert={menuOpen} className="min-w-0 flex-1">{children}</main>
-      <Toaster position="bottom-right" />
+      <Toasts />
     </div>
   );
 }
