@@ -271,6 +271,12 @@ const CRMS = {
     field: "API key",
     hint: "In Less Annoying CRM: Settings → API, then generate a new API key.",
   },
+  salesflare: {
+    name: "Salesflare",
+    record: "contacts",
+    field: "API key",
+    hint: "In Salesflare: Settings → API keys, then the + button. Notes go on the contact's account.",
+  },
 } as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
