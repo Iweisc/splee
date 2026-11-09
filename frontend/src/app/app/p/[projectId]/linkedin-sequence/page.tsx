@@ -58,16 +58,17 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
           </div>
         ) : data.length === 0 ? (
           <Card>
+            {/* Leads without a LinkedIn profile or a sequence aren't listed, so a project full of leads can still land here. */}
             <EmptyState
               icon={<UserPlus className="size-5" />}
-              title="No leads yet"
+              title="No leads with a LinkedIn profile"
               action={
-                <LinkButton href={`/app/p/${projectId}/segments`} variant="outline" size="sm">
-                  Go to campaigns
+                <LinkButton href={`/app/p/${projectId}/leads`} variant="outline" size="sm">
+                  Go to leads
                 </LinkButton>
               }
             >
-              Find people in a campaign first. Every lead gets a LinkedIn sequence on request.
+              Leads show up here once they have a LinkedIn profile. Add one in a lead&apos;s window, or find people in a campaign.
             </EmptyState>
           </Card>
         ) : (
