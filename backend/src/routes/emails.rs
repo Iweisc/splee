@@ -49,6 +49,8 @@ struct ListQuery {
     status: Option<String>,
     kind: Option<String>,
     q: Option<String>,
+    /// "soonest" sorts by scheduled time, earliest first, falling back to creation time. Otherwise newest first.
+    order: Option<String>,
 }
 
 const LIST_FILTER: &str = "where p.org_id = $1 and e.direction = 'outbound'
@@ -80,10 +82,13 @@ async fn list(
     .bind(&like)
     .fetch_one(&state.db)
     .await?;
-    let items = sqlx::query_as::<_, EmailRow>(&format!(
-        "{ROW_SELECT} {LIST_FILTER}
-         order by coalesce(e.sent_at, e.scheduled_for, e.created_at) desc limit $7 offset $8"
-    ))
+    // An approved email without a time is due now, so its creation time puts it first.
+    let order = if q.order.as_deref() == Some("soonest") {
+        "coalesce(e.scheduled_for, e.created_at), e.created_at"
+    } else {
+        "coalesce(e.sent_at, e.scheduled_for, e.created_at) desc"
+    };
+    let items = sqlx::query_as::<_, EmailRow>(&format!("{ROW_SELECT} {LIST_FILTER} order by {order} limit $7 offset $8"))
     .bind(auth.org_id)
     .bind(q.project_id)
     .bind(q.segment_id)
