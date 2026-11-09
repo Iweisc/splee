@@ -1,12 +1,15 @@
 "use client";
 
+import { useParams } from "next/navigation";
 import { ArrowDown, ArrowUp, Plus, Repeat, Trash2 } from "lucide-react";
+import useSWR from "swr";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { Button } from "@/components/ui/button";
 import { NumberInput, Switch, Textarea } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
-import type { FollowUp } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { fetcher } from "@/hooks/use-me";
+import type { FollowUp, StepStats } from "@/lib/types";
+import { cn, num, percent } from "@/lib/utils";
 
 const MAX_STEPS = 5;
 const MAX_DELAY_DAYS = 30;
@@ -43,62 +46,96 @@ export default function FollowUpsPage() {
         );
 
         return (
-          <Section
-            title="Sequence"
-            description={`Up to ${MAX_STEPS} follow-ups. Each delay counts from the previous email. Disabled steps are skipped.`}
-            actions={steps.length > 0 && add}
-          >
-            {steps.length === 0 ? (
-              <EmptyState icon={<Repeat className="size-6" />} title="No follow-ups" action={add} className="py-8">
-                Only the first email is sent to each lead.
-              </EmptyState>
-            ) : (
-              <ol className="space-y-3">
-                {steps.map((f, i) => (
-                  <li key={i}>
-                    <Card className={cn("p-4 shadow-none ring-1 ring-border", !f.enabled && "bg-muted")}>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <Switch checked={f.enabled} onChange={(enabled) => patch(i, { enabled })} label={`Enable follow-up ${i + 1}`} />
-                        <span className="font-medium">Follow-up {i + 1}</span>
-                        <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                          after
-                          <NumberInput
-                            min={1}
-                            max={MAX_DELAY_DAYS}
-                            value={f.delay_days}
-                            onValueChange={(delay_days) => patch(i, { delay_days })}
-                            className="h-8 w-16 text-center tabular-nums"
-                            aria-label={`Delay for follow-up ${i + 1} in days`}
-                          />
-                          {f.delay_days === 1 ? "day" : "days"}
-                        </span>
-                        <div className="ml-auto flex items-center gap-1">
-                          <Button variant="ghost" size="icon" onClick={() => move(i, i - 1)} disabled={i === 0} aria-label="Move up">
-                            <ArrowUp className="size-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={() => move(i, i + 1)} disabled={i === steps.length - 1} aria-label="Move down">
-                            <ArrowDown className="size-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={() => set(steps.filter((_, j) => j !== i))} aria-label="Remove follow-up">
-                            <Trash2 className="size-4" />
-                          </Button>
+          <>
+            <Section
+              title="Sequence"
+              description={`Up to ${MAX_STEPS} follow-ups. Each delay counts from the previous email. Disabled steps are skipped.`}
+              actions={steps.length > 0 && add}
+            >
+              {steps.length === 0 ? (
+                <EmptyState icon={<Repeat className="size-6" />} title="No follow-ups" action={add} className="py-8">
+                  Only the first email is sent to each lead.
+                </EmptyState>
+              ) : (
+                <ol className="space-y-3">
+                  {steps.map((f, i) => (
+                    <li key={i}>
+                      <Card className={cn("p-4 shadow-none ring-1 ring-border", !f.enabled && "bg-muted")}>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Switch checked={f.enabled} onChange={(enabled) => patch(i, { enabled })} label={`Enable follow-up ${i + 1}`} />
+                          <span className="font-medium">Follow-up {i + 1}</span>
+                          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                            after
+                            <NumberInput
+                              min={1}
+                              max={MAX_DELAY_DAYS}
+                              value={f.delay_days}
+                              onValueChange={(delay_days) => patch(i, { delay_days })}
+                              className="h-8 w-16 text-center tabular-nums"
+                              aria-label={`Delay for follow-up ${i + 1} in days`}
+                            />
+                            {f.delay_days === 1 ? "day" : "days"}
+                          </span>
+                          <div className="ml-auto flex items-center gap-1">
+                            <Button variant="ghost" size="icon" onClick={() => move(i, i - 1)} disabled={i === 0} aria-label="Move up">
+                              <ArrowUp className="size-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => move(i, i + 1)} disabled={i === steps.length - 1} aria-label="Move down">
+                              <ArrowDown className="size-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => set(steps.filter((_, j) => j !== i))} aria-label="Remove follow-up">
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
                         </div>
-                      </div>
-                      {/* At least two lines, and taller when the hint or the instructions need it, as the hint does on phones. 1.125rem is the padding plus border. */}
-                      <Textarea
-                        value={f.instructions}
-                        onChange={(e) => patch(i, { instructions: e.target.value })}
-                        placeholder="Optional: what this follow-up should say, e.g. share a case study, or ask if someone else handles this."
-                        className="mt-3 min-h-[calc(2lh+1.125rem)] bg-card field-sizing-content"
-                      />
-                    </Card>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </Section>
+                        {/* At least two lines, and taller when the hint or the instructions need it, as the hint does on phones. 1.125rem is the padding plus border. */}
+                        <Textarea
+                          value={f.instructions}
+                          onChange={(e) => patch(i, { instructions: e.target.value })}
+                          placeholder="Optional: what this follow-up should say, e.g. share a case study, or ask if someone else handles this."
+                          className="mt-3 min-h-[calc(2lh+1.125rem)] bg-card field-sizing-content"
+                        />
+                      </Card>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </Section>
+            <StepReplies />
+          </>
         );
       }}
     </ProjectSettingsPage>
+  );
+}
+
+/** Kept apart from the editable steps above, so moving or removing one doesn't relabel what was already sent. */
+function StepReplies() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const { data } = useSWR<StepStats[]>(`/projects/${projectId}/stats/steps`, fetcher);
+  if (!data?.length) return null;
+  return (
+    <Section title="Replies by step" description="Each lead's first reply counts for the last email they got before it.">
+      <table className="w-full text-sm tabular-nums">
+        <thead className="text-left text-muted-foreground">
+          <tr>
+            <th className="pb-2 font-normal">Email</th>
+            <th className="pb-2 text-right font-normal">Sent</th>
+            <th className="pb-2 text-right font-normal">Replied</th>
+            <th className="pb-2 text-right font-normal">Rate</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {data.map((s) => (
+            <tr key={s.step}>
+              <td className="py-2 font-medium">{s.step === 0 ? "First email" : `Follow-up ${s.step}`}</td>
+              <td className="py-2 text-right">{num(s.sent)}</td>
+              <td className="py-2 text-right">{num(s.replied)}</td>
+              <td className="py-2 text-right">{percent(s.replied / s.sent)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
   );
 }

@@ -14,6 +14,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/stats", get(project_stats))
+        .route("/projects/{id}/stats/steps", get(step_stats))
         .route("/public/stats", get(public_stats))
 }
 
@@ -122,6 +123,47 @@ async fn daily(db: &PgPool, id: Uuid, days: i32) -> sqlx::Result<Vec<Day>> {
     .await
 }
 
+/// One email of the sequence: step 0 is the first email, step n is follow-up n.
+#[derive(Serialize, FromRow)]
+pub(super) struct StepStats {
+    step: i32,
+    sent: i64,
+    /// Leads whose first reply came after this step and before the next one.
+    replied: i64,
+}
+
+/// Which email in the sequence leads answer, to judge whether another follow-up is worth sending. A lead's first real reply
+/// counts for the last first email or follow-up sent to them before it. Later replies, and bounces, don't count.
+pub(super) async fn steps(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<StepStats>> {
+    sqlx::query_as::<_, StepStats>(
+        "with sent as (
+           select step, count(*) as sent from email_messages
+           where project_id = $1 and direction = 'outbound' and status = 'sent' and kind in ('initial', 'follow_up')
+           group by step
+         ), first_reply as (
+           select distinct on (lead_id) lead_id, created_at from email_messages
+           where project_id = $1 and direction = 'inbound' and classification is distinct from 'bounce'
+           order by lead_id, created_at
+         ), replied as (
+           select o.step, count(*) as replied from first_reply r
+           join lateral (select e.step from email_messages e
+                         where e.lead_id = r.lead_id and e.direction = 'outbound' and e.status = 'sent'
+                           and e.kind in ('initial', 'follow_up') and e.sent_at <= r.created_at
+                         order by e.sent_at desc limit 1) o on true
+           group by o.step
+         )
+         select s.step, s.sent, coalesce(r.replied, 0) as replied from sent s left join replied r using (step) order by s.step",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await
+}
+
+async fn step_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<StepStats>>> {
+    auth.project(&state.db, id).await?;
+    Ok(Json(steps(&state.db, id).await?))
+}
+
 async fn project_stats(
     State(state): State<AppState>,
     auth: Auth,
@@ -152,6 +194,54 @@ async fn public_stats(State(state): State<AppState>) -> AppResult<Json<Value>> {
 pub(crate) mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_counts_for_the_last_step_before_it(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead = || sqlx::query_scalar::<_, Uuid>("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db);
+        let (early, late, bounced, twice) = (lead().await.unwrap(), lead().await.unwrap(), lead().await.unwrap(), lead().await.unwrap());
+        // (lead, kind, step, days ago, classification). Outbound kinds are sent, inbound ones received.
+        let rows: [(Uuid, &str, i32, i32, Option<&str>); 13] = [
+            (early, "initial", 0, 5, None),
+            (early, "inbound", 0, 4, Some("question")),
+            (late, "initial", 0, 5, None),
+            (late, "follow_up", 1, 2, None),
+            (late, "inbound", 0, 1, Some("hot")),
+            (bounced, "initial", 0, 5, None),
+            (bounced, "inbound", 0, 4, Some("bounce")),
+            (twice, "initial", 0, 5, None),
+            (twice, "follow_up", 1, 3, None),
+            (twice, "inbound", 0, 2, Some("question")),
+            (twice, "manual_reply", 0, 1, None),
+            (twice, "inbound", 0, 0, Some("hot")),
+            (twice, "follow_up", 2, 0, None),
+        ];
+        for (lead, kind, step, days, classification) in rows {
+            let inbound = kind == "inbound";
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, direction, kind, step, status, classification, sent_at, created_at)
+                 values ($1, $2, $3, $4, $5, $6, $7, case when $3 = 'outbound' then now() - make_interval(days => $8) end,
+                         now() - make_interval(days => $8))",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(if inbound { "inbound" } else { "outbound" })
+            .bind(kind)
+            .bind(step)
+            .bind(if inbound { "received" } else { "sent" })
+            .bind(classification)
+            .bind(days)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let steps: Vec<_> = super::steps(&db, project).await.unwrap().into_iter().map(|s| (s.step, s.sent, s.replied)).collect();
+        assert_eq!(steps, vec![(0, 4, 1), (1, 2, 2), (2, 1, 0)]);
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
