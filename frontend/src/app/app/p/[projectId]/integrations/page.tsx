@@ -91,7 +91,7 @@ const CHAT_APPS = [
   ["Teams", "the channel's Workflows → Post to a channel when a webhook request is received"],
   ["Google Chat", "Apps & integrations → Webhooks"],
   ["Telegram", "bot's sendMessage URL with ?chat_id="],
-  ["ntfy", "https://ntfy.sh/ and a topic only you know"],
+  ["ntfy", "https://ntfy.sh/ or your ntfy.* server, and a topic only you know"],
   ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
   ["Gotify", "your server's /message?token=APP_TOKEN"],
   ["Lark or Feishu", "group Settings → Bots → Custom Bot"],
@@ -122,7 +122,8 @@ function chatApp(url: string): string {
   if (on("logic.azure.com") || on("powerplatform.com") || on("webhook.office.com")) return "Teams";
   if (host === "chat.googleapis.com") return "Google Chat";
   if (host === "api.telegram.org") return "Telegram";
-  if (host === "ntfy.sh") return "ntfy";
+  // ntfy.sh or a self-hosted ntfy.* server, the same way hooks::ntfy does.
+  if (host.startsWith("ntfy.")) return "ntfy";
   if (host === "api.pushover.net") return "Pushover";
   if (host === "open.larksuite.com") return "Lark";
   if (host === "open.feishu.cn") return "Feishu";
