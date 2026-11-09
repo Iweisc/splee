@@ -236,6 +236,8 @@ pub struct EmailMessage {
     pub created_at: Ts,
     /// Inbound only: when you marked the reply as needing no answer.
     pub handled_at: Option<Ts>,
+    /// Times the receiving server answered "try again later".
+    pub deferrals: i32,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
