@@ -1,15 +1,13 @@
 "use client";
 
-import { useParams } from "next/navigation";
 import { ArrowDown, ArrowUp, Plus, Repeat, Trash2 } from "lucide-react";
-import useSWR from "swr";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
+import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
 import { NumberInput, Switch, Textarea } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
-import { fetcher } from "@/hooks/use-me";
 import type { FollowUp, StepStats } from "@/lib/types";
-import { cn, num, percent } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 const MAX_STEPS = 5;
 const MAX_DELAY_DAYS = 30;
@@ -101,41 +99,15 @@ export default function FollowUpsPage() {
                 </ol>
               )}
             </Section>
-            <StepReplies />
+            <RepliesSection<StepStats>
+              stat="steps"
+              title="Replies by step"
+              column="Email"
+              label={(r) => (r.step === 0 ? "First email" : `Follow-up ${r.step}`)}
+            />
           </>
         );
       }}
     </ProjectSettingsPage>
-  );
-}
-
-/** Kept apart from the editable steps above, so moving or removing one doesn't relabel what was already sent. */
-function StepReplies() {
-  const { projectId } = useParams<{ projectId: string }>();
-  const { data } = useSWR<StepStats[]>(`/projects/${projectId}/stats/steps`, fetcher);
-  if (!data?.length) return null;
-  return (
-    <Section title="Replies by step" description="Each lead's first reply counts for the last email they got before it.">
-      <table className="w-full text-sm tabular-nums">
-        <thead className="text-left text-muted-foreground">
-          <tr>
-            <th className="pb-2 font-normal">Email</th>
-            <th className="pb-2 text-right font-normal">Sent</th>
-            <th className="pb-2 text-right font-normal">Replied</th>
-            <th className="pb-2 text-right font-normal">Rate</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {data.map((s) => (
-            <tr key={s.step}>
-              <td className="py-2 font-medium">{s.step === 0 ? "First email" : `Follow-up ${s.step}`}</td>
-              <td className="py-2 text-right">{num(s.sent)}</td>
-              <td className="py-2 text-right">{num(s.replied)}</td>
-              <td className="py-2 text-right">{percent(s.replied / s.sent)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </Section>
   );
 }
