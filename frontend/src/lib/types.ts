@@ -459,6 +459,8 @@ export interface Mailbox {
   org_id: UUID;
   email: string;
   from_name: string;
+  /** Replaces the project's signature on the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
+  signature: string;
   smtp_host: string;
   smtp_port: number;
   smtp_security: "tls" | "starttls" | "none";
@@ -492,6 +494,8 @@ export interface MailboxStats {
 export interface MailboxInput {
   email: string;
   from_name: string;
+  /** Replaces the project's signature on the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
+  signature: string;
   smtp_host: string;
   smtp_port: number;
   smtp_security: "tls" | "starttls" | "none";
