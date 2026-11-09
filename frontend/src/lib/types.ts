@@ -104,7 +104,15 @@ export interface Targeting {
   exclude_keywords?: string[];
 }
 
-export interface ProjectSettings {
+/** Every CRM, in the order the integrations page lists them. Keep in sync with Crm::ALL in backend/src/crm/mod.rs. */
+export const CRM_NAMES = ["hubspot", "pipedrive", "attio", "close", "folk"] as const;
+export type CrmName = (typeof CRM_NAMES)[number];
+
+/** Each CRM's connection and last failed sync, as {crm}_connected, {crm}_error and {crm}_failed_at. Its token is write-only,
+ * through PUT /integrations/{crm}. */
+type CrmStatus = { [C in CrmName as `${C}_connected`]: boolean } & { [C in CrmName as `${C}_error` | `${C}_failed_at`]: string | null };
+
+export interface ProjectSettings extends CrmStatus {
   project_id: UUID;
   daily_email_limit: number;
   timezone: string;
@@ -141,22 +149,6 @@ export interface ProjectSettings {
   calendar_token: string;
   /** The secret in the form webhook URL, /api/forms/{form_token}. */
   form_token: string;
-  /** CRM tokens are write-only, through PUT /integrations/{crm}. */
-  hubspot_connected: boolean;
-  hubspot_error: string | null;
-  hubspot_failed_at: string | null;
-  pipedrive_connected: boolean;
-  pipedrive_error: string | null;
-  pipedrive_failed_at: string | null;
-  attio_connected: boolean;
-  attio_error: string | null;
-  attio_failed_at: string | null;
-  close_connected: boolean;
-  close_error: string | null;
-  close_failed_at: string | null;
-  folk_connected: boolean;
-  folk_error: string | null;
-  folk_failed_at: string | null;
   /** Its key is write-only, through PUT /integrations/verifier. */
   verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox";
   verifier_error: string | null;

@@ -6,8 +6,21 @@ import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { ProjectSettings } from "@/lib/types";
+import { CRM_NAMES, type ProjectSettings } from "@/lib/types";
 import { toastError } from "./use-action";
+
+// The backend sets the alert failures and the CRM and verifier connections itself, so these come from the latest fetch even
+// under an unsaved draft.
+const FROM_SERVER: (keyof ProjectSettings)[] = [
+  "webhook_error",
+  "webhook_failed_at",
+  "slack_error",
+  "slack_failed_at",
+  ...CRM_NAMES.flatMap((crm) => [`${crm}_connected`, `${crm}_error`, `${crm}_failed_at`] as const),
+  "verifier",
+  "verifier_error",
+  "verifier_failed_at",
+];
 
 export function useProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -17,36 +30,8 @@ export function useProjectSettings() {
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // The backend sets the alert failure fields and the CRM and verifier connections itself, so they come from the latest fetch even
-  // under an unsaved draft.
-  const settings =
-    draft && data
-      ? {
-          ...draft,
-          webhook_error: data.webhook_error,
-          webhook_failed_at: data.webhook_failed_at,
-          slack_error: data.slack_error,
-          slack_failed_at: data.slack_failed_at,
-          hubspot_connected: data.hubspot_connected,
-          hubspot_error: data.hubspot_error,
-          hubspot_failed_at: data.hubspot_failed_at,
-          pipedrive_connected: data.pipedrive_connected,
-          pipedrive_error: data.pipedrive_error,
-          pipedrive_failed_at: data.pipedrive_failed_at,
-          attio_connected: data.attio_connected,
-          attio_error: data.attio_error,
-          attio_failed_at: data.attio_failed_at,
-          close_connected: data.close_connected,
-          close_error: data.close_error,
-          close_failed_at: data.close_failed_at,
-          folk_connected: data.folk_connected,
-          folk_error: data.folk_error,
-          folk_failed_at: data.folk_failed_at,
-          verifier: data.verifier,
-          verifier_error: data.verifier_error,
-          verifier_failed_at: data.verifier_failed_at,
-        }
-      : (draft ?? data);
+  const settings: ProjectSettings | undefined =
+    draft && data ? { ...draft, ...Object.fromEntries(FROM_SERVER.map((field) => [field, data[field]])) } : (draft ?? data);
   const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);
 
   const update = (patch: Partial<ProjectSettings>) => {

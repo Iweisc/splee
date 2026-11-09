@@ -26,15 +26,11 @@ pub enum Crm {
 }
 
 impl Crm {
+    /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
+    pub const ALL: [Crm; 5] = [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk];
+
     pub fn parse(name: &str) -> Option<Crm> {
-        match name {
-            "hubspot" => Some(Crm::HubSpot),
-            "pipedrive" => Some(Crm::Pipedrive),
-            "attio" => Some(Crm::Attio),
-            "close" => Some(Crm::Close),
-            "folk" => Some(Crm::Folk),
-            _ => None,
-        }
+        Crm::ALL.into_iter().find(|crm| crm.name() == name)
     }
 
     /// Also the prefix of its project_settings columns: {name}_token_enc, {name}_connected, {name}_error, {name}_failed_at.
@@ -84,16 +80,12 @@ impl Crm {
 /// integrations page, they never fail the caller.
 pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     let Some(email) = lead.email.as_deref() else { return };
-    let tokens: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "select hubspot_token_enc, pipedrive_token_enc, attio_token_enc, close_token_enc, folk_token_enc from project_settings where project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-    let Some((hubspot, pipedrive, attio, close, folk)) = tokens else { return };
-    for (crm, enc) in [(Crm::HubSpot, hubspot), (Crm::Pipedrive, pipedrive), (Crm::Attio, attio), (Crm::Close, close), (Crm::Folk, folk)] {
+    // The column names come from Crm::name, never from input.
+    let columns: Vec<String> = Crm::ALL.iter().map(|crm| format!("{}_token_enc", crm.name())).collect();
+    let sql = format!("select array[{}] from project_settings where project_id = $1", columns.join(", "));
+    let tokens: Option<Vec<String>> = sqlx::query_scalar(&sql).bind(project_id).fetch_optional(&state.db).await.ok().flatten();
+    let Some(tokens) = tokens else { return };
+    for (crm, enc) in Crm::ALL.into_iter().zip(tokens) {
         if enc.is_empty() {
             continue;
         }
