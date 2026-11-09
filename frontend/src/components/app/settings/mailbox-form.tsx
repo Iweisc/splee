@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
@@ -9,6 +10,9 @@ import type { Mailbox, MailboxInput } from "@/lib/types";
 import { MicroLabel } from "@/components/app/work/states";
 
 type Preset = "google" | "microsoft" | "zoho" | "custom";
+
+/** GET /mailboxes/settings: the provider an address's domain sends its mail to, with its SMTP and IMAP settings. */
+type Found = Pick<MailboxInput, "smtp_host" | "smtp_port" | "smtp_security" | "imap_host" | "imap_port"> & { provider: string };
 
 const PRESETS: Record<Exclude<Preset, "custom">, Pick<MailboxInput, "smtp_host" | "smtp_port" | "smtp_security" | "imap_host" | "imap_port">> = {
   google: { smtp_host: "smtp.gmail.com", smtp_port: 587, smtp_security: "starttls", imap_host: "imap.gmail.com", imap_port: 993 },
@@ -78,6 +82,9 @@ export function MailboxForm({
   onSubmit: (input: MailboxInput) => void;
 }) {
   const [preset, setPreset] = useState<Preset>(mailbox ? presetOf(mailbox) : "google");
+  // Settings are filled in from the address's domain until the user picks a provider, and never on edit.
+  const [pickedByHand, setPickedByHand] = useState(!!mailbox);
+  const [found, setFound] = useState<string | null>(null);
   const [m, setM] = useState<MailboxInput>(mailbox ? toInput(mailbox) : EMPTY);
   // Most providers use the same login for SMTP and IMAP, so IMAP mirrors SMTP until the user edits it.
   const [separateImap, setSeparateImap] = useState(
@@ -88,6 +95,18 @@ export function MailboxForm({
   const pickPreset = (p: Preset) => {
     setPreset(p);
     if (p !== "custom") set(PRESETS[p]);
+  };
+  const lookUp = async (email: string) => {
+    if (pickedByHand || !/^\S+@\S+\.\S+$/.test(email)) return;
+    const result = await api<Found | null>(`/mailboxes/settings?email=${encodeURIComponent(email)}`).catch(() => null);
+    if (!result) return setFound(null);
+    const { provider, ...hosts } = result;
+    const known = (Object.keys(PRESETS) as (keyof typeof PRESETS)[]).find(
+      (p) => PRESETS[p].smtp_host === hosts.smtp_host && PRESETS[p].imap_host === hosts.imap_host,
+    );
+    pickPreset(known ?? "custom");
+    if (!known) set(hosts);
+    setFound(provider);
   };
 
   const imapUser = separateImap ? m.imap_username : m.smtp_username;
@@ -120,7 +139,11 @@ export function MailboxForm({
         <Tabs
           className="max-sm:grid max-sm:grid-cols-2"
           value={preset}
-          onChange={pickPreset}
+          onChange={(p) => {
+            setPickedByHand(true);
+            setFound(null);
+            pickPreset(p);
+          }}
           options={[
             { value: "google", label: <>Google<span className="max-sm:hidden"> Workspace</span></> },
             { value: "microsoft", label: <>Microsoft<span className="max-sm:hidden"> 365</span></> },
@@ -128,7 +151,11 @@ export function MailboxForm({
             { value: "custom", label: "Custom" },
           ]}
         />
-        <p className="mt-2 text-xs text-muted-foreground">{PRESET_NOTES[preset]}</p>
+        <p className="mt-2 text-xs text-pretty text-muted-foreground">
+          {preset === "custom" && found
+            ? `Filled in with ${found}'s settings. With two-step login on, use an app password.`
+            : PRESET_NOTES[preset]}
+        </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -141,6 +168,7 @@ export function MailboxForm({
               // Keep the username in step with the address while the user hasn't typed a different one.
               set({ email, ...(m.smtp_username === m.email ? { smtp_username: email } : {}) });
             }}
+            onBlur={(e) => lookUp(e.target.value.trim())}
             placeholder="alex@try-acme.com"
             autoFocus
           />
