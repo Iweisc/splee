@@ -37,7 +37,7 @@ export function CompanyProfile({ project, className }: { project: Project; class
       </div>
       {researched ? (
         <>
-          <p className={cn("mt-3 text-sm leading-relaxed text-pretty text-foreground/80", hasDetails && !details && "line-clamp-4")}>{c.description}</p>
+          <p className={cn("mt-3 text-sm leading-relaxed text-foreground/80", hasDetails && !details && "line-clamp-4")}>{c.description}</p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {c.employees && (
               <Badge>
