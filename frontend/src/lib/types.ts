@@ -199,6 +199,13 @@ export interface Segment {
   auto_paused_at: Ts | null;
 }
 
+/** One email of the sequence: step 0 is the first email, step n is follow-up n. `replied` counts leads whose first reply came after it. */
+export interface StepStats {
+  step: number;
+  sent: number;
+  replied: number;
+}
+
 export interface SegmentWithStats extends Segment {
   companies: number;
   leads: number;
