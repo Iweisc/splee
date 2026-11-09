@@ -500,7 +500,7 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
       {settings.unipile_connected ? (
         <p className="text-sm text-pretty">
           Sending as {settings.unipile_account_name || "your LinkedIn account"}. Each due step goes out in your sending hours, up to 25 a day, and
-          messages wait until they accept the connect note.
+          messages wait until they accept the connect note. A reply on LinkedIn stops their sequence and emails.
         </p>
       ) : (
         <div className="flex flex-col gap-4 sm:flex-row">

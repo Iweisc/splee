@@ -430,6 +430,17 @@ pub fn announce_booked(state: &AppState, lead: &Lead) {
     });
 }
 
+/// Tells chat that a lead wrote back on LinkedIn, which stopped their sequence and emails.
+pub fn announce_linkedin_reply(state: &AppState, lead: &Lead, text: &str) {
+    let (state, lead, text) = (state.clone(), lead.clone(), text.to_string());
+    let link = lead_url(&state.cfg.public_url, lead.project_id, lead.id);
+    tokio::spawn(async move {
+        let summary = format!("{} ({}) wrote back on LinkedIn", lead.full_name, lead.company_name);
+        let alert = ChatAlert { label: "LinkedIn reply", summary: &summary, quote: (!text.is_empty()).then_some(text.as_str()), link: &link, link_text: "Open the lead" };
+        post_chat(&state.db, lead.project_id, &alert).await;
+    });
+}
+
 /// Tells the team in chat, the webhook and the CRMs that a lead cancelled the call they booked. `was` is when it would have
 /// been, since the lead no longer has the time.
 /// Tells chat, the webhook and the CRMs that a booked lead moved their call. `lead.meeting_at` is the new time.

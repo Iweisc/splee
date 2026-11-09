@@ -358,19 +358,40 @@ async fn connect_unipile(
     }
     let (account, name) =
         unipile::find_account(&base, token).await.map_err(|e| AppError::BadRequest(format!("Unipile didn't accept that: {e:#}")))?;
-    set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name).await
+    remove_unipile_webhooks(&state, id).await?;
+    let hook_token: String =
+        sqlx::query_scalar("select unipile_webhook_token from project_settings where project_id = $1").bind(id).fetch_one(&state.db).await?;
+    let url = format!("{}/api/unipile/{hook_token}", state.cfg.public_url.trim_end_matches('/'));
+    let hooks = unipile::add_webhooks(&base, token, &account, &url)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Unipile didn't take Splee's webhook for LinkedIn replies: {e:#}")))?;
+    set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name, &hooks).await
 }
 
 async fn disconnect_unipile(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_unipile(&state.db, id, "", "", "", "").await
+    remove_unipile_webhooks(&state, id).await?;
+    set_unipile(&state.db, id, "", "", "", "", &[]).await
 }
 
-async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str, name: &str) -> AppResult<Json<ProjectSettings>> {
+/// The webhooks a previous connection made, so a reconnect or disconnect doesn't leave Unipile posting to Splee.
+async fn remove_unipile_webhooks(state: &AppState, id: Uuid) -> AppResult<()> {
+    let (base, enc, ids): (String, String, Vec<String>) =
+        sqlx::query_as("select unipile_dsn, unipile_token_enc, unipile_webhook_ids from project_settings where project_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+    if let (false, Ok(token)) = (ids.is_empty(), crypto::decrypt(&state.cfg.app_secret, &enc)) {
+        unipile::remove_webhooks(&base, &token, &ids).await;
+    }
+    Ok(())
+}
+
+async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str, name: &str, hooks: &[String]) -> AppResult<Json<ProjectSettings>> {
     let settings = sqlx::query_as::<_, ProjectSettings>(
         "update project_settings set unipile_dsn = $2, unipile_token_enc = $3, unipile_account_id = $4, unipile_account_name = $5,
-           unipile_error = null, unipile_failed_at = null
+           unipile_webhook_ids = $6, unipile_error = null, unipile_failed_at = null
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -378,6 +399,7 @@ async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str
     .bind(enc)
     .bind(account)
     .bind(name)
+    .bind(hooks)
     .fetch_one(db)
     .await?;
     Ok(Json(settings))
