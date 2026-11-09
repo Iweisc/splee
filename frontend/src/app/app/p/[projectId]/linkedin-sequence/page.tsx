@@ -5,6 +5,7 @@ import { Check, Copy, ExternalLink, SkipForward, Sparkles, UserPlus } from "luci
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { isActive, useProjectRuns } from "@/components/app/work/run-progress";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
@@ -23,6 +24,10 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
   const key = `/projects/${projectId}/linkedin${qs({ segment_id: segment })}`;
   const { data, error, mutate } = useSWR<Sequence[]>(key, fetcher, { keepPreviousData: true });
+  // Sequences still being written, by lead. Without them, coming back to the page offered Generate again, and each
+  // click starts another paid run.
+  const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
+  const writing = (leadId: string) => runs?.find((r) => r.kind === "linkedin_sequence" && r.input.lead_id === leadId && isActive(r))?.id ?? null;
 
   return (
     <>
@@ -69,7 +74,15 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
           // One card with rows. A card per lead with gaps between made a 40-lead list several screens tall.
           <Card className="divide-y divide-border">
             {data.map((s) => (
-              <LeadSequence key={s.lead.id} sequence={s} onChange={() => mutate()} />
+              <LeadSequence
+                key={s.lead.id}
+                sequence={s}
+                writing={writing(s.lead.id)}
+                onChange={() => {
+                  mutate();
+                  refreshRuns();
+                }}
+              />
             ))}
           </Card>
         )}
@@ -78,13 +91,14 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   );
 }
 
-function LeadSequence({ sequence: { lead, messages }, onChange }: { sequence: Sequence; onChange: () => void }) {
-  const [runId, setRunId] = useState<string | null>(null);
+function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { sequence: Sequence; writing: string | null; onChange: () => void }) {
+  const [started, setStarted] = useState<string | null>(null);
+  const runId = started ?? writing;
   const [starting, setStarting] = useState(false);
 
   useAgentEvents(runId ? `/api/runs/${runId}/events` : null, (e) => {
     if (e.kind === "done" || e.kind === "error") {
-      setRunId(null);
+      setStarted(null);
       if (e.kind === "error") toast.error(e.message || "Couldn't write the sequence");
       onChange();
     }
@@ -94,7 +108,7 @@ function LeadSequence({ sequence: { lead, messages }, onChange }: { sequence: Se
     setStarting(true);
     try {
       const { run_id } = await api<{ run_id: string }>(`/leads/${lead.id}/linkedin`, { method: "POST" });
-      setRunId(run_id);
+      setStarted(run_id);
     } catch (e) {
       toastError(e);
     } finally {
