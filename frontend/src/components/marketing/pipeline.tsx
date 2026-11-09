@@ -188,7 +188,7 @@ function EmailPreview() {
     <div className="overflow-hidden rounded-xl shadow-plaque">
       <div className="flex gap-3 border-b border-border px-4 py-3">
         <span className="text-muted-foreground">Subject</span>
-        <span className="font-medium">Petalworks x Gilded Table Co.</span>
+        <span className="font-medium text-balance">Petalworks x Gilded Table Co.</span>
       </div>
       <div className="space-y-3 px-4 py-4 leading-relaxed text-muted-foreground">
         <p>Hi Theo,</p>

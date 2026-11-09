@@ -14,7 +14,7 @@ export function toastError(e: unknown) {
 }
 
 export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("font-mono text-[11px] tracking-wide text-muted-foreground uppercase", className)} {...props} />;
+  return <p className={cn("font-mono text-[11px] tracking-wide text-balance text-muted-foreground uppercase", className)} {...props} />;
 }
 
 export function LoadError({ error, retry, what = "this", className }: { error: unknown; retry?: () => void; what?: string; className?: string }) {
