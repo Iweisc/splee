@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Field, Input, NumberInput, Select } from "@/components/ui/form";
+import { Field, Input, NumberInput, Select, Switch } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import type { Mailbox, MailboxInput } from "@/lib/types";
 import { MicroLabel } from "@/components/app/work/states";
@@ -33,11 +33,28 @@ const EMPTY: MailboxInput = {
   imap_password: "",
   daily_limit: 30,
   cost_per_email_micros: 0,
+  ramp_up: true,
 };
 
 function toInput(m: Mailbox): MailboxInput {
-  const { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros } = m;
-  return { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password: "", imap_host, imap_port, imap_username, imap_password: "", daily_limit, cost_per_email_micros };
+  const { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
+    m;
+  return {
+    email,
+    from_name,
+    smtp_host,
+    smtp_port,
+    smtp_security,
+    smtp_username,
+    smtp_password: "",
+    imap_host,
+    imap_port,
+    imap_username,
+    imap_password: "",
+    daily_limit,
+    cost_per_email_micros,
+    ramp_up,
+  };
 }
 
 function presetOf(m: Mailbox): Preset {
@@ -206,6 +223,17 @@ export function MailboxForm({
       <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
         <NumberInput required min={1} value={m.daily_limit} onValueChange={(daily_limit) => set({ daily_limit })} className="w-28 tabular-nums" />
       </Field>
+
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Ramp up slowly</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Send 10 emails on the first day and 4 more each day until the daily limit, so providers get used to a new mailbox before it sends
+            at full volume.
+          </p>
+        </div>
+        <Switch checked={m.ramp_up} onChange={(ramp_up) => set({ ramp_up })} label="Ramp up slowly" />
+      </div>
 
       <Field
         label="Cost per 1,000 emails"

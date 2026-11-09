@@ -377,6 +377,9 @@ export interface Mailbox {
   dns: { mx?: DnsCheck; spf?: DnsCheck; dmarc?: DnsCheck; checked_at?: Ts };
   created_at: Ts;
   recheck_at: Ts | null;
+  ramp_up: boolean;
+  /** "2026-11-09", the UTC day it first sent. */
+  first_sent_on: string | null;
 }
 
 export interface MailboxInput {
@@ -393,6 +396,7 @@ export interface MailboxInput {
   imap_password: string;
   daily_limit: number;
   cost_per_email_micros: number;
+  ramp_up: boolean;
   status?: "active" | "paused";
 }
 
