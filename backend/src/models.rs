@@ -144,6 +144,9 @@ pub struct ProjectSettings {
     pub salesflare_connected: bool,
     pub salesflare_error: Option<String>,
     pub salesflare_failed_at: Option<Ts>,
+    pub affinity_connected: bool,
+    pub affinity_error: Option<String>,
+    pub affinity_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,

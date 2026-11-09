@@ -1,6 +1,7 @@
 //! Copies hot and booked leads into the CRMs a project connected, each with a note saying what happened, so the sales
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
+mod affinity;
 mod attio;
 mod brevo;
 mod capsule;
@@ -33,11 +34,12 @@ pub enum Crm {
     ZendeskSell,
     Lacrm,
     Salesflare,
+    Affinity,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 10] = [
+    pub const ALL: [Crm; 11] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -48,6 +50,7 @@ impl Crm {
         Crm::ZendeskSell,
         Crm::Lacrm,
         Crm::Salesflare,
+        Crm::Affinity,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -67,6 +70,7 @@ impl Crm {
             Crm::ZendeskSell => "zendesk_sell",
             Crm::Lacrm => "lacrm",
             Crm::Salesflare => "salesflare",
+            Crm::Affinity => "affinity",
         }
     }
 
@@ -82,6 +86,7 @@ impl Crm {
             Crm::ZendeskSell => "Zendesk Sell",
             Crm::Lacrm => "Less Annoying CRM",
             Crm::Salesflare => "Salesflare",
+            Crm::Affinity => "Affinity",
         }
     }
 
@@ -98,6 +103,7 @@ impl Crm {
             Crm::ZendeskSell => zendesk_sell::check(token).await,
             Crm::Lacrm => lacrm::check(token).await,
             Crm::Salesflare => salesflare::check(token).await,
+            Crm::Affinity => affinity::check(token).await,
         }
     }
 
@@ -113,6 +119,7 @@ impl Crm {
             Crm::ZendeskSell => zendesk_sell::push(token, email, lead, note).await,
             Crm::Lacrm => lacrm::push(token, email, lead, note).await,
             Crm::Salesflare => salesflare::push(token, email, lead, note).await,
+            Crm::Affinity => affinity::push(token, email, lead, note).await,
         }
     }
 }

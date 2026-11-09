@@ -292,6 +292,12 @@ const CRMS = {
     field: "API key",
     hint: "In Salesflare: Settings → API keys, then the + button. Notes go on the contact's account.",
   },
+  affinity: {
+    name: "Affinity",
+    record: "people",
+    field: "API key",
+    hint: "In Affinity: Settings → API, then Generate an API key.",
+  },
 } as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
