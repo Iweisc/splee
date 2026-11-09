@@ -154,6 +154,9 @@ export interface ProjectSettings {
   close_connected: boolean;
   close_error: string | null;
   close_failed_at: string | null;
+  folk_connected: boolean;
+  folk_error: string | null;
+  folk_failed_at: string | null;
   /** Its key is write-only, through PUT /integrations/verifier. */
   verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox";
   verifier_error: string | null;

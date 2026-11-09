@@ -208,6 +208,12 @@ const CRMS = {
     field: "API key",
     hint: "In Close: Settings → Developer → API Keys → New API Key.",
   },
+  folk: {
+    name: "folk",
+    record: "people",
+    field: "API key",
+    hint: "In folk: Settings → API → Create a new key.",
+  },
 } as const;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
@@ -446,6 +452,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
           <CrmSection projectId={projectId} settings={s} crm="attio" />
           <CrmSection projectId={projectId} settings={s} crm="close" />
+          <CrmSection projectId={projectId} settings={s} crm="folk" />
           <VerifierSection projectId={projectId} settings={s} />
 
           <Section
