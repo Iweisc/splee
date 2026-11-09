@@ -10,7 +10,7 @@ import { CopyField } from "@/components/app/settings/copy-button";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
-import { toastError } from "@/components/app/work/states";
+import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Badge, Host } from "@/components/ui/misc";
 import { Field, Input, Select, Switch } from "@/components/ui/form";
@@ -353,7 +353,7 @@ function EndpointList({
   placeholder: string;
 }) {
   const key = `/projects/${projectId}/${kind}`;
-  const { data, mutate } = useSWR<Endpoint[]>(key, fetcher);
+  const { data, error, mutate } = useSWR<Endpoint[]>(key, fetcher);
   const { pending, run } = useAction();
   const [url, setUrl] = useState("");
   const add = async () => {
@@ -370,6 +370,8 @@ function EndpointList({
       await mutate();
     }, `Removed ${name(e.url)}`);
   };
+  // Without this a list that didn't load looked empty, with Add offered as if nothing was set up yet.
+  if (error) return <LoadError error={error} what={kind === "chat-channels" ? "your chats" : "your webhooks"} retry={() => mutate()} />;
   return (
     <>
       {!!data?.length && (
