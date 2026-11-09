@@ -53,7 +53,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           <Input value={q} onChange={filter(setQ)} placeholder="Search name, email or company" className="h-9 pl-9" />
         </div>
         {!segmentId && (
-          <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto flex-auto">
+          <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto flex-auto" aria-label="Campaign">
             <option value="">All campaigns</option>
             {segments?.map((s) => (
               <option key={s.id} value={s.id}>
@@ -63,7 +63,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           </Select>
         )}
         <div className="flex flex-auto flex-wrap gap-2">
-          <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto">
+          <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto" aria-label="Status">
             <option value="">Any status</option>
             {Object.entries(LEAD_STATUS).map(([value, s]) => (
               <option key={value} value={value}>

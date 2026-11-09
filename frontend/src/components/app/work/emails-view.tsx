@@ -73,6 +73,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
               reset();
             }}
             className="h-9 w-auto"
+            aria-label="Project"
           >
             <option value="">All projects</option>
             {projects?.map((p) => (

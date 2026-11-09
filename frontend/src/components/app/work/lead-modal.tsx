@@ -88,7 +88,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Select value={lead.status} onChange={(e) => setStatus(e.target.value as LeadStatus)} className="h-8 w-auto">
+        <Select value={lead.status} onChange={(e) => setStatus(e.target.value as LeadStatus)} className="h-8 w-auto" aria-label="Status">
           {Object.entries(LEAD_STATUS).map(([value, s]) => (
             <option key={value} value={value}>
               {s.label}
