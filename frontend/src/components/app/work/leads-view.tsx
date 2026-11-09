@@ -104,7 +104,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
               </LinkButton>
             }
           >
-            Run &quot;Find people&quot; on a campaign and the agent adds decision makers here.
+            Run &quot;Find people&quot; {segmentId ? "above" : "on a campaign"} and the agent adds decision makers here.
           </EmptyState>
         )
       ) : (
