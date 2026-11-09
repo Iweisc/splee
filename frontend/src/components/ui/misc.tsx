@@ -139,6 +139,9 @@ export function Modal({
   className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // Not onClick: a click lands where the press and the release have in common, so selecting text in a field and letting
+  // go past the edge "clicked" the backdrop and closed the modal with the edits in it. Both have to be on the backdrop.
+  const pressedBackdrop = useRef(false);
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -149,7 +152,8 @@ export function Modal({
     <dialog
       ref={ref}
       onClose={onClose}
-      onClick={(e) => e.target === ref.current && onClose()}
+      onPointerDown={(e) => (pressedBackdrop.current = e.target === ref.current)}
+      onPointerUp={(e) => pressedBackdrop.current && e.target === ref.current && onClose()}
       className={cn(
         "m-auto w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-card p-0 text-foreground shadow-pop backdrop:bg-black/30 backdrop:backdrop-blur-[2px]",
         className,
