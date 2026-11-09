@@ -2,7 +2,7 @@
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
-//! Anymail Finder.
+//! Anymail Finder or LeadMagic.
 
 use std::time::Duration;
 
@@ -197,6 +197,7 @@ pub enum Finder {
     Findymail,
     Prospeo,
     Anymail,
+    LeadMagic,
 }
 
 impl Finder {
@@ -206,6 +207,7 @@ impl Finder {
             "findymail" => Some(Finder::Findymail),
             "prospeo" => Some(Finder::Prospeo),
             "anymailfinder" => Some(Finder::Anymail),
+            "leadmagic" => Some(Finder::LeadMagic),
             _ => None,
         }
     }
@@ -216,6 +218,7 @@ impl Finder {
             Finder::Findymail => "Findymail",
             Finder::Prospeo => "Prospeo",
             Finder::Anymail => "Anymail Finder",
+            Finder::LeadMagic => "LeadMagic",
         }
     }
 
@@ -226,6 +229,7 @@ impl Finder {
             Finder::Findymail => findymail_call(client()?.get("https://app.findymail.com/api/credits"), key).await.map(|_| ()),
             Finder::Prospeo => prospeo_call(client()?.get("https://api.prospeo.io/account-information"), key).await.map(|_| ()),
             Finder::Anymail => anymailfinder_call(client()?.get("https://api.anymailfinder.com/v5.1/account"), key).await.map(|_| ()),
+            Finder::LeadMagic => leadmagic_call(client()?.get(format!("{LEADMAGIC}/credits")), key).await.map(|_| ()),
         }
     }
 
@@ -259,6 +263,12 @@ impl Finder {
                     Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(None),
                     body => Ok(anymailfinder_found(&body?, domain)),
                 }
+            }
+            Finder::LeadMagic => {
+                let mut body = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
+                body["domain"] = json!(domain);
+                let req = client()?.post(format!("{LEADMAGIC}/people/email-finder")).json(&body);
+                Ok(leadmagic_found(&leadmagic_call(req, key).await?, domain))
             }
         }
     }
@@ -389,6 +399,25 @@ async fn anymailfinder_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::
 /// Anymail Finder fills `valid_email` only when it verified the address, and charges a credit only then.
 fn anymailfinder_found(body: &Value, domain: &str) -> Option<Found> {
     at_domain(body["valid_email"].as_str(), domain).map(|email| Found { email, verified: true })
+}
+
+const LEADMAGIC: &str = "https://api.leadmagic.io/v1";
+
+/// LeadMagic explains a failure in `detail`, like "Not enough credits for this request." A wrong key's detail quotes
+/// the key's first characters, so a 401 gets its own message.
+async fn leadmagic_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("X-API-Key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["detail"].as_str().or(body["message"].as_str()).unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// LeadMagic's status is `valid` when it verified the address, and null with no address when it found nothing, which
+/// costs no credit.
+fn leadmagic_found(body: &Value, domain: &str) -> Option<Found> {
+    at_domain(body["email"].as_str(), domain).filter(|_| body["status"] == "valid").map(|email| Found { email, verified: true })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -690,6 +719,11 @@ mod tests {
         assert_eq!(anymailfinder_found(&found, "github.com"), None);
         let missing = json!({"email": null, "email_status": "not_found", "valid_email": null, "credits_charged": 0});
         assert_eq!(anymailfinder_found(&missing, "microsoft.com"), None);
+        // LeadMagic's documented answers: found and verified, and not found.
+        let found = json!({"email": "Jesse@leadmagic.io", "status": "valid", "credits_consumed": 1, "message": "Valid email found."});
+        assert_eq!(leadmagic_found(&found, "leadmagic.io"), Some(Found { email: "jesse@leadmagic.io".into(), verified: true }));
+        assert_eq!(leadmagic_found(&found, "acme.com"), None);
+        assert_eq!(leadmagic_found(&json!({"email": null, "status": null, "credits_consumed": 0}), "leadmagic.io"), None);
         // Real responses to a bad key, from both services.
         let nb = neverbounce_ok(&json!({"status": "auth_failure", "message": "Invalid API key 'secret123'"})).unwrap_err();
         assert!(!nb.to_string().contains("secret123"));
