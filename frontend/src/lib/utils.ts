@@ -39,6 +39,10 @@ export function dateTime(ts: string): string {
   return new Date(ts).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+export function isPast(ts: string): boolean {
+  return new Date(ts).getTime() <= Date.now();
+}
+
 export function favicon(domain: string, size = 32): string {
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=${size}`;
 }
