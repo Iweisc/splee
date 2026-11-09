@@ -5,7 +5,7 @@ import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Se
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
-import { Input, Select, Textarea } from "@/components/ui/form";
+import { Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, ProjectSummary } from "@/lib/types";
@@ -15,6 +15,7 @@ import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
 import { Kbd, ListKeysHint, useListKeys, useShortcut } from "./list-keys";
+import { SearchField } from "./search-field";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
@@ -67,20 +68,16 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
             ]}
             className="w-full [&>button]:flex-auto [&>button]:px-1.5 [&>button]:text-xs"
           />
-          <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setPage(1);
-                setSelectedLead(null);
-              }}
-              placeholder="Search name, email or company"
-              aria-label="Search replies"
-              className="h-9 pl-9"
-            />
-          </div>
+          <SearchField
+            value={q}
+            onChange={(v) => {
+              setQ(v);
+              setPage(1);
+              setSelectedLead(null);
+            }}
+            placeholder="Search name, email or company"
+            label="Search replies"
+          />
           {!projectId && (
             <Select
               value={project}

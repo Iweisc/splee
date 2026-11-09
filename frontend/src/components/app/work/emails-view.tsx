@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Mail, Search } from "lucide-react";
+import { Mail } from "lucide-react";
 import useSWR from "swr";
-import { Input, Select } from "@/components/ui/form";
+import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { EmailRow, Paginated, ProjectSummary } from "@/lib/types";
@@ -11,6 +11,7 @@ import { cn, isPast, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { EmailPreview } from "./email-preview";
 import { ListKeysHint, useListKeys } from "./list-keys";
+import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, useDebounced } from "./states";
 
 type Tab = "drafts" | "scheduled" | "sent" | "failed";
@@ -94,18 +95,15 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
             ))}
           </Select>
         )}
-        <div className="relative w-full sm:w-64">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              reset();
-            }}
-            placeholder="Search"
-            className="h-9 pl-9"
-          />
-        </div>
+        <SearchField
+          value={q}
+          onChange={(v) => {
+            setQ(v);
+            reset();
+          }}
+          label="Search emails"
+          className="w-full sm:w-64"
+        />
       </div>
 
       {error ? (

@@ -9,12 +9,14 @@ function shortcut(e: KeyboardEvent): string | null {
   return e.key;
 }
 
-/** Calls `run` when `key` is pressed, with the same rules as j and k. Null turns it off. */
+/** Calls `run` when `key` is pressed, with the same rules as j and k, and keeps the key from doing anything else. Null turns it off. */
 export function useShortcut(key: string, run: (() => void) | null) {
   useEffect(() => {
     if (!run) return;
     const listener = (e: KeyboardEvent) => {
-      if (shortcut(e) === key) run();
+      if (shortcut(e) !== key) return;
+      e.preventDefault();
+      run();
     };
     document.addEventListener("keydown", listener);
     return () => document.removeEventListener("keydown", listener);

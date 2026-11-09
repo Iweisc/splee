@@ -1,16 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Building2, Search } from "lucide-react";
+import { Building2 } from "lucide-react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Favicon } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { Company, Paginated } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced } from "./states";
+import { SearchField } from "./search-field";
 import { FitScore } from "./status";
 
 const STATUS_LABEL: Record<Company["status"], string> = {
@@ -50,18 +50,16 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-border p-3">
-        <div className="relative max-w-sm">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setPage(1);
-            }}
-            placeholder="Search companies"
-            className="h-9 pl-9"
-          />
-        </div>
+        <SearchField
+          value={q}
+          onChange={(v) => {
+            setQ(v);
+            setPage(1);
+          }}
+          placeholder="Search companies"
+          label="Search companies"
+          className="max-w-sm"
+        />
       </div>
       {error ? (
         <LoadError error={error} retry={() => mutate()} />
