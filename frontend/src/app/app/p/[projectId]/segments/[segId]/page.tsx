@@ -23,6 +23,7 @@ import { api, qs } from "@/lib/api";
 import { bouncing } from "@/lib/mailbox";
 import type { EmailRow, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, compact, money, num, percent } from "@/lib/utils";
+import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { fetcher } from "@/hooks/use-me";
 
 type Tab = "details" | "companies" | "leads" | "emails";
@@ -104,8 +105,11 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           // In one row the four tabs and their counts don't fit a phone, and Emails was cut off at the edge.
           className="self-start max-sm:grid max-sm:w-full max-sm:grid-cols-2"
         />
-        {/* Keyed on the content so the form picks up fields the agent fills in after "Describe it". */}
-        {tab === "details" && <SegmentEditor key={editorKey(segment)} segment={segment} />}
+        {/* Keyed on the content so the form picks up fields the agent fills in after "Describe it". Hidden rather than
+            unmounted on the other tabs, so a look at the leads doesn't throw away unsaved edits. */}
+        <div hidden={tab !== "details"}>
+          <SegmentEditor key={editorKey(segment)} segment={segment} />
+        </div>
         {tab === "companies" && <CompaniesTable projectId={projectId} segmentId={segId} />}
         {tab === "leads" && <LeadsView projectId={projectId} segmentId={segId} />}
         {tab === "emails" && <EmailsView projectId={projectId} segmentId={segId} />}
@@ -252,6 +256,7 @@ function SegmentEditor({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(initial);
   const [saving, setSaving] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  useLeaveGuard(dirty);
 
   const save = async () => {
     setSaving(true);
