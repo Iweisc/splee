@@ -310,6 +310,7 @@ export interface EmailMessage {
   created_at: Ts;
   /** Inbound only: when you marked the reply as needing no answer. */
   handled_at: Ts | null;
+  deferrals: number; // times the receiving server said to try again later
 }
 
 export interface EmailRow extends EmailMessage {

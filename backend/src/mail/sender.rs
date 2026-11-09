@@ -270,7 +270,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
         Ok(()) => record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await,
         Err(e) => {
             let code = e.status().map(|c| c.to_string()).unwrap_or_default();
-            // 550/551/553 reject this recipient. Anything else is a problem with the mailbox or the connection.
+            // 550/551/553 reject this recipient. A 4xx asks us to try again later, often a server greylisting a sender it
+            // hasn't seen before, so the mailbox is fine. Anything else is a problem with the mailbox or the connection.
             if matches!(code.as_str(), "550" | "551" | "553") {
                 sqlx::query("update email_messages set status = 'failed', error = $2 where id = $1")
                     .bind(email.id)
@@ -279,6 +280,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
                     .await?;
                 super::suppress_lead(&state.db, &lead, Some(org_id), "bounced", "bounce").await?;
                 Ok(())
+            } else if e.is_transient() {
+                defer(&state.db, &email, &e.to_string()).await
             } else {
                 mailbox_failed(state, &mb, &email, &format!("SMTP: {e}")).await
             }
@@ -301,6 +304,31 @@ async fn release(state: &AppState, email: &EmailMessage, skip: Skip) -> anyhow::
             sqlx::query("update email_messages set status = 'approved' where id = $1").bind(email.id).execute(&state.db).await?;
         }
     }
+    Ok(())
+}
+
+/// Tries a deferred email again later, waiting longer each time: 30 minutes, then an hour, and so on, about 18 hours in
+/// all. Then it gives up, since the server is unlikely to change its mind.
+const MAX_DEFERRALS: i32 = 8;
+
+async fn defer(db: &sqlx::PgPool, email: &EmailMessage, error: &str) -> anyhow::Result<()> {
+    if email.deferrals + 1 >= MAX_DEFERRALS {
+        sqlx::query("update email_messages set status = 'failed', deferrals = deferrals + 1, error = $2 where id = $1")
+            .bind(email.id)
+            .bind(format!("The recipient's server kept asking to try again later: {error}"))
+            .execute(db)
+            .await?;
+        return Ok(());
+    }
+    sqlx::query(
+        "update email_messages set status = 'approved', deferrals = deferrals + 1,
+           scheduled_for = now() + make_interval(mins => 30 * (deferrals + 1)), error = $2
+         where id = $1",
+    )
+    .bind(email.id)
+    .bind(format!("The recipient's server asked to try again later: {error}"))
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -436,7 +464,39 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{campaign_status, optimize};
+    use super::{MAX_DEFERRALS, campaign_status, defer, optimize};
+    use crate::models::EmailMessage;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_deferred_email_waits_longer_each_time_then_fails(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let id: Uuid = sqlx::query_scalar(
+            "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', 'initial', 'sending') returning id",
+        )
+        .bind(project)
+        .bind(lead)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let load = || sqlx::query_as::<_, EmailMessage>("select * from email_messages where id = $1").bind(id).fetch_one(&db);
+
+        for attempt in 1..MAX_DEFERRALS {
+            defer(&db, &load().await.unwrap(), "451 4.7.1 Greylisted").await.unwrap();
+            let email = load().await.unwrap();
+            assert_eq!((email.status.as_str(), email.deferrals), ("approved", attempt));
+            let wait = (email.scheduled_for.unwrap() - chrono::Utc::now()).num_minutes();
+            assert!((30 * attempt as i64 - 1..=30 * attempt as i64).contains(&wait), "attempt {attempt} waits {wait} minutes");
+        }
+        defer(&db, &load().await.unwrap(), "451 4.7.1 Greylisted").await.unwrap();
+        let email = load().await.unwrap();
+        assert_eq!((email.status.as_str(), email.deferrals), ("failed", MAX_DEFERRALS));
+        assert!(email.error.contains("kept asking"));
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
