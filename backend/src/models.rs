@@ -137,6 +137,9 @@ pub struct ProjectSettings {
     pub lacrm_connected: bool,
     pub lacrm_error: Option<String>,
     pub lacrm_failed_at: Option<Ts>,
+    pub salesflare_connected: bool,
+    pub salesflare_error: Option<String>,
+    pub salesflare_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,

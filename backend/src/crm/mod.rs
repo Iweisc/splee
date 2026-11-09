@@ -9,6 +9,7 @@ mod folk;
 mod hubspot;
 mod lacrm;
 mod pipedrive;
+mod salesflare;
 mod zendesk_sell;
 
 use std::time::Duration;
@@ -31,12 +32,23 @@ pub enum Crm {
     Brevo,
     ZendeskSell,
     Lacrm,
+    Salesflare,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 9] =
-        [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk, Crm::Capsule, Crm::Brevo, Crm::ZendeskSell, Crm::Lacrm];
+    pub const ALL: [Crm; 10] = [
+        Crm::HubSpot,
+        Crm::Pipedrive,
+        Crm::Attio,
+        Crm::Close,
+        Crm::Folk,
+        Crm::Capsule,
+        Crm::Brevo,
+        Crm::ZendeskSell,
+        Crm::Lacrm,
+        Crm::Salesflare,
+    ];
 
     pub fn parse(name: &str) -> Option<Crm> {
         Crm::ALL.into_iter().find(|crm| crm.name() == name)
@@ -54,6 +66,7 @@ impl Crm {
             Crm::Brevo => "brevo",
             Crm::ZendeskSell => "zendesk_sell",
             Crm::Lacrm => "lacrm",
+            Crm::Salesflare => "salesflare",
         }
     }
 
@@ -68,6 +81,7 @@ impl Crm {
             Crm::Brevo => "Brevo",
             Crm::ZendeskSell => "Zendesk Sell",
             Crm::Lacrm => "Less Annoying CRM",
+            Crm::Salesflare => "Salesflare",
         }
     }
 
@@ -83,6 +97,7 @@ impl Crm {
             Crm::Brevo => brevo::check(token).await,
             Crm::ZendeskSell => zendesk_sell::check(token).await,
             Crm::Lacrm => lacrm::check(token).await,
+            Crm::Salesflare => salesflare::check(token).await,
         }
     }
 
@@ -97,6 +112,7 @@ impl Crm {
             Crm::Brevo => brevo::push(token, email, lead, note).await,
             Crm::ZendeskSell => zendesk_sell::push(token, email, lead, note).await,
             Crm::Lacrm => lacrm::push(token, email, lead, note).await,
+            Crm::Salesflare => salesflare::push(token, email, lead, note).await,
         }
     }
 }
