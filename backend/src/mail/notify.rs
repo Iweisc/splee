@@ -51,25 +51,18 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         .bind(days)
         .fetch_all(&state.db)
         .await?;
-        let active: Vec<_> = activity.iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
-        if active.is_empty() {
+        let stopped: Vec<(String, String)> =
+            sqlx::query_as("select email::text, last_error from mailboxes where org_id = $1 and status = 'error' order by email")
+                .bind(org_id)
+                .fetch_all(&state.db)
+                .await?;
+        // A stopped mailbox gets a digest even on a quiet day: it may be why the day was quiet.
+        let active: Vec<_> = activity.into_iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
+        if active.is_empty() && stopped.is_empty() {
             continue;
         }
-
-        let period = if days == 1 { "the last 24 hours" } else { "the last 7 days" };
-        let mut body = format!("Here's what your Splee agent did in {period}:\n\n");
-        for a in &active {
-            body += &format!(
-                "{}: {} emails sent, {} replies, {} hot, {} spent\n",
-                a.name, a.sent, a.replies, a.hot, usd(a.spend_micros)
-            );
-        }
         let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id).await?;
-        if waiting > 0 {
-            let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
-            body += &format!("\n{replies} waiting for an answer.");
-        }
-        body += &format!("\nOpen your inbox: {}/app/inbox", state.cfg.public_url);
+        let body = digest_body(days, &active, waiting, &stopped, &state.cfg.public_url);
         let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
 
         for (user_id, to) in recipients(state, org_id, kind).await? {
@@ -80,6 +73,30 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         }
     }
     Ok(())
+}
+
+fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(String, String)], public_url: &str) -> String {
+    let period = if days == 1 { "the last 24 hours" } else { "the last 7 days" };
+    let mut body = String::new();
+    if !active.is_empty() {
+        body += &format!("Here's what your Splee agent did in {period}:\n\n");
+        for a in active {
+            body += &format!("{}: {} emails sent, {} replies, {} hot, {} spent\n", a.name, a.sent, a.replies, a.hot, usd(a.spend_micros));
+        }
+    }
+    if !stopped.is_empty() {
+        body += if body.is_empty() { "" } else { "\n" };
+        for (email, error) in stopped {
+            body += &format!("{email} has stopped sending: {error}\n");
+        }
+        body += &format!("Fix it and press Test on {public_url}/app/domains\n");
+    }
+    if waiting > 0 {
+        let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
+        body += &format!("\n{replies} waiting for an answer.");
+    }
+    body += &format!("\nOpen your inbox: {public_url}/app/inbox");
+    body
 }
 
 /// Records today's digest of this kind for this user and organization. False when it already went out, which keeps the
@@ -115,6 +132,20 @@ mod tests {
     use super::*;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[test]
+    fn a_stopped_mailbox_is_in_the_digest_even_on_a_quiet_day() {
+        let stopped = [("lewis@acme.test".to_string(), "SMTP: authentication failed".to_string())];
+        let quiet = digest_body(1, &[], 0, &stopped, "https://app.test");
+        assert!(quiet.starts_with("lewis@acme.test has stopped sending: SMTP: authentication failed\n"), "{quiet}");
+        assert!(quiet.contains("press Test on https://app.test/app/domains"), "{quiet}");
+
+        let busy = [ProjectActivity { name: "Northwind".into(), sent: 12, replies: 2, hot: 1, spend_micros: 1_500_000 }];
+        let normal = digest_body(1, &busy, 2, &[], "https://app.test");
+        assert!(normal.contains("Northwind: 12 emails sent, 2 replies, 1 hot, $1.50 spent\n"), "{normal}");
+        assert!(!normal.contains("stopped sending"), "{normal}");
+        assert!(normal.contains("2 replies are waiting for an answer."), "{normal}");
+    }
+
     #[sqlx::test]
     #[ignore = "needs Postgres"]
     async fn a_user_in_two_orgs_gets_each_orgs_digest_once(db: sqlx::PgPool) {
