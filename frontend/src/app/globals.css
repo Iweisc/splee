@@ -90,4 +90,9 @@ body {
   h1, h2, h3, h4, summary {
     text-wrap-style: balance;
   }
+
+  /* Pretty wrapping re-flows earlier lines as the last one grows, so text you're typing would jump around. */
+  textarea {
+    text-wrap-style: auto;
+  }
 }
