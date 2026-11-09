@@ -134,6 +134,9 @@ pub struct ProjectSettings {
     pub zendesk_sell_connected: bool,
     pub zendesk_sell_error: Option<String>,
     pub zendesk_sell_failed_at: Option<Ts>,
+    pub lacrm_connected: bool,
+    pub lacrm_error: Option<String>,
+    pub lacrm_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,
