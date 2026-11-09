@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import useSWR from "swr";
 import { Button, LinkButton } from "@/components/ui/button";
-import { Card, Spinner } from "@/components/ui/misc";
+import { Address, Card, Spinner } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { Me } from "@/lib/types";
@@ -56,12 +56,14 @@ export function InviteCard({ token }: { token: string }) {
     <Card className="w-full max-w-[400px] p-8">
       <h1 className="text-2xl font-medium tracking-tight">Join {invite.org_name}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        {invite.email} was invited as {invite.role === "admin" ? "an admin" : "a member"}.
+        <Address email={invite.email} /> was invited as {invite.role === "admin" ? "an admin" : "a member"}.
       </p>
       {me ? (
         <>
           <p className="mt-6 text-sm">
-            You&apos;re signed in as <strong className="font-medium">{me.user.email}</strong>.
+            You&apos;re signed in as <strong className="font-medium">
+              <Address email={me.user.email} />
+            </strong>.
           </p>
           {acceptError && <p className="mt-2 text-sm text-danger">{acceptError}</p>}
           <Button onClick={accept} loading={accepting} className="mt-4 w-full">

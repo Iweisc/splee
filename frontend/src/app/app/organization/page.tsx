@@ -252,7 +252,7 @@ function InviteForm({ onInvited, onDone }: { onInvited: () => void; onDone: () =
     return (
       <div className="grid gap-4">
         <p className="text-sm text-muted-foreground">
-          Send this link to {email}. If you have an active mailbox, Splee has emailed it to them too.
+          Send this link to <Address email={email} />. If you have an active mailbox, Splee has emailed it to them too.
         </p>
         <CopyField value={link} />
         <div className="flex justify-end">
