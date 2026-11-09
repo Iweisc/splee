@@ -312,7 +312,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <Hash className="size-4" /> Chat alerts
               </span>
             }
-            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy, when a lead turns hot or books a meeting."
+            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy, about hot leads, booked meetings and follow-ups that come due."
             actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field

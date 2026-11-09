@@ -276,6 +276,35 @@ pub fn announce_booked(state: &AppState, lead: &Lead) {
     });
 }
 
+/// Tells each project's chat about inbox reminders that just came due. A reminder more than a day overdue is skipped, so
+/// one set before this ran, or while the server was down, doesn't page anyone.
+pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {
+    for lead in claim_due_reminders(&state.db).await? {
+        let project: String =
+            sqlx::query_scalar("select name from projects where id = $1").bind(lead.project_id).fetch_one(&state.db).await.unwrap_or_default();
+        let who = if lead.company_name.is_empty() { lead.full_name.clone() } else { format!("{} ({})", lead.full_name, lead.company_name) };
+        let summary = format!("{who} for {project}");
+        let link = lead_url(&state.cfg.public_url, lead.project_id, lead.id);
+        let notes = lead.notes.trim();
+        let alert = ChatAlert { label: "Follow-up due", summary: &summary, quote: (!notes.is_empty()).then_some(notes), link: &link, link_text: "Open the conversation" };
+        post_chat(&state.db, lead.project_id, &alert).await;
+    }
+    Ok(())
+}
+
+/// Marks the reminders that just came due as announced and returns their leads. One statement, so a reminder is
+/// announced once even if two runs overlap.
+async fn claim_due_reminders(db: &sqlx::PgPool) -> sqlx::Result<Vec<Lead>> {
+    sqlx::query_as(
+        "update leads set remind_alerted_at = now()
+         where remind_at <= now() and remind_at > now() - interval '1 day'
+           and (remind_alerted_at is null or remind_alerted_at < remind_at)
+         returning *",
+    )
+    .fetch_all(db)
+    .await
+}
+
 /// Sends meeting_booked to chat and the webhook when someone in the app moves a lead there. The API only posts to chat
 /// (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
@@ -348,6 +377,32 @@ mod tests {
         assert_eq!(chat_endpoint("https://hooks.slack.com/services/T/B/x"), "https://hooks.slack.com/services/T/B/x");
         // A lookalike host isn't Discord.
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_due_reminder_is_announced_once_until_it_moves(db: sqlx::PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let lead = |ago: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, full_name, remind_at) values ($1, 'Sam Lee', now() - $2::interval) returning id")
+                .bind(project)
+                .bind(ago)
+                .fetch_one(&db)
+        };
+        let due = lead("1 minute").await.unwrap();
+        lead("2 days").await.unwrap();
+        sqlx::query("insert into leads (project_id, full_name, remind_at) values ($1, 'Later', now() + interval '1 hour')")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let ids = |leads: Vec<Lead>| leads.into_iter().map(|l| l.id).collect::<Vec<_>>();
+
+        assert_eq!(ids(claim_due_reminders(&db).await.unwrap()), [due]);
+        assert!(claim_due_reminders(&db).await.unwrap().is_empty());
+        // Moving the reminder to a later time that has also passed announces it again.
+        sqlx::query("update leads set remind_at = now() where id = $1").bind(due).execute(&db).await.unwrap();
+        assert_eq!(ids(claim_due_reminders(&db).await.unwrap()), [due]);
     }
 
     #[test]
