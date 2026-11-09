@@ -108,7 +108,8 @@ impl MailboxBody {
         if self.daily_limit.is_some_and(|l| !(1..=2000).contains(&l)) {
             return Err(AppError::BadRequest("Daily limit must be between 1 and 2000".into()));
         }
-        if trimmed(&self.booking_link).is_some_and(|l| !Url::parse(l).is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some())) {
+        // Like isUrl in the form and the project's booking link, http is let through.
+        if trimmed(&self.booking_link).is_some_and(|l| !Url::parse(l).is_ok_and(|u| matches!(u.scheme(), "https" | "http") && u.host_str().is_some())) {
             return Err(AppError::BadRequest("Booking link must be a full URL starting with https://".into()));
         }
         if self.cost_per_email_micros.is_some_and(|c| !(0..=1_000_000).contains(&c)) {

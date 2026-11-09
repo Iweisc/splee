@@ -281,14 +281,14 @@ async fn as_mailbox(db: &sqlx::PgPool, email: &EmailMessage, mb: &Mailbox) -> an
             .fetch_optional(db)
             .await?
             .unwrap_or_default();
-    let mut body = email.body.clone();
-    if !link.is_empty() {
-        body = swap_link(&body, project_link.trim(), link);
-    }
-    if !signature.is_empty() {
-        body = swap_signature(&body, agent::signature(&project_signature, &sender_name), signature);
-    }
-    Ok(body)
+    Ok(rewrite(&email.body, (agent::signature(&project_signature, &sender_name), signature), (project_link.trim(), link)))
+}
+
+/// Swaps each (old, new) pair whose new value is set. The signature goes first, since it can hold the booking link and
+/// then wouldn't match the project's anymore.
+fn rewrite(body: &str, (old_signature, signature): (&str, &str), (old_link, link): (&str, &str)) -> String {
+    let body = if signature.is_empty() { body.to_string() } else { swap_signature(body, old_signature, signature) };
+    if link.is_empty() { body } else { swap_link(&body, old_link, link) }
 }
 
 /// Replaces each `old` link in `body` with `new`. A longer link that starts with it, like another page on the same
@@ -679,7 +679,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, swap_link, swap_signature};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite, swap_link, swap_signature};
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
 
@@ -689,6 +689,13 @@ mod tests {
         let want = "Worth a chat?\nhttps://cal.com/jo\n\nOr see https://cal.com/jo. Prices: https://cal.com/acme/pricing";
         assert_eq!(swap_link(body, "https://cal.com/acme", "https://cal.com/jo"), want);
         assert_eq!(swap_link("Worth a chat?", "", "https://cal.com/jo"), "Worth a chat?");
+    }
+
+    #[test]
+    fn a_project_signature_holding_the_booking_link_is_still_replaced() {
+        let body = "Worth a chat?\n\nAlex\nhttps://cal.com/acme";
+        let got = rewrite(body, ("Alex\nhttps://cal.com/acme", "Jo\nhttps://cal.com/jo"), ("https://cal.com/acme", "https://cal.com/jo"));
+        assert_eq!(got, "Worth a chat?\n\nJo\nhttps://cal.com/jo");
     }
 
     #[test]
