@@ -7,7 +7,7 @@ import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { EmailRow, Paginated, ProjectSummary } from "@/lib/types";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, isPast, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { EmailPreview } from "./email-preview";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, useDebounced } from "./states";
@@ -39,7 +39,15 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
   const query = useDebounced(q);
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
-  const key = `/emails${qs({ project_id: projectId ?? project, segment_id: segmentId, status: TAB_STATUS[tab], q: query, page, per_page: PER_PAGE })}`;
+  const key = `/emails${qs({
+    project_id: projectId ?? project,
+    segment_id: segmentId,
+    status: TAB_STATUS[tab],
+    order: tab === "scheduled" ? "soonest" : undefined,
+    q: query,
+    page,
+    per_page: PER_PAGE,
+  })}`;
   const { data, error, mutate } = useSWR<Paginated<EmailRow>>(key, fetcher, { keepPreviousData: true });
   const selected = data?.items.find((e) => e.id === selectedId) ?? data?.items[0];
 
@@ -123,7 +131,12 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
                   >
                     <span className="flex items-center justify-between gap-2 text-sm">
                       <span className="truncate font-medium">{e.lead_name || e.lead_email}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(e.sent_at ?? e.scheduled_for ?? e.created_at)}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {/* In the queue, an email without a time or past it goes out at the sender's next chance. */}
+                        {tab === "scheduled" && (!e.scheduled_for || isPast(e.scheduled_for))
+                          ? "Next up"
+                          : timeAgo(e.sent_at ?? e.scheduled_for ?? e.created_at)}
+                      </span>
                     </span>
                     <span className="truncate text-xs text-muted-foreground">
                       {[e.company_name, !projectId && e.project_name].filter(Boolean).join(" · ")}
