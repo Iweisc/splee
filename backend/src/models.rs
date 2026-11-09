@@ -208,6 +208,7 @@ pub struct Mailbox {
     pub imap_uid_validity: Option<i64>,
     pub dns: Value,
     pub created_at: Ts,
+    pub recheck_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

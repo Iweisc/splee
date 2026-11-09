@@ -27,6 +27,9 @@ pub fn spawn_workers(state: AppState) {
             }
             every(Duration::from_secs(30), || sender::tick(&s), "sender").await;
         });
+        // Its own loop, because testing a server that never answers takes 30 seconds and sending shouldn't wait on it.
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(60), || sender::recheck_mailboxes(&s), "mailbox recheck").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });

@@ -77,6 +77,42 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
     Ok(builder.body(email.body.to_string())?)
 }
 
+/// The server never answered: it was down, unreachable or too slow. Its replies, TLS and our own setup are other kinds.
+pub fn unreachable(e: &lettre::transport::smtp::Error) -> bool {
+    !(e.is_response() || e.is_client() || e.is_transient() || e.is_permanent() || e.is_tls() || e.is_transport_shutdown())
+}
+
 pub async fn send(transport: &Transport, message: Message) -> Result<(), lettre::transport::smtp::Error> {
     transport.send(message).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    use super::{Transport, unreachable};
+
+    async fn test_on(port: u16) -> lettre::transport::smtp::Error {
+        let transport: Transport = Transport::builder_dangerous("127.0.0.1").port(port).build();
+        transport.test_connection().await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn only_a_server_that_never_answers_is_unreachable() {
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let err = test_on(port).await;
+        assert!(unreachable(&err), "{err}");
+
+        let refusing = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = refusing.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = refusing.accept().await.unwrap();
+            socket.write_all(b"554 5.7.1 No thanks\r\n").await.unwrap();
+        });
+        let err = test_on(port).await;
+        assert!(!unreachable(&err), "{err}");
+    }
 }
