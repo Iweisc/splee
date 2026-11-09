@@ -205,6 +205,8 @@ export interface SegmentWithStats extends Segment {
   sent: number;
   contacted: number;
   replies: number;
+  /** Leads whose address bounced. */
+  bounced: number;
   hot: number;
   spend_micros: number;
   cost_per_hot_micros: number | null;

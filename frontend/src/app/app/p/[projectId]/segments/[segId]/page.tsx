@@ -20,8 +20,9 @@ import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/ui/form";
 import { Card, Skeleton, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
+import { bouncing } from "@/lib/mailbox";
 import type { EmailRow, Paginated, SegmentWithStats } from "@/lib/types";
-import { cn, compact, money, num } from "@/lib/utils";
+import { cn, compact, money, num, percent } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 type Tab = "details" | "companies" | "leads" | "emails";
@@ -114,7 +115,13 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
 
 function Results({ segment: s }: { segment: SegmentWithStats }) {
   const kpis: Kpi[] = [
-    { label: "Contacted", value: num(s.contacted), title: "Leads this campaign has emailed at least once." },
+    {
+      label: "Contacted",
+      value: num(s.contacted),
+      title: "Leads this campaign has emailed at least once, and the share whose address bounced. Past 5%, check where the list came from.",
+      note: s.bounced > 0 && s.contacted > 0 ? `${percent(s.bounced / s.contacted)} bounced` : undefined,
+      warn: bouncing(s.contacted, s.bounced),
+    },
     { label: "Sent", value: num(s.sent) },
     {
       label: "Replies",

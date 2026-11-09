@@ -40,6 +40,8 @@ pub struct SegmentWithStats {
     sent: i64,
     contacted: i64,
     replies: i64,
+    /// Leads whose address bounced. A high share points at a bad lead list.
+    bounced: i64,
     hot: i64,
     spend_micros: i64,
     #[sqlx(skip)]
@@ -59,6 +61,7 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
            (select count(*) from leads l where l.segment_id = s.id
              and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
                          and e.classification is distinct from 'bounce')) as replies,
+           (select count(*) from leads l where l.segment_id = s.id and l.status = 'bounced') as bounced,
            (select count(*) from leads l where l.segment_id = s.id and l.status in ('hot', 'meeting_booked')) as hot,
            (select (coalesce(sum(r.cost_usd), 0) * 1000000)::bigint from agent_runs r
              where r.project_id = s.project_id and r.input->>'segment_id' = s.id::text)
@@ -360,5 +363,10 @@ mod tests {
         let pricey = row(seeded.pricey);
         assert_eq!((pricey.sent, pricey.hot, pricey.spend_micros), (1, 0, 500_700));
         assert_eq!(pricey.cost_per_hot_micros, None);
+        assert_eq!((cheap.bounced, pricey.bounced), (0, 0));
+
+        sqlx::query("update leads set status = 'bounced' where segment_id = $1").bind(seeded.pricey).execute(&db).await.unwrap();
+        let rows = with_stats(&db, seeded.project, Some(seeded.pricey)).await.unwrap();
+        assert_eq!(rows[0].bounced, 1);
     }
 }
