@@ -282,7 +282,9 @@ export default function DocsPage() {
                 title={
                   <span className="flex items-center gap-2 font-mono text-sm">
                     <Badge tone={METHOD_TONES[e.method]}>{e.method}</Badge>
-                    {e.path.split("?")[0]}
+                    {/* Wraps on a phone, filling each line like the code below it. Firefox doesn't break it at the slashes, so
+                        without this it widened the page. */}
+                    <span className="min-w-0 break-all">{e.path.split("?")[0]}</span>
                   </span>
                 }
                 description={e.summary}
