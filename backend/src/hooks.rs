@@ -43,7 +43,8 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
         let timestamp = chrono::Utc::now().timestamp().to_string();
         request = request.header("Splee-Timestamp", &timestamp).header("Splee-Signature", format!("v1={}", sign(secret, &timestamp, &body)));
     }
-    request.body(body).send().await?.error_for_status()?;
+    // Without the URL: Slack, Discord and Telegram URLs carry their secret, and errors are logged and shown.
+    request.body(body).send().await.map_err(reqwest::Error::without_url)?.error_for_status().map_err(reqwest::Error::without_url)?;
     Ok(())
 }
 
@@ -178,14 +179,21 @@ pub struct ChatAlert<'a> {
     pub link_text: &'a str,
 }
 
-/// The JSON a chat webhook takes. Discord and Teams (Workflows and the older connectors) have their own shapes. Anything
-/// else gets Slack's `{text}`, which Google Chat also reads, links included.
+/// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors) and Telegram (a bot's sendMessage
+/// URL with `?chat_id=`) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links
+/// included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
     let quote = a.quote.map(|q| format!("\n> {}", q.replace('\n', "\n> "))).unwrap_or_default();
     if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
+    } else if host == "api.telegram.org" {
+        // chat_id goes in the body too, so it doesn't matter whether Telegram reads the query of a JSON request.
+        let chat_id = Url::parse(url).ok().and_then(|u| u.query_pairs().find(|(k, _)| k == "chat_id").map(|(_, v)| v.into_owned()));
+        let quote = a.quote.map(|q| format!("\n<blockquote>{}</blockquote>", html(q))).unwrap_or_default();
+        let text = format!("<b>{}:</b> {}{quote}\n<a href=\"{}\">{}</a>", html(a.label), html(a.summary), html(a.link), html(a.link_text));
+        json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML", "link_preview_options": {"is_disabled": true}})
     } else if on("logic.azure.com") || on("powerplatform.com") || on("webhook.office.com") {
         let mut body = vec![json!({"type": "TextBlock", "text": format!("**{}:** {}", a.label, a.summary), "wrap": true})];
         if let Some(q) = a.quote {
@@ -201,6 +209,11 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     } else {
         json!({"text": format!("*{}:* {}{quote}\n<{}|{}>", a.label, a.summary, a.link, a.link_text)})
     }
+}
+
+/// For Telegram's HTML mode, which needs only these escaped.
+fn html(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams and Google Chat) when
@@ -299,6 +312,13 @@ mod tests {
         let slack = "*Hot lead:* Sarah replied to Acme\n> Sounds good\n> Tuesday?\n<https://app/x|Open the inbox>";
         assert_eq!(chat_payload("https://hooks.slack.com/services/T/B/x", &a)["text"], slack);
         assert_eq!(chat_payload("https://chat.googleapis.com/v1/spaces/x/messages?key=k", &a)["text"], slack);
+        let telegram = chat_payload("https://api.telegram.org/bot123:abc/sendMessage?chat_id=-1001", &ChatAlert { summary: "Sam <CTO> replied", ..a });
+        assert_eq!(telegram["chat_id"], "-1001");
+        assert_eq!(telegram["parse_mode"], "HTML");
+        assert_eq!(
+            telegram["text"],
+            "<b>Hot lead:</b> Sam &lt;CTO&gt; replied\n<blockquote>Sounds good\nTuesday?</blockquote>\n<a href=\"https://app/x\">Open the inbox</a>"
+        );
         // A lookalike host isn't Discord.
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }
