@@ -1,6 +1,6 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
-//! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
+//! Reoon, DeBounce and Bouncify take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
 //! Anymail Finder or LeadMagic.
 
@@ -38,6 +38,7 @@ pub enum Verifier {
     Reoon,
     DeBounce,
     EmailListVerify,
+    Bouncify,
 }
 
 impl Verifier {
@@ -53,6 +54,7 @@ impl Verifier {
             "reoon" => Some(Verifier::Reoon),
             "debounce" => Some(Verifier::DeBounce),
             "emaillistverify" => Some(Verifier::EmailListVerify),
+            "bouncify" => Some(Verifier::Bouncify),
             _ => None,
         }
     }
@@ -69,6 +71,7 @@ impl Verifier {
             Verifier::Reoon => "Reoon",
             Verifier::DeBounce => "DeBounce",
             Verifier::EmailListVerify => "EmailListVerify",
+            Verifier::Bouncify => "Bouncify",
         }
     }
 
@@ -91,6 +94,7 @@ impl Verifier {
             }
             Verifier::DeBounce => debounce_get(Url::parse_with_params("https://api.debounce.io/v1/balance/", [("api", key)])?).await.map(|_| ()),
             Verifier::EmailListVerify => elv_get(Url::parse(&format!("{ELV}/credits"))?, key).await.map(|_| ()),
+            Verifier::Bouncify => bouncify_get(Url::parse_with_params("https://api.bouncify.io/v1/info", [("apikey", key)])?).await.map(|_| ()),
         }
     }
 
@@ -145,6 +149,10 @@ impl Verifier {
                 let result = elv_get(Url::parse_with_params(&format!("{ELV}/verifyEmail"), [("email", email)])?, key).await?;
                 anyhow::ensure!(result != "error_credit", "the account is out of credits");
                 Ok(elv_verdict(&result))
+            }
+            Verifier::Bouncify => {
+                let url = Url::parse_with_params("https://api.bouncify.io/v1/verify", [("apikey", key), ("email", email)])?;
+                Ok(bouncify_verdict(&bouncify_get(url).await?))
             }
         }
     }
@@ -625,6 +633,30 @@ fn elv_verdict(result: &str) -> Verdict {
     }
 }
 
+/// A failure is `{"result": "Invalid API key", "success": false}`, so its `result` is the reason. A wrong key is a 401,
+/// which gets the same message as the other services'.
+async fn bouncify_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success() && body["success"] != false, "{}", body["result"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// An undeliverable address, a throwaway inbox or a spam trap isn't worth sending to, even when the inbox exists.
+/// Accept-all and unknown send like a catch-all. Bouncify's docs show the flags as 0 or 1 in one place and as booleans in another.
+fn bouncify_verdict(body: &Value) -> Verdict {
+    if [&body["disposable"], &body["spamtrap"]].into_iter().any(|flag| *flag == 1 || *flag == true) {
+        return Verdict::Invalid;
+    }
+    match body["result"].as_str().unwrap_or_default() {
+        "deliverable" => Verdict::Valid,
+        "undeliverable" => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -689,6 +721,13 @@ mod tests {
         assert_eq!(elv_verdict("disposable"), Verdict::Invalid);
         assert_eq!(elv_verdict("ok_for_all"), Verdict::Unsure);
         assert_eq!(elv_verdict("antispam_system"), Verdict::Unsure);
+        // Bouncify's results, with its flags as numbers or booleans.
+        assert_eq!(bouncify_verdict(&json!({"result": "deliverable", "disposable": 0, "spamtrap": 0})), Verdict::Valid);
+        assert_eq!(bouncify_verdict(&json!({"result": "undeliverable"})), Verdict::Invalid);
+        assert_eq!(bouncify_verdict(&json!({"result": "deliverable", "disposable": 1})), Verdict::Invalid);
+        assert_eq!(bouncify_verdict(&json!({"result": "deliverable", "spamtrap": true})), Verdict::Invalid);
+        assert_eq!(bouncify_verdict(&json!({"result": "accept all", "accept_all": 1})), Verdict::Unsure);
+        assert_eq!(bouncify_verdict(&json!({"result": "unknown"})), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
