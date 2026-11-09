@@ -1,7 +1,7 @@
 //! IMAP poller: stores replies to our emails and hands them to the classifier.
 
 use chrono::Utc;
-use mail_parser::{HeaderValue, MessageParser, MimeHeaders};
+use mail_parser::{HeaderValue, Message, MessageParser, MimeHeaders};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -92,6 +92,68 @@ fn bracketed_ids(raw: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, PartialEq)]
+enum Report {
+    /// A person wrote this.
+    Reply,
+    /// Our email could not be delivered.
+    Bounce,
+    /// An automated report that isn't a failure: a delay warning while the server keeps trying, or a read receipt.
+    Ignore,
+}
+
+fn classify(sender_local_part: &str, msg: &Message, raw: &[u8]) -> Report {
+    let report_type = msg.is_content_type("multipart", "report").then(|| msg.content_type().and_then(|c| c.attribute("report-type")).unwrap_or(""));
+    // Only the machine-readable part. The returned original email can contain any text, "Action: failed" included.
+    let delivery_status = msg
+        .parts
+        .iter()
+        .find(|p| {
+            p.content_type().is_some_and(|c| {
+                c.ctype().eq_ignore_ascii_case("message")
+                    && c.subtype().is_some_and(|s| s.eq_ignore_ascii_case("delivery-status") || s.eq_ignore_ascii_case("global-delivery-status"))
+            })
+        })
+        .and_then(|p| raw.get(p.offset_body as usize..p.offset_end as usize))
+        .map(String::from_utf8_lossy);
+    report(sender_local_part, report_type, delivery_status.as_deref())
+}
+
+/// `report_type` is the report-type of a multipart/report, and `delivery_status` the text of its message/delivery-status part.
+fn report(sender_local_part: &str, report_type: Option<&str>, delivery_status: Option<&str>) -> Report {
+    if !matches!(sender_local_part, "mailer-daemon" | "postmaster") && report_type.is_none() {
+        return Report::Reply;
+    }
+    // A delivery status report (RFC 3464) has an Action field per recipient: "failed", or "delayed" and the like.
+    let actions = delivery_status.map(|s| field_values(s, "action")).unwrap_or_default();
+    if !actions.is_empty() {
+        return if actions.iter().any(|a| a.eq_ignore_ascii_case("failed")) { Report::Bounce } else { Report::Ignore };
+    }
+    // A read receipt (RFC 8098) is a report too, and says the email arrived.
+    if report_type.is_some_and(|t| t.eq_ignore_ascii_case("disposition-notification")) {
+        return Report::Ignore;
+    }
+    // A plain-text bounce from a server that sends no report fields.
+    Report::Bounce
+}
+
+/// Every value of a header-style field, with folded lines joined back up.
+fn field_values(fields: &str, name: &str) -> Vec<String> {
+    let mut unfolded: Vec<String> = vec![];
+    for line in fields.lines() {
+        match unfolded.last_mut() {
+            Some(last) if line.starts_with([' ', '\t']) => last.push_str(line),
+            _ => unfolded.push(line.to_string()),
+        }
+    }
+    unfolded
+        .iter()
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim().to_string())
+        .collect()
+}
+
 /// The reply without the quoted thread under it.
 fn strip_quoted(body: &str) -> String {
     let mut kept = vec![];
@@ -128,7 +190,11 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
     let body = msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
 
     let local = from.split('@').next().unwrap_or_default();
-    let is_bounce = matches!(local, "mailer-daemon" | "postmaster") || msg.is_content_type("multipart", "report");
+    let is_bounce = match classify(local, &msg, raw) {
+        Report::Reply => false,
+        Report::Bounce => true,
+        Report::Ignore => return Ok(()),
+    };
     if is_bounce {
         thread_ids.extend(bracketed_ids(&String::from_utf8_lossy(raw)));
     }
@@ -217,7 +283,40 @@ async fn match_lead(state: &AppState, mb: &Mailbox, ids: &[String], from: Option
 
 #[cfg(test)]
 mod tests {
-    use super::strip_quoted;
+    use mail_parser::MessageParser;
+
+    use super::{Report, strip_quoted};
+
+    fn classify(from_local_part: &str, raw: &str) -> Report {
+        super::classify(from_local_part, &MessageParser::default().parse(raw.as_bytes()).unwrap(), raw.as_bytes())
+    }
+
+    fn dsn(action: &str, original_body: &str) -> String {
+        format!(
+            "From: Mail Delivery Subsystem <mailer-daemon@example.com>\r\nContent-Type: multipart/report; report-type=delivery-status; boundary=b\r\n\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nDelivery notice\r\n\
+             --b\r\nContent-Type: message/delivery-status\r\n\r\nReporting-MTA: dns; mx.example\r\n\r\n\
+             Final-Recipient: rfc822; ada@example.com\r\nAction: {action}\r\nStatus: 5.1.1\r\n\
+             --b\r\nContent-Type: message/rfc822\r\n\r\nSubject: Hello\r\n\r\n{original_body}\r\n--b--\r\n"
+        )
+    }
+
+    #[test]
+    fn only_a_failed_delivery_counts_as_a_bounce() {
+        assert_eq!(classify("mailer-daemon", &dsn("failed", "Hi Ada")), Report::Bounce);
+        assert_eq!(classify("mailer-daemon", &dsn("delayed", "Hi Ada")), Report::Ignore);
+        // The returned email's own text doesn't count, and a folded field still does.
+        assert_eq!(classify("mailer-daemon", &dsn("delayed", "Action: failed")), Report::Ignore);
+        assert_eq!(classify("mailer-daemon", &dsn("\r\n failed", "Hi Ada")), Report::Bounce);
+
+        let read_receipt = "From: ada@example.com\r\nContent-Type: multipart/report; report-type=disposition-notification; boundary=b\r\n\r\n\
+                            --b\r\nContent-Type: message/disposition-notification\r\n\r\nDisposition: manual-action/MDN-sent-manually; displayed\r\n--b--\r\n";
+        assert_eq!(classify("ada", read_receipt), Report::Ignore);
+
+        let plain_bounce = "From: MAILER-DAEMON@example.com\r\nSubject: Undelivered Mail Returned to Sender\r\n\r\nYour message could not be delivered.";
+        assert_eq!(classify("mailer-daemon", plain_bounce), Report::Bounce);
+        assert_eq!(classify("ada", "From: ada@example.com\r\nSubject: Re: Hello\r\n\r\nSounds good."), Report::Reply);
+    }
 
     #[test]
     fn drops_the_quoted_thread() {
