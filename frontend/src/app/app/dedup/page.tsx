@@ -7,7 +7,7 @@ import { Download, ShieldBan, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { SearchField } from "@/components/app/work/search-field";
-import { LoadError } from "@/components/app/work/states";
+import { LoadError, Pager, PER_PAGE } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
@@ -16,8 +16,6 @@ import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { Paginated, Suppression } from "@/lib/types";
 import { num, timeAgo } from "@/lib/utils";
-
-const PER_PAGE = 50;
 
 const REASONS: Record<Suppression["reason"], { label: string; tone: BadgeTone }> = {
   manual: { label: "Added by you", tone: "neutral" },
@@ -36,7 +34,6 @@ export default function DoNotContactPage() {
   const { pending, run } = useAction();
 
   const pasted = values.split(/[\s,;]+/).filter(Boolean).length;
-  const pages = data ? Math.max(1, Math.ceil(data.total / PER_PAGE)) : 1;
 
   const add = () =>
     run("add", async () => {
@@ -132,21 +129,7 @@ export default function DoNotContactPage() {
               </ul>
             )}
 
-            {data && pages > 1 && (
-              <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm">
-                <span className="text-muted-foreground tabular-nums">
-                  Page {page} of {pages}
-                </span>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setPage(page - 1)} disabled={page <= 1}>
-                    Previous
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setPage(page + 1)} disabled={page >= pages}>
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            {data && <Pager page={page} total={data.total} onChange={setPage} />}
           </Card>
         </SettingsColumn>
       </PageBody>
