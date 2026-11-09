@@ -84,6 +84,11 @@ export function Address({ email }: { email: string }) {
   return breakAt(email, /(?<=\.)|(?=@)/);
 }
 
+/** A host name that wraps after a dot, so "automation.example.com" never splits inside "example". */
+export function Host({ host }: { host: string }) {
+  return breakAt(host, /(?<=\.)/);
+}
+
 /** A file name that wraps after a dot, dash or underscore, so "leads.csv" never leaves a lone "v". */
 export function FileName({ name }: { name: string }) {
   return breakAt(name, /(?<=[._-])/);
