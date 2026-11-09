@@ -207,7 +207,7 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
   );
 }
 
-const VERIFIERS = { neverbounce: "NeverBounce", millionverifier: "MillionVerifier" } as const;
+const VERIFIERS = { neverbounce: "NeverBounce", millionverifier: "MillionVerifier", hunter: "Hunter" } as const;
 
 /** The key is write-only, like a CRM token. Connecting checks it with the service first. */
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
