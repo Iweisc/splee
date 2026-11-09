@@ -323,7 +323,8 @@ function ReminderBadge({ at }: { at: string }) {
 function Bubble({ message: m }: { message: EmailMessage }) {
   const inbound = m.direction === "inbound";
   return (
-    <li className={cn("flex max-w-[80%] flex-col gap-1", inbound ? "self-start" : "self-end items-end")}>
+    // 36rem caps a line at about 85 characters. At 80% alone, a wide screen ran lines to 150 and more.
+    <li className={cn("flex max-w-[min(80%,36rem)] flex-col gap-1", inbound ? "self-start" : "self-end items-end")}>
       <div className={cn("rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", inbound ? "bg-card shadow-card" : "bg-black/[0.06]")}>
         {m.body}
       </div>
@@ -355,7 +356,7 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
   };
 
   return (
-    <li className="flex w-[80%] flex-col gap-2 self-end rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-3">
+    <li className="flex w-[min(80%,36rem)] flex-col gap-2 self-end rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-3">
       <MicroLabel className="text-amber-700">Auto-reply draft · waiting for approval</MicroLabel>
       {editing ? (
         // No max height: like the draft text it replaces, it scrolls with the conversation instead of inside itself.
