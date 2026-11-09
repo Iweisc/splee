@@ -38,7 +38,8 @@ Splee-Signature: v1=5f0c…
     "company_name": "Northwind Studio",
     "company_domain": "northwind.studio",
     "linkedin_url": "https://www.linkedin.com/in/sarah-chen",
-    "x_url": "https://x.com/sarahchen"
+    "x_url": "https://x.com/sarahchen",
+    "meeting_at": null
   },
   "reply": {
     "id": "71aa…",
@@ -501,7 +502,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>id</code>, <code>kind</code> (initial, follow_up, auto_reply or manual_reply), <code>step</code>, <code>subject</code>, <code>body</code>,{" "}
                   <code>from</code>, <code>to</code> and <code>message_id</code>. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
                   <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
-                  <code>&quot;event&quot;: &quot;test&quot;</code>.
+                  <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once
+                  Calendly or Cal.com sent it.
                 </p>
                 <div className="mt-4">
                   <CodeBlock code={VERIFY} label="Check the signature (Node)" />
@@ -528,9 +530,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
               <span className="text-sm font-medium">Booking webhook URL</span>
               <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
               <p className="text-xs text-muted-foreground">
-                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created. In Calendly, subscribe it to{" "}
-                <code>invitee.created</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
-                <code>{`{"email": "..."}`}</code>. Leads are matched by email.
+                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created and Booking rescheduled. In Calendly,
+                subscribe it to <code>invitee.created</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
+                <code>{`{"email": "...", "start_time": "..."}`}</code>. Leads are matched by email, and the call&apos;s time shows on the lead.
               </p>
             </div>
           </Section>

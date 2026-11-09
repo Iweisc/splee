@@ -325,6 +325,8 @@ export interface Lead {
   personalization: { hook?: string; facts?: string[] };
   notes: string;
   remind_at: Ts | null;
+  /** When the call they booked starts, if Calendly or Cal.com said. */
+  meeting_at: Ts | null;
   last_contacted_at: Ts | null;
   created_at: Ts;
 }
