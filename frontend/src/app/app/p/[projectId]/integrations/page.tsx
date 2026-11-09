@@ -265,6 +265,12 @@ const CRMS = {
     field: "Access token",
     hint: "In Zendesk Sell: Settings → Integrations → OAuth → Access Tokens, then add a user token.",
   },
+  lacrm: {
+    name: "Less Annoying CRM",
+    record: "contacts",
+    field: "API key",
+    hint: "In Less Annoying CRM: Settings → API, then generate a new API key.",
+  },
 } as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
