@@ -105,8 +105,13 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           ))}
         </Select>
         {/* The campaign and source wrap together too, so the source never sits alone under the status. On phones the status stretches to fill the row they leave. */}
-        <div className="flex flex-wrap gap-2">
-          {lead.segment_name && <Badge>{lead.segment_name}</Badge>}
+        {/* max-w-full on both, so a long campaign name truncates instead of running out of the window on a phone. */}
+        <div className="flex max-w-full flex-wrap gap-2">
+          {lead.segment_name && (
+            <Badge className="max-w-full" title={lead.segment_name}>
+              <span className="truncate">{lead.segment_name}</span>
+            </Badge>
+          )}
           <Badge className="capitalize">{lead.source}</Badge>
         </div>
         {/* Edit and Delete wrap together, so Delete never sits alone on a row. On phones they share a row of their own. */}
