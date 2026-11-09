@@ -31,6 +31,8 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
       <>
         <div className="border-b border-border px-4 pt-6 pb-5 sm:px-8 sm:pt-8">
           <Skeleton className="h-8 w-64" />
+          {/* Stands in for the domain under the title, so the page doesn't drop 24px when the project loads. */}
+          <Skeleton className="mt-1 h-5 w-40" />
         </div>
         <PageBody className="grid gap-4 md:grid-cols-4">
           {Array.from({ length: 4 }, (_, i) => (
