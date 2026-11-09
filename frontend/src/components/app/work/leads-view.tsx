@@ -4,13 +4,14 @@ import { useState } from "react";
 import { Download, Search, Upload, Users } from "lucide-react";
 import useSWR from "swr";
 import { buttonClass, LinkButton } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/form";
+import { Select } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { LeadRow, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
+import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, Tr, useDebounced } from "./states";
 import { LEAD_STATUS, LeadStatusBadge } from "./status";
 
@@ -48,10 +49,16 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
       <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
         {/* The search takes a row's spare room, and never gets narrower than its placeholder. The filters only stretch
             to fill a row they wrapped onto. Status and Export wrap together, so Export never sits alone on a row. */}
-        <div className="relative min-w-64 flex-[999_1_0%]">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={filter(setQ)} placeholder="Search name, email or company" className="h-9 pl-9" />
-        </div>
+        <SearchField
+          value={q}
+          onChange={(v) => {
+            setQ(v);
+            setPage(1);
+          }}
+          placeholder="Search name, email or company"
+          label="Search leads"
+          className="min-w-64 flex-[999_1_0%]"
+        />
         {!segmentId && (
           <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto flex-auto" aria-label="Campaign">
             <option value="">All campaigns</option>

@@ -3,13 +3,14 @@
 import { useDeferredValue, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Download, Search, ShieldBan, Trash2 } from "lucide-react";
+import { Download, ShieldBan, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { SearchField } from "@/components/app/work/search-field";
 import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button, buttonClass } from "@/components/ui/button";
-import { Input, Textarea } from "@/components/ui/form";
+import { Textarea } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Skeleton, type BadgeTone } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
@@ -80,19 +81,15 @@ export default function DoNotContactPage() {
 
           <Card>
             <div className="flex items-center justify-between gap-4 border-b border-border p-4">
-              <div className="relative max-w-xs flex-1">
-                <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setPage(1);
-                  }}
-                  placeholder="Search"
-                  className="h-9 pl-9"
-                  aria-label="Search the list"
-                />
-              </div>
+              <SearchField
+                value={query}
+                onChange={(v) => {
+                  setQuery(v);
+                  setPage(1);
+                }}
+                label="Search the list"
+                className="max-w-xs flex-1"
+              />
               {data && (
                 <div className="flex shrink-0 items-center gap-3">
                   <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>
