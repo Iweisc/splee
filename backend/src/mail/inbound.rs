@@ -11,14 +11,20 @@ use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    let mailboxes = sqlx::query_as::<_, Mailbox>("select * from mailboxes where status in ('active', 'paused') and imap_host <> ''")
+    // A mailbox that stopped sending still gets replies to what it already sent, so it keeps being read.
+    let mailboxes = sqlx::query_as::<_, Mailbox>("select * from mailboxes where status in ('active', 'paused', 'error') and imap_host <> ''")
         .fetch_all(&state.db)
         .await?;
     for mb in mailboxes {
         if let Err(e) = poll(state, &mb).await {
-            // Reading replies failing doesn't stop sending, so only record it.
+            // Reading replies failing doesn't stop sending, so only record it. A stopped mailbox's last_error says why
+            // sending stopped, and that's the one to keep.
             tracing::warn!(mailbox = %mb.email, error = ?e, "imap poll failed");
-            sqlx::query("update mailboxes set last_error = $2 where id = $1").bind(mb.id).bind(format!("{e:#}")).execute(&state.db).await?;
+            sqlx::query("update mailboxes set last_error = $2 where id = $1 and status <> 'error'")
+                .bind(mb.id)
+                .bind(format!("{e:#}"))
+                .execute(&state.db)
+                .await?;
         }
     }
     Ok(())
@@ -69,7 +75,7 @@ async fn poll(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
             .await?;
     }
     if !mb.last_error.is_empty() && mb.status == "active" {
-        sqlx::query("update mailboxes set last_error = '' where id = $1").bind(mb.id).execute(&state.db).await?;
+        sqlx::query("update mailboxes set last_error = '' where id = $1 and status = 'active'").bind(mb.id).execute(&state.db).await?;
     }
     Ok(())
 }
