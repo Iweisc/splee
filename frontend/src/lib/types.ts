@@ -151,6 +151,9 @@ export interface ProjectSettings {
   attio_connected: boolean;
   attio_error: string | null;
   attio_failed_at: string | null;
+  close_connected: boolean;
+  close_error: string | null;
+  close_failed_at: string | null;
   /** Its key is write-only, through PUT /integrations/verifier. */
   verifier: "" | "neverbounce" | "millionverifier" | "hunter";
   verifier_error: string | null;
