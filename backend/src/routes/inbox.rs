@@ -103,11 +103,11 @@ const THREADS: &str = "with t as (
        when 'other' then not (is_hot or is_needs_reply or auto_replied)
        else true end";
 
-/// Threads across the organization in the Needs reply filter, for the digest emails.
-pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid) -> sqlx::Result<i64> {
+/// Threads in the Needs reply filter, across the organization or in one project, for the digest emails and weekly chat reports.
+pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid, project_id: Option<Uuid>) -> sqlx::Result<i64> {
     sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
         .bind(org_id)
-        .bind(None::<Uuid>)
+        .bind(project_id)
         .bind("needs_reply")
         .bind(None::<String>)
         .fetch_one(db)
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(threads("needs_reply").await, sorted(vec![leads[0], leads[1], leads[2], leads[9]]));
         assert_eq!(threads("other").await, sorted([&leads[3..7], &leads[8..9]].concat()));
         assert_eq!(threads("hot").await, vec![leads[7]]);
-        assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 4);
+        assert_eq!(super::needs_reply_count(&db, org, None).await.unwrap(), 4);
         // Search matches the lead's name, email or company and keeps the filter.
         assert_eq!(search("all", Some("lead 3")).await, vec![leads[3]]);
         assert_eq!(search("all", Some("LEAD1@")).await, vec![leads[1]]);
