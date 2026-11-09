@@ -33,9 +33,11 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
   const writing = (leadId: string) => runs?.find((r) => r.kind === "linkedin_sequence" && r.input.lead_id === leadId && isActive(r))?.id ?? null;
   const due = (data ?? []).filter((s) => s.messages.some(isDue)).sort((a, b) => dueSince(a) - dueSince(b));
-  // Opens on what's due today when there is something, otherwise on every lead.
+  // Opens on what's due today when there is something, otherwise on every lead. It's chosen once, on the first load, so
+  // ticking off the last due step shows "Nothing due right now" instead of swapping in every lead.
   const [picked, setPicked] = useState<"due" | "all" | null>(null);
-  const view = picked ?? (due.length > 0 ? "due" : "all");
+  if (picked === null && data) setPicked(due.length > 0 ? "due" : "all");
+  const view = picked ?? "all";
 
   return (
     <>
