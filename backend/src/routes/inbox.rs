@@ -31,6 +31,7 @@ pub fn router() -> Router<AppState> {
 struct ListQuery {
     project_id: Option<Uuid>,
     filter: Option<String>,
+    q: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +78,7 @@ const THREADS: &str = "with t as (
          -- The reply join above already drops leads without one. This lets Postgres start from the few leads that
          -- replied instead of looking up the last message of every lead in the org: 490 ms to 30 ms at 50k leads.
          and l.id in (select i.lead_id from email_messages i where i.direction = 'inbound')
+         and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4 or l.company_name ilike $4)
      ), f as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
@@ -101,6 +103,7 @@ pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid) -> sqlx::
         .bind(org_id)
         .bind(None::<Uuid>)
         .bind("needs_reply")
+        .bind(None::<String>)
         .fetch_one(db)
         .await
 }
@@ -113,17 +116,20 @@ async fn list(
 ) -> AppResult<Json<Paginated<InboxThread>>> {
     let filter = q.filter.unwrap_or_else(|| "all".into());
     util_input::one_of("filter", &filter, &["all", "hot", "needs_reply", "auto_replied", "other"])?;
+    let like = util_input::like_pattern(q.q.as_deref());
 
     let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
         .bind(auth.org_id)
         .bind(q.project_id)
         .bind(&filter)
+        .bind(&like)
         .fetch_one(&state.db)
         .await?;
-    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{THREADS} order by last_at desc limit $4 offset $5"))
+    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{THREADS} order by last_at desc limit $5 offset $6"))
         .bind(auth.org_id)
         .bind(q.project_id)
         .bind(&filter)
+        .bind(&like)
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(&state.db)
@@ -299,9 +305,15 @@ mod tests {
             (Some("question"), "replied"),
             (Some("question"), "replied"),
         ] {
-            let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, status) values ($1, $2) returning id")
-                .bind(project)
-                .bind(status)
+            let n = leads.len();
+            let lead: Uuid = sqlx::query_scalar(
+                "insert into leads (project_id, status, full_name, email, company_name) values ($1, $2, $3, $4, $5) returning id",
+            )
+            .bind(project)
+            .bind(status)
+            .bind(format!("Lead {n}"))
+            .bind(format!("lead{n}@example.test"))
+            .bind(format!("Company {n}"))
                 .fetch_one(&db)
                 .await
                 .unwrap();
@@ -348,13 +360,14 @@ mod tests {
             .await
             .unwrap();
 
-        let threads = |filter: &'static str| {
+        let search = |filter: &'static str, q: Option<&'static str>| {
             let db = db.clone();
             async move {
                 let mut ids: Vec<Uuid> = sqlx::query_scalar(&format!("select lead_id from ({THREADS}) x"))
                     .bind(org)
                     .bind(None::<Uuid>)
                     .bind(filter)
+                    .bind(super::util_input::like_pattern(q))
                     .fetch_all(&db)
                     .await
                     .unwrap();
@@ -362,6 +375,7 @@ mod tests {
                 ids
             }
         };
+        let threads = |filter: &'static str| search(filter, None);
         let sorted = |mut ids: Vec<Uuid>| {
             ids.sort();
             ids
@@ -370,5 +384,10 @@ mod tests {
         assert_eq!(threads("other").await, sorted([&leads[2..7], &leads[8..9]].concat()));
         assert_eq!(threads("hot").await, vec![leads[7]]);
         assert_eq!(super::needs_reply_count(&db, org).await.unwrap(), 3);
+        // Search matches the lead's name, email or company and keeps the filter.
+        assert_eq!(search("all", Some("lead 3")).await, vec![leads[3]]);
+        assert_eq!(search("all", Some("LEAD1@")).await, vec![leads[1]]);
+        assert_eq!(search("needs_reply", Some("company 9")).await, vec![leads[9]]);
+        assert!(search("needs_reply", Some("company 2")).await.is_empty());
     }
 }
