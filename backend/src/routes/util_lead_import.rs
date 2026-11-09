@@ -27,6 +27,10 @@ pub struct NewLead {
     pub company_domain: String,
     #[serde(default)]
     pub linkedin_url: String,
+    #[serde(default)]
+    pub city: String,
+    #[serde(default)]
+    pub country_code: String,
     pub segment_id: Option<Uuid>,
 }
 
@@ -52,6 +56,8 @@ struct Columns {
     company_name: Vec<String>,
     company_domain: Vec<Option<String>>,
     linkedin_url: Vec<String>,
+    city: Vec<String>,
+    country_code: Vec<String>,
     segment_id: Vec<Option<Uuid>>,
 }
 
@@ -116,14 +122,16 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
         cols.company_name.push(lead.company_name.trim().to_string());
         cols.company_domain.push(util_input::domain(&lead.company_domain));
         cols.linkedin_url.push(lead.linkedin_url.trim().to_string());
+        cols.city.push(lead.city.trim().to_string());
+        cols.country_code.push(country_code(&lead.country_code));
         cols.segment_id.push(lead.segment_id);
     }
 
     let imported = sqlx::query(
         "insert into leads (project_id, source, email, full_name, first_name, last_name, title, company_name,
-           company_domain, linkedin_url, segment_id)
+           company_domain, linkedin_url, city, country_code, segment_id)
          select $1, $2, * from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
-           $9::text[], $10::text[], $11::uuid[])
+           $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[])
          on conflict (project_id, email) do nothing",
     )
     .bind(project_id)
@@ -136,9 +144,30 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     .bind(&cols.company_name)
     .bind(&cols.company_domain)
     .bind(&cols.linkedin_url)
+    .bind(&cols.city)
+    .bind(&cols.country_code)
     .bind(&cols.segment_id)
     .execute(db)
     .await?
     .rows_affected() as i64;
     Ok(Outcome { imported, skipped: total - imported, errors })
+}
+
+/// An ISO 3166-1 alpha-2 code like "GB", or "" for anything else, such as a country's full name, so imported leads
+/// hold the same kind of code as the ones the agent finds.
+fn country_code(raw: &str) -> String {
+    let code = raw.trim().to_ascii_uppercase();
+    if code.len() == 2 && code.bytes().all(|b| b.is_ascii_uppercase()) { code } else { String::new() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::country_code;
+
+    #[test]
+    fn keeps_only_two_letter_country_codes() {
+        assert_eq!(country_code(" gb "), "GB");
+        assert_eq!(country_code("United Kingdom"), "");
+        assert_eq!(country_code("U1"), "");
+    }
 }
