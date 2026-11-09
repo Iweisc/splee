@@ -19,6 +19,12 @@ export function compact(n: number): string {
   return String(n);
 }
 
+/** One decimal under 10%, where it matters most for reply rates. */
+export function percent(ratio: number): string {
+  const p = ratio * 100;
+  return `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+}
+
 export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
