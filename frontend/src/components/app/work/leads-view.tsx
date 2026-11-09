@@ -9,7 +9,7 @@ import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Modal } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
-import { cn, num, timeAgo } from "@/lib/utils";
+import { cn, plural, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
 import { SearchField } from "./search-field";
@@ -111,7 +111,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             {!!data?.total && (
               // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
               <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
-                <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${num(data.total)} leads`}
+                <Download className="size-3.5" /> Export {plural(data.total, "lead")}
               </a>
             )}
           </div>
@@ -220,7 +220,7 @@ function PickedBar({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const count = ids.length === 1 ? "1 lead" : `${num(ids.length)} leads`;
+  const count = plural(ids.length, "lead");
 
   const run = async (path: string, body: Record<string, unknown>, done: string) => {
     setBusy(true);

@@ -29,6 +29,11 @@ export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** "1 lead", "2,340 leads". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${num(n)} ${n === 1 ? one : many}`;
+}
+
 /** "3h ago", or "in 3h" for a time still ahead, like an email's scheduled send. */
 export function timeAgo(ts: string): string {
   const diff = Math.round((Date.now() - new Date(ts).getTime()) / 1000);

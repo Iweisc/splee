@@ -15,7 +15,7 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { EmailRow, Paginated, ProjectSettings } from "@/lib/types";
-import { num } from "@/lib/utils";
+import { num, plural } from "@/lib/utils";
 
 const TONES = [
   { value: "friendly", label: "Friendly", description: "Warm and casual", greeting: "Hi Sarah,", signoff: "Best," },
@@ -156,7 +156,7 @@ function RewriteUnsent({ dirty }: { dirty: boolean }) {
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
-            {dirty ? "Save your changes first." : count > 0 ? `${num(count)} unsent ${count === 1 ? "email" : "emails"}` : "No unsent emails."}
+            {dirty ? "Save your changes first." : count > 0 ? plural(count, "unsent email") : "No unsent emails."}
           </p>
           <Button variant="outline" onClick={rewrite} loading={starting} disabled={dirty || count === 0}>
             Rewrite {count > 0 ? num(count) : ""} {count === 1 ? "email" : "emails"}

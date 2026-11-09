@@ -11,7 +11,7 @@ import { Field, Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, FileName, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
-import { dateTime, num } from "@/lib/utils";
+import { dateTime, num, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 type Preview = { headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
@@ -148,7 +148,7 @@ function MappingStep({
           Choose another file
         </Button>
       </div>
-      <p className="mb-5 text-sm text-muted-foreground">{preview.headers.length} columns. Match them to lead fields.</p>
+      <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
 
       <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
         {FIELDS.map((f) => (
@@ -263,7 +263,7 @@ function ImportResult({ result }: { result: Import }) {
       <p className="flex items-start gap-2 font-medium">
         <CircleCheck className="mt-1 size-4 shrink-0 text-brand-600" />
         <span className="min-w-0 wrap-anywhere">
-          Imported {num(result.imported)} of {num(result.total)} rows from <FileName name={result.filename} />
+          Imported {num(result.imported)} of {plural(result.total, "row")} from <FileName name={result.filename} />
         </span>
       </p>
       {result.skipped > 0 && <p className="mt-1 text-sm text-muted-foreground">{num(result.skipped)} skipped.</p>}

@@ -22,7 +22,7 @@ import { Card, Skeleton, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import { bouncing } from "@/lib/mailbox";
 import type { EmailRow, Paginated, SegmentWithStats } from "@/lib/types";
-import { cn, compact, money, num, percent } from "@/lib/utils";
+import { cn, compact, money, num, percent, plural } from "@/lib/utils";
 import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { fetcher } from "@/hooks/use-me";
 
@@ -189,7 +189,7 @@ function Pipeline({ segment, busy }: { segment: SegmentWithStats; busy: boolean 
     {
       title: "Find people",
       icon: <Users className="size-4" />,
-      stat: `${num(segment.leads)} leads`,
+      stat: plural(segment.leads, "lead"),
       done: segment.leads > 0,
       action: (
         <Button size="sm" variant="outline" disabled={busy || segment.companies === 0} loading={starting === "find-people"} onClick={() => start("find-people", {})}>
