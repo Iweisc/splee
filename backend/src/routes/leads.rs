@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/leads/export", get(export_leads))
         .route("/projects/{id}/leads/move", post(move_leads))
         .route("/projects/{id}/leads/delete", post(delete_leads))
+        .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
         .route("/projects/{id}/linkedin", get(list_linkedin))
         .route("/leads/{id}/linkedin", post(generate_linkedin))
@@ -301,6 +302,18 @@ async fn update_lead(
     .await?;
     crate::hooks::status_changed(&state, &before, &lead).await;
     Ok(Json(detail(&state.db, lead).await?))
+}
+
+/// Calls leads booked that haven't ended, soonest first, for the overview. One that started in the last hour may still be on.
+async fn upcoming_meetings(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Lead>>> {
+    auth.project(&state.db, id).await?;
+    let leads = sqlx::query_as::<_, Lead>(
+        "select * from leads where project_id = $1 and meeting_at > now() - interval '1 hour' order by meeting_at, id limit 10",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(leads))
 }
 
 #[derive(Deserialize)]

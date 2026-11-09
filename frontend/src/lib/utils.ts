@@ -48,6 +48,11 @@ export function dateTime(ts: string): string {
   return new Date(ts).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** With the weekday, for meetings people plan around: "Thu, Nov 12, 03:00 PM". */
+export function dayTime(ts: string): string {
+  return new Date(ts).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 export function isPast(ts: string): boolean {
   return new Date(ts).getTime() <= Date.now();
 }

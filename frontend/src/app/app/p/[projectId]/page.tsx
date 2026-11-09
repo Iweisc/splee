@@ -2,12 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
-import { Clock, Layers, MailWarning, Pause, Play, Plus, TriangleAlert } from "lucide-react";
+import { CalendarCheck, Clock, Layers, MailWarning, Pause, Play, Plus, TriangleAlert } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CampaignsTable } from "@/components/app/work/campaigns-table";
 import { CompanyProfile } from "@/components/app/work/company-profile";
+import { LeadModal } from "@/components/app/work/lead-modal";
 import { DailyChart } from "@/components/app/work/daily-chart";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
@@ -18,8 +19,8 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Address, Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import { bouncing, wholePercent } from "@/lib/mailbox";
-import type { Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
-import { money, num, timeAgo } from "@/lib/utils";
+import type { Lead, Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
+import { dayTime, money, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">) {
@@ -71,6 +72,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
           <Campaigns projectId={projectId} />
           <div className="flex flex-col gap-4">
             {!sending && <SetupChecklist projectId={projectId} settings={settings} />}
+            <UpcomingCalls projectId={projectId} />
             <CompanyProfile project={project} />
           </div>
         </div>
@@ -288,6 +290,42 @@ function Campaigns({ projectId }: { projectId: string }) {
       ) : (
         <CampaignsTable projectId={projectId} segments={data.segments} />
       )}
+    </Card>
+  );
+}
+
+/** Calls leads booked through Calendly or Cal.com, soonest first. Hidden until there is one. */
+function UpcomingCalls({ projectId }: { projectId: string }) {
+  const { data, mutate } = useSWR<Lead[]>(`/projects/${projectId}/meetings`, fetcher);
+  const [open, setOpen] = useState<string | null>(null);
+  if (!data?.length) return null;
+  return (
+    <Card className="overflow-hidden">
+      <MicroLabel className="px-5 pt-4 pb-2">Upcoming calls</MicroLabel>
+      <ul>
+        {data.map((l) => (
+          <li key={l.id} className="border-t border-border first:border-t-0">
+            <button onClick={() => setOpen(l.id)} className="flex w-full items-start gap-3 px-5 py-2.5 text-left hover:bg-accent">
+              <CalendarCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium">{l.full_name || l.email}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {dayTime(l.meeting_at!)}
+                  {l.company_name && ` · ${l.company_name}`}
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {/* The modal only refreshes lead lists, so pick up edits made in it when it closes. */}
+      <LeadModal
+        leadId={open}
+        onClose={() => {
+          setOpen(null);
+          mutate();
+        }}
+      />
     </Card>
   );
 }
