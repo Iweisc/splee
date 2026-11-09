@@ -21,7 +21,7 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
   const slug = decodeURIComponent(domain);
   const byId = slug.startsWith("p-") ? slug.slice(2) : null;
 
-  const { data: projects, error: listError } = useSWR<ProjectSummary[]>(byId ? null : "/projects", fetcher);
+  const { data: projects, error: listError, mutate: retryList } = useSWR<ProjectSummary[]>(byId ? null : "/projects", fetcher);
   const projectId =
     byId ??
     projects
@@ -30,7 +30,8 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
 
   const { data: detail, error, mutate } = useSWR<ProjectDetail>(projectId ? `/projects/${projectId}` : null, fetcher);
 
-  if (listError || error) return <LoadError error={listError ?? error} retry={() => mutate()} className="min-h-[60vh]" />;
+  if (listError) return <LoadError error={listError} retry={() => retryList()} className="min-h-[60vh]" />;
+  if (error) return <LoadError error={error} retry={() => mutate()} className="min-h-[60vh]" />;
   if (projects && !projectId) {
     return (
       <EmptyState
