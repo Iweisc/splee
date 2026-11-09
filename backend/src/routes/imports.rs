@@ -279,14 +279,14 @@ struct HunterBody {
     segment_id: Option<Uuid>,
 }
 
-/// Imports the people Hunter has found at a company, with the project's Hunter key from Email verification.
+/// Imports the people Hunter has found at a company, with the project's Hunter key from Email finder or Email verification.
 async fn import_hunter(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<HunterBody>) -> AppResult<Json<Import>> {
     auth.project(&state.db, id).await?;
     let domain = util_input::domain(&body.domain).ok_or_else(|| AppError::BadRequest("Enter a website like acme.com".into()))?;
     check_segment(&state, id, body.segment_id).await?;
     let key = verify::hunter_key(&state, id)
         .await?
-        .ok_or_else(|| AppError::BadRequest("Connect Hunter under Integrations → Email verification first".into()))?;
+        .ok_or_else(|| AppError::BadRequest("Connect Hunter under Integrations → Email finder first".into()))?;
     let url = Url::parse_with_params("https://api.hunter.io/v2/domain-search", [("domain", domain.as_str()), ("type", "personal")])
         .map_err(anyhow::Error::from)?;
     let found = verify::hunter_get(url, &key).await.map_err(|e| AppError::BadRequest(format!("Hunter: {e:#}")))?;

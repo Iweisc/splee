@@ -146,6 +146,11 @@ pub struct ProjectSettings {
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,
+    /// "hunter", "findymail", "prospeo" or "" for none. Looks up the real address behind a guessed one. Its key
+    /// (finder_key_enc) stays out of this struct.
+    pub finder: String,
+    pub finder_error: Option<String>,
+    pub finder_failed_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

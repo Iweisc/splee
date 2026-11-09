@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, UserPlus, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -148,7 +148,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" }) {
+function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -486,26 +486,98 @@ const VERIFIERS = {
   reoon: "Reoon",
 } as const;
 
-/** The key is write-only, like a CRM token. Connecting checks it with the service first. */
+const FINDERS = {
+  hunter: "Hunter",
+  findymail: "Findymail",
+  prospeo: "Prospeo",
+} as const;
+
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
-  const [provider, setProvider] = useState<keyof typeof VERIFIERS>("neverbounce");
+  // Without its own finder, Hunter connected here also looks up guessed addresses, as it did before Email finder existed.
+  const finds = settings.verifier === "hunter" && !settings.finder ? " Guessed addresses are looked up with Hunter's Email Finder first." : "";
+  return (
+    <ServiceKeySection
+      projectId={projectId}
+      path="verifier"
+      services={VERIFIERS}
+      current={settings.verifier}
+      error={settings.verifier_error}
+      failedAt={settings.verifier_failed_at}
+      title={
+        <>
+          <MailCheck className="size-4" /> Email verification
+        </>
+      }
+      description="Checks each address before its first email, so bad ones fail here instead of bouncing."
+      connected={(name) => `Connected to ${name}. Addresses it can't confirm either way, like catch-all domains, still get their email.${finds}`}
+      disconnectWarning="New addresses will be sent to without a check."
+      creditHint="Each check uses one of the service's credits."
+    />
+  );
+}
+
+function FinderSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  return (
+    <ServiceKeySection
+      projectId={projectId}
+      path="finder"
+      services={FINDERS}
+      current={settings.finder}
+      error={settings.finder_error}
+      failedAt={settings.finder_failed_at}
+      title={
+        <>
+          <UserSearch className="size-4" /> Email finder
+        </>
+      }
+      description="Looks up the real address of a lead whose email was guessed, before their first email."
+      connected={(name) => `Connected to ${name}. A found address replaces the guessed one, at the same company only.`}
+      disconnectWarning="Guessed addresses will be emailed as they are."
+      creditHint="Each address found uses one of the service's credits."
+    />
+  );
+}
+
+/** A service connected with an API key, which is write-only like a CRM token. Connecting checks it with the service first. */
+function ServiceKeySection<K extends string>({
+  projectId,
+  path,
+  services,
+  current,
+  error,
+  failedAt,
+  title,
+  description,
+  connected,
+  disconnectWarning,
+  creditHint,
+}: {
+  projectId: string;
+  path: string;
+  services: Record<K, string>;
+  current: K | "";
+  error: string | null;
+  failedAt: string | null;
+  title: React.ReactNode;
+  description: string;
+  connected: (name: string) => string;
+  disconnectWarning: string;
+  creditHint: string;
+}) {
+  const [provider, setProvider] = useState(Object.keys(services)[0] as K);
   const [key, setKey] = useState("");
-  const { busy, call } = useConnection(projectId, "verifier");
+  const { busy, call } = useConnection(projectId, path);
   const connect = async () => {
-    if (await call({ provider, key }, `Connected to ${VERIFIERS[provider]}`)) setKey("");
+    if (await call({ provider, key }, `Connected to ${services[provider]}`)) setKey("");
   };
-  const name = settings.verifier ? VERIFIERS[settings.verifier] : null;
+  const name = current ? services[current] : null;
   const disconnect = () => {
-    if (confirm(`Disconnect ${name}? New addresses will be sent to without a check.`)) call(undefined, `${name} disconnected`);
+    if (confirm(`Disconnect ${name}? ${disconnectWarning}`)) call(undefined, `${name} disconnected`);
   };
   return (
     <Section
-      title={
-        <span className="flex items-center gap-2">
-          <MailCheck className="size-4" /> Email verification
-        </span>
-      }
-      description="Checks each address before its first email, so bad ones fail here instead of bouncing."
+      title={<span className="flex items-center gap-2">{title}</span>}
+      description={description}
       actions={
         name ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
@@ -515,22 +587,19 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
       }
     >
       {name ? (
-        <p className="text-sm">
-          Connected to {name}. Addresses it can&apos;t confirm either way, like catch-all domains, still get their email.
-          {settings.verifier === "hunter" && " Guessed addresses are looked up with Hunter's Email Finder first."}
-        </p>
+        <p className="text-sm">{connected(name)}</p>
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
           <Field label="Service" className="sm:w-44">
-            <Select value={provider} onChange={(e) => setProvider(e.target.value as keyof typeof VERIFIERS)}>
-              {Object.entries(VERIFIERS).map(([value, label]) => (
+            <Select value={provider} onChange={(e) => setProvider(e.target.value as K)}>
+              {(Object.entries(services) as [K, string][]).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
                 </option>
               ))}
             </Select>
           </Field>
-          <Field label="API key" className="flex-1" hint="Each check uses one of the service's credits.">
+          <Field label="API key" className="flex-1" hint={creditHint}>
             <div className="flex gap-2">
               <Input aria-label="API key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value.trim())} />
               <Button type="submit" loading={busy} disabled={!key}>
@@ -540,7 +609,7 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
           </Field>
         </form>
       )}
-      <LastFailure error={settings.verifier_error} at={settings.verifier_failed_at} what="check" />
+      <LastFailure error={error} at={failedAt} what={path === "finder" ? "lookup" : "check"} />
     </Section>
   );
 }
@@ -666,6 +735,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />
           ))}
           <VerifierSection projectId={projectId} settings={s} />
+          <FinderSection projectId={projectId} settings={s} />
           <UnipileSection projectId={projectId} settings={s} />
 
           <Section
