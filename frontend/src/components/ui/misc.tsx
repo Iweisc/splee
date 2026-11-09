@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 import { cn, favicon, initials } from "@/lib/utils";
 
-export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+export function Card({ className, ...props }: React.ComponentProps<"div">) {
   return <div className={cn("rounded-2xl bg-card shadow-card", className)} {...props} />;
 }
 

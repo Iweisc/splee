@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Mail } from "lucide-react";
 import useSWR from "swr";
 import { Select } from "@/components/ui/form";
@@ -38,6 +38,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const query = useDebounced(q);
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
@@ -127,7 +128,11 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
               {data.items.map((e) => (
                 <li key={e.id} data-key={e.id} className="border-t border-border first:border-t-0">
                   <button
-                    onClick={() => setSelectedId(e.id)}
+                    onClick={() => {
+                      setSelectedId(e.id);
+                      // Below lg the preview sits under the whole list, so without this a tap seems to do nothing.
+                      if (!matchMedia("(min-width: 64rem)").matches) requestAnimationFrame(() => previewRef.current?.scrollIntoView({ block: "start" }));
+                    }}
                     className={cn("flex w-full flex-col gap-0.5 px-4 py-3 text-left hover:bg-accent focus-visible:-outline-offset-2", selected?.id === e.id && "bg-accent")}
                   >
                     <span className="flex items-center justify-between gap-2 text-sm">
@@ -151,7 +156,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
             <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground lg:block" />
           </Card>
           {selected && (
-            <Card className="p-5 lg:sticky lg:top-6">
+            <Card ref={previewRef} className="scroll-mt-20 p-5 lg:sticky lg:top-6">
               <EmailPreview key={`${selected.id}:${selected.status}:${selected.subject}:${selected.body}`} email={selected} showProject={!projectId} />
             </Card>
           )}
