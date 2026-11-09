@@ -167,6 +167,30 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "GET",
+      path: "/suppressions?since=2026-11-01T00:00:00Z&page=1",
+      summary:
+        "Your organization's do-not-contact list, oldest first, to copy unsubscribes and bounces into your CRM or other sending tools. reason is manual, customer, unsubscribe or bounce. Read every page, then next time pass the last created_at you saw as since.",
+      params: [
+        ["since", "optional RFC 3339 timestamp, returns entries added after it"],
+        ["page", "1-based page number"],
+        ["per_page", "1 to 200, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "0b5f…",
+      "org_id": "9e41…",
+      "value": "sarah@northwind.studio",
+      "kind": "email",
+      "reason": "unsubscribe",
+      "created_at": "2026-11-03T15:42:00Z"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
       method: "POST",
       path: "/suppressions",
       summary:

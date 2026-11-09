@@ -19,7 +19,7 @@ use crate::agent::{self, kind};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
-use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Ts};
+use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -31,7 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/stats", get(project_stats))
-        .route("/v1/suppressions", post(add_suppressions))
+        .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
         .route("/v1/runs/{id}", get(get_run))
 }
@@ -241,6 +241,26 @@ struct SuppressionsBody {
 }
 
 /// For syncing do-not-contact lists from a CRM. The sender checks suppressions before every email, so queued emails to these stop too.
+/// The org's do-not-contact list, oldest first, so a CRM or another sending tool can copy unsubscribes and bounces. Pages,
+/// not a cursor: one paste or POST adds many entries with the same created_at, so `since` alone can't resume mid-batch.
+async fn list_suppressions(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<SinceQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<Suppression>>> {
+    let filter = "from suppressions where org_id = $1 and ($2::timestamptz is null or created_at > $2)";
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) {filter}")).bind(auth.org_id).bind(q.since).fetch_one(&state.db).await?;
+    let items = sqlx::query_as::<_, Suppression>(&format!("select * {filter} order by created_at, id limit $3 offset $4"))
+        .bind(auth.org_id)
+        .bind(q.since)
+        .bind(page.limit())
+        .bind(page.offset())
+        .fetch_all(&state.db)
+        .await?;
+    Ok(Json(Paginated { items, total }))
+}
+
 async fn add_suppressions(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<SuppressionsBody>) -> AppResult<Json<Value>> {
     if body.values.len() > MAX_SUPPRESSIONS_PER_REQUEST {
         return Err(AppError::BadRequest(format!("Send at most {MAX_SUPPRESSIONS_PER_REQUEST} values per request")));
