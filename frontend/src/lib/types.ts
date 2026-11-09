@@ -188,6 +188,17 @@ export interface ProjectStats {
   segments: SegmentWithStats[];
 }
 
+export interface WebhookDelivery {
+  id: UUID;
+  project_id: UUID;
+  event: WebhookEvent;
+  /** The JSON body that was posted. */
+  payload: { lead?: { full_name?: string } } & Record<string, unknown>;
+  /** Null when the endpoint answered 2xx. */
+  error: string | null;
+  created_at: Ts;
+}
+
 export interface SavedReply {
   id: UUID;
   project_id: UUID;

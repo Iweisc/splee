@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::models::Lead;
+use crate::models::{Lead, WebhookDelivery};
 use crate::state::AppState;
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
@@ -156,11 +156,40 @@ pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static
                     tracing::warn!(error = %e, event, "webhook failed");
                 }
                 record(&db, project_id, Alert::Webhook, &url, &result).await;
+                if let Err(e) = log_delivery(&db, project_id, event, &payload, &result).await {
+                    tracing::warn!(error = %e, "couldn't log the webhook delivery");
+                }
             });
         }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, event, "couldn't load the webhook settings"),
     }
+}
+
+/// How many deliveries the integrations page keeps per project.
+const DELIVERIES_KEPT: i64 = 50;
+
+/// Keeps a webhook delivery for the integrations page and drops the oldest past DELIVERIES_KEPT.
+pub async fn log_delivery(db: &sqlx::PgPool, project_id: Uuid, event: &str, payload: &Value, result: &anyhow::Result<()>) -> sqlx::Result<WebhookDelivery> {
+    let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
+    let delivery = sqlx::query_as::<_, WebhookDelivery>(
+        "insert into webhook_deliveries (project_id, event, payload, error) values ($1, $2, $3, $4) returning *",
+    )
+    .bind(project_id)
+    .bind(event)
+    .bind(payload)
+    .bind(error)
+    .fetch_one(db)
+    .await?;
+    sqlx::query(
+        "delete from webhook_deliveries where project_id = $1 and id not in
+           (select id from webhook_deliveries where project_id = $1 order by created_at desc limit $2)",
+    )
+    .bind(project_id)
+    .bind(DELIVERIES_KEPT)
+    .execute(db)
+    .await?;
+    Ok(delivery)
 }
 
 /// Opens this lead's conversation, not just the inbox.
@@ -405,6 +434,25 @@ mod tests {
         // Moving the reminder to a later time that has also passed announces it again.
         sqlx::query("update leads set remind_at = now() where id = $1").bind(due).execute(&db).await.unwrap();
         assert_eq!(ids(claim_due_reminders(&db).await.unwrap()), [due]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_delivery_log_keeps_the_newest_fifty(db: sqlx::PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let mut first = None;
+        for i in 0..DELIVERIES_KEPT + 2 {
+            let result = if i == 0 { Err(anyhow::anyhow!("refused")) } else { Ok(()) };
+            let d = log_delivery(&db, project, "hot_lead", &json!({"n": i}), &result).await.unwrap();
+            first.get_or_insert(d);
+        }
+        assert_eq!(first.unwrap().error.as_deref(), Some("refused"));
+        let kept: Vec<i64> = sqlx::query_scalar("select (payload->>'n')::bigint from webhook_deliveries where project_id = $1 order by created_at")
+            .bind(project)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert_eq!(kept, (2..DELIVERIES_KEPT + 2).collect::<Vec<_>>());
     }
 
     #[test]

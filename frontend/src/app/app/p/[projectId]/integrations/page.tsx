@@ -3,17 +3,19 @@
 import { use, useState } from "react";
 import { CalendarCheck, CalendarClock, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/misc";
 import { Field, Input, Select } from "@/components/ui/form";
+import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import type { ProjectSettings, WebhookEvent } from "@/lib/types";
+import type { ProjectSettings, WebhookDelivery, WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -119,6 +121,60 @@ function LastFailure({ error, at, what = "alert" }: { error: string | null; at: 
       </p>
       <p className="mt-1 font-mono">{error}</p>
     </div>
+  );
+}
+
+/** The last lead events the webhook got and how each went, with a way to send one again after fixing the endpoint. */
+function RecentDeliveries({ projectId }: { projectId: string }) {
+  const { mutate } = useSWRConfig();
+  const key = `/projects/${projectId}/integrations/webhook-deliveries`;
+  const { data } = useSWR<WebhookDelivery[]>(key, fetcher);
+  const [resending, setResending] = useState<string | null>(null);
+  const label = (event: string) => EVENTS.find((e) => e.value === event)?.label ?? event;
+
+  const resend = async (d: WebhookDelivery) => {
+    setResending(d.id);
+    try {
+      const again = await api<WebhookDelivery>(`${key}/${d.id}/resend`, { method: "POST" });
+      if (again.error) toast.error(`It didn't go through: ${again.error}`);
+      else toast.success("Sent again");
+      await mutate((k) => k === key || k === `/projects/${projectId}/settings`);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setResending(null);
+    }
+  };
+
+  return (
+    <details className="mt-3">
+      <summary className="cursor-pointer text-sm font-medium select-none">Recent deliveries</summary>
+      {!data?.length ? (
+        <p className="mt-2 text-xs text-muted-foreground">Nothing sent yet. Each event shows up here with how your endpoint answered.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-border rounded-lg border border-border">
+          {data.map((d) => (
+            <li key={d.id} className="flex items-start gap-3 px-3 py-2.5 text-sm">
+              <div className="min-w-0 flex-1">
+                <p className="flex items-center gap-2">
+                  <Badge tone={d.error ? "red" : "green"}>{d.error ? "Failed" : "Delivered"}</Badge>
+                  <span className="truncate font-medium">{label(d.event)}</span>
+                </p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {d.payload.lead?.full_name && `${d.payload.lead.full_name} · `}
+                  <span title={dateTime(d.created_at)}>{timeAgo(d.created_at)}</span>
+                </p>
+                {d.error && <p className="mt-1 font-mono text-xs break-words text-red-700">{d.error}</p>}
+              </div>
+              {/* Just the icon on phones, so the event name fits beside the badge. */}
+              <Button variant="ghost" size="sm" onClick={() => resend(d)} loading={resending === d.id} disabled={!!resending} aria-label="Resend">
+                {resending !== d.id && <RefreshCw className="size-3.5" />} <span className="max-sm:hidden">Resend</span>
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
   );
 }
 
@@ -415,6 +471,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 </p>
               </div>
             </details>
+            <RecentDeliveries projectId={projectId} />
           </Section>
           <Section
             title={
