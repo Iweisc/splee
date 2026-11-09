@@ -680,7 +680,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <Section
             title={
               <span className="flex items-center gap-2">
-                <CalendarCheck className="size-4" /> Calendly, Cal.com and SavvyCal
+                <CalendarCheck className="size-4" /> Booking tools
               </span>
             }
             description="When a lead books a call, Splee marks them Meeting booked and stops emailing them. If they cancel, they go back to Hot. Your chat channel and webhook hear about both."
@@ -689,11 +689,18 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             <div className="flex flex-col gap-1.5">
               <span className="text-sm font-medium">Booking webhook URL</span>
               <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
-              <p className="text-xs text-pretty text-muted-foreground">
-                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled. In
-                SavvyCal: Settings → Integrations, then + next to Webhooks. In Calendly, subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
-                <code>{`{"email": "...", "start_time": "..."}`}</code>. Splee finds the lead by email and shows the call&apos;s time on it.
-              </p>
+              <ul className="flex flex-col gap-1 text-xs text-pretty text-muted-foreground">
+                <li>Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled.</li>
+                <li>SavvyCal: Settings → Integrations, then + next to Webhooks.</li>
+                <li>OnceHub: Account Integrations → APIs &amp; Webhooks → Create webhook, with booking scheduled, rescheduled and canceled.</li>
+                <li>
+                  Calendly: subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API.
+                </li>
+                <li>
+                  Anything else, like a Zapier step, can POST <code>{`{"email": "...", "start_time": "..."}`}</code>.
+                </li>
+              </ul>
+              <p className="text-xs text-pretty text-muted-foreground">Splee finds the lead by email and shows the call&apos;s time on it.</p>
             </div>
           </Section>
           <Section
