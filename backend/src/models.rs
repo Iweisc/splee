@@ -133,7 +133,7 @@ pub struct ProjectSettings {
     pub capsule_connected: bool,
     pub capsule_error: Option<String>,
     pub capsule_failed_at: Option<Ts>,
-    /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer" or "" for none. Its key (verifier_key_enc) stays out of this struct.
+    /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,
