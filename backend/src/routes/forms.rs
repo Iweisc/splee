@@ -1,9 +1,10 @@
-//! A website form (Tally, Typeform, Fillout, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
+//! A website form (Tally, Typeform, Fillout, Jotform, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
 //! The secret in the URL picks the project, like the booking webhook's.
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequest, Multipart, Path, Query, Request, State};
+use axum::http::header::CONTENT_TYPE;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -22,8 +23,11 @@ pub fn router() -> Router<AppState> {
 
 /// The (question, answer) pairs in a submission. Tally sends `data.fields[]`, Typeform `form_response.answers[]` with the
 /// questions in `form_response.definition.fields[]`, Fillout `questions[]` and its hidden fields in `urlParameters[]`,
-/// Webflow `payload.data`, and anything else flat JSON.
+/// Jotform a `rawRequest` field holding JSON, Webflow `payload.data`, and anything else flat JSON.
 fn answers(body: &Value) -> Vec<(String, String)> {
+    if let Some(raw) = body["rawRequest"].as_str() {
+        return jotform(&serde_json::from_str(raw).unwrap_or_default());
+    }
     if let Some(questions) = body["questions"].as_array() {
         let hidden = body["urlParameters"].as_array().map(Vec::as_slice).unwrap_or_default();
         return questions.iter().chain(hidden).filter_map(|q| Some((q["name"].as_str()?.to_string(), text(&q["value"])?))).collect();
@@ -57,6 +61,52 @@ fn answers(body: &Value) -> Vec<(String, String)> {
     }
     let flat = if body["payload"]["data"].is_object() { &body["payload"]["data"] } else { body };
     flat.as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), text(v)?))).collect()).unwrap_or_default()
+}
+
+/// Jotform keys each answer `q<id>_<fieldName>`, where the field name is its label in camel case, and splits a name into
+/// `{first, last}`. Its other keys, like `slug` and `path`, aren't answers.
+fn jotform(raw: &Value) -> Vec<(String, String)> {
+    let mut fields: Vec<(u32, &str, &Value)> = raw
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            let (id, name) = key.strip_prefix('q')?.split_once('_')?;
+            Some((id.parse().ok()?, name, value))
+        })
+        .collect();
+    // In the form's order, roughly: ids count up as fields are added.
+    fields.sort_by_key(|(id, ..)| *id);
+    let mut answers = Vec::new();
+    for (_, name, value) in fields {
+        let question = name.chars().fold(String::new(), |mut q, c| {
+            match q.chars().last() {
+                None => q.extend(c.to_uppercase()),
+                Some(p) if c.is_uppercase() && (p.is_lowercase() || p.is_ascii_digit()) => q.extend([' ', c]),
+                Some(_) => q.push(c),
+            }
+            q
+        });
+        if value.get("first").is_some() || value.get("last").is_some() {
+            answers.extend(["first", "last"].into_iter().filter_map(|part| Some((format!("{question} {part}"), text(&value[part])?))));
+        } else if let Some(answer) = jotform_text(value) {
+            answers.push((question, answer));
+        }
+    }
+    answers
+}
+
+/// A phone number comes as `{full}`, and an address or a date as its parts, which serde_json hands back sorted by name.
+fn jotform_text(value: &Value) -> Option<String> {
+    const ORDER: [&str; 9] = ["addr_line1", "addr_line2", "city", "state", "postal", "country", "month", "day", "year"];
+    let Value::Object(parts) = value else { return text(value) };
+    if let Some(full) = parts.get("full") {
+        return text(full);
+    }
+    let mut parts: Vec<_> = parts.iter().collect();
+    parts.sort_by_key(|(key, _)| ORDER.iter().position(|k| k == key).unwrap_or(ORDER.len()));
+    let joined = parts.into_iter().filter_map(|(_, v)| text(v)).collect::<Vec<_>>().join(", ");
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// An answer as text: choices joined with commas, and Typeform's `{"label"}` and `{"labels"}` choice objects read.
@@ -157,7 +207,7 @@ async fn submitted(
     State(state): State<AppState>,
     Path(token): Path<String>,
     Query(q): Query<FormQuery>,
-    Json(body): Json<Value>,
+    request: Request,
 ) -> AppResult<Json<Value>> {
     let (project_id, org_id): (Uuid, Uuid) =
         sqlx::query_as("select p.id, p.org_id from project_settings s join projects p on p.id = s.project_id where s.form_token = $1")
@@ -165,7 +215,7 @@ async fn submitted(
             .fetch_optional(&state.db)
             .await?
             .ok_or(AppError::NotFound)?;
-    let answered = answers(&body);
+    let answered = answers(&body(request, &state).await?);
     let given: Vec<Value> = answered.iter().filter(|(_, a)| !a.trim().is_empty()).map(|(q, a)| json!({"question": q, "answer": a})).collect();
     let form = json!({ "answers": given });
     let (mut lead, rest) = lead_from(answered);
@@ -201,6 +251,22 @@ async fn submitted(
         hooks::send_lead_event(&state, project_id, "form_submitted", &lead, Some(("form", form))).await;
     });
     Ok(Json(json!({ "added": 1 })))
+}
+
+/// Jotform posts multipart form data. Everything else posts JSON.
+async fn body(request: Request, state: &AppState) -> AppResult<Value> {
+    let content_type = request.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    if !content_type.starts_with("multipart/form-data") {
+        let Json(body) = Json::<Value>::from_request(request, state).await.map_err(|e| AppError::BadRequest(e.body_text()))?;
+        return Ok(body);
+    }
+    let mut form = Multipart::from_request(request, state).await.map_err(|e| AppError::BadRequest(e.body_text()))?;
+    let mut fields = serde_json::Map::new();
+    while let Some(field) = form.next_field().await.map_err(|e| AppError::BadRequest(e.body_text()))? {
+        let name = field.name().unwrap_or_default().to_string();
+        fields.insert(name, Value::String(field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?));
+    }
+    Ok(Value::Object(fields))
 }
 
 #[cfg(test)]
@@ -250,6 +316,18 @@ mod tests {
         let (lead, rest) = lead_from(answers(&fillout));
         assert_eq!((lead.full_name.as_str(), lead.email.as_str()), ("Lena Ortiz", "lena@quarry.example"));
         assert_eq!(rest, [("Which tools do you use?".to_string(), "HubSpot, Gmail".to_string()), ("utm_source".to_string(), "linkedin".to_string())]);
+
+        // Jotform's webhook, as multipart fields, with the answers in rawRequest.
+        let raw = json!({"slug": "submit/2531", "q11_message": "Pricing for 12 seats", "q3_yourName": {"first": "Ana", "last": "Ruiz"},
+            "q4_email": "ana@tern.example", "q5_companyName": "Tern", "q6_phoneNumber": {"full": "(555) 010-2030"},
+            "q7_address": {"addr_line1": "1 Main St", "addr_line2": "", "city": "Austin", "state": "TX", "postal": "78701", "country": "US"}, "event_id": "1_2"});
+        let jotform = json!({"formID": "2531", "submissionID": "6012", "pretty": "Your Name:Ana Ruiz", "rawRequest": raw.to_string()});
+        let (lead, rest) = lead_from(answers(&jotform));
+        let got = (lead.first_name.as_str(), lead.last_name.as_str(), lead.email.as_str(), lead.company_name.as_str());
+        assert_eq!(got, ("Ana", "Ruiz", "ana@tern.example", "Tern"));
+        assert_eq!(rest[0], ("Phone Number".to_string(), "(555) 010-2030".to_string()));
+        assert_eq!(rest[1], ("Address".to_string(), "1 Main St, Austin, TX, 78701, US".to_string()));
+        assert_eq!(rest[2], ("Message".to_string(), "Pricing for 12 seats".to_string()));
 
         let plain = json!({"email": " Tom@Halcyon.example ", "first_name": "Tom", "lastName": "Alvarez", "job_title": "Director of Ops", "linkedin": "https://linkedin.com/in/tom"});
         let (lead, _) = lead_from(answers(&plain));
