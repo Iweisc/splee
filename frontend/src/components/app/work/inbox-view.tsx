@@ -282,38 +282,22 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* The status buttons drop under the name rather than squeezing it. When they wrap among themselves, each row fills. */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-        <div className="min-w-0 flex-1 basis-60">
-          <p className="flex items-center gap-2 font-medium">
-            {lead.full_name || lead.email} <LeadStatusBadge status={lead.status} />
-          </p>
-          <p className="truncate text-xs text-muted-foreground">
-            {[lead.title, lead.company_name, lead.email].filter(Boolean).join(" · ")}
-          </p>
-          {lead.remind_at && (
-            <p className="mt-1 flex items-center gap-1 text-xs text-amber-700">
-              <Bell className="size-3" /> {reminderDue ? "Reminder: follow up now" : `Reminder ${dateTime(lead.remind_at)}`}
+        <div className="flex min-w-0 flex-1 basis-60 items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="flex items-center gap-2 font-medium">
+              {lead.full_name || lead.email} <LeadStatusBadge status={lead.status} />
             </p>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-1 [&>*]:grow">
-          {statusActions.map((a) => (
-            <Button
-              key={a.status}
-              size="sm"
-              variant={lead.status === a.status ? "primary" : "outline"}
-              onClick={() => setStatus(a.status)}
-              disabled={lead.status === a.status}
-            >
-              {a.icon} {a.label}
-            </Button>
-          ))}
-          {awaiting && (
-            <Button size="sm" variant="outline" onClick={markDone} title="Needs no reply. Takes it out of Needs reply until they write again.">
-              <Check className="size-3.5" /> Done
-            </Button>
-          )}
-          {/* A bell button that opens a native menu: the select covers it unseen and resets after each pick. A bell keeps
-              it on the row with the status buttons. */}
+            <p className="truncate text-xs text-muted-foreground">
+              {[lead.title, lead.company_name, lead.email].filter(Boolean).join(" · ")}
+            </p>
+            {lead.remind_at && (
+              <p className="mt-1 flex items-center gap-1 text-xs text-amber-700">
+                <Bell className="size-3" /> {reminderDue ? "Reminder: follow up now" : `Reminder ${dateTime(lead.remind_at)}`}
+              </p>
+            )}
+          </div>
+          {/* A bell button that opens a native menu: the select covers it unseen and resets after each pick. It sits beside the
+              name, not with the status buttons, because one more button there took a row of its own on a phone. */}
           <label
             title="Remind me"
             className={buttonClass(
@@ -343,6 +327,24 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
               {lead.remind_at && <option value="clear">Clear reminder</option>}
             </select>
           </label>
+        </div>
+        <div className="flex flex-wrap gap-1 [&>*]:grow">
+          {statusActions.map((a) => (
+            <Button
+              key={a.status}
+              size="sm"
+              variant={lead.status === a.status ? "primary" : "outline"}
+              onClick={() => setStatus(a.status)}
+              disabled={lead.status === a.status}
+            >
+              {a.icon} {a.label}
+            </Button>
+          ))}
+          {awaiting && (
+            <Button size="sm" variant="outline" onClick={markDone} title="Needs no reply. Takes it out of Needs reply until they write again.">
+              <Check className="size-3.5" /> Done
+            </Button>
+          )}
         </div>
       </div>
       {picking && <ReminderPicker current={lead.remind_at} onPick={(at) => remind({ at })} onClose={() => setPicking(false)} />}
