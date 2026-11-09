@@ -225,33 +225,55 @@ fn host(url: &str) -> String {
 }
 
 /// Where a chat alert is posted. ntfy takes JSON only at its root, with the topic from the user's https://ntfy.sh/{topic}
-/// URL in the body. Everything else is posted to the URL as given.
+/// URL in the body. Pushover reads its token and user key from the body only, so they move there from the query.
+/// Everything else is posted to the URL as given.
 pub fn chat_endpoint(url: &str) -> String {
-    if host(url) == "ntfy.sh" { "https://ntfy.sh/".to_string() } else { url.to_string() }
+    match host(url).as_str() {
+        "ntfy.sh" => "https://ntfy.sh/".to_string(),
+        PUSHOVER => format!("https://{PUSHOVER}/1/messages.json"),
+        _ => url.to_string(),
+    }
+}
+
+const PUSHOVER: &str = "api.pushover.net";
+
+fn query(url: &str, key: &str) -> Option<String> {
+    Url::parse(url).ok()?.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
 }
 
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
-/// URL with `?chat_id=`) and ntfy (a topic URL, for phone notifications) have their own shapes. Anything else gets
-/// Slack's `{text}`, which Google Chat also reads, links included.
+/// URL with `?chat_id=`), ntfy (a topic URL) and Pushover (its messages.json URL with `?token=` and `&user=`) have their
+/// own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
     let quote = a.quote.map(|q| format!("\n> {}", q.replace('\n', "\n> "))).unwrap_or_default();
+    // ntfy and Pushover show the reply as plain text under the summary.
+    let message = match a.quote {
+        Some(q) => format!("{}\n\n{q}", a.summary),
+        None => a.summary.to_string(),
+    };
     if host == "ntfy.sh" {
         let topic = Url::parse(url).ok().and_then(|u| u.path_segments()?.find(|s| !s.is_empty()).map(str::to_string)).unwrap_or_default();
-        let message = match a.quote {
-            Some(q) => format!("{}\n\n{q}", a.summary),
-            None => a.summary.to_string(),
-        };
         json!({
             "topic": topic, "title": a.label, "message": message, "click": a.link,
             "actions": [{"action": "view", "label": a.link_text, "url": a.link}],
+        })
+    } else if host == PUSHOVER {
+        // Pushover refuses a message over 1024 characters, and a long reply would pass that.
+        let message = match message.char_indices().nth(1023) {
+            Some((end, _)) if message.chars().nth(1024).is_some() => format!("{}…", &message[..end]),
+            _ => message,
+        };
+        json!({
+            "token": query(url, "token"), "user": query(url, "user"), "title": a.label, "message": message,
+            "url": a.link, "url_title": a.link_text,
         })
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
         // chat_id goes in the body too, so it doesn't matter whether Telegram reads the query of a JSON request.
-        let chat_id = Url::parse(url).ok().and_then(|u| u.query_pairs().find(|(k, _)| k == "chat_id").map(|(_, v)| v.into_owned()));
+        let chat_id = query(url, "chat_id");
         let quote = a.quote.map(|q| format!("\n<blockquote>{}</blockquote>", html(q))).unwrap_or_default();
         let text = format!("<b>{}:</b> {}{quote}\n<a href=\"{}\">{}</a>", html(a.label), html(a.summary), html(a.link), html(a.link_text));
         json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML", "link_preview_options": {"is_disabled": true}})
@@ -277,8 +299,8 @@ fn html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams, Google Chat, Telegram
-/// and ntfy) when it has one, and records how it went for the integrations page.
+/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams, Google Chat, Telegram,
+/// ntfy and Pushover) when it has one, and records how it went for the integrations page.
 pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_>) {
     let url: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
         .bind(project_id)
@@ -474,6 +496,17 @@ mod tests {
         assert_eq!(ntfy["click"], "https://app/x");
         assert_eq!(chat_endpoint("https://ntfy.sh/acme-hot-leads"), "https://ntfy.sh/");
         assert_eq!(chat_endpoint("https://hooks.slack.com/services/T/B/x"), "https://hooks.slack.com/services/T/B/x");
+        let pushover_url = "https://api.pushover.net/1/messages.json?token=app123&user=user456";
+        let pushover = chat_payload(pushover_url, &a);
+        assert_eq!((pushover["token"].as_str(), pushover["user"].as_str()), (Some("app123"), Some("user456")));
+        assert_eq!(pushover["message"], "Sarah replied to Acme\n\nSounds good\nTuesday?");
+        assert_eq!((pushover["url"].as_str(), pushover["url_title"].as_str()), (Some("https://app/x"), Some("Open the inbox")));
+        assert_eq!(chat_endpoint(pushover_url), "https://api.pushover.net/1/messages.json");
+        let long = "é".repeat(2000);
+        let cut = chat_payload(pushover_url, &ChatAlert { quote: Some(&long), ..a })["message"].as_str().unwrap().to_string();
+        assert_eq!((cut.chars().count(), cut.ends_with("é…")), (1024, true));
+        let fits = "é".repeat(1024 - "Sarah replied to Acme\n\n".len());
+        assert_eq!(chat_payload(pushover_url, &ChatAlert { quote: Some(&fits), ..a })["message"].as_str().unwrap().chars().last(), Some('é'));
         // A lookalike host isn't Discord.
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }

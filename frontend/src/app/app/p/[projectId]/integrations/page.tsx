@@ -92,6 +92,7 @@ const CHAT_APPS = [
   ["Google Chat", "Apps & integrations → Webhooks"],
   ["Telegram", "bot's sendMessage URL with ?chat_id="],
   ["ntfy", "https://ntfy.sh/ and a topic only you know"],
+  ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
 ];
 
 /** Posts a sample alert to the URL as typed, saved or not. */
@@ -429,7 +430,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <Hash className="size-4" /> Chat alerts
               </span>
             }
-            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy, about hot leads, booked meetings and follow-ups that come due."
+            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy or Pushover, about hot leads, booked meetings and follow-ups that come due."
             actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field
