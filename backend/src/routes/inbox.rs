@@ -328,7 +328,7 @@ async fn set_status(
         .bind(&body.status)
         .fetch_one(&state.db)
         .await?;
-    crate::hooks::status_changed(&state, &lead.status, &updated).await;
+    crate::hooks::team_set_status(&state, &lead.status, &updated).await;
     Ok(Json(json!({ "ok": true })))
 }
 

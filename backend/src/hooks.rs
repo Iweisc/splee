@@ -100,7 +100,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 10] = [
+pub const EVENTS: [&str; 11] = [
     "hot_lead",
     "lead_replied",
     "meeting_booked",
@@ -111,10 +111,11 @@ pub const EVENTS: [&str; 10] = [
     "email_sent",
     "follow_up_due",
     "form_submitted",
+    "status_changed",
 ];
 
 /// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder, a form's answers or
-/// a moved call's old time. Its key is "reply", "email", "reminder", "form" or "previous_meeting_at", and "reply" stays in every payload, null when there's none.
+/// a moved call's old time or status. Its key is "reply", "email", "reminder", "form", "previous_meeting_at" or "previous_status", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;
 
 /// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
@@ -142,7 +143,7 @@ async fn lead_event(
         "event": event,
         "project": {"id": project_id, "name": name},
         "lead": {
-            "id": lead.id, "full_name": lead.full_name, "email": lead.email, "title": lead.title,
+            "id": lead.id, "full_name": lead.full_name, "email": lead.email, "title": lead.title, "status": lead.status,
             "company_name": lead.company_name, "company_domain": lead.company_domain,
             "linkedin_url": lead.linkedin_url, "x_url": lead.x_url, "meeting_at": lead.meeting_at,
         },
@@ -392,6 +393,15 @@ async fn claim_due_reminders(db: &sqlx::PgPool) -> sqlx::Result<Vec<Lead>> {
     )
     .fetch_all(db)
     .await
+}
+
+/// A status someone on the team set in the app, alone or in bulk, sends the status_changed event on top of what
+/// status_changed below sends. Replies, bounces and bookings have their own events, so they don't come through here.
+pub async fn team_set_status(state: &AppState, before: &str, lead: &Lead) {
+    status_changed(state, before, lead).await;
+    if before != lead.status {
+        send_lead_event(state, lead.project_id, "status_changed", lead, Some(("previous_status", json!(before)))).await;
+    }
 }
 
 /// Sends meeting_booked to chat and the webhook when someone in the app moves a lead there. The API only posts to chat
