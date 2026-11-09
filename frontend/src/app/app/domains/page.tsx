@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { DnsCheck, Mailbox, MailboxInput } from "@/lib/types";
+import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
 import { todayLimit } from "@/lib/mailbox";
 import { dateTime, isPast, timeAgo } from "@/lib/utils";
 
@@ -52,6 +52,8 @@ function PublicUrlWarning() {
 export default function MailboxesPage() {
   // Polled every minute like the sender's recheck, so a stopped mailbox that starts sending again shows it.
   const { data, error, mutate } = useSWR<Mailbox[]>("/mailboxes", fetcher, { refreshInterval: 60_000 });
+  // A month of numbers barely moves in a minute, so this one loads with the page and isn't polled.
+  const { data: stats } = useSWR<MailboxStats[]>("/mailboxes/stats", fetcher);
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Mailbox | "new" | null>(null);
 
@@ -196,6 +198,8 @@ export default function MailboxesPage() {
                   </span>
                 </div>
 
+                <Health stats={stats?.find((s) => s.mailbox_id === m.id)} />
+
                 {m.last_error && (
                   <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">{m.last_error}</p>
                 )}
@@ -230,6 +234,34 @@ function nextStep(m: Mailbox): string {
   if (!m.recheck_at) return "Fix the settings, then press Test connection to start sending again.";
   if (isPast(m.recheck_at)) return "Splee is testing it again now.";
   return `Splee tests it again at ${dateTime(m.recheck_at)} and starts sending once it works.`;
+}
+
+/**
+ * Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
+ * crosses that, so the warning waits for enough sends to mean something.
+ */
+function Health({ stats }: { stats?: MailboxStats }) {
+  if (!stats?.emailed) return null;
+  const pct = (n: number) => `${Math.min(100, Math.round((n / stats.emailed) * 100))}%`;
+  const risky = stats.emailed >= 20 && stats.bounced / stats.emailed > 0.05;
+  return (
+    <>
+      {/* Each part stays whole, so a narrow phone wraps between them rather than leaving a word alone. */}
+      <p className="mt-3 flex flex-wrap gap-x-1.5 text-xs text-muted-foreground [&>span]:whitespace-nowrap">
+        <span>30 days: {stats.emailed} emailed ·</span>
+        <span>
+          <span className={risky ? "font-medium text-amber-700" : undefined}>{pct(stats.bounced)} bounced</span> ·
+        </span>
+        <span>{pct(stats.replied)} replied</span>
+      </p>
+      {risky && (
+        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          More than 1 in 20 emails from this mailbox bounced. Past that, providers start sending its mail to spam. Check the addresses in your
+          lead lists before you send more.
+        </p>
+      )}
+    </>
+  );
 }
 
 function DnsBadge({ name, check }: { name: string; check?: DnsCheck }) {

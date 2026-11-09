@@ -385,6 +385,14 @@ export interface Mailbox {
   first_sent_on: string | null;
 }
 
+/** GET /mailboxes/stats: distinct leads over the last 30 days. */
+export interface MailboxStats {
+  mailbox_id: UUID;
+  emailed: number;
+  bounced: number;
+  replied: number;
+}
+
 export interface MailboxInput {
   email: string;
   from_name: string;
