@@ -287,8 +287,10 @@ pub struct Mailbox {
     pub org_id: Uuid,
     pub email: String,
     pub from_name: String,
-    /// Replaces the project's signature on the emails Splee writes, when this mailbox sends them. See sender::resign.
+    /// The signature and booking link used instead of the project's in the emails Splee writes, when this mailbox sends
+    /// them. See sender::as_mailbox.
     pub signature: String,
+    pub booking_link: String,
     pub smtp_host: String,
     pub smtp_port: i32,
     pub smtp_security: String,

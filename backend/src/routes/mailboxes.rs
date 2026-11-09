@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -71,6 +72,7 @@ struct MailboxBody {
     email: Option<String>,
     from_name: Option<String>,
     signature: Option<String>,
+    booking_link: Option<String>,
     smtp_host: Option<String>,
     smtp_port: Option<i32>,
     smtp_security: Option<String>,
@@ -106,6 +108,9 @@ impl MailboxBody {
         if self.daily_limit.is_some_and(|l| !(1..=2000).contains(&l)) {
             return Err(AppError::BadRequest("Daily limit must be between 1 and 2000".into()));
         }
+        if trimmed(&self.booking_link).is_some_and(|l| !Url::parse(l).is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some())) {
+            return Err(AppError::BadRequest("Booking link must be a full URL starting with https://".into()));
+        }
         if self.cost_per_email_micros.is_some_and(|c| !(0..=1_000_000).contains(&c)) {
             return Err(AppError::BadRequest("Cost per email must be between $0 and $1".into()));
         }
@@ -135,9 +140,9 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let secret = &state.cfg.app_secret;
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
-           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature)
+           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
-           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''))
+           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''))
          returning *",
     )
     .bind(auth.org_id)
@@ -157,6 +162,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.cost_per_email_micros)
     .bind(body.ramp_up)
     .bind(body.signature.as_deref().map(str::trim))
+    .bind(body.booking_link.as_deref().map(str::trim))
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -197,7 +203,8 @@ async fn update(
            status = coalesce($14, status),
            cost_per_email_micros = coalesce($15, cost_per_email_micros),
            ramp_up = coalesce($16, ramp_up),
-           signature = coalesce($17, signature)
+           signature = coalesce($17, signature),
+           booking_link = coalesce($18, booking_link)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -217,6 +224,7 @@ async fn update(
     .bind(body.cost_per_email_micros)
     .bind(body.ramp_up)
     .bind(body.signature.as_deref().map(str::trim))
+    .bind(body.booking_link.as_deref().map(str::trim))
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

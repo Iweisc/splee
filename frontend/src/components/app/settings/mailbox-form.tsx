@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
+import { isUrl } from "@/components/app/settings/is-url";
 import type { Mailbox, MailboxInput } from "@/lib/types";
 import { MicroLabel } from "@/components/app/work/states";
 
@@ -27,6 +28,7 @@ const EMPTY: MailboxInput = {
   email: "",
   from_name: "",
   signature: "",
+  booking_link: "",
   ...PRESETS.google,
   smtp_username: "",
   smtp_password: "",
@@ -38,12 +40,13 @@ const EMPTY: MailboxInput = {
 };
 
 function toInput(m: Mailbox): MailboxInput {
-  const { email, from_name, signature, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
+  const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
     m;
   return {
     email,
     from_name,
     signature,
+    booking_link,
     smtp_host,
     smtp_port,
     smtp_security,
@@ -91,6 +94,7 @@ export function MailboxForm({
   const imapPassword = separateImap ? m.imap_password : m.smtp_password;
   const valid =
     /^\S+@\S+\.\S+$/.test(m.email) &&
+    (!m.booking_link || isUrl(m.booking_link)) &&
     m.smtp_host &&
     m.smtp_port > 0 &&
     m.smtp_username &&
@@ -148,6 +152,13 @@ export function MailboxForm({
 
       <Field label="Signature" hint="Signs the emails Splee writes when this mailbox sends them. Leave empty to use the project's.">
         <Textarea value={m.signature} onChange={(e) => set({ signature: e.target.value })} placeholder={"Alex Morgan\nFounder, Acme"} rows={2} />
+      </Field>
+      <Field
+        label="Booking link"
+        hint="Replaces the project's booking link in those emails, so calls land on this person's calendar."
+        error={m.booking_link && !isUrl(m.booking_link) ? "Enter a full URL, e.g. https://cal.com/alex/intro" : null}
+      >
+        <Input type="url" value={m.booking_link} onChange={(e) => set({ booking_link: e.target.value.trim() })} placeholder="https://cal.com/alex/intro" />
       </Field>
 
       <fieldset className="grid gap-4">

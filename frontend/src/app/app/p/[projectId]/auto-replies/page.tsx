@@ -31,7 +31,7 @@ export default function AutoRepliesPage() {
             />
           </Section>
 
-          <Section title="Booking link" description="The agent includes this link when a lead wants to meet, so they can pick a time themselves.">
+          <Section title="Booking link" description="The agent includes this link when a lead wants to meet, unless the sending mailbox has its own.">
             <Field label="URL" error={s.booking_link && !isUrl(s.booking_link) ? "Enter a full URL, e.g. https://cal.com/you/intro" : null}>
               <Input
                 type="url"
