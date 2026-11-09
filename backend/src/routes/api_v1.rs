@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/projects/{id}/replies", get(replies))
+        .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/suppressions", post(add_suppressions))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
@@ -35,7 +36,7 @@ pub fn router() -> Router<AppState> {
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
-const MAX_REPLIES: i64 = 500;
+const MAX_MESSAGES: i64 = 500;
 const MAX_SUPPRESSIONS_PER_REQUEST: usize = 1000;
 
 async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
@@ -166,7 +167,7 @@ async fn update_lead(
 }
 
 #[derive(Deserialize)]
-struct RepliesQuery {
+struct SinceQuery {
     since: Option<Ts>,
 }
 
@@ -174,7 +175,7 @@ async fn replies(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
-    Query(q): Query<RepliesQuery>,
+    Query(q): Query<SinceQuery>,
 ) -> AppResult<Json<Vec<EmailMessage>>> {
     check_project(&state.db, id, auth.org_id).await?;
     let messages = sqlx::query_as::<_, EmailMessage>(
@@ -184,7 +185,28 @@ async fn replies(
     )
     .bind(id)
     .bind(q.since)
-    .bind(MAX_REPLIES)
+    .bind(MAX_MESSAGES)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(messages))
+}
+
+/// The polling twin of the email_sent webhook: what Splee sent, oldest first, for logging outreach in a CRM.
+async fn sent_emails(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SinceQuery>,
+) -> AppResult<Json<Vec<EmailMessage>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let messages = sqlx::query_as::<_, EmailMessage>(
+        "select * from email_messages
+         where project_id = $1 and direction = 'outbound' and status = 'sent' and ($2::timestamptz is null or sent_at > $2)
+         order by sent_at limit $3",
+    )
+    .bind(id)
+    .bind(q.since)
+    .bind(MAX_MESSAGES)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(messages))
