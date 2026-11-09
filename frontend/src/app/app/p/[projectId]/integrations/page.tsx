@@ -70,7 +70,8 @@ function fromSplee(rawBody, headers, secret) {
 const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "hot_lead", label: "Hot lead", hint: "A reply that shows interest, like asking for a call." },
   { value: "lead_replied", label: "Every reply", hint: "Any reply a person wrote, with how Splee classified it." },
-  { value: "meeting_booked", label: "Meeting booked", hint: "Someone on your team marked the lead Meeting booked." },
+  { value: "meeting_booked", label: "Meeting booked", hint: "The lead booked a call, or your team marked them Meeting booked." },
+  { value: "meeting_cancelled", label: "Meeting cancelled", hint: "The lead cancelled the call they booked in Calendly or Cal.com." },
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
   { value: "email_sent", label: "Email sent", hint: "Every email Splee sends a lead, to log it in your CRM." },
@@ -497,7 +498,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 {/* Keep PAYLOAD in sync with the json! in lead_event, backend/src/hooks.rs. */}
                 <p className="mt-2 text-xs text-muted-foreground">
                   These are all the fields Splee sends. The values are examples. <code>lead_replied</code> has the same shape, with the reply&apos;s{" "}
-                  <code>classification</code>: hot, question, not_interested or other. <code>meeting_booked</code>, <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
+                  <code>classification</code>: hot, question, not_interested or other. <code>meeting_booked</code>, <code>meeting_cancelled</code>, <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
                   <code>&quot;reply&quot;: null</code>. <code>email_sent</code> sends <code>&quot;reply&quot;: null</code> and an <code>email</code> with its{" "}
                   <code>id</code>, <code>kind</code> (initial, follow_up, auto_reply or manual_reply), <code>step</code>, <code>subject</code>, <code>body</code>,{" "}
                   <code>from</code>, <code>to</code> and <code>message_id</code>. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
@@ -523,16 +524,16 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <CalendarCheck className="size-4" /> Calendly and Cal.com
               </span>
             }
-            description="When a lead books a call, Splee marks them Meeting booked. That stops their follow-ups and tells your chat channel and webhook."
+            description="When a lead books a call, Splee marks them Meeting booked and stops emailing them. If they cancel, they go back to Hot. Your chat channel and webhook hear about both."
           >
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="flex flex-col gap-1.5">
               <span className="text-sm font-medium">Booking webhook URL</span>
               <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
-              <p className="text-xs text-muted-foreground">
-                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created and Booking rescheduled. In Calendly,
-                subscribe it to <code>invitee.created</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
-                <code>{`{"email": "...", "start_time": "..."}`}</code>. Leads are matched by email, and the call&apos;s time shows on the lead.
+              <p className="text-xs text-pretty text-muted-foreground">
+                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled. In
+                Calendly, subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
+                <code>{`{"email": "...", "start_time": "..."}`}</code>. Splee finds the lead by email and shows the call&apos;s time on it.
               </p>
             </div>
           </Section>

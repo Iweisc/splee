@@ -100,7 +100,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 7] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced", "email_sent", "follow_up_due"];
+pub const EVENTS: [&str; 8] =
+    ["hot_lead", "lead_replied", "meeting_booked", "meeting_cancelled", "lead_unsubscribed", "lead_bounced", "email_sent", "follow_up_due"];
 
 /// What an event carries besides the lead: the reply that set it off, or the email Splee sent.
 /// Its key is "reply" or "email", and "reply" stays in every payload, null when there's none.
@@ -296,26 +297,46 @@ fn meeting_time(at: Ts, timezone: &str) -> String {
     at.with_timezone(&tz).format("%a %-d %b at %H:%M %Z").to_string()
 }
 
+/// "Sarah Chen (Brightline) for Acme, Tue 10 Nov at 14:00 GMT", the time in the project's timezone, for meeting alerts.
+async fn meeting_summary(db: &sqlx::PgPool, lead: &Lead, at: Option<Ts>) -> String {
+    let (project, timezone): (String, String) = sqlx::query_as(
+        "select p.name, coalesce(s.timezone, 'UTC') from projects p left join project_settings s on s.project_id = p.id where p.id = $1",
+    )
+    .bind(lead.project_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or_default();
+    let who = format!("{} ({})", lead.full_name, lead.company_name);
+    match at {
+        Some(at) => format!("{who} for {project}, {}", meeting_time(at, &timezone)),
+        None => format!("{who} for {project}"),
+    }
+}
+
 /// Tells the team in chat and HubSpot that a lead booked a meeting. It runs in the background, so the request that set
 /// the status doesn't wait on either.
 pub fn announce_booked(state: &AppState, lead: &Lead) {
     let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
-    let (who, link) = (format!("{} ({})", lead.full_name, lead.company_name), lead_url(&state.cfg.public_url, project_id, lead.id));
+    let link = lead_url(&state.cfg.public_url, project_id, lead.id);
     tokio::spawn(async move {
-        let (project, timezone): (String, String) = sqlx::query_as(
-            "select p.name, coalesce(s.timezone, 'UTC') from projects p left join project_settings s on s.project_id = p.id where p.id = $1",
-        )
-        .bind(project_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or_default();
-        let summary = match lead.meeting_at {
-            Some(at) => format!("{who} for {project}, {}", meeting_time(at, &timezone)),
-            None => format!("{who} for {project}"),
-        };
+        let summary = meeting_summary(&state.db, &lead, lead.meeting_at).await;
         let alert = ChatAlert { label: "Meeting booked", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
         post_chat(&state.db, project_id, &alert).await;
         crate::crm::sync(&state, project_id, &lead, &format!("Booked a meeting through Splee.\n{link}")).await;
+    });
+}
+
+/// Tells the team in chat, the webhook and the CRMs that a lead cancelled the call they booked. `was` is when it would have
+/// been, since the lead no longer has the time.
+pub fn announce_cancelled(state: &AppState, lead: &Lead, was: Option<Ts>) {
+    let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
+    let link = lead_url(&state.cfg.public_url, project_id, lead.id);
+    tokio::spawn(async move {
+        let summary = meeting_summary(&state.db, &lead, was).await;
+        let alert = ChatAlert { label: "Meeting cancelled", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
+        post_chat(&state.db, project_id, &alert).await;
+        send_lead_event(&state, project_id, "meeting_cancelled", &lead, None).await;
+        crate::crm::sync(&state, project_id, &lead, &format!("Cancelled the meeting they booked.\n{link}")).await;
     });
 }
 
