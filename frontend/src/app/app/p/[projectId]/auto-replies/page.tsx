@@ -27,7 +27,7 @@ export default function AutoRepliesPage() {
               value={s.auto_reply_mode}
               onChange={(auto_reply_mode) => update({ auto_reply_mode })}
               options={MODES}
-              className="sm:grid-cols-3"
+              className="@2xl:grid-cols-3"
             />
           </Section>
 
