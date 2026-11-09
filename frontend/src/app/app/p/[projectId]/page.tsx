@@ -19,7 +19,7 @@ import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import { bouncing, wholePercent } from "@/lib/mailbox";
 import type { Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
-import { money, num } from "@/lib/utils";
+import { money, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">) {
@@ -174,15 +174,13 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
   const [now] = useState(() => new Date());
   const next = nextSendWindow(settings, now);
   if (!next) return null;
-  const mins = Math.round((next.getTime() - now.getTime()) / 60_000);
-  const wait = mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`;
   const yours = next.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
   const theirs = next.toLocaleString("en-US", { timeZone: settings.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <Clock className="size-4 text-muted-foreground" />
-      <p className="flex-1">
-        Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone}), in {wait}.
+      <p className="flex-1 text-pretty">
+        Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone}), {timeAgo(next.toISOString())}.
       </p>
       <LinkButton href={`/app/p/${projectId}/schedule`} variant="outline" size="sm">
         Change hours
