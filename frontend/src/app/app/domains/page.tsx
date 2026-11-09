@@ -129,7 +129,7 @@ export default function MailboxesPage() {
         ) : (
           <div className="grid gap-3">
             {data.map((m) => (
-              <Card key={m.id} className="p-5">
+              <Card key={m.id} className="min-w-0 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -195,7 +195,7 @@ export default function MailboxesPage() {
                 </div>
 
                 {m.last_error && (
-                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs text-red-700">{m.last_error}</p>
+                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">{m.last_error}</p>
                 )}
                 {m.status === "error" && <p className="mt-2 text-xs text-muted-foreground">{nextStep(m)}</p>}
               </Card>
