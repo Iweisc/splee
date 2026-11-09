@@ -323,7 +323,7 @@ async fn connect_verifier(
 ) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    let verifier = Verifier::parse(&body.provider).ok_or_else(|| AppError::BadRequest("Pick NeverBounce, MillionVerifier, Hunter or Kickbox".into()))?;
+    let verifier = Verifier::parse(&body.provider).ok_or_else(|| AppError::BadRequest("Pick NeverBounce, MillionVerifier, Hunter, Kickbox or Bouncer".into()))?;
     let key = body.key.trim();
     if key.is_empty() {
         return Err(AppError::BadRequest(format!("Paste your {} API key", verifier.label())));

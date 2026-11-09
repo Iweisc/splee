@@ -130,7 +130,7 @@ pub struct ProjectSettings {
     pub folk_connected: bool,
     pub folk_error: Option<String>,
     pub folk_failed_at: Option<Ts>,
-    /// "neverbounce", "millionverifier", "hunter", "kickbox" or "" for none. Its key (verifier_key_enc) stays out of this struct.
+    /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,
