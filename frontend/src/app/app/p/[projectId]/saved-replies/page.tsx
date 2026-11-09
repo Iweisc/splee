@@ -65,7 +65,7 @@ export default function SavedRepliesPage() {
                     <p className="mt-0.5 line-clamp-3 text-sm whitespace-pre-wrap text-muted-foreground">{r.body}</p>
                   </div>
                   <Button variant="ghost" size="icon" onClick={() => remove(r)} loading={pending === r.id} aria-label={`Delete ${r.title}`}>
-                    {pending !== r.id && <Trash2 className="size-4" />}
+                    <Trash2 className="size-4" />
                   </Button>
                 </div>
               ))}
@@ -95,7 +95,7 @@ export default function SavedRepliesPage() {
                 </Field>
                 <div className="flex justify-end">
                   <Button type="submit" disabled={!ready} loading={pending === "add"}>
-                    {pending !== "add" && <Plus className="size-4" />} Save reply
+                    <Plus className="size-4" /> Save reply
                   </Button>
                 </div>
               </form>

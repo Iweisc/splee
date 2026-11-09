@@ -182,7 +182,7 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
           )}
           {open && (
             <Button size="sm" variant="ghost" onClick={markReplied} loading={marking} className="max-sm:ml-auto">
-              {!marking && <MessageCircleReply className="size-3.5" />} They replied
+              <MessageCircleReply className="size-3.5" /> They replied
             </Button>
           )}
           {runId ? (

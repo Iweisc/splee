@@ -76,7 +76,7 @@ export default function CompetitorsPage() {
                     {c.note && <p className="mt-0.5 text-sm text-muted-foreground">{c.note}</p>}
                   </div>
                   <Button variant="ghost" size="icon" onClick={() => remove(c)} loading={pending === c.id} aria-label={`Remove ${c.domain}`}>
-                    {pending !== c.id && <Trash2 className="size-4" />}
+                    <Trash2 className="size-4" />
                   </Button>
                 </div>
               ))}
@@ -104,7 +104,7 @@ export default function CompetitorsPage() {
                 </Field>
                 <div className="flex justify-end sm:col-span-2">
                   <Button type="submit" disabled={!draft.domain.trim()} loading={pending === "add"}>
-                    {pending !== "add" && <Plus className="size-4" />} Add
+                    <Plus className="size-4" /> Add
                   </Button>
                 </div>
               </form>

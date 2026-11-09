@@ -154,10 +154,10 @@ export default function MailboxesPage() {
                   <div className="flex flex-wrap items-center gap-1.5 max-sm:w-full">
                     <div className="flex flex-wrap gap-1.5 max-sm:basis-full max-sm:[&>*]:flex-1">
                       <Button variant="outline" size="sm" onClick={() => test(m)} loading={pending === `test:${m.id}`}>
-                        {pending !== `test:${m.id}` && <Plug className="size-4" />} Test connection
+                        <Plug className="size-4" /> Test connection
                       </Button>
                       <Button variant="outline" size="sm" onClick={() => checkDns(m)} loading={pending === `dns:${m.id}`}>
-                        {pending !== `dns:${m.id}` && <RefreshCw className="size-4" />} Check DNS
+                        <RefreshCw className="size-4" /> Check DNS
                       </Button>
                     </div>
                     <div className="flex gap-1.5 max-sm:basis-full max-sm:[&>*]:w-auto max-sm:[&>*]:flex-1 max-sm:[&>*]:gap-1.5">
@@ -169,7 +169,7 @@ export default function MailboxesPage() {
                         aria-label={m.status === "paused" ? "Resume" : "Pause"}
                         title={m.status === "paused" ? "Resume" : "Pause"}
                       >
-                        {pending !== `pause:${m.id}` && (m.status === "paused" ? <Play className="size-4" /> : <Pause className="size-4" />)}
+                        {m.status === "paused" ? <Play className="size-4" /> : <Pause className="size-4" />}
                         <span className="sm:hidden">{m.status === "paused" ? "Resume" : "Pause"}</span>
                       </Button>
                       <Button variant="ghost" size="icon" onClick={() => setEditing(m)} aria-label="Edit" title="Edit">
@@ -184,7 +184,7 @@ export default function MailboxesPage() {
                         aria-label="Remove"
                         title="Remove"
                       >
-                        {pending !== `delete:${m.id}` && <Trash2 className="size-4" />}
+                        <Trash2 className="size-4" />
                         <span className="sm:hidden">Remove</span>
                       </Button>
                     </div>

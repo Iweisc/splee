@@ -31,7 +31,7 @@ export function SegmentToggle({ segment, size = "sm" }: { segment: Segment; size
 
   return (
     <Button size={size} variant={running ? "outline" : "primary"} onClick={toggle} loading={busy}>
-      {!busy && (running ? <Pause className="size-3.5" /> : <Play className="size-3.5" />)}
+      {running ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
       {running ? "Pause" : "Start"}
     </Button>
   );

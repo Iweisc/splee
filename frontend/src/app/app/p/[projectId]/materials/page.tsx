@@ -89,7 +89,7 @@ export default function MaterialsPage() {
                       <Pencil className="size-4" />
                     </Button>
                     <Button variant="ghost" size="icon" onClick={() => remove(m)} loading={pending === m.id} aria-label="Delete">
-                      {pending !== m.id && <Trash2 className="size-4" />}
+                      <Trash2 className="size-4" />
                     </Button>
                   </div>
                 </div>
