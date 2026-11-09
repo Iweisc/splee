@@ -109,7 +109,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
       </div>
 
       <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        <Detail icon={<Mail className="size-3.5" />} wide>
+        <Detail label="Email" icon={<Mail className="size-3.5" />} wide>
           {lead.email ? (
             <>
               {lead.email} <span className="text-xs text-muted-foreground">({lead.email_status})</span>
@@ -119,27 +119,31 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           )}
         </Detail>
         {lead.linkedin_url && (
-          <Detail icon={<Link2 className="size-3.5" />}>
+          <Detail label="LinkedIn" icon={<Link2 className="size-3.5" />}>
             <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="hover:underline">
               LinkedIn profile
             </a>
           </Detail>
         )}
         {lead.x_url && (
-          <Detail icon={<XIcon className="size-3.5" />}>
+          <Detail label="X" icon={<XIcon className="size-3.5" />}>
             <a href={lead.x_url} target="_blank" rel="noreferrer" className="hover:underline">
               X profile
             </a>
           </Detail>
         )}
         {lead.company_domain && (
-          <Detail icon={<Favicon domain={lead.company_domain} size={14} />}>
+          <Detail label="Website" icon={<Favicon domain={lead.company_domain} size={14} />}>
             <a href={`https://${lead.company_domain}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
               {lead.company_domain} <ExternalLink className="size-3" />
             </a>
           </Detail>
         )}
-        {location && <Detail icon={<MapPin className="size-3.5" />}>{location}</Detail>}
+        {location && (
+          <Detail label="Location" icon={<MapPin className="size-3.5" />}>
+            {location}
+          </Detail>
+        )}
       </dl>
 
       <div>
@@ -306,12 +310,16 @@ export function LeadNotes({ lead, onSaved }: { lead: Lead; onSaved: () => unknow
 }
 
 /** `wide` is for the email: it takes the whole row and wraps rather than being cut off, since it's the one detail people copy. */
-function Detail({ icon, wide, children }: { icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
+/** One row of the details list. The icon is the term on screen; screen readers get the label instead. */
+function Detail({ label, icon, wide, children }: { label: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
   return (
     <div className={cn("flex min-w-0 items-start gap-2", wide && "sm:col-span-2")}>
       {/* As tall as one line of text, so the icon lines up with the first line when the text wraps. */}
-      <span className="flex h-5 items-center text-muted-foreground">{icon}</span>
-      <span className={wide ? "break-all" : "truncate"}>{children}</span>
+      <dt className="flex h-5 items-center text-muted-foreground">
+        <span aria-hidden>{icon}</span>
+        <span className="sr-only">{label}</span>
+      </dt>
+      <dd className={wide ? "break-all" : "truncate"}>{children}</dd>
     </div>
   );
 }
