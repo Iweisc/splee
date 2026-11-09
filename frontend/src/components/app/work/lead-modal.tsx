@@ -1,13 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
-import { Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
+import { Address, Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime } from "@/lib/utils";
@@ -115,7 +115,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         <Detail label="Email" icon={<Mail className="size-3.5" />} wide>
           {lead.email ? (
             <>
-              {breakable(lead.email)} <span className="text-xs text-muted-foreground">({lead.email_status})</span>
+              <Address email={lead.email} /> <span className="text-xs text-muted-foreground">({lead.email_status})</span>
             </>
           ) : (
             <span className="text-muted-foreground">No email found</span>
@@ -314,16 +314,6 @@ export function LeadNotes({ lead, onSaved }: { lead: Lead; onSaved: () => unknow
 
 /** `wide` is for the email: it takes the whole row and wraps rather than being cut off, since it's the one detail people copy. */
 /** One row of the details list. The icon is the term on screen; screen readers get the label instead. */
-/** Lets a long address wrap after a dot or before the @ instead of cutting a word, like a lone "e" on its own line. */
-function breakable(email: string) {
-  return email.split(/(?<=\.)|(?=@)/).map((part, i) => (
-    <Fragment key={i}>
-      {i > 0 && <wbr />}
-      {part}
-    </Fragment>
-  ));
-}
-
 function Detail({ label, icon, wide, children }: { label: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
   return (
     <div className={cn("flex min-w-0 items-start gap-2", wide && "sm:col-span-2")}>
