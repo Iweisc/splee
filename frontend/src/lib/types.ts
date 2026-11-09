@@ -146,7 +146,7 @@ export interface ProjectSettings {
   attio_error: string | null;
   attio_failed_at: string | null;
   /** Its key is write-only, through PUT /integrations/verifier. */
-  verifier: "" | "neverbounce" | "millionverifier";
+  verifier: "" | "neverbounce" | "millionverifier" | "hunter";
   verifier_error: string | null;
   verifier_failed_at: string | null;
 }
