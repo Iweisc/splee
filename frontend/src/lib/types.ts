@@ -135,6 +135,8 @@ export interface ProjectSettings {
   webhook_events: WebhookEvent[];
   /** The secret in the booking webhook URL, /api/bookings/{booking_token}. */
   booking_token: string;
+  /** The secret in the reminders calendar feed URL, /api/calendar/{calendar_token}.ics. */
+  calendar_token: string;
   /** CRM tokens are write-only, through PUT /integrations/{crm}. */
   hubspot_connected: boolean;
   hubspot_error: string | null;

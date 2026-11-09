@@ -108,6 +108,8 @@ pub struct ProjectSettings {
     pub webhook_events: Vec<String>,
     /// The secret in this project's booking webhook URL, /api/bookings/{booking_token}.
     pub booking_token: String,
+    /// The secret in this project's reminders calendar feed URL, /api/calendar/{calendar_token}.ics.
+    pub calendar_token: String,
     /// The CRM tokens themselves ({crm}_token_enc) stay out of this struct, so they never reach the browser.
     pub hubspot_connected: bool,
     pub hubspot_error: Option<String>,

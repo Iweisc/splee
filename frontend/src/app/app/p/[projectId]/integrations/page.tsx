@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -428,6 +428,23 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created. In Calendly, subscribe it to{" "}
                 <code>invitee.created</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
                 <code>{`{"email": "..."}`}</code>. Leads are matched by email.
+              </p>
+            </div>
+          </Section>
+          <Section
+            title={
+              <span className="flex items-center gap-2">
+                <CalendarClock className="size-4" /> Reminders in your calendar
+              </span>
+            }
+            description="Inbox reminders become calendar events with the lead's notes and a link."
+          >
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">Calendar feed URL</span>
+              <CopyField value={`${origin}/api/calendar/${s.calendar_token}.ics`} />
+              <p className="text-xs text-pretty text-muted-foreground">
+                Anyone with this URL sees your reminders. Google Calendar: Other calendars → + → From URL. Outlook: Add calendar → Subscribe
+                from web. Apple Calendar: File → New Calendar Subscription.
               </p>
             </div>
           </Section>
