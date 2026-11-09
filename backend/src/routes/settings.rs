@@ -14,6 +14,7 @@ use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::ProjectSettings;
 use crate::state::AppState;
+use crate::verify::Verifier;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -21,6 +22,8 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/test", post(test_integration))
         .route("/projects/{id}/integrations/webhook-secret", post(replace_webhook_secret))
         .route("/projects/{id}/integrations/{crm}", put(connect_crm).delete(disconnect_crm))
+        // Static, so it wins over {crm} above.
+        .route("/projects/{id}/integrations/verifier", put(connect_verifier).delete(disconnect_verifier))
 }
 
 /// Settings rows are created with the project, but older demo projects may not have one yet.
@@ -262,6 +265,49 @@ async fn set_crm_token(db: &PgPool, id: Uuid, crm: Crm, enc: &str) -> AppResult<
         "update project_settings set {n}_token_enc = $2, {n}_error = null, {n}_failed_at = null where project_id = $1 returning *"
     ))
     .bind(id)
+    .bind(enc)
+    .fetch_one(db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct VerifierBody {
+    provider: String,
+    key: String,
+}
+
+/// Saves an email verification key once the service accepts it.
+async fn connect_verifier(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<VerifierBody>,
+) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let verifier = Verifier::parse(&body.provider).ok_or_else(|| AppError::BadRequest("Pick NeverBounce or MillionVerifier".into()))?;
+    let key = body.key.trim();
+    if key.is_empty() {
+        return Err(AppError::BadRequest(format!("Paste your {} API key", verifier.label())));
+    }
+    verifier.check_key(key).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that key: {e:#}", verifier.label())))?;
+    set_verifier(&state.db, id, &body.provider, &crypto::encrypt(&state.cfg.app_secret, key)).await
+}
+
+async fn disconnect_verifier(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_verifier(&state.db, id, "", "").await
+}
+
+async fn set_verifier(db: &PgPool, id: Uuid, provider: &str, enc: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set verifier = $2, verifier_key_enc = $3, verifier_error = null, verifier_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(provider)
     .bind(enc)
     .fetch_one(db)
     .await?;
