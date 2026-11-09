@@ -357,6 +357,14 @@ pub fn chat_endpoint(url: &str) -> String {
 
 const PUSHOVER: &str = "api.pushover.net";
 
+/// A Mattermost server can be on any host, so its incoming webhook is told apart by the path, which ends in /hooks/ and
+/// the webhook's 26-character id. Keep in sync with chatApp in the integrations page.
+fn mattermost(url: &str) -> bool {
+    let Ok(url) = Url::parse(url) else { return false };
+    let segments: Vec<&str> = url.path_segments().map(Iterator::collect).unwrap_or_default();
+    matches!(segments.as_slice(), [.., "hooks", id] if id.len() == 26 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
 fn query(url: &str, key: &str) -> Option<String> {
     Url::parse(url).ok()?.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
 }
@@ -364,7 +372,8 @@ fn query(url: &str, key: &str) -> Option<String> {
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
-/// (an incoming webhook's URL) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
+/// (an incoming webhook's URL) have their own shapes, and Mattermost wants markdown. Anything else gets Slack's `{text}`,
+/// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
@@ -412,6 +421,9 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
         }
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
+    } else if mattermost(url) {
+        // Mattermost reads Slack's links but shows Slack's *bold* as italics.
+        json!({"text": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
         // chat_id goes in the body too, so it doesn't matter whether Telegram reads the query of a JSON request.
         let chat_id = query(url, "chat_id");
@@ -694,6 +706,12 @@ mod tests {
         let content = content["markdown"].as_str().unwrap();
         assert!(content.len() <= 7439 && content.len() > 7400 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
+        let mattermost = "**Hot lead:** Sarah replied to Acme\n> Sounds good\n> Tuesday?\n[Open the inbox](https://app/x)";
+        assert_eq!(chat_payload("https://chat.acme.dev/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a), json!({"text": mattermost}));
+        assert_eq!(chat_payload("https://acme.dev/mattermost/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a)["text"], mattermost);
+        // Rocket.Chat's /hooks/{id}/{token} and Zulip read Slack's format.
+        assert_eq!(chat_payload("https://chat.acme.dev/hooks/66c9b2b8b6a2d5a1e8c1f0a2/AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdefghij", &a)["text"], slack);
+        assert_eq!(chat_payload("https://acme.zulipchat.com/api/v1/external/slack_incoming?api_key=k&stream=sales", &a)["text"], slack);
     }
 
     #[sqlx::test]
