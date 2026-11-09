@@ -6,7 +6,7 @@ import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
-import { Spinner } from "@/components/ui/misc";
+import { Address, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailRow } from "@/lib/types";
 import { dateTime } from "@/lib/utils";
@@ -89,7 +89,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 text-sm">
           <p className="font-medium">
-            {email.lead_name || email.lead_email} <span className="font-normal text-muted-foreground">{email.lead_email && `<${email.lead_email}>`}</span>
+            {email.lead_name || email.lead_email} <span className="font-normal text-muted-foreground">{email.lead_email && <>&lt;<Address email={email.lead_email} />&gt;</>}</span>
           </p>
           <p className="truncate text-muted-foreground">
             {[email.company_name, email.segment_name, showProject && email.project_name].filter(Boolean).join(" · ")}

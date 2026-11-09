@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 import { cn, favicon, initials } from "@/lib/utils";
 
@@ -76,6 +76,16 @@ export function Favicon({ domain, size = 16, className }: { domain: string; size
     // eslint-disable-next-line @next/next/no-img-element
     <img src={favicon(domain, size * 2)} alt="" width={size} height={size} className={cn("shrink-0 rounded-sm", className)} onError={() => setFailed(true)} />
   );
+}
+
+/** An email address that wraps after a dot or before the @, instead of cutting a word, like a lone "e" on its own line. */
+export function Address({ email }: { email: string }) {
+  return email.split(/(?<=\.)|(?=@)/).map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && <wbr />}
+      {part}
+    </Fragment>
+  ));
 }
 
 export function Avatar({ name, className }: { name: string; className?: string }) {
