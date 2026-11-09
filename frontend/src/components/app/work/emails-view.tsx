@@ -10,6 +10,7 @@ import type { EmailRow, Paginated, ProjectSummary } from "@/lib/types";
 import { cn, isPast, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { EmailPreview } from "./email-preview";
+import { ListKeysHint, useListKeys } from "./list-keys";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, useDebounced } from "./states";
 
 type Tab = "drafts" | "scheduled" | "sent" | "failed";
@@ -50,6 +51,8 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
   })}`;
   const { data, error, mutate } = useSWR<Paginated<EmailRow>>(key, fetcher, { keepPreviousData: true });
   const selected = data?.items.find((e) => e.id === selectedId) ?? data?.items[0];
+  // The list and the open email sit side by side from lg, so that's where the keys start.
+  const listRef = useListKeys(data?.items.map((e) => e.id), selected?.id, setSelectedId, "64rem");
 
   const reset = () => {
     setPage(1);
@@ -122,9 +125,9 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <Card className="overflow-hidden">
-            <ul>
+            <ul ref={listRef}>
               {data.items.map((e) => (
-                <li key={e.id} className="border-t border-border first:border-t-0">
+                <li key={e.id} data-key={e.id} className="border-t border-border first:border-t-0">
                   <button
                     onClick={() => setSelectedId(e.id)}
                     className={cn("flex w-full flex-col gap-0.5 px-4 py-3 text-left hover:bg-accent", selected?.id === e.id && "bg-accent")}
@@ -147,6 +150,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
               ))}
             </ul>
             <Pager page={page} total={data.total} onChange={setPage} />
+            <ListKeysHint what="emails" className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground lg:block" />
           </Card>
           {selected && (
             <Card className="p-5 lg:sticky lg:top-6">
