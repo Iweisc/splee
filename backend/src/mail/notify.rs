@@ -102,7 +102,8 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
 async fn claim_weekly_reports(db: &sqlx::PgPool) -> sqlx::Result<Vec<(Uuid, Uuid)>> {
     sqlx::query_as(
         "update project_settings s set chat_report_on = current_date from projects p
-         where p.id = s.project_id and p.org_id is not null and s.chat_weekly_report and s.slack_webhook_url <> ''
+         where p.id = s.project_id and p.org_id is not null and s.chat_weekly_report
+           and exists (select 1 from chat_channels c where c.project_id = s.project_id)
            and s.chat_report_on is distinct from current_date
          returning s.project_id, p.org_id",
     )
@@ -243,13 +244,10 @@ mod tests {
             let db = db.clone();
             async move {
                 let id: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(org).fetch_one(&db).await.unwrap();
-                sqlx::query("insert into project_settings (project_id, slack_webhook_url, chat_weekly_report) values ($1, $2, $3)")
-                    .bind(id)
-                    .bind(chat)
-                    .bind(weekly)
-                    .execute(&db)
-                    .await
-                    .unwrap();
+                sqlx::query("insert into project_settings (project_id, chat_weekly_report) values ($1, $2)").bind(id).bind(weekly).execute(&db).await.unwrap();
+                if !chat.is_empty() {
+                    sqlx::query("insert into chat_channels (project_id, url) values ($1, $2)").bind(id).bind(chat).execute(&db).await.unwrap();
+                }
                 id
             }
         };

@@ -66,7 +66,6 @@ struct SettingsBody {
     channels: Option<Value>,
     targeting: Option<Value>,
     webhook_url: Option<String>,
-    slack_webhook_url: Option<String>,
     webhook_events: Option<Vec<String>>,
     chat_weekly_report: Option<bool>,
 }
@@ -138,14 +137,11 @@ async fn update_settings(
            channels = coalesce($18, channels),
            targeting = coalesce($19, targeting),
            webhook_url = coalesce($20, webhook_url),
-           slack_webhook_url = coalesce($21, slack_webhook_url),
-           webhook_events = coalesce($22, webhook_events),
-           chat_weekly_report = coalesce($23, chat_weekly_report),
+           webhook_events = coalesce($21, webhook_events),
+           chat_weekly_report = coalesce($22, chat_weekly_report),
            -- The right-hand sides see the old row, so a new URL drops the old URL's failure.
            webhook_error = case when coalesce($20, webhook_url) = webhook_url then webhook_error end,
-           webhook_failed_at = case when coalesce($20, webhook_url) = webhook_url then webhook_failed_at end,
-           slack_error = case when coalesce($21, slack_webhook_url) = slack_webhook_url then slack_error end,
-           slack_failed_at = case when coalesce($21, slack_webhook_url) = slack_webhook_url then slack_failed_at end
+           webhook_failed_at = case when coalesce($20, webhook_url) = webhook_url then webhook_failed_at end
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -168,7 +164,6 @@ async fn update_settings(
     .bind(body.channels)
     .bind(body.targeting)
     .bind(body.webhook_url.as_deref().map(str::trim))
-    .bind(body.slack_webhook_url.as_deref().map(str::trim))
     .bind(body.webhook_events)
     .bind(body.chat_weekly_report)
     .fetch_one(&state.db)
@@ -209,7 +204,7 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
         })
     };
     let target = if body.target == "slack" { hooks::chat_endpoint(&body.url) } else { body.url.clone() };
-    let alert = if body.target == "webhook" { hooks::Alert::Webhook } else { hooks::Alert::Slack };
+    let alert = if body.target == "webhook" { hooks::Alert::Webhook } else { hooks::Alert::Chat };
     let secret = if body.target == "webhook" { Some(load_or_create(&state.db, project.id).await?.webhook_secret) } else { None };
     hooks::post_json(&target, &payload, secret.as_deref()).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
     // A passing test on the saved URL clears its last failure, so fixing an endpoint and testing it is enough. A failed test only shows in the toast.

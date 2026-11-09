@@ -14,8 +14,6 @@ import { toastError } from "./use-action";
 const FROM_SERVER: (keyof ProjectSettings)[] = [
   "webhook_error",
   "webhook_failed_at",
-  "slack_error",
-  "slack_failed_at",
   ...CRM_NAMES.flatMap((crm) => [`${crm}_connected`, `${crm}_error`, `${crm}_failed_at`] as const),
   "verifier",
   "verifier_error",

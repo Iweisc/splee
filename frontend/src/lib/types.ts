@@ -133,13 +133,10 @@ export interface ProjectSettings extends CrmStatus {
   channels: { email: boolean; linkedin: boolean };
   targeting: Targeting;
   webhook_url: string;
-  slack_webhook_url: string;
   webhook_secret: string;
   webhook_error: string | null;
   webhook_failed_at: string | null;
-  slack_error: string | null;
-  slack_failed_at: string | null;
-  /** Posts the last 7 days' numbers to the chat channel every Monday. */
+  /** Posts the last 7 days' numbers to the project's chats every Monday. */
   chat_weekly_report: boolean;
   paused: boolean;
   webhook_events: WebhookEvent[];
@@ -209,6 +206,16 @@ export interface WebhookDelivery {
   payload: { lead?: { full_name?: string } } & Record<string, unknown>;
   /** Null when the endpoint answered 2xx. */
   error: string | null;
+  created_at: Ts;
+}
+
+/** A chat that gets the project's alerts, from GET /projects/{id}/chat-channels. */
+export interface ChatChannel {
+  id: UUID;
+  project_id: UUID;
+  url: string;
+  error: string | null;
+  failed_at: Ts | null;
   created_at: Ts;
 }
 

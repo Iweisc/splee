@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod auth;
 mod bookings;
+mod chat_channels;
 mod forms;
 mod calendar;
 mod saved_replies;
@@ -49,6 +50,7 @@ pub fn router() -> Router<AppState> {
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())
+        .merge(chat_channels::router())
         .merge(mailboxes::router())
         .merge(settings::router())
         .merge(materials::router())
