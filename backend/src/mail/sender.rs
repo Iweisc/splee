@@ -157,23 +157,28 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
     Ok(None)
 }
 
+/// How many emails mailbox `m` may send today. A ramping mailbox starts at 10 on its first day and adds 4 a day until it
+/// reaches its daily limit. Keep in sync with todayLimit in frontend/src/lib/mailbox.ts.
+const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 * (current_date - coalesce(m.first_sent_on, current_date)))
+                           else m.daily_limit end";
+
 /// Mailboxes of the org that may still send today, least used first.
-async fn mailboxes_with_room(state: &AppState, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
-    Ok(sqlx::query_as::<_, Mailbox>(
+async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
+    Ok(sqlx::query_as::<_, Mailbox>(&format!(
         "select m.* from mailboxes m
          left join lateral (select count(*) as sent, max(sent_at) as last_sent from email_messages e
                             where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at >= date_trunc('day', now())) t on true
-         where m.org_id = $1 and m.status = 'active' and coalesce(t.sent, 0) < m.daily_limit
+         where m.org_id = $1 and m.status = 'active' and coalesce(t.sent, 0) < {TODAY_LIMIT}
          order by coalesce(t.sent, 0), t.last_sent nulls first",
-    )
+    ))
     .bind(org_id)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?)
 }
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
 async fn pick_mailbox(state: &AppState, org_id: Uuid, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
-    let available = mailboxes_with_room(state, org_id).await?;
+    let available = mailboxes_with_room(&state.db, org_id).await?;
     if email.kind == "initial" {
         return Ok(available.into_iter().next());
     }
@@ -425,6 +430,7 @@ async fn record_sent(
     .bind(lead.id)
     .execute(&mut *tx)
     .await?;
+    sqlx::query("update mailboxes set first_sent_on = current_date where id = $1 and first_sent_on is null").bind(mb.id).execute(&mut *tx).await?;
 
     tx.commit().await?;
     Ok(())
@@ -519,8 +525,58 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, optimize};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize};
     use crate::models::EmailMessage;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_ramping_mailbox_sends_10_then_4_more_a_day(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let mailbox: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, daily_limit, ramp_up)
+             values ($1, 'new@example.test', 'smtp.example.test', 'new', 'x', 40, true) returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let send = |n: i32| {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+                 select $1, $2, $3, 'outbound', 'initial', 'sent', now() from generate_series(1, $4)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(mailbox)
+            .bind(n)
+            .execute(&db)
+        };
+        let has_room = || async { !mailboxes_with_room(&db, org).await.unwrap().is_empty() };
+
+        // Its first day: 10.
+        send(9).await.unwrap();
+        assert!(has_room().await);
+        send(1).await.unwrap();
+        assert!(!has_room().await);
+
+        // Three days after its first send: 10 + 3 * 4.
+        sqlx::query("update mailboxes set first_sent_on = current_date - 3 where id = $1").bind(mailbox).execute(&db).await.unwrap();
+        send(11).await.unwrap();
+        assert!(has_room().await);
+        send(1).await.unwrap();
+        assert!(!has_room().await);
+
+        // Once the ramp passes the daily limit, the limit applies.
+        sqlx::query("update mailboxes set first_sent_on = current_date - 30 where id = $1").bind(mailbox).execute(&db).await.unwrap();
+        send(17).await.unwrap();
+        assert!(has_room().await);
+        send(1).await.unwrap();
+        assert!(!has_room().await);
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]

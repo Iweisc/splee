@@ -57,6 +57,7 @@ struct MailboxBody {
     /// What the email provider charges per email, so spend stats can include it. Flat-rate mailboxes leave it at 0.
     cost_per_email_micros: Option<i64>,
     status: Option<String>,
+    ramp_up: Option<bool>,
 }
 
 fn trimmed(value: &Option<String>) -> Option<&str> {
@@ -107,9 +108,9 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let secret = &state.cfg.app_secret;
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
-           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros)
+           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
-           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0))
+           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true))
          returning *",
     )
     .bind(auth.org_id)
@@ -127,6 +128,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.daily_limit)
     .bind(&body.status)
     .bind(body.cost_per_email_micros)
+    .bind(body.ramp_up)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -165,7 +167,8 @@ async fn update(
            imap_password_enc = coalesce($12, imap_password_enc),
            daily_limit = coalesce($13, daily_limit),
            status = coalesce($14, status),
-           cost_per_email_micros = coalesce($15, cost_per_email_micros)
+           cost_per_email_micros = coalesce($15, cost_per_email_micros),
+           ramp_up = coalesce($16, ramp_up)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -183,6 +186,7 @@ async fn update(
     .bind(body.daily_limit)
     .bind(&body.status)
     .bind(body.cost_per_email_micros)
+    .bind(body.ramp_up)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

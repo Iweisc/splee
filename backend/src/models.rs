@@ -209,6 +209,9 @@ pub struct Mailbox {
     pub dns: Value,
     pub created_at: Ts,
     pub recheck_at: Option<Ts>,
+    /// Start at a few emails a day and work up to daily_limit. See sender::TODAY_LIMIT.
+    pub ramp_up: bool,
+    pub first_sent_on: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

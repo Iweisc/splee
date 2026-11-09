@@ -7,6 +7,7 @@ import { MicroLabel } from "@/components/app/work/states";
 import { NumberInput } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
+import { todayLimit } from "@/lib/mailbox";
 import type { Mailbox } from "@/lib/types";
 import { num } from "@/lib/utils";
 
@@ -17,7 +18,7 @@ const SLIDER_MAX = 1000;
 
 export default function DailyLimitPage() {
   const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
-  const capacity = mailboxes?.filter((m) => m.status === "active").reduce((sum, m) => sum + m.daily_limit, 0);
+  const capacity = mailboxes?.filter((m) => m.status === "active").reduce((sum, m) => sum + todayLimit(m), 0);
 
   return (
     <ProjectSettingsPage

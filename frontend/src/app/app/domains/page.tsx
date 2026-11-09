@@ -13,6 +13,7 @@ import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput } from "@/lib/types";
+import { todayLimit } from "@/lib/mailbox";
 import { dateTime, isPast, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
@@ -138,7 +139,8 @@ export default function MailboxesPage() {
                     </div>
                     <p className="mt-0.5 text-sm text-muted-foreground">
                       {m.from_name && `${m.from_name} · `}
-                      {m.smtp_host} · up to {m.daily_limit}/day
+                      {m.smtp_host} ·{" "}
+                      {todayLimit(m) < m.daily_limit ? `${todayLimit(m)} today, ramping up to ${m.daily_limit}/day` : `up to ${m.daily_limit}/day`}
                     </p>
                   </div>
                   {/* On phones the five buttons don't fit one row, so each group takes a full row of its own,
