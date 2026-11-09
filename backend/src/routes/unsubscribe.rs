@@ -31,6 +31,6 @@ async fn show(State(state): State<AppState>, Path(token): Path<String>) -> AppRe
 async fn unsubscribe(State(state): State<AppState>, Path(token): Path<String>) -> AppResult<Json<Value>> {
     let lead = find(&state.db, &token).await?;
     let org_id: Option<uuid::Uuid> = sqlx::query_scalar("select org_id from projects where id = $1").bind(lead.project_id).fetch_one(&state.db).await?;
-    mail::suppress_lead(&state.db, &lead, org_id, "unsubscribed", "unsubscribe").await?;
+    mail::suppress_lead(&state, &lead, org_id, "unsubscribed", "unsubscribe").await?;
     Ok(Json(json!({"ok": true, "email": lead.email})))
 }

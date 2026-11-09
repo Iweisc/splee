@@ -104,6 +104,8 @@ pub struct ProjectSettings {
     pub slack_error: Option<String>,
     pub slack_failed_at: Option<Ts>,
     pub paused: bool,
+    /// Which of hooks::EVENTS the webhook gets.
+    pub webhook_events: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

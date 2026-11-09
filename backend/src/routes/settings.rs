@@ -59,6 +59,7 @@ struct SettingsBody {
     targeting: Option<Value>,
     webhook_url: Option<String>,
     slack_webhook_url: Option<String>,
+    webhook_events: Option<Vec<String>>,
 }
 
 async fn update_settings(
@@ -103,6 +104,9 @@ async fn update_settings(
     if body.max_words.is_some_and(|w| !(20..=500).contains(&w)) {
         return bad("Max words must be between 20 and 500");
     }
+    for event in body.webhook_events.iter().flatten() {
+        util_input::one_of("webhook_events", event, &hooks::EVENTS)?;
+    }
 
     let settings = sqlx::query_as::<_, ProjectSettings>(
         "update project_settings set
@@ -126,6 +130,7 @@ async fn update_settings(
            targeting = coalesce($19, targeting),
            webhook_url = coalesce($20, webhook_url),
            slack_webhook_url = coalesce($21, slack_webhook_url),
+           webhook_events = coalesce($22, webhook_events),
            -- The right-hand sides see the old row, so a new URL drops the old URL's failure.
            webhook_error = case when coalesce($20, webhook_url) = webhook_url then webhook_error end,
            webhook_failed_at = case when coalesce($20, webhook_url) = webhook_url then webhook_failed_at end,
@@ -154,6 +159,7 @@ async fn update_settings(
     .bind(body.targeting)
     .bind(body.webhook_url.as_deref().map(str::trim))
     .bind(body.slack_webhook_url.as_deref().map(str::trim))
+    .bind(body.webhook_events)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))
@@ -171,7 +177,7 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
     util_input::one_of("target", &body.target, &["webhook", "slack"])?;
     let name = if project.name.is_empty() { project.domain.clone().unwrap_or_default() } else { project.name.clone() };
     let link = format!("{}/app/p/{}/inbox", state.cfg.public_url, project.id);
-    // Same shape as the hot_lead payload in agent::replies::notify_hot, so tools like Zapier can map fields from it.
+    // Same shape as a hot_lead event from hooks::lead_event, so tools like Zapier can map fields from it.
     let payload = if body.target == "slack" {
         json!({"text": format!("*Splee test:* hot-lead alerts for {name} will post in this channel.\n<{link}|Open the inbox>")})
     } else {
@@ -183,7 +189,10 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
                 "company_name": "Northwind Studio", "company_domain": "northwind.example",
                 "linkedin_url": "https://www.linkedin.com/in/sarah-chen-example", "x_url": "https://x.com/sarahchen_example",
             },
-            "reply": {"id": Uuid::nil(), "subject": "Re: Northwind Studio x Splee", "body": "This is a test alert from Splee.", "reason": "Test"},
+            "reply": {
+                "id": Uuid::nil(), "subject": "Re: Northwind Studio x Splee", "body": "This is a test alert from Splee.",
+                "classification": "hot", "reason": "Test",
+            },
             "url": link,
         })
     };

@@ -9,7 +9,6 @@ mod smtp;
 
 use std::time::Duration;
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::{Lead, Mailbox};
@@ -102,9 +101,10 @@ pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, kind: &str, sub
 }
 
 /// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails.
-pub async fn suppress_lead(db: &PgPool, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {
-    let mut tx = db.begin().await?;
-    sqlx::query("update leads set status = $2 where id = $1").bind(lead.id).bind(status).execute(&mut *tx).await?;
+pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {
+    let mut tx = state.db.begin().await?;
+    // Only a lead this changes gets a webhook event, so an unsubscribe link clicked twice sends one.
+    let changed = sqlx::query("update leads set status = $2 where id = $1 and status <> $2").bind(lead.id).bind(status).execute(&mut *tx).await?;
     if let (Some(org_id), Some(email)) = (org_id, &lead.email) {
         sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, $2, 'email', $3) on conflict (org_id, value) do nothing")
             .bind(org_id)
@@ -121,5 +121,14 @@ pub async fn suppress_lead(db: &PgPool, lead: &Lead, org_id: Option<Uuid>, statu
     .bind(format!("Lead {status}"))
     .execute(&mut *tx)
     .await?;
-    tx.commit().await
+    tx.commit().await?;
+    let event = match status {
+        "unsubscribed" => Some("lead_unsubscribed"),
+        "bounced" => Some("lead_bounced"),
+        _ => None,
+    };
+    if let Some(event) = event.filter(|_| changed.rows_affected() > 0) {
+        crate::hooks::send_lead_event(state, lead.project_id, event, lead, None).await;
+    }
+    Ok(())
 }

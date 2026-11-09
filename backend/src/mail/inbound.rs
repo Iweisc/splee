@@ -243,7 +243,7 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
     .await?;
 
     if is_bounce {
-        super::suppress_lead(&state.db, &lead, project_org, "bounced", "bounce").await?;
+        super::suppress_lead(state, &lead, project_org, "bounced", "bounce").await?;
         return Ok(());
     }
     // Replied for now, so no follow-up goes out while the classifier works. It sets the final status.
