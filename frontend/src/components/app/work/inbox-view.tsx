@@ -269,6 +269,8 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     setSending(true);
     try {
       await api(`/inbox/threads/${leadId}/reply`, { body: { body: reply.trim() } });
+      // Cleared here too: if you opened another thread while it sent, this pane is gone and its effect won't run.
+      sessionStorage.removeItem(draftKey);
       setReply("");
       await refresh();
       toast.success("Reply queued");
