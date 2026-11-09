@@ -421,7 +421,9 @@ function fillReply(body: string, lead: Lead) {
 function SavedReplyMenu({ lead, onPick }: { lead: Lead; onPick: (text: string) => void }) {
   const router = useRouter();
   const manage = `/app/p/${lead.project_id}/saved-replies`;
-  const { data } = useSWR<SavedReply[]>(`/projects/${lead.project_id}/saved-replies`, fetcher);
+  const { data, error } = useSWR<SavedReply[]>(`/projects/${lead.project_id}/saved-replies`, fetcher);
+  // A failed load mustn't read as "none yet", or people add the replies they already have again.
+  const none = !data?.length && !error;
   const pick = (value: string) => {
     if (value === "manage") return router.push(manage);
     const saved = data?.find((r) => r.id === value);
@@ -439,14 +441,14 @@ function SavedReplyMenu({ lead, onPick }: { lead: Lead; onPick: (text: string) =
       <MessageSquareText className="size-4" />
       <select aria-label="Saved replies" value="" onChange={(e) => pick(e.target.value)} className="absolute inset-0 cursor-pointer opacity-0">
         <option value="" disabled>
-          {data?.length ? "Insert a saved reply" : "No saved replies yet"}
+          {error ? "Couldn't load your saved replies" : none ? "No saved replies yet" : "Insert a saved reply"}
         </option>
         {data?.map((r) => (
           <option key={r.id} value={r.id}>
             {r.title}
           </option>
         ))}
-        <option value="manage">{data?.length ? "Manage saved replies…" : "Add saved replies…"}</option>
+        <option value="manage">{none ? "Add saved replies…" : "Manage saved replies…"}</option>
       </select>
     </label>
   );
