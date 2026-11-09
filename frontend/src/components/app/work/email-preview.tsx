@@ -195,6 +195,14 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
         </div>
       )}
 
+      {email.status === "failed" && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" onClick={() => patch("approve", { status: "approved" }, "Queued to send again")} loading={busy === "approve"}>
+            <Send className="size-3.5" /> Send again
+          </Button>
+        </div>
+      )}
+
       {pending && (
         <div className="flex justify-end">
           <Button size="sm" variant="outline" onClick={() => patch("cancel", { status: "cancelled" }, "Email cancelled")} loading={busy === "cancel"}>
