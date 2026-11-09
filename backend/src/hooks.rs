@@ -1,4 +1,4 @@
-//! Posts JSON to the URLs users paste into project settings (the hot-lead webhook and Slack).
+//! Posts JSON to the URLs users paste into project settings (the lead-event webhook and Slack).
 //! Those URLs can point anywhere, including this server's own network, so a host that resolves to a
 //! private, loopback or link-local address is refused. The request is pinned to the addresses that
 //! were checked, with no proxy and no redirects, so neither a second DNS answer nor a 302 can get around it.
@@ -11,8 +11,12 @@ use anyhow::Context;
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::Url;
 use reqwest::header::CONTENT_TYPE;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::Sha256;
+use uuid::Uuid;
+
+use crate::models::Lead;
+use crate::state::AppState;
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
     let url = Url::parse(raw.trim())?;
@@ -70,7 +74,7 @@ pub enum Alert {
     Slack,
 }
 
-/// Saves how a hot-lead alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
+/// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
 /// Matching on the URL keeps a slow delivery to an old URL from marking a URL that was saved since.
 pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url: &str, result: &anyhow::Result<()>) {
     let sql = match alert {
@@ -86,6 +90,64 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
     if let Err(e) = sqlx::query(sql).bind(project_id).bind(url).bind(error).execute(db).await {
         tracing::warn!(error = %e, "couldn't save the alert outcome");
+    }
+}
+
+/// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
+pub const EVENTS: [&str; 4] = ["hot_lead", "lead_replied", "lead_unsubscribed", "lead_bounced"];
+
+/// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
+async fn lead_event(
+    db: &sqlx::PgPool,
+    public_url: &str,
+    project_id: Uuid,
+    event: &str,
+    lead: &Lead,
+    reply: Option<Value>,
+) -> sqlx::Result<Option<(String, String, Value)>> {
+    let settings: Option<(String, String, Vec<String>, String)> = sqlx::query_as(
+        "select s.webhook_url, s.webhook_secret, s.webhook_events, p.name from project_settings s join projects p on p.id = s.project_id
+         where s.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await?;
+    let Some((url, secret, events, name)) = settings else { return Ok(None) };
+    if url.trim().is_empty() || !events.iter().any(|e| e == event) {
+        return Ok(None);
+    }
+    // Keep in sync with PAYLOAD on the integrations page.
+    let payload = json!({
+        "event": event,
+        "project": {"id": project_id, "name": name},
+        "lead": {
+            "id": lead.id, "full_name": lead.full_name, "email": lead.email, "title": lead.title,
+            "company_name": lead.company_name, "company_domain": lead.company_domain,
+            "linkedin_url": lead.linkedin_url, "x_url": lead.x_url,
+        },
+        "reply": reply,
+        // Opens this lead's conversation, not just the inbox.
+        "url": format!("{public_url}/app/p/{project_id}/inbox?lead={}", lead.id),
+    });
+    Ok(Some((url, secret, payload)))
+}
+
+/// Posts a lead event to the project's webhook when it subscribes to it. Delivery runs in the background, so a slow
+/// receiver never holds up a run or a request. Failures are logged and shown on the integrations page.
+pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, reply: Option<Value>) {
+    match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, reply).await {
+        Ok(Some((url, secret, payload))) => {
+            let db = state.db.clone();
+            tokio::spawn(async move {
+                let result = post_json_retrying(&url, &payload, Some(&secret)).await;
+                if let Err(e) = &result {
+                    tracing::warn!(error = %e, event, "webhook failed");
+                }
+                record(&db, project_id, Alert::Webhook, &url, &result).await;
+            });
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, event, "couldn't load the webhook settings"),
     }
 }
 
@@ -161,6 +223,44 @@ mod tests {
     fn signature_matches_a_receiver_computing_it_independently() {
         // Expected value from: printf '1700000000.{"a":1}' | openssl dgst -sha256 -hmac secret
         assert_eq!(sign("secret", "1700000000", br#"{"a":1}"#), "49f24e537407743fa4a0242bb63b94b9a47ee99cbbe071ccd8a22550ae411686");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_webhook_gets_only_the_events_it_subscribes_to(db: sqlx::PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        // Settings saved before webhook_events existed get the default: hot leads only.
+        sqlx::query("insert into project_settings (project_id, webhook_url) values ($1, 'https://crm.example/hook')").bind(project).execute(&db).await.unwrap();
+        let lead = sqlx::query_as::<_, Lead>("insert into leads (project_id, full_name, email) values ($1, 'Sarah Chen', 'sarah@northwind.example') returning *")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let event = |name: &'static str| lead_event(&db, "https://app.test", project, name, &lead, None);
+
+        let (url, _, payload) = event("hot_lead").await.unwrap().unwrap();
+        assert_eq!(url, "https://crm.example/hook");
+        assert_eq!(payload["event"], "hot_lead");
+        assert_eq!(payload["project"]["name"], "Acme");
+        assert_eq!(payload["lead"]["email"], "sarah@northwind.example");
+        assert_eq!(payload["url"], format!("https://app.test/app/p/{project}/inbox?lead={}", lead.id));
+        for name in ["lead_replied", "lead_unsubscribed", "lead_bounced"] {
+            assert!(event(name).await.unwrap().is_none(), "{name}");
+        }
+
+        sqlx::query("update project_settings set webhook_events = '{lead_unsubscribed,lead_bounced}' where project_id = $1")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(event("hot_lead").await.unwrap().is_none());
+        assert_eq!(event("lead_bounced").await.unwrap().unwrap().2["reply"], Value::Null);
+
+        sqlx::query("update project_settings set webhook_url = '' where project_id = $1").bind(project).execute(&db).await.unwrap();
+        assert!(event("lead_bounced").await.unwrap().is_none());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

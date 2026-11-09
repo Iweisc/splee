@@ -12,7 +12,7 @@ import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { api } from "@/lib/api";
-import type { ProjectSettings } from "@/lib/types";
+import type { ProjectSettings, WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -40,6 +40,7 @@ Splee-Signature: v1=5f0c…
     "id": "71aa…",
     "subject": "Re: Northwind Studio x Acme",
     "body": "Sounds interesting, can you send times for next week?",
+    "classification": "hot",
     "reason": "Asks to schedule a call"
   },
   "url": "https://your-splee-host/app/p/9b1f…/inbox?lead=c42e…"
@@ -59,6 +60,14 @@ function fromSplee(rawBody, headers, secret) {
   if (!fresh || given.length !== Buffer.byteLength(expected)) return false;
   return timingSafeEqual(given, Buffer.from(expected));
 }`;
+
+// Keep in sync with hooks::EVENTS in backend/src/hooks.rs.
+const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
+  { value: "hot_lead", label: "Hot lead", hint: "A reply that shows interest, like asking for a call." },
+  { value: "lead_replied", label: "Every reply", hint: "Any reply a person wrote, with how Splee classified it." },
+  { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
+  { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
+];
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
 
@@ -92,7 +101,7 @@ function LastFailure({ error, at }: { error: string | null; at: string | null })
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
       <p className="font-medium">
-        The last hot-lead alert didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
+        The last alert didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
       </p>
       <p className="mt-1 font-mono">{error}</p>
     </div>
@@ -129,7 +138,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
   return (
     <ProjectSettingsPage
       title="Integrations"
-      description="Get told the moment a lead replies with interest, in your own tools."
+      description="Get told the moment a lead replies, in your own tools."
       problem={(s) => problemFor("Webhook URL", s.webhook_url) ?? problemFor("Slack webhook URL", s.slack_webhook_url)}
     >
       {(s, update) => (
@@ -164,7 +173,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <Webhook className="size-4" /> Webhook
               </span>
             }
-            description="Sends a JSON POST for every hot lead, for your CRM, Zapier, Make or your own backend."
+            description="Sends a JSON POST when something happens to a lead, for your CRM, Zapier, Make or your own backend."
             actions={<TestButton projectId={projectId} target="webhook" url={s.webhook_url} />}
           >
             <Field label="Endpoint URL" error={problemFor("Webhook URL", s.webhook_url)}>
@@ -175,6 +184,29 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 placeholder="https://example.com/hooks/splee"
               />
             </Field>
+            <fieldset className="mt-4">
+              <legend className="text-sm font-medium">Send these events</legend>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {EVENTS.map((e) => (
+                  <label key={e.value} className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={s.webhook_events.includes(e.value)}
+                      onChange={(ev) =>
+                        update({
+                          webhook_events: ev.target.checked ? [...s.webhook_events, e.value] : s.webhook_events.filter((v) => v !== e.value),
+                        })
+                      }
+                      className="mt-0.5 accent-black"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">{e.label}</span>
+                      <span className="block text-xs text-muted-foreground">{e.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <LastFailure error={s.webhook_error} at={s.webhook_failed_at} />
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="mt-4 flex flex-col gap-1.5">
@@ -192,10 +224,11 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
               <summary className="cursor-pointer text-sm font-medium select-none">Show the payload</summary>
               <div className="mt-3">
                 <CodeBlock code={PAYLOAD} label="hot_lead" />
-                {/* Keep PAYLOAD in sync with the json! in notify_hot, backend/src/agent/replies.rs. */}
+                {/* Keep PAYLOAD in sync with the json! in lead_event, backend/src/hooks.rs. */}
                 <p className="mt-2 text-xs text-muted-foreground">
-                  These are all the fields Splee sends. The values are examples. &quot;Send a test&quot; posts the same shape with{" "}
-                  <code>&quot;event&quot;: &quot;test&quot;</code>.
+                  These are all the fields Splee sends. The values are examples. <code>lead_replied</code> has the same shape, with the reply&apos;s{" "}
+                  <code>classification</code>: hot, question, not_interested or other. <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
+                  <code>&quot;reply&quot;: null</code>. &quot;Send a test&quot; posts the hot_lead shape with <code>&quot;event&quot;: &quot;test&quot;</code>.
                 </p>
                 <div className="mt-4">
                   <CodeBlock code={VERIFY} label="Check the signature (Node)" />

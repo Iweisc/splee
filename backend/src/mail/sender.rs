@@ -287,7 +287,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
                     .bind(format!("Rejected by the recipient's server: {e}"))
                     .execute(&state.db)
                     .await?;
-                super::suppress_lead(&state.db, &lead, Some(org_id), "bounced", "bounce").await?;
+                super::suppress_lead(state, &lead, Some(org_id), "bounced", "bounce").await?;
                 Ok(())
             } else if e.is_transient() {
                 defer(&state.db, &email, &e.to_string()).await

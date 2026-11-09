@@ -132,7 +132,10 @@ export interface ProjectSettings {
   slack_error: string | null;
   slack_failed_at: string | null;
   paused: boolean;
+  webhook_events: WebhookEvent[];
 }
+
+export type WebhookEvent = "hot_lead" | "lead_replied" | "lead_unsubscribed" | "lead_bounced";
 
 export interface ProjectSummary extends Project {
   sent: number;
