@@ -30,7 +30,7 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
         title="LinkedIn"
         description="LinkedIn is manual: Splee writes the connect note and follow-ups, you send them from your own profile and tick them off."
         actions={
-          <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto">
+          <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto" aria-label="Campaign">
             <option value="">All campaigns</option>
             {segments?.map((s) => (
               <option key={s.id} value={s.id}>

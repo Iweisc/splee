@@ -78,6 +78,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
                 setSelectedLead(null);
               }}
               className="h-9"
+              aria-label="Project"
             >
               <option value="">All projects</option>
               {projects?.map((p) => (
