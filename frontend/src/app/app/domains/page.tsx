@@ -141,36 +141,47 @@ export default function MailboxesPage() {
                       {m.smtp_host} · up to {m.daily_limit}/day
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Button variant="outline" size="sm" onClick={() => test(m)} loading={pending === `test:${m.id}`}>
-                      {pending !== `test:${m.id}` && <Plug className="size-4" />} Test connection
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => checkDns(m)} loading={pending === `dns:${m.id}`}>
-                      {pending !== `dns:${m.id}` && <RefreshCw className="size-4" />} Check DNS
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => togglePause(m)}
-                      loading={pending === `pause:${m.id}`}
-                      aria-label={m.status === "paused" ? "Resume" : "Pause"}
-                      title={m.status === "paused" ? "Resume" : "Pause"}
-                    >
-                      {pending !== `pause:${m.id}` && (m.status === "paused" ? <Play className="size-4" /> : <Pause className="size-4" />)}
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setEditing(m)} aria-label="Edit" title="Edit">
-                      <Pencil className="size-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => remove(m)}
-                      loading={pending === `delete:${m.id}`}
-                      aria-label="Remove"
-                      title="Remove"
-                    >
-                      {pending !== `delete:${m.id}` && <Trash2 className="size-4" />}
-                    </Button>
+                  {/* On phones the five buttons don't fit one row, so each group takes a full row of its own,
+                      stretched, instead of leaving edit and remove alone on a second row. The icon buttons have
+                      room for their labels there. w-auto drops their fixed icon width so a label can't squeeze
+                      its icon, and the first pair wraps on the narrowest phones where it can't sit side by side. */}
+                  <div className="flex flex-wrap items-center gap-1.5 max-sm:w-full">
+                    <div className="flex flex-wrap gap-1.5 max-sm:basis-full max-sm:[&>*]:flex-1">
+                      <Button variant="outline" size="sm" onClick={() => test(m)} loading={pending === `test:${m.id}`}>
+                        {pending !== `test:${m.id}` && <Plug className="size-4" />} Test connection
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => checkDns(m)} loading={pending === `dns:${m.id}`}>
+                        {pending !== `dns:${m.id}` && <RefreshCw className="size-4" />} Check DNS
+                      </Button>
+                    </div>
+                    <div className="flex gap-1.5 max-sm:basis-full max-sm:[&>*]:w-auto max-sm:[&>*]:flex-1 max-sm:[&>*]:gap-1.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => togglePause(m)}
+                        loading={pending === `pause:${m.id}`}
+                        aria-label={m.status === "paused" ? "Resume" : "Pause"}
+                        title={m.status === "paused" ? "Resume" : "Pause"}
+                      >
+                        {pending !== `pause:${m.id}` && (m.status === "paused" ? <Play className="size-4" /> : <Pause className="size-4" />)}
+                        <span className="sm:hidden">{m.status === "paused" ? "Resume" : "Pause"}</span>
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => setEditing(m)} aria-label="Edit" title="Edit">
+                        <Pencil className="size-4" />
+                        <span className="sm:hidden">Edit</span>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => remove(m)}
+                        loading={pending === `delete:${m.id}`}
+                        aria-label="Remove"
+                        title="Remove"
+                      >
+                        {pending !== `delete:${m.id}` && <Trash2 className="size-4" />}
+                        <span className="sm:hidden">Remove</span>
+                      </Button>
+                    </div>
                   </div>
                 </div>
 
