@@ -44,8 +44,69 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
         request = request.header("Splee-Timestamp", &timestamp).header("Splee-Signature", format!("v1={}", sign(secret, &timestamp, &body)));
     }
     // Without the URL: Slack, Discord and Telegram URLs carry their secret, and errors are logged and shown.
-    request.body(body).send().await.map_err(reqwest::Error::without_url)?.error_for_status().map_err(reqwest::Error::without_url)?;
+    let res = request.body(body).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    if status.is_client_error() || status.is_server_error() {
+        return Err(Refused::new(status, &first_bytes(res).await).into());
+    }
     Ok(())
+}
+
+/// An endpoint that answered with an error status, and the reason it gave, like Discord's "Unknown Webhook".
+#[derive(Debug)]
+struct Refused {
+    status: reqwest::StatusCode,
+    reason: Option<String>,
+}
+
+impl Refused {
+    /// Telegram's "Unauthorized" only repeats the status, so it's left out.
+    fn new(status: reqwest::StatusCode, body: &[u8]) -> Refused {
+        let reason = reason(body).filter(|r| !status.canonical_reason().is_some_and(|c| c.eq_ignore_ascii_case(r)));
+        Refused { status, reason }
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.status)?;
+        if let Some(reason) = &self.reason {
+            write!(f, ": {reason}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Enough of an error body to find its reason in, without reading whatever a broken endpoint streams back.
+async fn first_bytes(mut res: reqwest::Response) -> Vec<u8> {
+    let mut body = Vec::new();
+    while body.len() < 16 * 1024
+        && let Ok(Some(chunk)) = res.chunk().await
+    {
+        body.extend_from_slice(&chunk);
+    }
+    body
+}
+
+/// What an endpoint said when it refused a post. The chat apps put it in different places: Telegram in description,
+/// Discord in message, Google Chat and Teams in error.message, ntfy in error, Pushover in errors, and Slack in a
+/// plain-text body.
+fn reason(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let said = match serde_json::from_str::<Value>(&text) {
+        Ok(json) => ["/description", "/message", "/error/message", "/error", "/errors/0"].iter().find_map(|p| json.pointer(p)?.as_str())?.to_string(),
+        // An HTML error page says nothing a person can act on.
+        Err(_) if text.trim_start().starts_with('<') => return None,
+        Err(_) => text.into_owned(),
+    };
+    let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    match said.char_indices().nth(200) {
+        _ if said.is_empty() => None,
+        Some((end, _)) => Some(format!("{}…", &said[..end])),
+        None => Some(said),
+    }
 }
 
 const RETRY_AFTER: Duration = Duration::from_secs(10);
@@ -64,9 +125,10 @@ pub async fn post_json_retrying(raw: &str, body: &Value, secret: Option<&str>) -
 }
 
 fn transient(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<reqwest::Error>().is_some_and(|e| {
-        e.is_timeout() || e.is_connect() || e.status().is_some_and(|s| s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS)
-    })
+    if let Some(refused) = e.downcast_ref::<Refused>() {
+        return refused.status.is_server_error() || refused.status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+    }
+    e.downcast_ref::<reqwest::Error>().is_some_and(|e| e.is_timeout() || e.is_connect())
 }
 
 #[derive(Clone, Copy)]
@@ -585,10 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_failures_that_may_pass_are_retried() {
-        let status = |code: u16| -> anyhow::Error {
-            let response = axum::http::Response::builder().status(code).body("").unwrap();
-            reqwest::Response::from(response).error_for_status().unwrap_err().into()
-        };
+        let status = |code: u16| -> anyhow::Error { Refused { status: reqwest::StatusCode::from_u16(code).unwrap(), reason: None }.into() };
         assert!(transient(&status(503)));
         assert!(transient(&status(429)));
         assert!(!transient(&status(404)));
@@ -596,6 +655,28 @@ mod tests {
         let refused = reqwest::Client::new().get("http://127.0.0.1:9/").send().await.unwrap_err();
         assert!(transient(&refused.into()));
         assert!(!transient(&post_json("http://127.0.0.1/hook", &Value::Null, None).await.unwrap_err()));
+    }
+
+    #[test]
+    fn a_refusal_says_why_in_the_apps_own_words() {
+        // What each app answered a made-up URL with.
+        let said = |body: &str| reason(body.as_bytes());
+        assert_eq!(said(r#"{"message": "Unknown Webhook", "code": 10015}"#).as_deref(), Some("Unknown Webhook"));
+        assert_eq!(said(r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#).as_deref(), Some("Unauthorized"));
+        assert_eq!(said("no_team").as_deref(), Some("no_team"));
+        let google = r#"{"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT"}}"#;
+        assert_eq!(said(google).as_deref(), Some("API key not valid. Please pass a valid API key."));
+        let teams = r#"{"error":{"code":"WorkflowNotFound","message":"The workflow 'abc' could not be found."}}"#;
+        assert_eq!(said(teams).as_deref(), Some("The workflow 'abc' could not be found."));
+        assert_eq!(said(r#"{"token":"invalid","errors":["application token is invalid"],"status":0}"#).as_deref(), Some("application token is invalid"));
+        assert_eq!(said(r#"{"code":40101,"http":401,"error":"unauthorized"}"#).as_deref(), Some("unauthorized"));
+        assert_eq!(said("<html><body><h1>502 Bad Gateway</h1></body></html>"), None);
+        assert_eq!(said(r#"{"ok": false}"#), None);
+        assert_eq!(said("  \n "), None);
+        assert_eq!(said(&"x".repeat(300)).map(|r| r.chars().count()), Some(201));
+        let refused = |code: u16, body: &str| Refused::new(reqwest::StatusCode::from_u16(code).unwrap(), body.as_bytes()).to_string();
+        assert_eq!(refused(404, r#"{"message": "Unknown Webhook", "code": 10015}"#), "404 Not Found: Unknown Webhook");
+        assert_eq!(refused(401, r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#), "401 Unauthorized");
     }
 
     #[test]
