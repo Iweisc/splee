@@ -83,30 +83,33 @@ export default function CompetitorsPage() {
             </Card>
           )}
 
-          <Section title="Add a competitor" description="One the research missed.">
-            <form
-              className="grid gap-4 sm:grid-cols-[1fr_1fr]"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (draft.domain.trim()) add();
-              }}
-            >
-              <Field label="Website">
-                <Input value={draft.domain} onChange={(e) => setDraft({ ...draft, domain: e.target.value })} placeholder="acme.com" />
-              </Field>
-              <Field label="Name (optional)">
-                <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Acme" />
-              </Field>
-              <Field label="How it overlaps (optional)" className="sm:col-span-2">
-                <Input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} placeholder="e.g. Same product for enterprises" />
-              </Field>
-              <div className="flex justify-end sm:col-span-2">
-                <Button type="submit" disabled={!draft.domain.trim()} loading={pending === "add"}>
-                  {pending !== "add" && <Plus className="size-4" />} Add
-                </Button>
-              </div>
-            </form>
-          </Section>
+          {/* Waits for the list: drawn under the skeleton, it jumped down by the list's height when that loaded. */}
+          {data && (
+            <Section title="Add a competitor" description="One the research missed.">
+              <form
+                className="grid gap-4 sm:grid-cols-[1fr_1fr]"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (draft.domain.trim()) add();
+                }}
+              >
+                <Field label="Website">
+                  <Input value={draft.domain} onChange={(e) => setDraft({ ...draft, domain: e.target.value })} placeholder="acme.com" />
+                </Field>
+                <Field label="Name (optional)">
+                  <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Acme" />
+                </Field>
+                <Field label="How it overlaps (optional)" className="sm:col-span-2">
+                  <Input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} placeholder="e.g. Same product for enterprises" />
+                </Field>
+                <div className="flex justify-end sm:col-span-2">
+                  <Button type="submit" disabled={!draft.domain.trim()} loading={pending === "add"}>
+                    {pending !== "add" && <Plus className="size-4" />} Add
+                  </Button>
+                </div>
+              </form>
+            </Section>
+          )}
         </SettingsColumn>
       </PageBody>
     </>
