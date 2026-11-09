@@ -274,6 +274,11 @@ impl MailboxStats {
         self.emailed >= 20 && self.bounced * 20 > self.emailed
     }
 
+    /// Past 10%, twice where `bouncing` warns, the mailbox is hurting its domain, so Splee stops sending from it.
+    pub fn too_many_bounces(&self) -> bool {
+        self.emailed >= 20 && self.bounced * 10 > self.emailed
+    }
+
     /// Rounded, like the Mailboxes page shows it.
     pub fn bounce_percent(&self) -> i64 {
         let emailed = self.emailed.max(1);

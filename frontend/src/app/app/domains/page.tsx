@@ -258,7 +258,7 @@ function Health({ stats }: { stats?: MailboxStats }) {
       {risky && (
         <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
           More than 1 in 20 emails from this mailbox bounced. Past that, providers start sending its mail to spam. Check the addresses in your
-          lead lists before you send more.
+          lead lists before you send more. Past 1 in 10, Splee pauses it.
         </p>
       )}
     </>

@@ -244,7 +244,7 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
 
     if is_bounce {
         super::suppress_lead(state, &lead, project_org, "bounced", "bounce").await?;
-        return Ok(());
+        return Ok(super::pause_if_bouncing(&state.db, mb.id).await?);
     }
     // Replied for now, so no follow-up goes out while the classifier works. It sets the final status.
     sqlx::query("update leads set status = 'replied' where id = $1 and status in ('new', 'queued', 'contacted')")

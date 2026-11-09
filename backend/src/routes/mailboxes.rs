@@ -48,8 +48,16 @@ async fn stats(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<
 }
 
 pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>> {
-    let stats = sqlx::query_as::<_, MailboxStats>(
-        "select m.id as mailbox_id, m.email::text,
+    let stats = sqlx::query_as::<_, MailboxStats>(&format!("{STATS} where m.org_id = $1 order by m.email")).bind(org_id).fetch_all(db).await?;
+    Ok(stats.into_iter().filter(|s| s.emailed > 0).collect())
+}
+
+/// One mailbox's last 30 days, as org_stats counts them.
+pub async fn mailbox_stats(db: &PgPool, mailbox_id: Uuid) -> sqlx::Result<Option<MailboxStats>> {
+    sqlx::query_as::<_, MailboxStats>(&format!("{STATS} where m.id = $1")).bind(mailbox_id).fetch_optional(db).await
+}
+
+const STATS: &str = "select m.id as mailbox_id, m.email::text,
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at > now() - interval '30 days') as emailed,
            (select count(distinct e.lead_id) from email_messages e
@@ -58,13 +66,7 @@ pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxSta
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.direction = 'inbound' and e.classification is distinct from 'bounce'
                and e.created_at > now() - interval '30 days') as replied
-         from mailboxes m where m.org_id = $1 order by m.email",
-    )
-    .bind(org_id)
-    .fetch_all(db)
-    .await?;
-    Ok(stats.into_iter().filter(|s| s.emailed > 0).collect())
-}
+         from mailboxes m";
 
 /// MailboxInput from types.ts. Every field is optional so PATCH can reuse it.
 #[derive(Deserialize)]
@@ -202,6 +204,8 @@ async fn update(
            imap_password_enc = coalesce($12, imap_password_enc),
            daily_limit = coalesce($13, daily_limit),
            status = coalesce($14, status),
+           -- Resuming clears why it was paused, like a bounce rate that stopped it.
+           last_error = case when $14 = 'active' and status = 'paused' then '' else last_error end,
            cost_per_email_micros = coalesce($15, cost_per_email_micros),
            ramp_up = coalesce($16, ramp_up),
            signature = coalesce($17, signature),

@@ -147,6 +147,9 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
         }
         "bounce" => {
             mail::suppress_lead(&ctx.state, &t.lead, t.project.org_id, "bounced", "bounce").await?;
+            if let Some(mailbox_id) = t.inbound.mailbox_id {
+                mail::pause_if_bouncing(db, mailbox_id).await?;
+            }
             return Ok(());
         }
         _ => {}
