@@ -183,7 +183,7 @@ export default function MailboxesPage() {
                 </div>
 
                 {m.last_error && (
-                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs break-words text-red-700">{m.last_error}</p>
+                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs text-red-700">{m.last_error}</p>
                 )}
               </Card>
             ))}

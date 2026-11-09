@@ -80,6 +80,12 @@ body {
 /* Headings wrap into even lines, so one that just misses fitting doesn't leave a word alone on its last line.
    Only the longhand, in the base layer: utilities like truncate and whitespace-nowrap still win. */
 @layer base {
+  /* A word longer than its line, like a tracking URL in an email, breaks instead of running out of its box and making
+     the page scroll sideways. It doesn't change how wide anything wants to be, so tables and flex rows lay out as before. */
+  body {
+    overflow-wrap: break-word;
+  }
+
   h1, h2, h3, h4, summary {
     text-wrap-style: balance;
   }
