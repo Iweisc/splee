@@ -253,6 +253,7 @@ struct LeadBody {
     linkedin_url: Option<String>,
     x_url: Option<String>,
     company_name: Option<String>,
+    notes: Option<String>,
 }
 
 async fn update_lead(
@@ -280,6 +281,10 @@ async fn update_lead(
         },
         None => None,
     };
+    let notes = body.notes.as_deref().map(str::trim);
+    if notes.is_some_and(|n| n.chars().count() > 5000) {
+        return Err(AppError::BadRequest("Keep notes under 5,000 characters".into()));
+    }
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
            status = coalesce($2, status),
@@ -291,7 +296,8 @@ async fn update_lead(
            last_name = coalesce($7, last_name),
            linkedin_url = coalesce($8, linkedin_url),
            company_name = coalesce($9, company_name),
-           x_url = coalesce($10, x_url)
+           x_url = coalesce($10, x_url),
+           notes = coalesce($12, notes)
          where id = $1 returning *",
     )
     .bind(lead.id)
@@ -305,6 +311,7 @@ async fn update_lead(
     .bind(body.company_name.as_deref().map(str::trim))
     .bind(x_url)
     .bind(clear_email)
+    .bind(notes)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(detail(&state.db, lead).await?))

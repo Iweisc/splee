@@ -12,6 +12,7 @@ import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, Proj
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
+import { LeadNotes } from "./lead-modal";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
@@ -233,6 +234,9 @@ function ThreadPane({ leadId }: { leadId: string }) {
             </Button>
           )}
         </div>
+      </div>
+      <div className="border-b border-border px-5 py-2">
+        <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
 
       <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5">

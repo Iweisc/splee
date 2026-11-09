@@ -1,15 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select } from "@/components/ui/form";
+import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
 import { Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { EmailMessage, LeadDetail, LeadStatus } from "@/lib/types";
+import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
@@ -142,6 +142,11 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         {location && <Detail icon={<MapPin className="size-3.5" />}>{location}</Detail>}
       </dl>
 
+      <div>
+        <MicroLabel className="mb-2">Notes</MicroLabel>
+        <LeadNotes key={lead.id} lead={lead} onSaved={() => mutateAll((k) => typeof k === "string" && (k.includes("/leads") || k.startsWith("/inbox")))} />
+      </div>
+
       {(lead.personalization.hook || !!lead.personalization.facts?.length || lead.company?.fit_reason) && (
         <div className="rounded-xl bg-muted p-4">
           <MicroLabel className="mb-2">Personalization notes</MicroLabel>
@@ -239,6 +244,64 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Your team's own notes on a lead. Saves when you leave the box. */
+export function LeadNotes({ lead, onSaved }: { lead: Lead; onSaved: () => unknown }) {
+  const [notes, setNotes] = useState(lead.notes);
+  // What the box last loaded or saved. Text that differs from it is an edit you haven't saved yet.
+  const [base, setBase] = useState(lead.notes);
+  // A new note from the server shows up unless you're midway through your own. Only a change to the stored note
+  // counts, so the old one doesn't flash back between your save and the refresh.
+  const [stored, setStored] = useState(lead.notes);
+  if (lead.notes !== stored) {
+    setStored(lead.notes);
+    if (notes === base) {
+      setBase(lead.notes);
+      setNotes(lead.notes);
+    }
+  }
+
+  // The newest note the server has, from loading it or from our last save. Each save compares against it when it
+  // runs, so leaving the box unchanged never puts back older text, and clearing it still saves.
+  const known = useRef(lead.notes);
+  useEffect(() => {
+    known.current = lead.notes;
+  }, [lead.notes]);
+  // Saves run one after another, so an earlier save that answers late can't overwrite a later one.
+  const queue = useRef(Promise.resolve());
+  const save = () => {
+    queue.current = queue.current.then(saveNow);
+  };
+  const saveNow = async () => {
+    const value = notes.trim();
+    if (value === known.current) return;
+    try {
+      await api(`/leads/${lead.id}`, { method: "PATCH", body: { notes: value } });
+      known.current = value;
+      setBase(value);
+      // Show what was saved, unless you kept typing while it saved.
+      setNotes((current) => (current === notes ? value : current));
+      await onSaved();
+      toast.success("Notes saved");
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  // Grows from one line to six whole lines, then scrolls. 1.125rem is the padding plus border.
+  return (
+    <Textarea
+      value={notes}
+      onChange={(e) => setNotes(e.target.value)}
+      onBlur={save}
+      // Escape closes the lead window without blurring the box first, so save before it goes.
+      onKeyDown={(e) => e.key === "Escape" && save()}
+      aria-label="Notes"
+      placeholder="Add a note for your team"
+      className="max-h-[calc(6lh+1.125rem)] min-h-[calc(1lh+1.125rem)] resize-none field-sizing-content"
+    />
   );
 }
 
