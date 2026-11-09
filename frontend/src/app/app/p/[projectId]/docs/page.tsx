@@ -37,6 +37,7 @@ const LEAD = `{
   "country_code": "US",
   "source": "agent",
   "status": "contacted",
+  "notes": "",
   "last_contacted_at": "2026-11-03T09:14:00Z",
   "created_at": "2026-11-02T16:40:00Z"
 }`;
@@ -152,12 +153,16 @@ function endpoints(projectId: string): Endpoint[] {
       method: "PATCH",
       path: "/leads/c42e…",
       summary:
-        "Set a lead's status, for example meeting_booked when your calendar books a call or not_interested from your CRM. Follow-ups only go to contacted leads, so any other status stops them. Returns the lead like GET.",
-      params: [["status", "new, queued, contacted, replied, hot, meeting_booked, not_interested, bounced, unsubscribed or do_not_contact"]],
-      body: `{ "status": "meeting_booked" }`,
+        "Set a lead's status, for example meeting_booked when your calendar books a call or not_interested from your CRM, or replace its notes, the ones your team sees in the inbox. Send either or both. Follow-ups only go to contacted leads, so any other status stops them. Returns the lead like GET.",
+      params: [
+        ["status", "new, queued, contacted, replied, hot, meeting_booked, not_interested, bounced, unsubscribed or do_not_contact"],
+        ["notes", "up to 5,000 characters, replacing the lead's notes. An empty string clears them."],
+      ],
+      body: `{ "status": "meeting_booked", "notes": "Booked for Tuesday 2pm by Calendly." }`,
       response: `{
   "id": "c42e…",
   "status": "meeting_booked",
+  "notes": "Booked for Tuesday 2pm by Calendly.",
   "…": "…"
 }`,
     },

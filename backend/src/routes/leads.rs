@@ -281,10 +281,7 @@ async fn update_lead(
         },
         None => None,
     };
-    let notes = body.notes.as_deref().map(str::trim);
-    if notes.is_some_and(|n| n.chars().count() > 5000) {
-        return Err(AppError::BadRequest("Keep notes under 5,000 characters".into()));
-    }
+    let notes = util_input::notes(body.notes.as_deref())?;
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
            status = coalesce($2, status),
