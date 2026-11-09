@@ -67,6 +67,26 @@ async fn txt_records(resolver: &TokioResolver, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The selectors the usual providers sign with: Google Workspace, Microsoft 365, Cloudflare, Zoho, Proton, Fastmail,
+/// Mailchimp and SendGrid, then common defaults. DKIM has no way to list a domain's keys, so these are tried by name.
+const DKIM_SELECTORS: [&str; 15] =
+    ["google", "selector1", "selector2", "cf2024-1", "zmail", "zoho", "protonmail", "fm1", "k1", "s1", "s2", "default", "dkim", "mail", "smtp"];
+
+/// The first DKIM key found under DKIM_SELECTORS, as "{selector}: {start of the record}".
+async fn dkim(resolver: &TokioResolver, domain: &str) -> Option<String> {
+    let lookups = DKIM_SELECTORS.map(|selector| async move { (selector, txt_records(resolver, &format!("{selector}._domainkey.{domain}")).await) });
+    futures::future::join_all(lookups).await.into_iter().find_map(|(selector, records)| {
+        let key = records.into_iter().find(|t| is_dkim_key(t))?;
+        let start: String = key.chars().take(48).collect();
+        Some(format!("{selector}: {start}{}", if key.chars().count() > 48 { "…" } else { "" }))
+    })
+}
+
+/// A published key. An empty `p=` means the key was revoked, so it doesn't count.
+fn is_dkim_key(record: &str) -> bool {
+    record.split(';').any(|tag| tag.trim().strip_prefix("p=").is_some_and(|key| !key.trim().is_empty()))
+}
+
 fn check(found: Option<String>, missing: &str) -> Value {
     match found {
         Some(record) => json!({"ok": true, "record": record}),
@@ -77,12 +97,14 @@ fn check(found: Option<String>, missing: &str) -> Value {
 pub async fn check_dns(domain: &str) -> anyhow::Result<Value> {
     let resolver = resolver()?;
     let mx = mx_hosts(&resolver, domain).await;
+    let dkim = dkim(&resolver, domain).await;
     let spf = txt_records(&resolver, domain).await.into_iter().find(|t| t.to_lowercase().starts_with("v=spf1"));
     let dmarc = txt_records(&resolver, &format!("_dmarc.{domain}")).await.into_iter().find(|t| t.to_lowercase().starts_with("v=dmarc1"));
     Ok(json!({
         "mx": check((!mx.is_empty()).then(|| mx.join(", ")), "No MX records, this domain can't receive replies"),
         "spf": check(spf, "No SPF record, add one that includes your email provider"),
         "dmarc": check(dmarc, "No DMARC record, add one at _dmarc with at least p=none"),
+        "dkim": check(dkim, "No DKIM key under the selectors common providers use. Turn on DKIM signing with your email provider"),
         "checked_at": Utc::now(),
     }))
 }
@@ -102,5 +124,22 @@ mod tests {
         // example.com publishes a null MX.
         assert!(undeliverable(&resolver, "example.com").await);
         assert!(undeliverable(&resolver, "no-such-domain-splee-test.com").await);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs DNS"]
+    async fn dkim_is_found_under_the_providers_selector() {
+        let resolver = resolver().unwrap();
+        // Microsoft 365 publishes selector1 and selector2 as CNAMEs to its own zone and rotates the key between them.
+        let found = dkim(&resolver, "microsoft.com").await;
+        assert!(found.as_deref().is_some_and(|f| f.starts_with("selector") && f.contains("v=DKIM1")), "{found:?}");
+        assert_eq!(dkim(&resolver, "no-such-domain-splee-test.com").await, None);
+    }
+
+    #[test]
+    fn a_revoked_dkim_key_is_not_a_key() {
+        assert!(is_dkim_key("v=DKIM1; k=rsa; p=MIIBIjANBgkq"));
+        assert!(!is_dkim_key("v=DKIM1; k=rsa; p="));
+        assert!(!is_dkim_key("v=spf1 include:_spf.google.com ~all"));
     }
 }

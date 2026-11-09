@@ -195,6 +195,7 @@ export default function MailboxesPage() {
                   <DnsBadge name="MX" check={m.dns?.mx} />
                   <DnsBadge name="SPF" check={m.dns?.spf} />
                   <DnsBadge name="DMARC" check={m.dns?.dmarc} />
+                  <DnsBadge name="DKIM" check={m.dns?.dkim} />
                   <span className="text-xs text-muted-foreground">
                     {m.dns?.checked_at ? `Checked ${timeAgo(m.dns.checked_at)}` : "DNS not checked yet"}
                   </span>
