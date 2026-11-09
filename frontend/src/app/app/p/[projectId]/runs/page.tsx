@@ -67,7 +67,9 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
       />
       <PageBody>
         {error ? (
-          <LoadError error={error} retry={() => mutate()} />
+          <Card>
+            <LoadError error={error} retry={() => mutate()} />
+          </Card>
         ) : !runs ? (
           <ListSkeleton />
         ) : runs.length === 0 ? (

@@ -213,7 +213,12 @@ function nextSendWindow(s: ProjectSettings, now: Date): Date | null {
 
 function Stats({ projectId }: { projectId: string }) {
   const { data, error, mutate } = useSWR<ProjectStats>(`/projects/${projectId}/stats?days=30`, fetcher);
-  if (error) return <LoadError error={error} retry={() => mutate()} />;
+  if (error)
+    return (
+      <Card>
+        <LoadError error={error} retry={() => mutate()} />
+      </Card>
+    );
 
   const t = data?.totals;
   const kpis: Kpi[] = [
