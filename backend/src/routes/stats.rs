@@ -81,6 +81,43 @@ pub(super) async fn totals(db: &PgPool, id: Uuid) -> sqlx::Result<Totals> {
     Ok(totals)
 }
 
+/// Sends, replies and hot replies per UTC day for the last `days` days, oldest first, with empty days included.
+async fn daily(db: &PgPool, id: Uuid, days: i32) -> sqlx::Result<Vec<Day>> {
+    // Days are UTC. A reply or hot lead is counted on the day its inbound message arrived. One grouped pass over the
+    // window's emails rather than three lookups per day, which took 430 ms on a 50k-lead project.
+    sqlx::query_as::<_, Day>(
+        "with days as (
+           select g as d from generate_series(
+             date_trunc('day', now() at time zone 'utc') - make_interval(days => $2 - 1),
+             date_trunc('day', now() at time zone 'utc'),
+             interval '1 day'
+           ) as g
+         ), sent as (
+           select date_trunc('day', e.sent_at at time zone 'utc') as d, count(*) as sent
+           from email_messages e
+           where e.project_id = $1 and e.direction = 'outbound' and e.status = 'sent'
+             and e.sent_at >= (select min(d) from days) at time zone 'utc'
+           group by 1
+         ), replies as (
+           select date_trunc('day', e.created_at at time zone 'utc') as d,
+             count(distinct e.lead_id) as replies,
+             count(distinct e.lead_id) filter (where e.classification = 'hot') as hot
+           from email_messages e
+           where e.project_id = $1 and e.direction = 'inbound'
+             and e.created_at >= (select min(d) from days) at time zone 'utc'
+           group by 1
+         )
+         select to_char(days.d, 'YYYY-MM-DD') as date, coalesce(sent.sent, 0) as sent, coalesce(replies.replies, 0) as replies,
+           coalesce(replies.hot, 0) as hot
+         from days left join sent using (d) left join replies using (d)
+         order by days.d",
+    )
+    .bind(id)
+    .bind(days)
+    .fetch_all(db)
+    .await
+}
+
 async fn project_stats(
     State(state): State<AppState>,
     auth: Auth,
@@ -92,29 +129,7 @@ async fn project_stats(
 
     let totals = totals(&state.db, id).await?;
 
-    // Days are UTC. A reply or hot lead is counted on the day its inbound message arrived.
-    let daily = sqlx::query_as::<_, Day>(
-        "select to_char(local_d, 'YYYY-MM-DD') as date,
-           (select count(*) from email_messages e
-             where e.project_id = $1 and e.direction = 'outbound' and e.status = 'sent'
-               and e.sent_at >= d and e.sent_at < d + interval '1 day') as sent,
-           (select count(distinct e.lead_id) from email_messages e
-             where e.project_id = $1 and e.direction = 'inbound'
-               and e.created_at >= d and e.created_at < d + interval '1 day') as replies,
-           (select count(distinct e.lead_id) from email_messages e
-             where e.project_id = $1 and e.direction = 'inbound' and e.classification = 'hot'
-               and e.created_at >= d and e.created_at < d + interval '1 day') as hot
-         from generate_series(
-           date_trunc('day', now() at time zone 'utc') - make_interval(days => $2 - 1),
-           date_trunc('day', now() at time zone 'utc'),
-           interval '1 day'
-         ) as g(local_d), lateral (select local_d at time zone 'utc' as d) as day
-         order by local_d",
-    )
-    .bind(id)
-    .bind(days)
-    .fetch_all(&state.db)
-    .await?;
+    let daily = daily(&state.db, id, days).await?;
 
     Ok(Json(ProjectStats { totals, daily, segments: segments::with_stats(&state.db, id, None).await? }))
 }
@@ -133,6 +148,35 @@ async fn public_stats(State(state): State<AppState>) -> AppResult<Json<Value>> {
 pub(crate) mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn daily_counts_each_day_once(db: PgPool) {
+        let seeded = seed_costs(&db).await;
+        let lead: Uuid = sqlx::query_scalar("select id from leads where project_id = $1 and status = 'hot'")
+            .bind(seeded.project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        // Two replies from one lead today count once. Yesterday gets one send. Two days ago stays empty.
+        sqlx::query("update email_messages set sent_at = now() - interval '1 day' where lead_id = $1 and status = 'sent'")
+            .bind(lead)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status, classification) values ($1, $2, 'inbound', 'inbound', 'received', 'hot')")
+            .bind(seeded.project)
+            .bind(lead)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let days = super::daily(&db, seeded.project, 3).await.unwrap();
+        let counts: Vec<_> = days.iter().map(|d| (d.sent, d.replies, d.hot)).collect();
+        // The other emails seed_costs sends have no sent_at, so they never count.
+        assert_eq!(counts, vec![(0, 0, 0), (1, 0, 0), (0, 1, 1)]);
+    }
 
     use super::totals;
 
