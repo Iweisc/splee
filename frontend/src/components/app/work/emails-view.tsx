@@ -117,7 +117,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
       ) : data.items.length === 0 ? (
         <Card>
           <EmptyState icon={<Mail className="size-5" />} title={query ? "No emails match your search" : EMPTY[tab]}>
-            {tab === "drafts" && !query && "Run \"Write emails\" on a campaign and the drafts show up here for review."}
+            {tab === "drafts" && !query && `Run "Write emails" ${segmentId ? "above" : "on a campaign"} and the drafts show up here for review.`}
           </EmptyState>
         </Card>
       ) : (
