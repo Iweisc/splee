@@ -8,6 +8,11 @@ export function bouncing(emailed: number, bounced: number): boolean {
   return emailed >= 20 && bounced / emailed > 0.05;
 }
 
+/** "15%", rounded like MailboxStats::bounce_percent in the digest. */
+export function wholePercent(part: number, total: number): string {
+  return `${Math.min(100, Math.round((part / Math.max(1, total)) * 100))}%`;
+}
+
 const DAY_MS = 86_400_000;
 
 /**

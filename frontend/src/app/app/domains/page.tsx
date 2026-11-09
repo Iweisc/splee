@@ -13,7 +13,7 @@ import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
-import { bouncing, todayLimit } from "@/lib/mailbox";
+import { bouncing, todayLimit, wholePercent } from "@/lib/mailbox";
 import { dateTime, isPast, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
@@ -238,7 +238,7 @@ function nextStep(m: Mailbox): string {
 
 function Health({ stats }: { stats?: MailboxStats }) {
   if (!stats?.emailed) return null;
-  const pct = (n: number) => `${Math.min(100, Math.round((n / stats.emailed) * 100))}%`;
+  const pct = (n: number) => wholePercent(n, stats.emailed);
   const risky = bouncing(stats.emailed, stats.bounced);
   return (
     <>
