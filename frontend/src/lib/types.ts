@@ -153,7 +153,7 @@ export interface ProjectSettings {
   verifier_failed_at: string | null;
 }
 
-export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";
+export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent" | "follow_up_due";
 
 export interface ProjectSummary extends Project {
   sent: number;

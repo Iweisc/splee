@@ -70,6 +70,7 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
   { value: "email_sent", label: "Email sent", hint: "Every email Splee sends a lead, to log it in your CRM." },
+  { value: "follow_up_due", label: "Follow-up due", hint: "A reminder you set in the inbox came due." },
 ];
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
@@ -401,7 +402,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>classification</code>: hot, question, not_interested or other. <code>meeting_booked</code>, <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
                   <code>&quot;reply&quot;: null</code>. <code>email_sent</code> sends <code>&quot;reply&quot;: null</code> and an <code>email</code> with its{" "}
                   <code>id</code>, <code>kind</code> (initial, follow_up, auto_reply or manual_reply), <code>step</code>, <code>subject</code>, <code>body</code>,{" "}
-                  <code>from</code>, <code>to</code> and <code>message_id</code>. &quot;Send a test&quot; posts the hot_lead shape with <code>&quot;event&quot;: &quot;test&quot;</code>.
+                  <code>from</code>, <code>to</code> and <code>message_id</code>. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
+                  <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
+                  <code>&quot;event&quot;: &quot;test&quot;</code>.
                 </p>
                 <div className="mt-4">
                   <CodeBlock code={VERIFY} label="Check the signature (Node)" />

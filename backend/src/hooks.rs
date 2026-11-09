@@ -100,7 +100,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 6] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced", "email_sent"];
+pub const EVENTS: [&str; 7] = ["hot_lead", "lead_replied", "meeting_booked", "lead_unsubscribed", "lead_bounced", "email_sent", "follow_up_due"];
 
 /// What an event carries besides the lead: the reply that set it off, or the email Splee sent.
 /// Its key is "reply" or "email", and "reply" stays in every payload, null when there's none.
@@ -276,7 +276,7 @@ pub fn announce_booked(state: &AppState, lead: &Lead) {
     });
 }
 
-/// Tells each project's chat about inbox reminders that just came due. A reminder more than a day overdue is skipped, so
+/// Tells each project's chat and webhook about inbox reminders that just came due. A reminder more than a day overdue is skipped, so
 /// one set before this ran, or while the server was down, doesn't page anyone.
 pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {
     for lead in claim_due_reminders(&state.db).await? {
@@ -288,6 +288,8 @@ pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {
         let notes = lead.notes.trim();
         let alert = ChatAlert { label: "Follow-up due", summary: &summary, quote: (!notes.is_empty()).then_some(notes), link: &link, link_text: "Open the conversation" };
         post_chat(&state.db, lead.project_id, &alert).await;
+        let reminder = json!({"at": lead.remind_at, "notes": lead.notes});
+        send_lead_event(state, lead.project_id, "follow_up_due", &lead, Some(("reminder", reminder))).await;
     }
     Ok(())
 }
