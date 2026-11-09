@@ -51,11 +51,12 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         .bind(days)
         .fetch_all(&state.db)
         .await?;
-        let stopped: Vec<(String, String)> =
-            sqlx::query_as("select email::text, last_error from mailboxes where org_id = $1 and status = 'error' order by email")
-                .bind(org_id)
-                .fetch_all(&state.db)
-                .await?;
+        let stopped: Vec<(String, String, bool)> = sqlx::query_as(
+            "select email::text, last_error, recheck_at is not null from mailboxes where org_id = $1 and status = 'error' order by email",
+        )
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await?;
         // A stopped mailbox gets a digest even on a quiet day: it may be why the day was quiet.
         let active: Vec<_> = activity.into_iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
         if active.is_empty() && stopped.is_empty() {
@@ -75,7 +76,8 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
     Ok(())
 }
 
-fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(String, String)], public_url: &str) -> String {
+/// `stopped` is each stopped mailbox's address, error, and whether the sender tests it again by itself.
+fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(String, String, bool)], public_url: &str) -> String {
     let period = if days == 1 { "the last 24 hours" } else { "the last 7 days" };
     let mut body = String::new();
     if !active.is_empty() {
@@ -86,10 +88,13 @@ fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(
     }
     if !stopped.is_empty() {
         body += if body.is_empty() { "" } else { "\n" };
-        for (email, error) in stopped {
-            body += &format!("{email} has stopped sending: {error}\n");
+        for (email, error, retrying) in stopped {
+            let next = if *retrying { ", and Splee tests it again on its own" } else { "" };
+            body += &format!("{email} has stopped sending{next}: {error}\n");
         }
-        body += &format!("Fix it and press Test on {public_url}/app/domains\n");
+        if stopped.iter().any(|(_, _, retrying)| !retrying) {
+            body += &format!("Fix it and press Test on {public_url}/app/domains\n");
+        }
     }
     if waiting > 0 {
         let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
@@ -134,10 +139,15 @@ mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[test]
     fn a_stopped_mailbox_is_in_the_digest_even_on_a_quiet_day() {
-        let stopped = [("lewis@acme.test".to_string(), "SMTP: authentication failed".to_string())];
+        let stopped = [("lewis@acme.test".to_string(), "SMTP: authentication failed".to_string(), false)];
         let quiet = digest_body(1, &[], 0, &stopped, "https://app.test");
         assert!(quiet.starts_with("lewis@acme.test has stopped sending: SMTP: authentication failed\n"), "{quiet}");
         assert!(quiet.contains("press Test on https://app.test/app/domains"), "{quiet}");
+
+        let retrying = [("maya@acme.test".to_string(), "SMTP: 5.4.5 Daily user sending limit exceeded".to_string(), true)];
+        let waits = digest_body(1, &[], 0, &retrying, "https://app.test");
+        assert!(waits.starts_with("maya@acme.test has stopped sending, and Splee tests it again on its own: SMTP: 5.4.5"), "{waits}");
+        assert!(!waits.contains("press Test"), "{waits}");
 
         let busy = [ProjectActivity { name: "Northwind".into(), sent: 12, replies: 2, hot: 1, spend_micros: 1_500_000 }];
         let normal = digest_body(1, &busy, 2, &[], "https://app.test");
