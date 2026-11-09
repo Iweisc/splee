@@ -26,7 +26,7 @@ export function LeadModal({ leadId, onClose }: { leadId: string | null; onClose:
 function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) {
   const { mutate: mutateAll } = useSWRConfig();
   const { data: lead, error, mutate } = useSWR<LeadDetail>(`/leads/${leadId}`, fetcher);
-  const [deleting, setDeleting] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [editing, setEditing] = useState(false);
 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
@@ -59,19 +59,18 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
     );
   }
 
-  const remove = async () => {
-    if (!confirm(`Delete ${lead.full_name || lead.email}? Their emails are deleted too.`)) return;
-    setDeleting(true);
-    try {
-      await api(`/leads/${leadId}`, { method: "DELETE" });
-      mutateAll(() => true);
-      toast.success("Lead deleted");
-      onClose();
-    } catch (e) {
-      toastError(e);
-      setDeleting(false);
-    }
-  };
+  if (removing) {
+    return (
+      <RemoveLead
+        lead={lead}
+        onCancel={() => setRemoving(false)}
+        onRemoved={() => {
+          mutateAll(() => true);
+          onClose();
+        }}
+      />
+    );
+  }
 
   const location = [lead.city, lead.country_code].filter(Boolean).join(", ");
 
@@ -105,7 +104,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
             <Pencil className="size-3.5" /> Edit
           </Button>
-          <Button variant="ghost" size="sm" onClick={remove} loading={deleting} className="text-danger">
+          <Button variant="ghost" size="sm" onClick={() => setRemoving(true)} className="text-danger">
             <Trash2 className="size-3.5" /> Delete
           </Button>
         </div>
@@ -251,6 +250,51 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Asks before deleting, and offers to block the address too, for people who asked to be erased. */
+function RemoveLead({ lead, onCancel, onRemoved }: { lead: LeadDetail; onCancel: () => void; onRemoved: () => void }) {
+  const [forget, setForget] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const name = lead.full_name || lead.email;
+
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      await api(`/leads/${lead.id}${forget ? "?forget=true" : ""}`, { method: "DELETE" });
+      toast.success(forget ? `${name} deleted and blocked` : "Lead deleted");
+      onRemoved();
+    } catch (e) {
+      toastError(e);
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="pr-6">
+        <p className="text-lg font-semibold">Delete {name}?</p>
+        <p className="mt-1 text-sm text-muted-foreground">Their emails, notes and webhook history go too. You can&apos;t undo this.</p>
+      </div>
+      {lead.email && (
+        <label className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5">
+          <input type="checkbox" checked={forget} onChange={(e) => setForget(e.target.checked)} className="mt-0.5 accent-black" />
+          <span>
+            <span className="block text-sm font-medium">Never contact {lead.email} again</span>
+            <span className="block text-xs text-muted-foreground">Adds them to Do-not-contact, so no import or search brings them back.</span>
+          </span>
+        </label>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={remove} loading={deleting}>
+          <Trash2 className="size-4" /> Delete
+        </Button>
+      </div>
+    </div>
   );
 }
 
