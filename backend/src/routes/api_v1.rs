@@ -18,6 +18,7 @@ use super::util_scope;
 use crate::agent::{self, kind};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
+use crate::hooks;
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Ts};
 use crate::state::AppState;
 
@@ -157,12 +158,17 @@ async fn update_lead(
         util_input::one_of("status", status, LEAD_STATUSES)?;
     }
     let notes = util_input::notes(body.notes.as_deref())?;
+    let before = lead.status;
     let lead = sqlx::query_as::<_, Lead>("update leads set status = coalesce($2, status), notes = coalesce($3, notes) where id = $1 returning *")
         .bind(lead.id)
         .bind(&body.status)
         .bind(notes)
         .fetch_one(&state.db)
         .await?;
+    // No meeting_booked webhook here: it would echo a booking straight back to the tool that sent it.
+    if hooks::booked(&before, &lead) {
+        hooks::booked_in_slack(&state, &lead);
+    }
     Ok(Json(leads::detail(&state.db, lead).await?))
 }
 
