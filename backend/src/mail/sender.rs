@@ -15,8 +15,9 @@ use crate::verify::{self, Lookup, Verdict};
 
 /// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
 const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
-/// The kinds whose body ends with the signature WriterSettings::sign added. A reply someone typed is sent as they wrote it.
-const SIGNED_KINDS: [&str; 3] = ["initial", "follow_up", "auto_reply"];
+/// The kinds Splee writes, ending with the signature WriterSettings::sign added. A reply someone typed is sent as they
+/// wrote it.
+const WRITTEN_KINDS: [&str; 3] = ["initial", "follow_up", "auto_reply"];
 
 pub fn new_message_id(sender_email: &str) -> String {
     let domain = sender_email.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("splee.local");
@@ -266,19 +267,49 @@ async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> 
     }
 }
 
-/// Signs the email with the sending mailbox's signature, when it has one, instead of the project's, so a team sending
-/// from several people's mailboxes signs each email as the person it comes from. The mailbox is only known now, after the
-/// email was written and approved.
-async fn resign(db: &sqlx::PgPool, email: &EmailMessage, mb: &Mailbox) -> anyhow::Result<String> {
-    if mb.signature.trim().is_empty() || !SIGNED_KINDS.contains(&email.kind.as_str()) {
+/// Writes the email as the sending mailbox: its signature and booking link, when it has them, in place of the project's,
+/// so a team sending from several people's mailboxes signs each email as the person it comes from and books the call on
+/// their calendar. The mailbox is only known now, after the email was written and approved.
+async fn as_mailbox(db: &sqlx::PgPool, email: &EmailMessage, mb: &Mailbox) -> anyhow::Result<String> {
+    let (signature, link) = (mb.signature.trim(), mb.booking_link.trim());
+    if (signature.is_empty() && link.is_empty()) || !WRITTEN_KINDS.contains(&email.kind.as_str()) {
         return Ok(email.body.clone());
     }
-    let (signature, sender_name): (String, String) = sqlx::query_as("select signature, sender_name from project_settings where project_id = $1")
-        .bind(email.project_id)
-        .fetch_optional(db)
-        .await?
-        .unwrap_or_default();
-    Ok(swap_signature(&email.body, agent::signature(&signature, &sender_name), mb.signature.trim()))
+    let (project_signature, sender_name, project_link): (String, String, String) =
+        sqlx::query_as("select signature, sender_name, booking_link from project_settings where project_id = $1")
+            .bind(email.project_id)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or_default();
+    Ok(rewrite(&email.body, (agent::signature(&project_signature, &sender_name), signature), (project_link.trim(), link)))
+}
+
+/// Swaps each (old, new) pair whose new value is set. The signature goes first, since it can hold the booking link and
+/// then wouldn't match the project's anymore.
+fn rewrite(body: &str, (old_signature, signature): (&str, &str), (old_link, link): (&str, &str)) -> String {
+    let body = if signature.is_empty() { body.to_string() } else { swap_signature(body, old_signature, signature) };
+    if link.is_empty() { body } else { swap_link(&body, old_link, link) }
+}
+
+/// Replaces each `old` link in `body` with `new`. A longer link that starts with it, like another page on the same
+/// calendar, is left alone.
+fn swap_link(body: &str, old: &str, new: &str) -> String {
+    if old.is_empty() {
+        return body.to_string();
+    }
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(at) = rest.find(old) {
+        let after = &rest[at + old.len()..];
+        // The link ends at a space, the end, closing punctuation, or a full stop ending the sentence.
+        let ends = after.chars().next().is_none_or(|c| c.is_whitespace() || ",;:!)>]\"'".contains(c))
+            || after.strip_prefix('.').is_some_and(|a| a.chars().next().is_none_or(char::is_whitespace));
+        out.push_str(&rest[..at]);
+        out.push_str(if ends { new } else { old });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces the `old` signature at the end of `body` with `new`. A body that no longer ends with it was edited by hand,
@@ -336,7 +367,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let unsubscribe_page = format!("{}/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
     let one_click = format!("{}/api/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
     // Saved as sent, so the app shows the signature the lead got.
-    let email = EmailMessage { body: resign(&state.db, &email, &mb).await?, ..email };
+    let email = EmailMessage { body: as_mailbox(&state.db, &email, &mb).await?, ..email };
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
 
     let built = smtp::build(
@@ -648,9 +679,24 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, swap_signature};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite, swap_link, swap_signature};
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
+
+    #[test]
+    fn the_sending_mailbox_links_its_own_calendar() {
+        let body = "Worth a chat?\nhttps://cal.com/acme\n\nOr see https://cal.com/acme. Prices: https://cal.com/acme/pricing";
+        let want = "Worth a chat?\nhttps://cal.com/jo\n\nOr see https://cal.com/jo. Prices: https://cal.com/acme/pricing";
+        assert_eq!(swap_link(body, "https://cal.com/acme", "https://cal.com/jo"), want);
+        assert_eq!(swap_link("Worth a chat?", "", "https://cal.com/jo"), "Worth a chat?");
+    }
+
+    #[test]
+    fn a_project_signature_holding_the_booking_link_is_still_replaced() {
+        let body = "Worth a chat?\n\nAlex\nhttps://cal.com/acme";
+        let got = rewrite(body, ("Alex\nhttps://cal.com/acme", "Jo\nhttps://cal.com/jo"), ("https://cal.com/acme", "https://cal.com/jo"));
+        assert_eq!(got, "Worth a chat?\n\nJo\nhttps://cal.com/jo");
+    }
 
     #[test]
     fn the_sending_mailbox_signs_in_place_of_the_project() {
