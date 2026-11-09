@@ -4,14 +4,14 @@
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use super::client;
+use super::{client, send};
 use crate::models::Lead;
 
 const API: &str = "https://api.close.com/api/v1";
 
 /// Checks the key belongs to a user, before it's saved.
 pub async fn check(token: &str) -> anyhow::Result<()> {
-    client()?.get(format!("{API}/me/")).basic_auth(token, Some("")).send().await?.error_for_status()?;
+    send(client()?.get(format!("{API}/me/")).basic_auth(token, Some(""))).await?;
     Ok(())
 }
 
@@ -20,23 +20,16 @@ pub async fn push(token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::
     let email = email.to_lowercase();
     // Search reads an index that lags a few seconds behind writes, so a lead pushed twice that quickly can be created
     // twice. Close has no lookup by email that avoids the index.
-    let found: Value =
-        client.post(format!("{API}/data/search/")).basic_auth(token, Some("")).json(&search(&email)).send().await?.error_for_status()?.json().await?;
+    let found: Value = send(client.post(format!("{API}/data/search/")).basic_auth(token, Some("")).json(&search(&email))).await?.json().await?;
     let (lead_id, contact_id) = match found["data"][0]["lead_id"].as_str() {
         Some(lead_id) => (lead_id.to_string(), found["data"][0]["id"].as_str().map(str::to_string)),
         None => {
-            let created: Value =
-                client.post(format!("{API}/lead/")).basic_auth(token, Some("")).json(&new_lead(&email, lead)).send().await?.error_for_status()?.json().await?;
+            let created: Value = send(client.post(format!("{API}/lead/")).basic_auth(token, Some("")).json(&new_lead(&email, lead))).await?.json().await?;
             (created["id"].as_str().context("Close didn't return the lead")?.to_string(), None)
         }
     };
-    client
-        .post(format!("{API}/activity/note/"))
-        .basic_auth(token, Some(""))
-        .json(&json!({"lead_id": lead_id, "contact_id": contact_id, "title": "From Splee", "note": note}))
-        .send()
-        .await?
-        .error_for_status()?;
+    let note = json!({"lead_id": lead_id, "contact_id": contact_id, "title": "From Splee", "note": note});
+    send(client.post(format!("{API}/activity/note/")).basic_auth(token, Some("")).json(&note)).await?;
     Ok(())
 }
 

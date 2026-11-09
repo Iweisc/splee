@@ -184,6 +184,21 @@ fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().timeout(Duration::from_secs(20)).build()
 }
 
+/// Sends the request and turns a failure into a plain message: a 401 says the key was turned down, and anything else gives
+/// the CRM's own `message` or `error`, or the status. reqwest's own errors quote the URL, which can hold the lead's email
+/// and reads like noise on the integrations page.
+async fn send(request: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    let res = request.send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    if status.is_success() {
+        return Ok(res);
+    }
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key or token is wrong or was revoked");
+    let body: serde_json::Value = res.json().await.unwrap_or_default();
+    let said = body["message"].as_str().or(body["error"].as_str()).filter(|s| !s.is_empty());
+    anyhow::bail!("{}", said.map_or_else(|| status.to_string(), str::to_string))
+}
+
 /// "Sarah van Dijk" is ("Sarah", "van Dijk"). A one-word name has no last name.
 fn split_name(full: &str) -> (&str, &str) {
     let full = full.trim();
