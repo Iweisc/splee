@@ -6,7 +6,7 @@ import { CircleAlert, CircleCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, Spinner } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 // Opening this page doesn't unsubscribe anyone. Mail security scanners open links in a real browser, so only the button does.
 export function UnsubscribeCard({ token }: { token: string }) {
@@ -47,11 +47,21 @@ export function UnsubscribeCard({ token }: { token: string }) {
   return (
     // Balanced lines, so a heading that just misses one line on a phone doesn't leave a word alone on the second.
     <Card className="flex w-full max-w-[420px] flex-col items-center gap-3 p-8 text-center text-balance">
-      {error ? (
+      {/* Only a 404 means the link is bad. When Splee can't be reached, the same link works once it can. */}
+      {error instanceof ApiError && error.status === 404 ? (
         <>
           <CircleAlert className="size-6 text-danger" />
           <h1 className="text-xl font-medium">We couldn&apos;t process this link</h1>
           <p className="text-sm text-muted-foreground">It may be broken or expired. You can also reply to the email and ask the sender to stop.</p>
+        </>
+      ) : error ? (
+        <>
+          <CircleAlert className="size-6 text-danger" />
+          <h1 className="text-xl font-medium">We couldn&apos;t load this page</h1>
+          <p className="text-sm text-muted-foreground">Try again in a moment, or reply to the email and ask the sender to stop.</p>
+          <Button variant="outline" className="mt-2 w-full" onClick={() => mutate()}>
+            Try again
+          </Button>
         </>
       ) : !data ? (
         <Spinner />
