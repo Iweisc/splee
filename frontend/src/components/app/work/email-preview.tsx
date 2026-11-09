@@ -107,7 +107,9 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
           {email.from_email && (
             <>
               <dt>From</dt>
-              <dd className="text-foreground">{email.from_email}</dd>
+              <dd className="text-foreground">
+                <Address email={email.from_email} />
+              </dd>
             </>
           )}
           {email.sent_at ? (

@@ -15,7 +15,7 @@ import { SetupChecklist } from "@/components/app/work/setup-checklist";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { ProjectStatusBadge } from "@/components/app/work/status";
 import { Button, LinkButton } from "@/components/ui/button";
-import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
+import { Address, Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import { bouncing, wholePercent } from "@/lib/mailbox";
 import type { Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
@@ -128,7 +128,9 @@ function MailboxNotice() {
       <div className="min-w-0 flex-1 basis-64 space-y-1">
         {broken.map((m) => (
           <p key={m.id}>
-            <span className="font-medium">{m.email}</span>{" "}
+            <span className="font-medium">
+              <Address email={m.email} />
+            </span>{" "}
             {m.status !== "error" ? "can't read replies" : m.recheck_at ? "can't send, and Splee tests it again on its own" : "can't send"}:{" "}
             <span className="text-muted-foreground">{m.last_error}</span>
           </p>
@@ -153,7 +155,10 @@ function BounceNotice() {
       <div className="min-w-0 flex-1 basis-64 space-y-1">
         {bad.map((s) => (
           <p key={s.mailbox_id}>
-            <span className="font-medium">{s.email}</span> bounced {wholePercent(s.bounced, s.emailed)} of the {num(s.emailed)} leads it
+            <span className="font-medium">
+              <Address email={s.email} />
+            </span>{" "}
+            bounced {wholePercent(s.bounced, s.emailed)} of the {num(s.emailed)} leads it
             emailed in the last 30 days.
           </p>
         ))}
