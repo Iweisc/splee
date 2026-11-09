@@ -70,7 +70,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV, a Google Sheet or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -89,11 +89,11 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
           <Card>
             <label className="flex cursor-pointer flex-col items-center gap-2 rounded-t-2xl border-b border-dashed border-border-strong px-6 py-12 text-center hover:bg-accent">
               {loading === "file" ? <Spinner className="size-5" /> : <FileUp className="size-5 text-muted-foreground" />}
-              <span className="font-medium">{loading === "file" ? "Reading file…" : "Choose a CSV file"}</span>
+              <span className="font-medium">{loading === "file" ? "Reading file…" : "Choose a CSV or Excel file"}</span>
               <span className="text-sm text-muted-foreground">You map the columns in the next step.</span>
               <input
                 type="file"
-                accept=".csv,text/csv"
+                accept=".csv,text/csv,.xlsx,.xlsm,.xls,.ods"
                 className="sr-only"
                 disabled={!!loading}
                 onChange={(e) => {
