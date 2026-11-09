@@ -269,10 +269,9 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     match smtp::send(&transport, message).await {
         Ok(()) => record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await,
         Err(e) => {
-            let code = e.status().map(|c| c.to_string()).unwrap_or_default();
-            // 550/551/553 reject this recipient. A 4xx asks us to try again later, often a server greylisting a sender it
-            // hasn't seen before, so the mailbox is fine. Anything else is a problem with the mailbox or the connection.
-            if matches!(code.as_str(), "550" | "551" | "553") {
+            // A 4xx asks us to try again later, often a server greylisting a sender it hasn't seen before, so the mailbox is
+            // fine. Anything else that isn't about the recipient is a problem with the mailbox or the connection.
+            if smtp::recipient_rejected(&e) {
                 sqlx::query("update email_messages set status = 'failed', error = $2 where id = $1")
                     .bind(email.id)
                     .bind(format!("Rejected by the recipient's server: {e}"))

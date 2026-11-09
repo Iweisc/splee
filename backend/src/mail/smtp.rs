@@ -77,6 +77,25 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
     Ok(builder.body(email.body.to_string())?)
 }
 
+/// The server says this recipient can't get mail: a 550, 551 or 553 that, when it carries an enhanced status code
+/// (RFC 3463), is about the address (5.1.x). Our own server also answers 550 for its sending quota (Gmail's 5.4.5) or a
+/// policy block (5.7.x), and those are the mailbox's problem, not a reason to give up on the lead.
+pub fn recipient_rejected(e: &lettre::transport::smtp::Error) -> bool {
+    if !e.status().is_some_and(|c| matches!(c.to_string().as_str(), "550" | "551" | "553")) {
+        return false;
+    }
+    let reply = std::error::Error::source(e).map(ToString::to_string).unwrap_or_default();
+    enhanced_code(&reply).is_none_or(|code| code.starts_with("5.1."))
+}
+
+/// The "5.1.1" that starts a reply like "5.1.1 The email account that you tried to reach does not exist".
+fn enhanced_code(reply: &str) -> Option<&str> {
+    let first = reply.split_whitespace().next()?;
+    let parts: Vec<&str> = first.split('.').collect();
+    let numeric = parts.iter().all(|p| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()));
+    (parts.len() == 3 && numeric).then_some(first)
+}
+
 /// The server never answered: it was down, unreachable or too slow. Its replies, TLS and our own setup are other kinds.
 pub fn unreachable(e: &lettre::transport::smtp::Error) -> bool {
     !(e.is_response() || e.is_client() || e.is_transient() || e.is_permanent() || e.is_tls() || e.is_transport_shutdown())
@@ -91,11 +110,45 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
-    use super::{Transport, unreachable};
+    use lettre::{AsyncTransport, Message};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    use super::{Transport, recipient_rejected, unreachable};
 
     async fn test_on(port: u16) -> lettre::transport::smtp::Error {
         let transport: Transport = Transport::builder_dangerous("127.0.0.1").port(port).build();
         transport.test_connection().await.unwrap_err()
+    }
+
+    /// Sends one email through a fake server that answers RCPT TO with `rcpt_reply`.
+    async fn send_rejected(rcpt_reply: &'static str) -> lettre::transport::smtp::Error {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (socket, _) = server.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            write.write_all(b"220 fake\r\n").await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let reply = if line.starts_with("RCPT") { rcpt_reply } else if line.starts_with("QUIT") { "221 bye" } else { "250 ok" };
+                write.write_all(format!("{reply}\r\n").as_bytes()).await.unwrap();
+            }
+        });
+        let transport: Transport = Transport::builder_dangerous("127.0.0.1").port(port).build();
+        let message = Message::builder().from("a@example.com".parse().unwrap()).to("b@example.com".parse().unwrap()).body(String::new()).unwrap();
+        transport.send(message).await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn only_an_unknown_address_counts_as_a_rejected_recipient() {
+        for reply in ["550 5.1.1 The email account that you tried to reach does not exist", "553 sorry, no such user here"] {
+            let err = send_rejected(reply).await;
+            assert!(recipient_rejected(&err), "{err}");
+        }
+        for reply in ["550 5.4.5 Daily user sending limit exceeded", "550 5.7.1 Message rejected as spam", "554 5.7.1 Relay denied"] {
+            let err = send_rejected(reply).await;
+            assert!(!recipient_rejected(&err), "{err}");
+        }
     }
 
     #[tokio::test]
