@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { Check, Copy, ExternalLink, SkipForward, Sparkles, UserPlus } from "lucide-react";
+import { Check, Copy, ExternalLink, MessageCircleReply, SkipForward, Sparkles, UserPlus } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -12,11 +12,15 @@ import { Select } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Skeleton, Spinner } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { LeadRow, LinkedinMessage, SegmentWithStats } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 
 type Sequence = { lead: LeadRow; messages: LinkedinMessage[] };
+
+const isDue = (m: LinkedinMessage) => m.status === "todo" && !!m.due_at && new Date(m.due_at).getTime() <= Date.now();
+/** When the step due soonest came due, for sorting the list with the longest-waiting first. */
+const dueSince = (s: Sequence) => Math.min(...s.messages.filter(isDue).map((m) => new Date(m.due_at!).getTime()));
 
 export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/linkedin-sequence">) {
   const { projectId } = use(params);
@@ -28,21 +32,31 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   // click starts another paid run.
   const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
   const writing = (leadId: string) => runs?.find((r) => r.kind === "linkedin_sequence" && r.input.lead_id === leadId && isActive(r))?.id ?? null;
+  const due = (data ?? []).filter((s) => s.messages.some(isDue)).sort((a, b) => dueSince(a) - dueSince(b));
+  // Opens on what's due today when there is something, otherwise on every lead.
+  const [picked, setPicked] = useState<"due" | "all" | null>(null);
+  const view = picked ?? (due.length > 0 ? "due" : "all");
 
   return (
     <>
       <PageHeader
         title="LinkedIn"
-        description="LinkedIn is manual: Splee writes the connect note and follow-ups, you send them from your own profile and tick them off."
+        description="Splee writes the connect note and follow-ups and brings each one due a few days after the last. You send them from your own profile and tick them off. A reply on LinkedIn or by email stops both."
         actions={
-          <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto" aria-label="Campaign">
-            <option value="">All campaigns</option>
-            {segments?.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </Select>
+          <>
+            <Select value={view} onChange={(e) => setPicked(e.target.value as "due" | "all")} className="w-auto" aria-label="Show">
+              <option value="due">Due now ({due.length})</option>
+              <option value="all">All leads</option>
+            </Select>
+            <Select value={segment} onChange={(e) => setSegment(e.target.value)} className="w-auto" aria-label="Campaign">
+              <option value="">All campaigns</option>
+              {segments?.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </>
         }
       />
       <PageBody>
@@ -56,6 +70,12 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
               <Skeleton key={i} className="h-16 rounded-2xl" />
             ))}
           </div>
+        ) : view === "due" && due.length === 0 ? (
+          <Card>
+            <EmptyState icon={<Check className="size-5" />} title="Nothing due right now">
+              Each message comes due a few days after you send the one before it.
+            </EmptyState>
+          </Card>
         ) : data.length === 0 ? (
           <Card>
             {/* Leads without a LinkedIn profile or a sequence aren't listed, so a project full of leads can still land here. */}
@@ -74,7 +94,7 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
         ) : (
           // One card with rows. A card per lead with gaps between made a 40-lead list several screens tall.
           <Card className="divide-y divide-border">
-            {data.map((s) => (
+            {(view === "due" ? due : data).map((s) => (
               <LeadSequence
                 key={s.lead.id}
                 sequence={s}
@@ -117,6 +137,24 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
     }
   };
 
+  // They answered on LinkedIn: the lead moves to Replied, and the emails and steps still to send stop.
+  const [marking, setMarking] = useState(false);
+  // They can answer the last message too, so this stays until the lead stops being contacted, like the backend's own rule.
+  const open = messages.some((m) => m.status === "todo") || (messages.length > 0 && ["new", "queued", "contacted"].includes(lead.status));
+  const markReplied = async () => {
+    if (!confirm(`Mark ${lead.full_name || "this lead"} as replied? Their follow-up emails and LinkedIn steps stop.`)) return;
+    setMarking(true);
+    try {
+      await api(`/leads/${lead.id}/linkedin/replied`, { method: "POST" });
+      toast.success(`Stopped emailing ${lead.full_name || "them"} and their LinkedIn steps`);
+      onChange();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setMarking(false);
+    }
+  };
+
   const sorted = [...messages].sort((a, b) => a.step - b.step);
   const doneCount = messages.filter((m) => m.status !== "todo").length;
 
@@ -128,34 +166,42 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
           <p className="font-medium">{lead.full_name}</p>
           <p className="truncate text-sm text-muted-foreground">{[lead.title, lead.company_name].filter(Boolean).join(" at ")}</p>
         </div>
-        {messages.length > 0 && (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {doneCount}/{messages.length} done
-          </span>
-        )}
-        {lead.linkedin_url ? (
-          <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm hover:underline">
-            Profile <ExternalLink className="size-3.5" />
-          </a>
-        ) : (
-          <span className="text-sm text-muted-foreground">No LinkedIn URL</span>
-        )}
-        {runId ? (
-          <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-            <Spinner /> Writing…
-          </span>
-        ) : (
-          messages.length === 0 && (
-            <Button size="sm" variant="outline" onClick={generate} loading={starting}>
-              <Sparkles className="size-3.5" /> Generate sequence
+        {/* On phones these get their own line under the name, so the title isn't cut short and nothing wraps alone. */}
+        <div className="flex items-center gap-3 max-sm:w-full max-sm:pl-11">
+          {messages.length > 0 && (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {doneCount}/{messages.length} done
+            </span>
+          )}
+          {lead.linkedin_url ? (
+            <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm hover:underline">
+              Profile <ExternalLink className="size-3.5" />
+            </a>
+          ) : (
+            <span className="text-sm text-muted-foreground">No LinkedIn URL</span>
+          )}
+          {open && (
+            <Button size="sm" variant="ghost" onClick={markReplied} loading={marking} className="max-sm:ml-auto">
+              {!marking && <MessageCircleReply className="size-3.5" />} They replied
             </Button>
-          )
-        )}
+          )}
+          {runId ? (
+            <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner /> Writing…
+            </span>
+          ) : (
+            messages.length === 0 && (
+              <Button size="sm" variant="outline" onClick={generate} loading={starting} className="max-sm:ml-auto">
+                <Sparkles className="size-3.5" /> Generate sequence
+              </Button>
+            )
+          )}
+        </div>
       </div>
       {sorted.length > 0 && (
         <ol className="mt-4 grid gap-3 lg:grid-cols-3">
-          {sorted.map((m) => (
-            <MessageCard key={m.id} message={m} onChange={onChange} />
+          {sorted.map((m, i) => (
+            <MessageCard key={m.id} message={m} before={sorted[i - 1]} onChange={onChange} />
           ))}
         </ol>
       )}
@@ -163,7 +209,9 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
   );
 }
 
-function MessageCard({ message: m, onChange }: { message: LinkedinMessage; onChange: () => void }) {
+const stepName = (m: LinkedinMessage) => (m.kind === "connect" ? "Connect note" : `Message ${m.step}`);
+
+function MessageCard({ message: m, before, onChange }: { message: LinkedinMessage; before?: LinkedinMessage; onChange: () => void }) {
   const setStatus = async (status: LinkedinMessage["status"]) => {
     try {
       await api(`/linkedin/${m.id}`, { method: "PATCH", body: { status } });
@@ -184,9 +232,21 @@ function MessageCard({ message: m, onChange }: { message: LinkedinMessage; onCha
 
   return (
     <li className={cn("flex flex-col gap-2 rounded-xl border border-border p-3", m.status !== "todo" && "bg-muted/60")}>
-      <div className="flex items-center justify-between">
-        <MicroLabel>{m.kind === "connect" ? "Connect note" : `Message ${m.step}`}</MicroLabel>
-        {m.status !== "todo" && <Badge tone={m.status === "done" ? "green" : "neutral"}>{m.status === "done" ? "Done" : "Skipped"}</Badge>}
+      <div className="flex min-h-6 items-center justify-between">
+        <MicroLabel>{stepName(m)}</MicroLabel>
+        {m.status !== "todo" ? (
+          <Badge tone={m.status === "done" ? "green" : "neutral"}>{m.status === "done" ? "Done" : "Skipped"}</Badge>
+        ) : isDue(m) ? (
+          <Badge tone="amber">Due now</Badge>
+        ) : m.due_at ? (
+          <span className="text-xs text-muted-foreground" title={dateTime(m.due_at)}>
+            Due {timeAgo(m.due_at)}
+          </span>
+        ) : (
+          before && (
+            <span className="text-xs text-muted-foreground">{before.kind === "connect" ? "After the connect note" : `After message ${before.step}`}</span>
+          )
+        )}
       </div>
       <p className={cn("flex-1 text-sm whitespace-pre-wrap", m.status !== "todo" && "text-muted-foreground")}>{m.body}</p>
       <div className="flex gap-1">

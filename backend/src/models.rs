@@ -343,6 +343,10 @@ pub struct LinkedinMessage {
     pub kind: String,
     pub body: String,
     pub status: String,
+    /// When the step should be sent: the connect note once it's written, each message a few days after the step before
+    /// it was sent. None until then, and for steps that are done or skipped before coming due.
+    pub due_at: Option<Ts>,
+    pub done_at: Option<Ts>,
     pub created_at: Ts,
 }
 

@@ -102,7 +102,11 @@ pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, kind: &str, sub
     send_system_email(state, org_id, to, subject, &body).await
 }
 
-/// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails.
+/// Takes a lead's unsent LinkedIn steps off the to-do list, for a reply or a suppression. $1 is the lead.
+pub const STOP_LINKEDIN: &str = "update linkedin_messages set status = 'skipped' where lead_id = $1 and status = 'todo'";
+
+/// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails and
+/// LinkedIn steps.
 pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {
     let mut tx = state.db.begin().await?;
     // Only a lead this changes gets a webhook event, so an unsubscribe link clicked twice sends one.
@@ -123,6 +127,7 @@ pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, 
     .bind(format!("Lead {status}"))
     .execute(&mut *tx)
     .await?;
+    sqlx::query(STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
     tx.commit().await?;
     let event = match status {
         "unsubscribed" => Some("lead_unsubscribed"),
