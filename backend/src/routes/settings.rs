@@ -275,6 +275,9 @@ async fn replace_webhook_secret(State(state): State<AppState>, auth: Auth, Path(
 #[derive(Deserialize)]
 struct CrmBody {
     token: String,
+    /// For a CRM with Crm::account.
+    #[serde(default)]
+    account: String,
 }
 
 fn crm(name: &str) -> AppResult<Crm> {
@@ -295,8 +298,18 @@ async fn connect_crm(
     if token.is_empty() {
         return Err(AppError::BadRequest(format!("Paste your {} token", crm.label())));
     }
-    crm.check(token).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that token: {e:#}", crm.label())))?;
-    set_crm_token(&state.db, id, crm, &crypto::encrypt(&state.cfg.app_secret, token)).await
+    let token = match crm.account() {
+        Some(what) => {
+            let account = body.account.trim();
+            if account.is_empty() {
+                return Err(AppError::BadRequest(format!("Paste your {} {what}", crm.label())));
+            }
+            format!("{account}\n{token}")
+        }
+        None => token.to_string(),
+    };
+    crm.check(&token).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that: {e:#}", crm.label())))?;
+    set_crm_token(&state.db, id, crm, &crypto::encrypt(&state.cfg.app_secret, &token)).await
 }
 
 async fn disconnect_crm(State(state): State<AppState>, auth: Auth, Path((id, name)): Path<(Uuid, String)>) -> AppResult<Json<ProjectSettings>> {

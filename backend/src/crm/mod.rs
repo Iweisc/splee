@@ -7,6 +7,7 @@ mod brevo;
 mod capsule;
 mod close;
 mod folk;
+mod freshsales;
 mod hubspot;
 mod lacrm;
 mod pipedrive;
@@ -35,11 +36,12 @@ pub enum Crm {
     Lacrm,
     Salesflare,
     Affinity,
+    Freshsales,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 11] = [
+    pub const ALL: [Crm; 12] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -51,6 +53,7 @@ impl Crm {
         Crm::Lacrm,
         Crm::Salesflare,
         Crm::Affinity,
+        Crm::Freshsales,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -71,6 +74,7 @@ impl Crm {
             Crm::Lacrm => "lacrm",
             Crm::Salesflare => "salesflare",
             Crm::Affinity => "affinity",
+            Crm::Freshsales => "freshsales",
         }
     }
 
@@ -87,6 +91,16 @@ impl Crm {
             Crm::Lacrm => "Less Annoying CRM",
             Crm::Salesflare => "Salesflare",
             Crm::Affinity => "Affinity",
+            Crm::Freshsales => "Freshsales",
+        }
+    }
+
+    /// What the CRM needs besides the token to find the account, asked for on its own. It's saved in the token, a line
+    /// before it, so syncing needs nothing new.
+    pub fn account(self) -> Option<&'static str> {
+        match self {
+            Crm::Freshsales => Some("bundle alias"),
+            _ => None,
         }
     }
 
@@ -104,6 +118,7 @@ impl Crm {
             Crm::Lacrm => lacrm::check(token).await,
             Crm::Salesflare => salesflare::check(token).await,
             Crm::Affinity => affinity::check(token).await,
+            Crm::Freshsales => freshsales::check(token).await,
         }
     }
 
@@ -120,6 +135,7 @@ impl Crm {
             Crm::Lacrm => lacrm::push(token, email, lead, note).await,
             Crm::Salesflare => salesflare::push(token, email, lead, note).await,
             Crm::Affinity => affinity::push(token, email, lead, note).await,
+            Crm::Freshsales => freshsales::push(token, email, lead, note).await,
         }
     }
 }
