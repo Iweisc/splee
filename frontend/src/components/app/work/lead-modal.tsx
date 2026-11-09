@@ -88,15 +88,18 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Select value={lead.status} onChange={(e) => setStatus(e.target.value as LeadStatus)} className="h-8 w-auto" aria-label="Status">
+        <Select value={lead.status} onChange={(e) => setStatus(e.target.value as LeadStatus)} className="h-8 w-auto max-sm:grow" aria-label="Status">
           {Object.entries(LEAD_STATUS).map(([value, s]) => (
             <option key={value} value={value}>
               {s.label}
             </option>
           ))}
         </Select>
-        {lead.segment_name && <Badge>{lead.segment_name}</Badge>}
-        <Badge className="capitalize">{lead.source}</Badge>
+        {/* The campaign and source wrap together too, so the source never sits alone under the status. On phones the status stretches to fill the row they leave. */}
+        <div className="flex flex-wrap gap-2">
+          {lead.segment_name && <Badge>{lead.segment_name}</Badge>}
+          <Badge className="capitalize">{lead.source}</Badge>
+        </div>
         {/* Edit and Delete wrap together, so Delete never sits alone on a row. On phones they share a row of their own. */}
         <div className="ml-auto flex gap-1 max-sm:basis-full max-sm:[&>*]:flex-1">
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
