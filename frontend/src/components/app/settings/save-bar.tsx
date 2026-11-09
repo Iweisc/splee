@@ -1,11 +1,13 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
 /** `problem` blocks saving and replaces the "Unsaved changes" text. */
 export function SaveBar({ form, problem }: { form: ProjectSettingsForm; problem?: string | null }) {
+  useLeaveGuard(form.dirty);
   return (
     <div
       className={cn(
