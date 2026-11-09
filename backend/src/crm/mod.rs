@@ -2,6 +2,7 @@
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
 mod attio;
+mod brevo;
 mod capsule;
 mod close;
 mod folk;
@@ -25,11 +26,12 @@ pub enum Crm {
     Close,
     Folk,
     Capsule,
+    Brevo,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 6] = [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk, Crm::Capsule];
+    pub const ALL: [Crm; 7] = [Crm::HubSpot, Crm::Pipedrive, Crm::Attio, Crm::Close, Crm::Folk, Crm::Capsule, Crm::Brevo];
 
     pub fn parse(name: &str) -> Option<Crm> {
         Crm::ALL.into_iter().find(|crm| crm.name() == name)
@@ -44,6 +46,7 @@ impl Crm {
             Crm::Close => "close",
             Crm::Folk => "folk",
             Crm::Capsule => "capsule",
+            Crm::Brevo => "brevo",
         }
     }
 
@@ -55,6 +58,7 @@ impl Crm {
             Crm::Close => "Close",
             Crm::Folk => "folk",
             Crm::Capsule => "Capsule",
+            Crm::Brevo => "Brevo",
         }
     }
 
@@ -67,6 +71,7 @@ impl Crm {
             Crm::Close => close::check(token).await,
             Crm::Folk => folk::check(token).await,
             Crm::Capsule => capsule::check(token).await,
+            Crm::Brevo => brevo::check(token).await,
         }
     }
 
@@ -78,6 +83,7 @@ impl Crm {
             Crm::Close => close::push(token, email, lead, note).await,
             Crm::Folk => folk::push(token, email, lead, note).await,
             Crm::Capsule => capsule::push(token, email, lead, note).await,
+            Crm::Brevo => brevo::push(token, email, lead, note).await,
         }
     }
 }
@@ -116,7 +122,7 @@ fn split_name(full: &str) -> (&str, &str) {
     full.split_once(' ').map(|(f, l)| (f, l.trim())).unwrap_or((full, ""))
 }
 
-/// HubSpot and Pipedrive render notes as HTML, so the reply is escaped and its line breaks kept.
+/// HubSpot, Pipedrive and Brevo render notes as HTML, so the reply is escaped and its line breaks kept.
 fn note_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
