@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod auth;
 mod bookings;
+mod calendar;
 pub mod org;
 pub mod projects;
 pub mod competitors;
@@ -60,6 +61,7 @@ pub fn router() -> Router<AppState> {
         .merge(explorer::router())
         .merge(unsubscribe::router())
         .merge(bookings::router())
+        .merge(calendar::router())
         .route("/health", get(health))
 }
 

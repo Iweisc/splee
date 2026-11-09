@@ -75,6 +75,7 @@ All paths below are under `/api`.
 | GET | /unsubscribe/:token | | `{email, unsubscribed}`. Read-only, because mail security scanners open links in a browser. |
 | POST | /unsubscribe/:token | | marks lead unsubscribed + suppression, returns `{ok:true, email}`. The `/unsubscribe/[token]` page's button and the RFC 8058 `List-Unsubscribe-Post` one-click both use it. |
 | POST | /bookings/:token | Calendly `invitee.created`, Cal.com `BOOKING_CREATED`, or `{email}` | `{matched}`. `token` is `project_settings.booking_token`, 404 for an unknown one. Every lead in that project with an invitee's email moves to `meeting_booked`, which sends the chat post and the `meeting_booked` webhook once per lead. Other events (cancellations, pings) match nothing. Shown on the Integrations page. |
+| GET | /calendar/:token.ics | — | An iCalendar feed (`text/calendar`). `token` is `project_settings.calendar_token`, 404 for an unknown one. One 15-minute event per lead in that project with a `remind_at`, at that time, titled "Follow up with {name} ({company})", with the lead's notes and inbox link in the description, a display alarm, and the lead id as the UID so a moved reminder moves its event. The `.ics` suffix is optional. Shown on the Integrations page. |
 
 ### Auth
 
