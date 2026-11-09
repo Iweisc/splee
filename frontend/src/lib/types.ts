@@ -388,6 +388,7 @@ export interface Mailbox {
 /** GET /mailboxes/stats: distinct leads over the last 30 days. */
 export interface MailboxStats {
   mailbox_id: UUID;
+  email: string;
   emailed: number;
   bounced: number;
   replied: number;
