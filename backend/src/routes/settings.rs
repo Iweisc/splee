@@ -203,9 +203,10 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
             "url": link,
         })
     };
+    let target = if body.target == "slack" { hooks::chat_endpoint(&body.url) } else { body.url.clone() };
     let alert = if body.target == "webhook" { hooks::Alert::Webhook } else { hooks::Alert::Slack };
     let secret = if body.target == "webhook" { Some(load_or_create(&state.db, project.id).await?.webhook_secret) } else { None };
-    hooks::post_json(&body.url, &payload, secret.as_deref()).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
+    hooks::post_json(&target, &payload, secret.as_deref()).await.map_err(|e| AppError::BadRequest(format!("The test didn't go through: {e:#}")))?;
     // A passing test on the saved URL clears its last failure, so fixing an endpoint and testing it is enough. A failed test only shows in the toast.
     hooks::record(&state.db, project.id, alert, &body.url, &Ok(())).await;
     Ok(Json(json!({ "ok": true })))

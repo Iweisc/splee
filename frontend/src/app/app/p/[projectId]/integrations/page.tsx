@@ -81,6 +81,7 @@ const CHAT_APPS = [
   ["Teams", "the channel's Workflows → Post to a channel when a webhook request is received"],
   ["Google Chat", "Apps & integrations → Webhooks"],
   ["Telegram", "bot's sendMessage URL with ?chat_id="],
+  ["ntfy", "https://ntfy.sh/ and a topic only you know"],
 ];
 
 /** Posts a sample alert to the URL as typed, saved or not. */
@@ -311,7 +312,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <Hash className="size-4" /> Chat alerts
               </span>
             }
-            description="Posts to a Slack, Discord, Microsoft Teams, Google Chat or Telegram channel when a lead turns hot or books a meeting."
+            description="Posts to Slack, Discord, Teams, Google Chat or Telegram, or to your phone with ntfy, when a lead turns hot or books a meeting."
             actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field

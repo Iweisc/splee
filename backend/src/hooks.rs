@@ -179,14 +179,34 @@ pub struct ChatAlert<'a> {
     pub link_text: &'a str,
 }
 
-/// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors) and Telegram (a bot's sendMessage
-/// URL with `?chat_id=`) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links
-/// included.
+fn host(url: &str) -> String {
+    Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default()
+}
+
+/// Where a chat alert is posted. ntfy takes JSON only at its root, with the topic from the user's https://ntfy.sh/{topic}
+/// URL in the body. Everything else is posted to the URL as given.
+pub fn chat_endpoint(url: &str) -> String {
+    if host(url) == "ntfy.sh" { "https://ntfy.sh/".to_string() } else { url.to_string() }
+}
+
+/// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
+/// URL with `?chat_id=`) and ntfy (a topic URL, for phone notifications) have their own shapes. Anything else gets
+/// Slack's `{text}`, which Google Chat also reads, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
-    let host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
+    let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
     let quote = a.quote.map(|q| format!("\n> {}", q.replace('\n', "\n> "))).unwrap_or_default();
-    if on("discord.com") || on("discordapp.com") {
+    if host == "ntfy.sh" {
+        let topic = Url::parse(url).ok().and_then(|u| u.path_segments()?.find(|s| !s.is_empty()).map(str::to_string)).unwrap_or_default();
+        let message = match a.quote {
+            Some(q) => format!("{}\n\n{q}", a.summary),
+            None => a.summary.to_string(),
+        };
+        json!({
+            "topic": topic, "title": a.label, "message": message, "click": a.link,
+            "actions": [{"action": "view", "label": a.link_text, "url": a.link}],
+        })
+    } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
         // chat_id goes in the body too, so it doesn't matter whether Telegram reads the query of a JSON request.
@@ -216,8 +236,8 @@ fn html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams and Google Chat) when
-/// it has one, and records how it went for the integrations page.
+/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams, Google Chat, Telegram
+/// and ntfy) when it has one, and records how it went for the integrations page.
 pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_>) {
     let url: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
         .bind(project_id)
@@ -229,7 +249,7 @@ pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_
     if url.trim().is_empty() {
         return;
     }
-    let result = post_json_retrying(&url, &chat_payload(&url, alert), None).await;
+    let result = post_json_retrying(&chat_endpoint(&url), &chat_payload(&url, alert), None).await;
     if let Err(e) = &result {
         tracing::warn!(error = %e, "chat notification failed");
     }
@@ -319,6 +339,13 @@ mod tests {
             telegram["text"],
             "<b>Hot lead:</b> Sam &lt;CTO&gt; replied\n<blockquote>Sounds good\nTuesday?</blockquote>\n<a href=\"https://app/x\">Open the inbox</a>"
         );
+        let ntfy = chat_payload("https://ntfy.sh/acme-hot-leads", &a);
+        assert_eq!(ntfy["topic"], "acme-hot-leads");
+        assert_eq!(ntfy["title"], "Hot lead");
+        assert_eq!(ntfy["message"], "Sarah replied to Acme\n\nSounds good\nTuesday?");
+        assert_eq!(ntfy["click"], "https://app/x");
+        assert_eq!(chat_endpoint("https://ntfy.sh/acme-hot-leads"), "https://ntfy.sh/");
+        assert_eq!(chat_endpoint("https://hooks.slack.com/services/T/B/x"), "https://hooks.slack.com/services/T/B/x");
         // A lookalike host isn't Discord.
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }
