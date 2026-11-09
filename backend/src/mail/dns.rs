@@ -81,9 +81,11 @@ async fn txt_records(resolver: &TokioResolver, name: &str) -> Vec<String> {
 const DKIM_SELECTORS: [&str; 15] =
     ["google", "selector1", "selector2", "cf2024-1", "zmail", "zoho", "protonmail", "fm1", "k1", "s1", "s2", "default", "dkim", "mail", "smtp"];
 
-/// The first DKIM key found under DKIM_SELECTORS, as "{selector}: {start of the record}".
-async fn dkim(resolver: &TokioResolver, domain: &str) -> Option<String> {
-    let lookups = DKIM_SELECTORS.map(|selector| async move { (selector, txt_records(resolver, &format!("{selector}._domainkey.{domain}")).await) });
+/// The first DKIM key found under the mailbox's own selector, when it has one, then DKIM_SELECTORS, as
+/// "{selector}: {start of the record}".
+async fn dkim(resolver: &TokioResolver, domain: &str, own: Option<&str>) -> Option<String> {
+    let selectors = own.into_iter().chain(DKIM_SELECTORS);
+    let lookups = selectors.map(|selector| async move { (selector, txt_records(resolver, &format!("{selector}._domainkey.{domain}")).await) });
     futures::future::join_all(lookups).await.into_iter().find_map(|(selector, records)| {
         let key = records.into_iter().find(|t| is_dkim_key(t))?;
         let start: String = key.chars().take(48).collect();
@@ -103,17 +105,23 @@ fn check(found: Option<String>, missing: &str) -> Value {
     }
 }
 
-pub async fn check_dns(domain: &str) -> anyhow::Result<Value> {
+pub async fn check_dns(domain: &str, dkim_selector: Option<&str>) -> anyhow::Result<Value> {
     let resolver = resolver()?;
     let mx = mx_hosts(&resolver, domain).await;
-    let dkim = dkim(&resolver, domain).await;
+    let dkim = dkim(&resolver, domain, dkim_selector).await;
     let spf = txt_records(&resolver, domain).await.into_iter().find(|t| t.to_lowercase().starts_with("v=spf1"));
     let dmarc = txt_records(&resolver, &format!("_dmarc.{domain}")).await.into_iter().find(|t| t.to_lowercase().starts_with("v=dmarc1"));
     Ok(json!({
         "mx": check((!mx.is_empty()).then(|| mx.join(", ")), "No MX records, this domain can't receive replies"),
         "spf": check(spf, "No SPF record, add one that includes your email provider"),
         "dmarc": check(dmarc, "No DMARC record, add one at _dmarc with at least p=none"),
-        "dkim": check(dkim, "No DKIM key under the selectors common providers use. Turn on DKIM signing with your email provider"),
+        "dkim": check(
+            dkim,
+            match dkim_selector {
+                Some(_) => "No DKIM key under this mailbox's selector or the ones common providers use. Turn on DKIM signing with your email provider",
+                None => "No DKIM key under the selectors common providers use. Turn on DKIM signing, or set the mailbox's DKIM selector if your provider uses its own",
+            },
+        ),
         "checked_at": Utc::now(),
     }))
 }
@@ -140,9 +148,13 @@ mod tests {
     async fn dkim_is_found_under_the_providers_selector() {
         let resolver = resolver().unwrap();
         // Microsoft 365 publishes selector1 and selector2 as CNAMEs to its own zone and rotates the key between them.
-        let found = dkim(&resolver, "microsoft.com").await;
+        let found = dkim(&resolver, "microsoft.com", None).await;
         assert!(found.as_deref().is_some_and(|f| f.starts_with("selector") && f.contains("v=DKIM1")), "{found:?}");
-        assert_eq!(dkim(&resolver, "no-such-domain-splee-test.com").await, None);
+        assert_eq!(dkim(&resolver, "no-such-domain-splee-test.com", None).await, None);
+        // Mailchimp signs with mandrill, which isn't a common selector, so it's found only when named.
+        assert_eq!(dkim(&resolver, "mailchimp.com", None).await.filter(|f| f.starts_with("mandrill")), None);
+        let own = dkim(&resolver, "mailchimp.com", Some("mandrill")).await;
+        assert!(own.as_deref().is_some_and(|f| f.starts_with("mandrill: ")), "{own:?}");
     }
 
     #[test]

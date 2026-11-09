@@ -90,6 +90,8 @@ struct MailboxBody {
     cost_per_email_micros: Option<i64>,
     status: Option<String>,
     ramp_up: Option<bool>,
+    /// Only for a provider that signs with a selector of its own. Empty clears it.
+    dkim_selector: Option<String>,
 }
 
 fn trimmed(value: &Option<String>) -> Option<&str> {
@@ -123,11 +125,26 @@ impl MailboxBody {
             None => Ok(None),
         }
     }
+
+    /// The DKIM selector as it goes into `{selector}._domainkey.{domain}`. A pasted "s1._domainkey.acme.com" is cut back to
+    /// "s1".
+    fn dkim_selector(&self) -> AppResult<Option<String>> {
+        let Some(raw) = &self.dkim_selector else { return Ok(None) };
+        let lower = raw.trim().to_lowercase();
+        let selector = lower.split("._domainkey").next().unwrap_or_default().trim_end_matches('.');
+        let label_ok = |l: &str| (1..=63).contains(&l.len()) && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        let valid = selector.is_empty() || (selector.len() <= 200 && selector.split('.').all(label_ok));
+        if !valid {
+            return Err(AppError::BadRequest("A DKIM selector has only letters, digits, dashes, underscores and dots, like s1 or k2".into()));
+        }
+        Ok(Some(selector.to_string()))
+    }
 }
 
 async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<MailboxBody>) -> AppResult<Json<Mailbox>> {
     auth.require_admin()?;
     let email = body.validate()?.ok_or_else(|| AppError::BadRequest("Email is required".into()))?;
+    let dkim_selector = body.dkim_selector()?;
     let smtp_host = trimmed(&body.smtp_host).ok_or_else(|| AppError::BadRequest("SMTP host is required".into()))?;
     let smtp_password = body.smtp_password.as_deref().filter(|p| !p.is_empty()).ok_or_else(|| AppError::BadRequest("SMTP password is required".into()))?;
     let smtp_username = trimmed(&body.smtp_username).unwrap_or(&email);
@@ -144,9 +161,11 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let secret = &state.cfg.app_secret;
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
-           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link)
+           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link,
+           dkim_selector)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
-           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''))
+           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''),
+           coalesce($19, ''))
          returning *",
     )
     .bind(auth.org_id)
@@ -167,6 +186,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.ramp_up)
     .bind(body.signature.as_deref().map(str::trim))
     .bind(body.booking_link.as_deref().map(str::trim))
+    .bind(dkim_selector)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -185,6 +205,7 @@ async fn update(
     auth.require_admin()?;
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let email = body.validate()?;
+    let dkim_selector = body.dkim_selector()?;
     let secret = &state.cfg.app_secret;
     let encrypt_new = |p: &Option<String>| p.as_deref().filter(|p| !p.is_empty()).map(|p| encrypt(secret, p));
     let mailbox = sqlx::query_as::<_, Mailbox>(
@@ -210,7 +231,8 @@ async fn update(
            cost_per_email_micros = coalesce($15, cost_per_email_micros),
            ramp_up = coalesce($16, ramp_up),
            signature = coalesce($17, signature),
-           booking_link = coalesce($18, booking_link)
+           booking_link = coalesce($18, booking_link),
+           dkim_selector = coalesce($19, dkim_selector)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -231,6 +253,7 @@ async fn update(
     .bind(body.ramp_up)
     .bind(body.signature.as_deref().map(str::trim))
     .bind(body.booking_link.as_deref().map(str::trim))
+    .bind(dkim_selector)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))
@@ -282,7 +305,8 @@ async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 async fn check_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Mailbox>> {
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let domain = mailbox.email.rsplit('@').next().unwrap_or_default();
-    let dns = mail::check_dns(domain).await.map_err(|e| AppError::BadRequest(format!("DNS check failed: {e:#}")))?;
+    let selector = Some(mailbox.dkim_selector.as_str()).filter(|s| !s.is_empty());
+    let dns = mail::check_dns(domain, selector).await.map_err(|e| AppError::BadRequest(format!("DNS check failed: {e:#}")))?;
     let mailbox = sqlx::query_as::<_, Mailbox>("update mailboxes set dns = $2 where id = $1 returning *")
         .bind(mailbox.id)
         .bind(dns)

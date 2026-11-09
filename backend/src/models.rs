@@ -323,6 +323,8 @@ pub struct Mailbox {
     /// INBOX's UIDVALIDITY when imap_last_uid was taken. When the server changes it, the cursor starts over.
     pub imap_uid_validity: Option<i64>,
     pub dns: Value,
+    /// Tried first by the DNS check's DKIM lookup, for a provider that signs with a selector of its own. Empty for none.
+    pub dkim_selector: String,
     pub created_at: Ts,
     pub recheck_at: Option<Ts>,
     /// Start at a few emails a day and work up to daily_limit. See sender::TODAY_LIMIT.

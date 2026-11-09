@@ -71,8 +71,8 @@ pub async fn test_mailbox(state: &AppState, mailbox: &Mailbox) -> anyhow::Result
 }
 
 /// Looks up MX, SPF and DMARC for the mailbox domain. Returns the JSON stored in mailboxes.dns.
-pub async fn check_dns(domain: &str) -> anyhow::Result<serde_json::Value> {
-    dns::check_dns(domain).await
+pub async fn check_dns(domain: &str, dkim_selector: Option<&str>) -> anyhow::Result<serde_json::Value> {
+    dns::check_dns(domain, dkim_selector).await
 }
 
 /// Sends a one-off email (e.g. a team invite) from the org's first active mailbox.

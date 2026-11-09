@@ -41,11 +41,12 @@ const EMPTY: MailboxInput = {
   daily_limit: 30,
   cost_per_email_micros: 0,
   ramp_up: true,
+  dkim_selector: "",
 };
 
 function toInput(m: Mailbox): MailboxInput {
-  const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
-    m;
+  const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username } = m;
+  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector } = m;
   return {
     email,
     from_name,
@@ -63,6 +64,7 @@ function toInput(m: Mailbox): MailboxInput {
     daily_limit,
     cost_per_email_micros,
     ramp_up,
+    dkim_selector,
   };
 }
 
@@ -303,6 +305,10 @@ export function MailboxForm({
             className="pl-6 tabular-nums"
           />
         </div>
+      </Field>
+
+      <Field label="DKIM selector" hint="Only if your provider signs with a selector of its own. Check DNS tries it before the common ones.">
+        <Input value={m.dkim_selector} onChange={(e) => set({ dkim_selector: e.target.value.trim() })} placeholder="s1" className="w-40" />
       </Field>
 
       <div className="flex justify-end">
