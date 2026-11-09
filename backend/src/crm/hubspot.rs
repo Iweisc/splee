@@ -4,7 +4,7 @@
 use anyhow::Context;
 use serde_json::{Value, json};
 
-use super::{client, note_html};
+use super::{client, note_html, split_name};
 use crate::models::Lead;
 
 const API: &str = "https://api.hubapi.com";
@@ -44,11 +44,11 @@ pub async fn push(token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::
 
 /// The contact's properties. Blank fields are left out so they don't wipe what HubSpot already has.
 fn contact(email: &str, lead: &Lead) -> Value {
-    let (first, last) = lead.full_name.trim().split_once(' ').unwrap_or((lead.full_name.trim(), ""));
+    let (first, last) = split_name(&lead.full_name);
     let fields = [
         ("email", email.to_lowercase()),
         ("firstname", first.to_string()),
-        ("lastname", last.trim().to_string()),
+        ("lastname", last.to_string()),
         ("jobtitle", lead.title.clone()),
         ("company", lead.company_name.clone()),
         ("website", lead.company_domain.clone().unwrap_or_default()),

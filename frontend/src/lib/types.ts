@@ -142,6 +142,9 @@ export interface ProjectSettings {
   pipedrive_connected: boolean;
   pipedrive_error: string | null;
   pipedrive_failed_at: string | null;
+  attio_connected: boolean;
+  attio_error: string | null;
+  attio_failed_at: string | null;
 }
 
 export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";
