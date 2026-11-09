@@ -35,6 +35,7 @@ Splee-Signature: v1=5f0c…
     "full_name": "Sarah Chen",
     "email": "sarah@northwind.studio",
     "title": "Founder",
+    "status": "hot",
     "company_name": "Northwind Studio",
     "company_domain": "northwind.studio",
     "linkedin_url": "https://www.linkedin.com/in/sarah-chen",
@@ -78,6 +79,7 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "email_sent", label: "Email sent", hint: "Every email Splee sends a lead, to log it in your CRM." },
   { value: "follow_up_due", label: "Follow-up due", hint: "A reminder you set in the inbox came due." },
   { value: "form_submitted", label: "Form submitted", hint: "Someone filled in your website form and became a lead." },
+  { value: "status_changed", label: "Status changed", hint: "Someone on your team changed a lead's status in Splee." },
 ];
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
@@ -474,7 +476,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
               <legend className="text-sm font-medium">Send these events</legend>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 {EVENTS.map((e) => (
-                  <label key={e.value} className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5">
+                  <label key={e.value} className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 sm:odd:last:col-span-2">
                     <input
                       type="checkbox"
                       checked={s.webhook_events.includes(e.value)}
@@ -487,7 +489,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                     />
                     <span>
                       <span className="block text-sm font-medium">{e.label}</span>
-                      <span className="block text-xs text-muted-foreground">{e.hint}</span>
+                      <span className="block text-xs text-pretty text-muted-foreground">{e.hint}</span>
                     </span>
                   </label>
                 ))}
@@ -519,7 +521,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. <code>meeting_rescheduled</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and the old time as <code>previous_meeting_at</code>. <code>form_submitted</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and a <code>form</code> whose <code>answers</code> each have a <code>question</code> and an{" "}
-                  <code>answer</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
+                  <code>answer</code>. <code>status_changed</code> sends <code>&quot;reply&quot;: null</code> and the old status as{" "}
+                  <code>previous_status</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
                   <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once
                   their scheduling tool sent it.
                 </p>

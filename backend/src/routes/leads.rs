@@ -301,7 +301,7 @@ async fn update_lead(
     .bind(notes)
     .fetch_one(&state.db)
     .await?;
-    crate::hooks::status_changed(&state, &before, &lead).await;
+    crate::hooks::team_set_status(&state, &before, &lead).await;
     Ok(Json(detail(&state.db, lead).await?))
 }
 
@@ -388,7 +388,7 @@ async fn set_status(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
     .fetch_all(&state.db)
     .await?;
     for c in &changed {
-        crate::hooks::status_changed(&state, &c.before, &c.lead).await;
+        crate::hooks::team_set_status(&state, &c.before, &c.lead).await;
     }
     Ok(Json(json!({ "changed": changed.len() })))
 }
