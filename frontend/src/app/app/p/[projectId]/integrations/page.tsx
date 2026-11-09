@@ -240,6 +240,7 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
       {name ? (
         <p className="text-sm">
           Connected to {name}. Addresses it can&apos;t confirm either way, like catch-all domains, still get their email.
+          {settings.verifier === "hunter" && " Guessed addresses are looked up with Hunter's Email Finder first."}
         </p>
       ) : (
         <div className="flex flex-col gap-4 sm:flex-row">

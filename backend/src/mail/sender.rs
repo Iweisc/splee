@@ -11,7 +11,7 @@ use super::{dns, smtp};
 use crate::agent::{self, kind};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
-use crate::verify::{self, Verdict};
+use crate::verify::{self, Lookup, Verdict};
 
 /// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
 const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
@@ -168,13 +168,42 @@ async fn verify_first(state: &AppState, email: &EmailMessage, lead: &Lead, to: &
     if lead.email_status == "invalid" {
         return Ok(Some(INVALID));
     }
-    let status = match verify::verify(state, email.project_id, to).await {
+    // A found address beats a guessed one. The email waits a tick so the new address gets the do-not-contact and domain
+    // checks too. Skipped when another lead in the project already has it, so nobody gets two first emails.
+    let lookup = if lead.email_status == "guessed" { verify::find(state, email.project_id, lead, to).await } else { Lookup::Nothing };
+    let finder_failed = matches!(lookup, Lookup::Failed);
+    if let Lookup::Found(found) = lookup {
+        if found.email != to.to_lowercase() {
+            if replace_guessed(&state.db, lead, &found).await? {
+                return Ok(Some(Skip::Wait));
+            }
+        } else if found.verified {
+            sqlx::query("update leads set email_status = 'verified' where id = $1").bind(lead.id).execute(&state.db).await?;
+            return Ok(None);
+        }
+    }
+    let status = match verify::verify(state, email.project_id, to, finder_failed).await {
         Some(Verdict::Valid) => "verified",
         Some(Verdict::Invalid) => "invalid",
         Some(Verdict::Unsure) | None => return Ok(None),
     };
     sqlx::query("update leads set email_status = $2 where id = $1").bind(lead.id).bind(status).execute(&state.db).await?;
     Ok((status == "invalid").then_some(INVALID))
+}
+
+/// Points the lead at the found address, unless another lead in the project already has it. True when it moved.
+async fn replace_guessed(db: &sqlx::PgPool, lead: &Lead, found: &verify::Found) -> sqlx::Result<bool> {
+    let moved = sqlx::query(
+        "update leads set email = $2, email_status = $3 where id = $1
+           and not exists (select 1 from leads o where o.project_id = $4 and o.id <> $1 and lower(o.email::text) = $2)",
+    )
+    .bind(lead.id)
+    .bind(&found.email)
+    .bind(if found.verified { "verified" } else { "found" })
+    .bind(lead.project_id)
+    .execute(db)
+    .await?;
+    Ok(moved.rows_affected() == 1)
 }
 
 /// How many emails mailbox `m` may send today. A ramping mailbox starts at 10 on its first day and adds 4 a day until it
@@ -560,8 +589,9 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox};
-    use crate::models::EmailMessage;
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, replace_guessed};
+    use crate::models::{EmailMessage, Lead};
+    use crate::verify::Found;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
@@ -746,5 +776,30 @@ mod tests {
     fn no_hot_lead_pauses_only_past_the_threshold() {
         assert_eq!(campaign_status(625, 0), Some("working"));
         assert_eq!(campaign_status(626, 0), Some("paused"));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_found_address_replaces_a_guess_unless_another_lead_has_it(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead = |email: &'static str| {
+            sqlx::query_as::<_, Lead>("insert into leads (project_id, full_name, email, email_status) values ($1, 'Sam Lee', $2, 'guessed') returning *")
+                .bind(project)
+                .bind(email)
+                .fetch_one(&db)
+        };
+        let guessed = lead("s.lee@acme.example").await.unwrap();
+        lead("Sam@acme.example").await.unwrap();
+
+        let taken = Found { email: "sam@acme.example".into(), verified: true };
+        assert!(!replace_guessed(&db, &guessed, &taken).await.unwrap());
+        let fresh = Found { email: "samuel@acme.example".into(), verified: false };
+        assert!(replace_guessed(&db, &guessed, &fresh).await.unwrap());
+        let (email, status): (String, String) =
+            sqlx::query_as("select email::text, email_status from leads where id = $1").bind(guessed.id).fetch_one(&db).await.unwrap();
+        assert_eq!((email.as_str(), status.as_str()), ("samuel@acme.example", "found"));
     }
 }

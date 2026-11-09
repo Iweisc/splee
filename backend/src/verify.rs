@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::crypto;
 use crate::hooks::{self, Alert};
+use crate::models::Lead;
 use crate::state::AppState;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,8 +83,9 @@ impl Verifier {
 }
 
 /// The project's verdict on `email`, or None when it has no verifier or the service failed. A failure is logged and shown
-/// on the integrations page, and the email goes out unverified rather than waiting on the service.
-pub async fn verify(state: &AppState, project_id: Uuid, email: &str) -> Option<Verdict> {
+/// on the integrations page, and the email goes out unverified rather than waiting on the service. A success clears the
+/// shown failure unless `keep_error`, set when a lookup just before it failed.
+pub async fn verify(state: &AppState, project_id: Uuid, email: &str, keep_error: bool) -> Option<Verdict> {
     let row: Option<(String, String)> = sqlx::query_as("select verifier, verifier_key_enc from project_settings where project_id = $1")
         .bind(project_id)
         .fetch_optional(&state.db)
@@ -96,7 +98,9 @@ pub async fn verify(state: &AppState, project_id: Uuid, email: &str) -> Option<V
         Ok(key) => verifier.verify(&key, email).await,
         Err(e) => Err(e),
     };
-    hooks::record(&state.db, project_id, Alert::Verifier, &enc, &result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"))).await;
+    if !(keep_error && result.is_ok()) {
+        hooks::record(&state.db, project_id, Alert::Verifier, &enc, &result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"))).await;
+    }
     match result {
         Ok(verdict) => Some(verdict),
         Err(e) => {
@@ -104,6 +108,68 @@ pub async fn verify(state: &AppState, project_id: Uuid, email: &str) -> Option<V
             None
         }
     }
+}
+
+/// An address Hunter found for a lead, to replace a guessed one.
+#[derive(Debug, PartialEq)]
+pub struct Found {
+    pub email: String,
+    /// Hunter also verified it, so it needn't be checked again.
+    pub verified: bool,
+}
+
+pub enum Lookup {
+    Found(Found),
+    /// Not Hunter, or nothing Hunter is confident in.
+    Nothing,
+    /// Recorded like a failed check.
+    Failed,
+}
+
+/// With Hunter connected, looks up the lead's real address at the guessed address's domain.
+pub async fn find(state: &AppState, project_id: Uuid, lead: &Lead, guessed: &str) -> Lookup {
+    let row: Option<(String, String)> = sqlx::query_as("select verifier, verifier_key_enc from project_settings where project_id = $1")
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let Some((_, enc)) = row.filter(|(name, _)| matches!(Verifier::parse(name), Some(Verifier::Hunter))) else { return Lookup::Nothing };
+    let Some((_, domain)) = guessed.rsplit_once('@') else { return Lookup::Nothing };
+    let domain = domain.to_lowercase();
+    let (first, last) = if lead.first_name.is_empty() {
+        lead.full_name.trim().split_once(' ').unwrap_or((lead.full_name.trim(), ""))
+    } else {
+        (lead.first_name.as_str(), lead.last_name.as_str())
+    };
+    let result = match crypto::decrypt(&state.cfg.app_secret, &enc) {
+        Ok(key) => match Url::parse_with_params(
+            "https://api.hunter.io/v2/email-finder",
+            [("domain", domain.as_str()), ("first_name", first.trim()), ("last_name", last.trim())],
+        ) {
+            Ok(url) => hunter_get(url, &key).await,
+            Err(e) => Err(e.into()),
+        },
+        Err(e) => Err(e),
+    };
+    match result {
+        Ok(body) => hunter_found(&body, &domain).map_or(Lookup::Nothing, Lookup::Found),
+        Err(e) => {
+            tracing::warn!(error = %e, "hunter email finder failed");
+            hooks::record(&state.db, project_id, Alert::Verifier, &enc, &Err(anyhow::anyhow!("Email finder: {e:#}"))).await;
+            Lookup::Failed
+        }
+    }
+}
+
+/// Hunter's answer, kept only at the same domain and when it's verified or Hunter is fairly sure (score 0 to 100), so a
+/// lead is never pointed at someone at another company.
+fn hunter_found(body: &Value, domain: &str) -> Option<Found> {
+    let data = &body["data"];
+    let email = data["email"].as_str()?.trim().to_lowercase();
+    let verified = data["verification"]["status"] == "valid";
+    let sure = verified || data["score"].as_i64().unwrap_or(0) >= 80;
+    (email.rsplit_once('@').is_some_and(|(_, d)| d == domain) && sure).then_some(Found { email, verified })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -182,6 +248,13 @@ mod tests {
         assert_eq!(hunter_verdict("disposable"), Verdict::Invalid);
         assert_eq!(hunter_verdict("webmail"), Verdict::Unsure);
         assert_eq!(hunter_verdict(""), Verdict::Unsure);
+        // Hunter's test key answers with this person whatever was asked.
+        let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
+        assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
+        assert_eq!(hunter_found(&found, "stripe.com"), None);
+        let unsure = json!({"data": {"email": "r@piedpiper.com", "score": 40, "verification": {"status": "accept_all"}}});
+        assert_eq!(hunter_found(&unsure, "piedpiper.com"), None);
+        assert_eq!(hunter_found(&json!({"data": {"email": null}}), "piedpiper.com"), None);
         // Real responses to a bad key, from both services.
         let nb = neverbounce_ok(&json!({"status": "auth_failure", "message": "Invalid API key 'secret123'"})).unwrap_err();
         assert!(!nb.to_string().contains("secret123"));
