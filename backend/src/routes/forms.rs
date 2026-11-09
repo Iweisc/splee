@@ -160,7 +160,10 @@ async fn submitted(
             .fetch_optional(&state.db)
             .await?
             .ok_or(AppError::NotFound)?;
-    let (mut lead, rest) = lead_from(answers(&body));
+    let answered = answers(&body);
+    let given: Vec<Value> = answered.iter().filter(|(_, a)| !a.trim().is_empty()).map(|(q, a)| json!({"question": q, "answer": a})).collect();
+    let form = json!({ "answers": given });
+    let (mut lead, rest) = lead_from(answered);
     if let Some(campaign) = q.campaign {
         let Ok(segment_id) = campaign.parse() else { return Ok(Json(json!({ "added": 0 }))) };
         lead.segment_id = Some(segment_id);
@@ -190,6 +193,7 @@ async fn submitted(
         let link = hooks::lead_url(&state.cfg.public_url, project_id, lead.id);
         let alert = ChatAlert { label: "New form lead", summary: &summary, quote: (!notes.is_empty()).then_some(&notes), link: &link, link_text: "Open the lead" };
         hooks::post_chat(&state.db, project_id, &alert).await;
+        hooks::send_lead_event(&state, project_id, "form_submitted", &lead, Some(("form", form))).await;
     });
     Ok(Json(json!({ "added": 1 })))
 }
