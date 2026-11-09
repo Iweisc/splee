@@ -88,6 +88,12 @@ export function FileName({ name }: { name: string }) {
   return breakAt(name, /(?<=[._-])/);
 }
 
+/** Free text such as an error, where a URL wraps after a path slash instead of in the middle of a word or number.
+    Not after "https://", which would leave the scheme alone at the end of a line. */
+export function Message({ text }: { text: string }) {
+  return breakAt(text, /(?<=[^/]\/)(?!\/)/);
+}
+
 function breakAt(text: string, at: RegExp) {
   return text.split(at).map((part, i) => (
     <Fragment key={i}>

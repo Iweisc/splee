@@ -9,7 +9,7 @@ import { LoadError, SectionsSkeleton } from "@/components/app/settings/layout";
 import { MailboxForm } from "@/components/app/settings/mailbox-form";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
-import { Address, Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/misc";
+import { Address, Badge, Card, EmptyState, Message, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
@@ -203,7 +203,9 @@ export default function MailboxesPage() {
                 <Health stats={stats?.find((s) => s.mailbox_id === m.id)} />
 
                 {m.last_error && (
-                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">{m.last_error}</p>
+                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">
+                    <Message text={m.last_error} />
+                  </p>
                 )}
                 {m.status === "error" && <p className="mt-2 text-xs text-muted-foreground">{nextStep(m)}</p>}
               </Card>
