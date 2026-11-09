@@ -15,6 +15,8 @@ use crate::verify::{self, Lookup, Verdict};
 
 /// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
 const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
+/// The kinds whose body ends with the signature WriterSettings::sign added. A reply someone typed is sent as they wrote it.
+const SIGNED_KINDS: [&str; 3] = ["initial", "follow_up", "auto_reply"];
 
 pub fn new_message_id(sender_email: &str) -> String {
     let domain = sender_email.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("splee.local");
@@ -264,6 +266,32 @@ async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> 
     }
 }
 
+/// Signs the email with the sending mailbox's signature, when it has one, instead of the project's, so a team sending
+/// from several people's mailboxes signs each email as the person it comes from. The mailbox is only known now, after the
+/// email was written and approved.
+async fn resign(db: &sqlx::PgPool, email: &EmailMessage, mb: &Mailbox) -> anyhow::Result<String> {
+    if mb.signature.trim().is_empty() || !SIGNED_KINDS.contains(&email.kind.as_str()) {
+        return Ok(email.body.clone());
+    }
+    let (signature, sender_name): (String, String) = sqlx::query_as("select signature, sender_name from project_settings where project_id = $1")
+        .bind(email.project_id)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or_default();
+    Ok(swap_signature(&email.body, agent::signature(&signature, &sender_name), mb.signature.trim()))
+}
+
+/// Replaces the `old` signature at the end of `body` with `new`. A body that no longer ends with it was edited by hand,
+/// so it's left alone rather than signed twice.
+fn swap_signature(body: &str, old: &str, new: &str) -> String {
+    let body = body.trim_end();
+    let unsigned = if old.is_empty() { Some(body) } else { body.strip_suffix(old).and_then(|rest| rest.strip_suffix("\n\n")) };
+    match unsigned {
+        Some(rest) => format!("{}\n\n{new}", rest.trim_end()),
+        None => body.to_string(),
+    }
+}
+
 /// Cold emails carry an unsubscribe footer. Replies go without one, like any other message in a conversation.
 pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str) -> String {
     if kind == "initial" || kind == "follow_up" {
@@ -307,6 +335,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let in_reply_to = email.in_reply_to.clone().or_else(|| if email.kind == "initial" { None } else { references.last().cloned() });
     let unsubscribe_page = format!("{}/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
     let one_click = format!("{}/api/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
+    // Saved as sent, so the app shows the signature the lead got.
+    let email = EmailMessage { body: resign(&state.db, &email, &mb).await?, ..email };
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
 
     let built = smtp::build(
@@ -475,7 +505,7 @@ async fn record_sent(
     let mut tx = state.db.begin().await?;
     sqlx::query(
         "update email_messages set status = 'sent', sent_at = now(), message_id = $2, in_reply_to = $3, mailbox_id = $4, from_email = $5,
-                                   to_email = $6, cost_micros = $7, error = ''
+                                   to_email = $6, cost_micros = $7, error = '', body = $8
          where id = $1",
     )
     .bind(email.id)
@@ -485,6 +515,7 @@ async fn record_sent(
     .bind(&mb.email)
     .bind(to)
     .bind(mb.cost_per_email_micros)
+    .bind(&email.body)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -617,9 +648,18 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, swap_signature};
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
+
+    #[test]
+    fn the_sending_mailbox_signs_in_place_of_the_project() {
+        assert_eq!(swap_signature("Hi Sam,\n\nWorth a chat?\n\nAlex\nAcme\n", "Alex\nAcme", "Jo Lee\nAcme"), "Hi Sam,\n\nWorth a chat?\n\nJo Lee\nAcme");
+        // A project with no signature or sender name signs nothing, so the mailbox's goes under the body.
+        assert_eq!(swap_signature("Worth a chat?", "", "Jo"), "Worth a chat?\n\nJo");
+        // Edited by hand to end some other way, so it's sent as it is.
+        assert_eq!(swap_signature("Worth a chat?\n\nCheers, Alex B", "Alex", "Jo"), "Worth a chat?\n\nCheers, Alex B");
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]

@@ -8,7 +8,7 @@ pub mod sdk;
 mod write;
 pub mod x;
 
-pub use write::leads_without_initial;
+pub use write::{leads_without_initial, signature};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};

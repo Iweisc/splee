@@ -44,7 +44,7 @@ export default function EmailTemplatesPage() {
     >
       {(s, update, dirty) => (
         <>
-          <Section title="Sender" description="The name the agent signs with and the signature added under every email.">
+          <Section title="Sender" description="The name the agent signs with and the signature under every email, unless the sending mailbox has its own.">
             <div className="grid gap-4">
               <Field label="Sender name">
                 <Input value={s.sender_name} onChange={(e) => update({ sender_name: e.target.value })} placeholder="e.g. Alex Morgan" />

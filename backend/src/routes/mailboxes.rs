@@ -70,6 +70,7 @@ pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxSta
 struct MailboxBody {
     email: Option<String>,
     from_name: Option<String>,
+    signature: Option<String>,
     smtp_host: Option<String>,
     smtp_port: Option<i32>,
     smtp_security: Option<String>,
@@ -134,9 +135,9 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let secret = &state.cfg.app_secret;
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
-           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up)
+           imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
-           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true))
+           $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''))
          returning *",
     )
     .bind(auth.org_id)
@@ -155,6 +156,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(&body.status)
     .bind(body.cost_per_email_micros)
     .bind(body.ramp_up)
+    .bind(body.signature.as_deref().map(str::trim))
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -194,7 +196,8 @@ async fn update(
            daily_limit = coalesce($13, daily_limit),
            status = coalesce($14, status),
            cost_per_email_micros = coalesce($15, cost_per_email_micros),
-           ramp_up = coalesce($16, ramp_up)
+           ramp_up = coalesce($16, ramp_up),
+           signature = coalesce($17, signature)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -213,6 +216,7 @@ async fn update(
     .bind(&body.status)
     .bind(body.cost_per_email_micros)
     .bind(body.ramp_up)
+    .bind(body.signature.as_deref().map(str::trim))
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

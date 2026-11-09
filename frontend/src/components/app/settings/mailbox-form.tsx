@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Field, Input, NumberInput, Select, Switch } from "@/components/ui/form";
+import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import type { Mailbox, MailboxInput } from "@/lib/types";
 import { MicroLabel } from "@/components/app/work/states";
@@ -26,6 +26,7 @@ const PRESET_NOTES: Record<Preset, string> = {
 const EMPTY: MailboxInput = {
   email: "",
   from_name: "",
+  signature: "",
   ...PRESETS.google,
   smtp_username: "",
   smtp_password: "",
@@ -37,11 +38,12 @@ const EMPTY: MailboxInput = {
 };
 
 function toInput(m: Mailbox): MailboxInput {
-  const { email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
+  const { email, from_name, signature, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username, daily_limit, cost_per_email_micros, ramp_up } =
     m;
   return {
     email,
     from_name,
+    signature,
     smtp_host,
     smtp_port,
     smtp_security,
@@ -143,6 +145,10 @@ export function MailboxForm({
           <Input value={m.from_name} onChange={(e) => set({ from_name: e.target.value })} placeholder="Alex Morgan" />
         </Field>
       </div>
+
+      <Field label="Signature" hint="Signs the emails Splee writes when this mailbox sends them. Leave empty to use the project's.">
+        <Textarea value={m.signature} onChange={(e) => set({ signature: e.target.value })} placeholder={"Alex Morgan\nFounder, Acme"} rows={2} />
+      </Field>
 
       <fieldset className="grid gap-4">
         <MicroLabel>Sending (SMTP)</MicroLabel>

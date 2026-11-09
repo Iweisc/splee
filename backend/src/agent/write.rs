@@ -76,9 +76,14 @@ impl WriterSettings {
     /// Appended by code so the user's exact signature is used.
     pub fn sign(&self, body: &str) -> String {
         let body = body.trim_end();
-        let sig = if self.signature.trim().is_empty() { self.sender_name.trim() } else { self.signature.trim() };
+        let sig = signature(&self.signature, &self.sender_name);
         if sig.is_empty() { body.to_string() } else { format!("{body}\n\n{sig}") }
     }
+}
+
+/// What `sign` puts under an email: the project's signature, or its sender name when it has none.
+pub fn signature<'a>(signature: &'a str, sender_name: &'a str) -> &'a str {
+    if signature.trim().is_empty() { sender_name.trim() } else { signature.trim() }
 }
 
 async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
