@@ -96,6 +96,7 @@ const CHAT_APPS = [
   ["Lark or Feishu", "group Settings → Bots → Custom Bot"],
   ["DingTalk", "group Bots → Custom, with IP security"],
   ["WeCom", "the group chat's ⋯ → Add Group Robot"],
+  ["Webex", "Incoming Webhooks on the Webex App Hub"],
 ];
 
 /** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */
@@ -118,6 +119,7 @@ function chatApp(url: string): string {
   if (host === "open.feishu.cn") return "Feishu";
   if (host === "oapi.dingtalk.com") return "DingTalk";
   if (host === "qyapi.weixin.qq.com") return "WeCom";
+  if (host === "webexapis.com") return "Webex";
   return host;
 }
 

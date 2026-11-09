@@ -64,6 +64,7 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
 const LARK: [&str; 2] = ["open.larksuite.com", "open.feishu.cn"];
 const DINGTALK: &str = "oapi.dingtalk.com";
 const WECOM: &str = "qyapi.weixin.qq.com";
+const WEBEX: &str = "webexapis.com";
 
 /// The chat apps that answer 200 to every post and put a failure, like a wrong token, in the body: the keys of its
 /// code, which is 0 when the post went through, and of its reason.
@@ -359,8 +360,8 @@ fn query(url: &str, key: &str) -> Option<String> {
 
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
-/// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL) and WeCom (a group robot's `?key=` URL) have
-/// their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
+/// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
+/// (an incoming webhook's URL) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
@@ -393,16 +394,18 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
         }
         lines.push(json!([{"tag": "a", "text": a.link_text, "href": a.link}]));
         json!({"msg_type": "post", "content": {"post": {"en_us": {"title": a.label, "content": lines}}}})
-    } else if host == DINGTALK || host == WECOM {
+    } else if host == DINGTALK || host == WECOM || host == WEBEX {
         let (head, tail) = (format!("**{}:** {}", a.label, a.summary), format!("\n\n[{}]({})", a.link_text, a.link));
         // A blank line between quoted lines, or they run together into one.
         let quote = quote.replace("\n>", "\n\n>");
         if host == DINGTALK {
             json!({"msgtype": "markdown", "markdown": {"title": a.label, "text": format!("{head}{quote}{tail}")}})
         } else {
-            // WeCom refuses markdown over 4096 bytes, and a long reply would pass that. The reply is cut, not the link.
-            let quote = cut_bytes(&quote, 4096usize.saturating_sub(head.len() + tail.len()));
-            json!({"msgtype": "markdown", "markdown": {"content": format!("{head}{quote}{tail}")}})
+            // WeCom refuses markdown over 4096 bytes and Webex a message over 7439, and a long reply would pass that. The
+            // reply is cut, not the link.
+            let max: usize = if host == WECOM { 4096 } else { 7439 };
+            let content = format!("{head}{}{tail}", cut_bytes(&quote, max.saturating_sub(head.len() + tail.len())));
+            if host == WECOM { json!({"msgtype": "markdown", "markdown": {"content": content}}) } else { json!({"markdown": content}) }
         }
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
@@ -681,6 +684,12 @@ mod tests {
         let content = chat_payload("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc", &ChatAlert { quote: Some(&long), ..a });
         let content = content["markdown"]["content"].as_str().unwrap();
         assert!(content.len() <= 4096 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
+        let webex = "https://webexapis.com/v1/webhooks/incoming/abc";
+        assert_eq!(chat_payload(webex, &a), json!({"markdown": markdown}));
+        let long = "é".repeat(5000);
+        let content = chat_payload(webex, &ChatAlert { quote: Some(&long), ..a });
+        let content = content["markdown"].as_str().unwrap();
+        assert!(content.len() <= 7439 && content.len() > 7400 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }
 
