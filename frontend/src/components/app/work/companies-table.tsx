@@ -24,7 +24,12 @@ const STATUS_LABEL: Record<Company["status"], string> = {
 const ACTION = "hidden @lg:table-cell";
 const STATUS = "hidden @2xl:table-cell";
 const REASON = "hidden @4xl:table-cell";
-const FIRMOGRAPHICS = "hidden @[70rem]:table-cell";
+// Size and location wait for a wider table than the others: on a 1440px screen they squeezed the names and reasons.
+const FIRMOGRAPHICS = "hidden @[80rem]:table-cell";
+// The name and reason split whatever width the other columns leave, so a name only cuts off when the table is out of
+// room. max-w-0 keeps a long name from widening the table. The rest are 1% wide so they shrink to their content: a
+// column with no width would take the spare room instead.
+const NARROW = "w-[1%]";
 
 export function CompaniesTable({ projectId, segmentId }: { projectId: string; segmentId: string }) {
   const [q, setQ] = useState("");
@@ -72,22 +77,22 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
             <table className="w-full text-sm">
               <thead>
                 <tr>
-                  <Th>Company</Th>
-                  <Th className={FIRMOGRAPHICS}>Size</Th>
-                  <Th className={FIRMOGRAPHICS}>Location</Th>
-                  <Th>Fit</Th>
-                  <Th className={REASON}>Why it fits</Th>
-                  <Th className={STATUS}>Status</Th>
-                  <Th className={ACTION} />
+                  <Th className="w-[50%]">Company</Th>
+                  <Th className={cn(FIRMOGRAPHICS, NARROW)}>Size</Th>
+                  <Th className={cn(FIRMOGRAPHICS, NARROW)}>Location</Th>
+                  <Th className={NARROW}>Fit</Th>
+                  <Th className={cn(REASON, "w-[50%]")}>Why it fits</Th>
+                  <Th className={cn(STATUS, NARROW)}>Status</Th>
+                  <Th className={cn(ACTION, NARROW)} />
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((c) => (
                   <Tr key={c.id} className={cn(c.status === "excluded" && "text-muted-foreground")}>
-                    <Td>
+                    <Td className="max-w-0">
                       <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
                         <Favicon domain={c.domain} />
-                        <span className="max-w-40 min-w-0 @md:max-w-48">
+                        <span className="min-w-0">
                           <span className="block truncate font-medium">{c.name || c.domain}</span>
                           <span className="block truncate text-xs text-muted-foreground">{c.domain}</span>
                         </span>
@@ -99,7 +104,7 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                     <Td title={c.fit_reason}>
                       <FitScore value={c.fit_score} />
                     </Td>
-                    <Td className={cn(REASON, "max-w-md min-w-60")}>
+                    <Td className={cn(REASON, "min-w-60")}>
                       <p className="line-clamp-2 text-xs text-muted-foreground">{c.fit_reason}</p>
                     </Td>
                     <Td className={STATUS}>
