@@ -160,7 +160,9 @@ pub fn spawn_workers(state: AppState) {
 /// Deletes signed-out demos and explorer runs a week after they start, and support chats a week after their last message.
 /// All of them keep the visitor's IP. Only the tab that started a demo holds its claim token, in sessionStorage, so a week
 /// leaves plenty of time to sign up. The chat widget starts a new conversation when its stored one is gone.
+/// Expired sign-in sessions go too: sign-in already ignores them, and nothing else removes them.
 async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("delete from sessions where expires_at < now()").execute(db).await?;
     sqlx::query("delete from projects where org_id is null and created_at < now() - interval '7 days'").execute(db).await?;
     sqlx::query("delete from agent_runs where kind = 'explorer' and project_id is null and created_at < now() - interval '7 days'").execute(db).await?;
     sqlx::query(
@@ -330,6 +332,17 @@ mod tests {
         };
         let idle_chat = chat("8 days").await;
         let active_chat = chat("1 day").await;
+        let user: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('ana@example.com', 'x') returning id").fetch_one(&db).await.unwrap();
+        for (token, expires) in [("expired", "-1 minute"), ("live", "1 day")] {
+            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + $4::interval)")
+                .bind(token)
+                .bind(user)
+                .bind(org)
+                .bind(expires)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
 
         expire_visitor_data(&db).await.unwrap();
 
@@ -341,5 +354,7 @@ mod tests {
         assert!(runs.contains(&new_explorer));
         let chats: Vec<Uuid> = sqlx::query_scalar("select id from support_conversations").fetch_all(&db).await.unwrap();
         assert!(!chats.contains(&idle_chat) && chats.contains(&active_chat));
+        let sessions: Vec<String> = sqlx::query_scalar("select token_hash from sessions").fetch_all(&db).await.unwrap();
+        assert_eq!(sessions, vec!["live"]);
     }
 }
