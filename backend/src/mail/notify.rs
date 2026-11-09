@@ -162,7 +162,8 @@ fn digest_body(
         for s in bouncing {
             body += &format!("{} bounced {}% of the {} leads it emailed in the last 30 days.\n", s.email, s.bounce_percent(), s.emailed);
         }
-        body += "Past 5%, providers start sending a mailbox's mail to spam. Check the addresses in your lead lists before you send more.\n";
+        body += "Past 5%, providers start sending a mailbox's mail to spam, and past 10% Splee pauses it. ";
+        body += "Check the addresses in your lead lists before you send more.\n";
     }
     if waiting > 0 {
         let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };

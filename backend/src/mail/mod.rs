@@ -107,6 +107,29 @@ pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, kind: &str, sub
     send_system_email(state, org_id, to, subject, &body).await
 }
 
+/// Pauses a mailbox that bounced too much of its last 30 days, after a bounce came back to it. Resuming it is left to
+/// someone who has cleaned the lead lists, and the next bounce pauses it again while the rate stays that high.
+pub async fn pause_if_bouncing(db: &sqlx::PgPool, mailbox_id: Uuid) -> sqlx::Result<()> {
+    let Some(stats) = crate::routes::mailboxes::mailbox_stats(db, mailbox_id).await? else { return Ok(()) };
+    if !stats.too_many_bounces() {
+        return Ok(());
+    }
+    let why = format!(
+        "Paused after {}% of the {} leads it emailed in the last 30 days bounced. Check the addresses in your lead lists, then resume it.",
+        stats.bounce_percent(),
+        stats.emailed
+    );
+    let paused = sqlx::query("update mailboxes set status = 'paused', last_error = $2 where id = $1 and status = 'active'")
+        .bind(mailbox_id)
+        .bind(&why)
+        .execute(db)
+        .await?;
+    if paused.rows_affected() == 1 {
+        tracing::warn!(mailbox = %stats.email, bounced = stats.bounced, emailed = stats.emailed, "paused a mailbox for bounces");
+    }
+    Ok(())
+}
+
 /// Takes a lead's unsent LinkedIn steps off the to-do list, for a reply or a suppression. $1 is the lead.
 pub const STOP_LINKEDIN: &str = "update linkedin_messages set status = 'skipped' where lead_id = $1 and status = 'todo'";
 
@@ -143,4 +166,72 @@ pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, 
         crate::hooks::send_lead_event(state, lead.project_id, event, lead, None).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::pause_if_bouncing;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_mailbox_stops_once_over_a_tenth_of_its_leads_bounce(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc)
+             values ($1, 'a@example.test', 'smtp.example.test', 'a', 'x') returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        // 20 leads emailed, and a bounce back from each of the first `n`.
+        let leads: Vec<Uuid> = sqlx::query_scalar("insert into leads (project_id) select $1 from generate_series(1, 20) returning id")
+            .bind(project)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        for lead in &leads {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+                 values ($1, $2, $3, 'outbound', 'initial', 'sent', now())",
+            )
+                .bind(project)
+                .bind(lead)
+                .bind(mailbox)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let bounce = |lead: Uuid| {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, classification)
+                 values ($1, $2, $3, 'inbound', 'inbound', 'received', 'bounce')",
+            )
+                .bind(project)
+                .bind(lead)
+                .bind(mailbox)
+                .execute(&db)
+        };
+        let state = || async {
+            sqlx::query_as::<_, (String, String)>("select status, last_error from mailboxes where id = $1").bind(mailbox).fetch_one(&db).await.unwrap()
+        };
+
+        // 2 of 20 is 10%: past the digest's warning, not yet over the line.
+        bounce(leads[0]).await.unwrap();
+        bounce(leads[1]).await.unwrap();
+        pause_if_bouncing(&db, mailbox).await.unwrap();
+        assert_eq!(state().await.0, "active");
+
+        bounce(leads[2]).await.unwrap();
+        pause_if_bouncing(&db, mailbox).await.unwrap();
+        let (status, why) = state().await;
+        assert_eq!(status, "paused");
+        assert!(why.starts_with("Paused after 15% of the 20 leads"), "{why}");
+    }
 }

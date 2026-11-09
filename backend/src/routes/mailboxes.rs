@@ -48,8 +48,16 @@ async fn stats(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<
 }
 
 pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>> {
-    let stats = sqlx::query_as::<_, MailboxStats>(
-        "select m.id as mailbox_id, m.email::text,
+    let stats = sqlx::query_as::<_, MailboxStats>(&format!("{STATS} where m.org_id = $1 order by m.email")).bind(org_id).fetch_all(db).await?;
+    Ok(stats.into_iter().filter(|s| s.emailed > 0).collect())
+}
+
+/// One mailbox's last 30 days, as org_stats counts them.
+pub async fn mailbox_stats(db: &PgPool, mailbox_id: Uuid) -> sqlx::Result<Option<MailboxStats>> {
+    sqlx::query_as::<_, MailboxStats>(&format!("{STATS} where m.id = $1")).bind(mailbox_id).fetch_optional(db).await
+}
+
+const STATS: &str = "select m.id as mailbox_id, m.email::text,
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at > now() - interval '30 days') as emailed,
            (select count(distinct e.lead_id) from email_messages e
@@ -58,13 +66,7 @@ pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxSta
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.direction = 'inbound' and e.classification is distinct from 'bounce'
                and e.created_at > now() - interval '30 days') as replied
-         from mailboxes m where m.org_id = $1 order by m.email",
-    )
-    .bind(org_id)
-    .fetch_all(db)
-    .await?;
-    Ok(stats.into_iter().filter(|s| s.emailed > 0).collect())
-}
+         from mailboxes m";
 
 /// MailboxInput from types.ts. Every field is optional so PATCH can reuse it.
 #[derive(Deserialize)]
@@ -202,6 +204,8 @@ async fn update(
            imap_password_enc = coalesce($12, imap_password_enc),
            daily_limit = coalesce($13, daily_limit),
            status = coalesce($14, status),
+           -- Resuming clears why it was paused, like a bounce rate that stopped it.
+           last_error = case when $14 = 'active' and status = 'paused' then '' else last_error end,
            cost_per_email_micros = coalesce($15, cost_per_email_micros),
            ramp_up = coalesce($16, ramp_up),
            signature = coalesce($17, signature),
@@ -241,19 +245,23 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let result = mail::test_mailbox(&state, &mailbox).await;
-    // A passing test clears an error state but never unpauses a mailbox the user paused. Either way a person has now seen
-    // the result, so the sender stops testing it on its own.
-    let (status, error) = match &result {
-        Ok(()) => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, String::new()),
-        Err(e) => ("error", format!("{e:#}")),
-    };
-    sqlx::query("update mailboxes set status = $2, last_error = $3, recheck_at = null where id = $1")
-        .bind(mailbox.id)
-        .bind(status)
-        .bind(&error)
-        .execute(&state.db)
-        .await?;
-    Ok(Json(if result.is_ok() { json!({ "ok": true }) } else { json!({ "ok": false, "error": error }) }))
+    // A passing test clears an error state. Either way a person has now seen the result, so the sender stops testing it
+    // on its own. A test never changes a paused mailbox: only Resume does, and its last_error keeps why it's paused. The
+    // status comes from the row as it is now, since a bounce or Resume can change it while the test runs.
+    let error = result.as_ref().err().map(|e| format!("{e:#}"));
+    sqlx::query(
+        "update mailboxes set status = case when $2::text is not null then 'error' when status = 'error' then 'active' else status end,
+           last_error = coalesce($2, ''), recheck_at = null
+         where id = $1 and status <> 'paused'",
+    )
+    .bind(mailbox.id)
+    .bind(&error)
+    .execute(&state.db)
+    .await?;
+    Ok(Json(match error {
+        None => json!({ "ok": true }),
+        Some(e) => json!({ "ok": false, "error": e }),
+    }))
 }
 
 async fn check_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Mailbox>> {

@@ -17,10 +17,10 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         .await?;
     for mb in mailboxes {
         if let Err(e) = poll(state, &mb).await {
-            // Reading replies failing doesn't stop sending, so only record it. A stopped mailbox's last_error says why
-            // sending stopped, and that's the one to keep.
+            // Reading replies failing doesn't stop sending, so only record it. A stopped or paused mailbox's last_error says
+            // why it isn't sending, like too many bounces, and that's the one to keep.
             tracing::warn!(mailbox = %mb.email, error = ?e, "imap poll failed");
-            sqlx::query("update mailboxes set last_error = $2 where id = $1 and status <> 'error'")
+            sqlx::query("update mailboxes set last_error = $2 where id = $1 and status = 'active'")
                 .bind(mb.id)
                 .bind(format!("{e:#}"))
                 .execute(&state.db)
@@ -244,7 +244,7 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
 
     if is_bounce {
         super::suppress_lead(state, &lead, project_org, "bounced", "bounce").await?;
-        return Ok(());
+        return Ok(super::pause_if_bouncing(&state.db, mb.id).await?);
     }
     // Replied for now, so no follow-up goes out while the classifier works. It sets the final status.
     sqlx::query("update leads set status = 'replied' where id = $1 and status in ('new', 'queued', 'contacted')")
