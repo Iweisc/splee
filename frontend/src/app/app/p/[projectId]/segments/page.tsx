@@ -31,7 +31,9 @@ export default function SegmentsPage({ params }: PageProps<"/app/p/[projectId]/s
       />
       <PageBody>
         {error ? (
-          <LoadError error={error} retry={() => mutate()} />
+          <Card>
+            <LoadError error={error} retry={() => mutate()} />
+          </Card>
         ) : !segments ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 6 }, (_, i) => (

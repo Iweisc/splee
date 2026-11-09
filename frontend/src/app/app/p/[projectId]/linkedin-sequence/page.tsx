@@ -42,7 +42,9 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
       />
       <PageBody>
         {error ? (
-          <LoadError error={error} retry={() => mutate()} />
+          <Card>
+            <LoadError error={error} retry={() => mutate()} />
+          </Card>
         ) : !data ? (
           <div className="flex flex-col gap-3">
             {Array.from({ length: 4 }, (_, i) => (
