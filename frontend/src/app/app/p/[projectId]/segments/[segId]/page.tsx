@@ -101,7 +101,8 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
             { value: "leads", label: `Leads ${num(segment.leads)}` },
             { value: "emails", label: "Emails" },
           ]}
-          className="self-start"
+          // In one row the four tabs and their counts don't fit a phone, and Emails was cut off at the edge.
+          className="self-start max-sm:grid max-sm:w-full max-sm:grid-cols-2"
         />
         {/* Keyed on the content so the form picks up fields the agent fills in after "Describe it". */}
         {tab === "details" && <SegmentEditor key={editorKey(segment)} segment={segment} />}
