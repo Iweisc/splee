@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
 import { Toaster } from "sonner";
@@ -27,10 +27,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // The phone menu remembers the page it was opened on, so following any link closes it without an effect.
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const menuOpen = menuPath === pathname;
+  const navRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (params.projectId) localStorage.setItem(LAST_PROJECT_KEY, params.projectId);
   }, [params.projectId]);
+
+  // The nav scrolls on a laptop or phone, and the org pages sit at its bottom, so a fresh load of one left its
+  // highlighted link out of view. This scrolls just enough to bring it clear of the faded edges, and not at all when
+  // it's already in view, so clicking a link never moves the list under the pointer.
+  useEffect(() => {
+    const nav = navRef.current;
+    const link = nav?.querySelector('[aria-current="page"]');
+    if (!nav || !link) return;
+    const n = nav.getBoundingClientRect();
+    const l = link.getBoundingClientRect();
+    if (l.bottom > n.bottom - 32) nav.scrollTop += l.bottom - n.bottom + 32;
+    else if (l.top < n.top + 16) nav.scrollTop -= n.top + 16 - l.top;
+  }, [pathname, menuOpen, me, projects]);
 
   useEffect(() => {
     if (me === null) router.replace(`/signin?next=${encodeURIComponent(pathname)}`);
@@ -88,7 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* The nav doesn't fit a laptop's height, so its edges fade: a cut-off item shows there's more to scroll to. Scrolled
             to either end, they only cover padding: the first group's mt-4 at the top and pb-8 at the bottom. */}
-        <nav className="flex-1 overflow-y-auto px-2 pb-8 [mask-image:linear-gradient(transparent,#000_1rem,#000_calc(100%-2rem),transparent)]">
+        <nav ref={navRef} className="flex-1 overflow-y-auto px-2 pb-8 [mask-image:linear-gradient(transparent,#000_1rem,#000_calc(100%-2rem),transparent)]">
           {projectId &&
             projectNav.map((group) => (
               <div key={group.title} className="mt-4">
@@ -188,6 +202,7 @@ function NavLink({
   return (
     <Link
       href={href}
+      aria-current={active ? "page" : undefined}
       className={cn(
         "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors",
         active ? "bg-card font-medium text-foreground shadow-card" : "text-foreground/75 hover:bg-accent hover:text-foreground",
