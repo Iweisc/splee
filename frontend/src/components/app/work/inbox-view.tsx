@@ -116,7 +116,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
                 <li key={t.lead.id} data-key={t.lead.id} className="border-b border-border">
                   <button
                     onClick={() => setSelectedLead(t.lead.id)}
-                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent", selectedId === t.lead.id && "bg-accent")}
+                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent focus-visible:-outline-offset-2", selectedId === t.lead.id && "bg-accent")}
                   >
                     <Avatar name={t.lead.full_name || t.lead.email || "?"} />
                     <span className="min-w-0 flex-1">
@@ -340,7 +340,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
 
-      <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5">
+      <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5 focus-visible:-outline-offset-2">
         {conversation.map((m) => (
           <Bubble key={m.id} message={m} />
         ))}
