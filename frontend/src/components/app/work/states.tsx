@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button, LinkButton } from "@/components/ui/button";
@@ -57,17 +57,27 @@ export function ListSkeleton({ rows = 6, className }: { rows?: number; className
 
 export function Pager({ page, total, onChange }: { page: number; total: number; onChange: (page: number) => void }) {
   const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  const ref = useRef<HTMLDivElement>(null);
   if (total <= PER_PAGE) return null;
+  // The next page's rows replace these in place, so a click down here would land at the bottom of the next page.
+  // Back to the first row instead: the list above, if it scrolls by itself like Inbox's, and the page if its top is
+  // out of view. 72px leaves room for the phone header that sticks to the top.
+  const go = (to: number) => {
+    onChange(to);
+    ref.current?.previousElementSibling?.scrollTo({ top: 0 });
+    const top = ref.current?.parentElement?.getBoundingClientRect().top ?? 0;
+    if (top < 0) window.scrollBy({ top: top - 72 });
+  };
   return (
-    <div className="flex items-center justify-between border-t border-border px-4 py-2.5 text-sm text-muted-foreground">
+    <div ref={ref} className="flex items-center justify-between border-t border-border px-4 py-2.5 text-sm text-muted-foreground">
       <span className="tabular-nums">
         {num((page - 1) * PER_PAGE + 1)}–{num(Math.min(page * PER_PAGE, total))} of {num(total)}
       </span>
       <div className="flex gap-1">
-        <Button variant="ghost" size="icon" disabled={page <= 1} onClick={() => onChange(page - 1)} aria-label="Previous page">
+        <Button variant="ghost" size="icon" disabled={page <= 1} onClick={() => go(page - 1)} aria-label="Previous page">
           <ChevronLeft className="size-4" />
         </Button>
-        <Button variant="ghost" size="icon" disabled={page >= pages} onClick={() => onChange(page + 1)} aria-label="Next page">
+        <Button variant="ghost" size="icon" disabled={page >= pages} onClick={() => go(page + 1)} aria-label="Next page">
           <ChevronRight className="size-4" />
         </Button>
       </div>
