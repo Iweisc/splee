@@ -145,7 +145,7 @@ pub struct ProjectSettings {
     pub unipile_account_name: String,
     pub unipile_error: Option<String>,
     pub unipile_failed_at: Option<Ts>,
-    /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon" or "" for none. Its key (verifier_key_enc) stays out of this struct.
+    /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,
