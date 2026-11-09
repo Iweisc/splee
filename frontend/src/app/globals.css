@@ -76,3 +76,11 @@ body {
 ::selection {
   background: var(--color-brand-200);
 }
+
+/* Headings wrap into even lines, so one that just misses fitting doesn't leave a word alone on its last line.
+   Only the longhand, in the base layer: utilities like truncate and whitespace-nowrap still win. */
+@layer base {
+  h1, h2, h3, h4, summary {
+    text-wrap-style: balance;
+  }
+}
