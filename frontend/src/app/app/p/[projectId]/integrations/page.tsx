@@ -305,6 +305,13 @@ const CRMS = {
     account: { label: "Bundle alias", placeholder: "acme.myfreshworks.com" },
     hint: "In Freshsales: your profile → Profile Settings → API Settings, which shows both.",
   },
+  copper: {
+    name: "Copper",
+    record: "people",
+    field: "API key",
+    account: { label: "Your Copper email", placeholder: "you@company.com" },
+    hint: "In Copper: Settings → Integrations → API Keys → Generate API Key.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */

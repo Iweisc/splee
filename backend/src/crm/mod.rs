@@ -6,6 +6,7 @@ mod attio;
 mod brevo;
 mod capsule;
 mod close;
+mod copper;
 mod folk;
 mod freshsales;
 mod hubspot;
@@ -37,11 +38,12 @@ pub enum Crm {
     Salesflare,
     Affinity,
     Freshsales,
+    Copper,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 12] = [
+    pub const ALL: [Crm; 13] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -54,6 +56,7 @@ impl Crm {
         Crm::Salesflare,
         Crm::Affinity,
         Crm::Freshsales,
+        Crm::Copper,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -75,6 +78,7 @@ impl Crm {
             Crm::Salesflare => "salesflare",
             Crm::Affinity => "affinity",
             Crm::Freshsales => "freshsales",
+            Crm::Copper => "copper",
         }
     }
 
@@ -92,6 +96,7 @@ impl Crm {
             Crm::Salesflare => "Salesflare",
             Crm::Affinity => "Affinity",
             Crm::Freshsales => "Freshsales",
+            Crm::Copper => "Copper",
         }
     }
 
@@ -100,6 +105,7 @@ impl Crm {
     pub fn account(self) -> Option<&'static str> {
         match self {
             Crm::Freshsales => Some("bundle alias"),
+            Crm::Copper => Some("email"),
             _ => None,
         }
     }
@@ -119,6 +125,7 @@ impl Crm {
             Crm::Salesflare => salesflare::check(token).await,
             Crm::Affinity => affinity::check(token).await,
             Crm::Freshsales => freshsales::check(token).await,
+            Crm::Copper => copper::check(token).await,
         }
     }
 
@@ -136,6 +143,7 @@ impl Crm {
             Crm::Salesflare => salesflare::push(token, email, lead, note).await,
             Crm::Affinity => affinity::push(token, email, lead, note).await,
             Crm::Freshsales => freshsales::push(token, email, lead, note).await,
+            Crm::Copper => copper::push(token, email, lead, note).await,
         }
     }
 }

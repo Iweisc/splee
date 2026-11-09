@@ -150,6 +150,9 @@ pub struct ProjectSettings {
     pub freshsales_connected: bool,
     pub freshsales_error: Option<String>,
     pub freshsales_failed_at: Option<Ts>,
+    pub copper_connected: bool,
+    pub copper_error: Option<String>,
+    pub copper_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,
