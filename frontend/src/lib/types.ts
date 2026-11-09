@@ -168,7 +168,8 @@ export type WebhookEvent =
   | "lead_unsubscribed"
   | "lead_bounced"
   | "email_sent"
-  | "follow_up_due";
+  | "follow_up_due"
+  | "form_submitted";
 
 export interface ProjectSummary extends Project {
   sent: number;
