@@ -116,6 +116,7 @@ All paths below are under `/api`.
 | GET | /projects/:id/stats?days=30 | | `ProjectStats` |
 | GET | /projects/:id/stats/steps | | `StepStats[]` `{step, sent, replied}` per sequence step that sent mail (0 is the first email, n is follow-up n). A lead's first non-bounce reply counts for the last first email or follow-up sent before it. Shown on the Follow-ups page. |
 | GET | /projects/:id/stats/weekdays | | `WeekdayStats[]` `{weekday, sent, replied}` per day of the week (1 Monday to 7 Sunday, in the project's time zone) that sent a first email or follow-up, with replies counted the same way as steps. Shown on the Schedule page. |
+| GET | /projects/:id/stats/hours | | `HourStats[]` `{hour, sent, replied}` per hour of the day (0 to 23, in the project's time zone), counted like weekdays. Shown on the Schedule page. |
 | GET | /projects/:id/runs | | `AgentRun[]` (last 50) |
 | POST | /projects/:id/rewrite-emails | | `{run_id}`. One write_emails run in rewrite mode for every lead with an unsent (draft/approved/scheduled) first email or follow-up. 409 when there are none or a write run is already going. The sender holds those leads until the run ends. |
 | GET/POST | /projects/:id/competitors | `{domain, name?, note?}` | `Competitor[]` / `Competitor`. 409 when the domain is already listed. The explore run's competitor step replaces the whole list. |

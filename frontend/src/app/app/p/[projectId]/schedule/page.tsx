@@ -5,7 +5,7 @@ import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
 import { Field, Select } from "@/components/ui/form";
-import type { WeekdayStats } from "@/lib/types";
+import type { HourStats, WeekdayStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -114,6 +114,12 @@ export default function SchedulePage() {
               )}
             </Section>
             <RepliesSection<WeekdayStats> stat="weekdays" title="Replies by send day" column="Day" label={(r) => DAYS[r.weekday - 1]!} />
+            <RepliesSection<HourStats>
+              stat="hours"
+              title="Replies by send hour"
+              column="Sent between"
+              label={(r) => `${hour(r.hour)}–${hour(r.hour + 1)}`}
+            />
           </>
         );
       }}

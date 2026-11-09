@@ -43,8 +43,9 @@ export function useProjectSettings() {
       setDraft(null);
       // The overview reads settings through ProjectDetail, so refresh that copy too.
       mutateKey(`/projects/${projectId}`);
-      // The Schedule page's weekday stats count days in the saved time zone.
+      // The Schedule page's stats count days and hours in the saved time zone.
       mutateKey(`/projects/${projectId}/stats/weekdays`);
+      mutateKey(`/projects/${projectId}/stats/hours`);
       toast.success("Settings saved");
     } catch (e) {
       toastError(e);

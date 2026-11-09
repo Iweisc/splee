@@ -16,6 +16,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/stats", get(project_stats))
         .route("/projects/{id}/stats/steps", get(step_stats))
         .route("/projects/{id}/stats/weekdays", get(weekday_stats))
+        .route("/projects/{id}/stats/hours", get(hour_stats))
         .route("/public/stats", get(public_stats))
 }
 
@@ -179,6 +180,20 @@ pub(super) async fn weekdays(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<WeekdayS
     sqlx::query_as::<_, WeekdayStats>(&replies_by(key, "weekday")).bind(id).fetch_all(db).await
 }
 
+/// One hour of the day in the project's time zone, 0 to 23.
+#[derive(Serialize, FromRow)]
+pub(super) struct HourStats {
+    hour: i32,
+    sent: i64,
+    replied: i64,
+}
+
+/// Which send hours get answers, next to the send window, counted like weekdays.
+pub(super) async fn hours(db: &PgPool, id: Uuid) -> sqlx::Result<Vec<HourStats>> {
+    let key = "extract(hour from e.sent_at at time zone coalesce(ps.timezone, 'UTC'))::int";
+    sqlx::query_as::<_, HourStats>(&replies_by(key, "hour")).bind(id).fetch_all(db).await
+}
+
 async fn step_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<StepStats>>> {
     auth.project(&state.db, id).await?;
     Ok(Json(steps(&state.db, id).await?))
@@ -187,6 +202,11 @@ async fn step_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
 async fn weekday_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<WeekdayStats>>> {
     auth.project(&state.db, id).await?;
     Ok(Json(weekdays(&state.db, id).await?))
+}
+
+async fn hour_stats(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<HourStats>>> {
+    auth.project(&state.db, id).await?;
+    Ok(Json(hours(&state.db, id).await?))
 }
 
 async fn project_stats(
@@ -271,14 +291,14 @@ pub(crate) mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
-    async fn weekdays_use_the_project_time_zone(db: PgPool) {
+    async fn weekdays_and_hours_use_the_project_time_zone(db: PgPool) {
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
         let project: Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
         sqlx::query("insert into project_settings (project_id, timezone) values ($1, 'Asia/Tokyo')").bind(project).execute(&db).await.unwrap();
         let lead = || sqlx::query_scalar::<_, Uuid>("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db);
         let (answered, quiet) = (lead().await.unwrap(), lead().await.unwrap());
-        // Monday 20:00 UTC is Tuesday morning in Tokyo.
+        // Monday 20:00 UTC is Tuesday 05:00 in Tokyo.
         let rows = [
             (answered, "outbound", "initial", "sent", "2026-11-09 20:00Z"),
             (answered, "inbound", "inbound", "received", "2026-11-10 01:00Z"),
@@ -302,6 +322,8 @@ pub(crate) mod tests {
         }
         let days: Vec<_> = super::weekdays(&db, project).await.unwrap().into_iter().map(|d| (d.weekday, d.sent, d.replied)).collect();
         assert_eq!(days, vec![(2, 1, 1), (3, 1, 0)]);
+        let hours: Vec<_> = super::hours(&db, project).await.unwrap().into_iter().map(|h| (h.hour, h.sent, h.replied)).collect();
+        assert_eq!(hours, vec![(5, 1, 1), (12, 1, 0)]);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
