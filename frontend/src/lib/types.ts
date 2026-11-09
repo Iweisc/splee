@@ -135,6 +135,10 @@ export interface ProjectSettings {
   webhook_events: WebhookEvent[];
   /** The secret in the booking webhook URL, /api/bookings/{booking_token}. */
   booking_token: string;
+  /** The token itself is write-only, through PUT /integrations/hubspot. */
+  hubspot_connected: boolean;
+  hubspot_error: string | null;
+  hubspot_failed_at: string | null;
 }
 
 export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";

@@ -186,7 +186,7 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
     Ok(())
 }
 
-/// Chat and email alerts for a hot lead. The webhook gets it as a lead event. Failures are logged, they never fail the run.
+/// Chat, HubSpot and email alerts for a hot lead. The webhook gets it as a lead event. Failures are logged, they never fail the run.
 async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     let link = hooks::lead_url(&state.cfg.public_url, t.project.id, t.lead.id);
     let who = format!("{} ({})", t.lead.full_name, t.lead.company_name);
@@ -194,6 +194,8 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     let summary = format!("{who} replied to {}", t.project.name);
     let alert = hooks::ChatAlert { label: "Hot lead", summary: &summary, quote: Some(&snippet), link: &link, link_text: "Open the inbox" };
     hooks::post_chat(&state.db, t.project.id, &alert).await;
+    let note = format!("Hot lead in Splee. They replied:\n\n{}\n\nWhy it's hot: {reason}\n{link}", t.inbound.body.trim());
+    crate::hubspot::sync(state, t.project.id, &t.lead, &note).await;
 
     let Some(org_id) = t.project.org_id else { return };
     let recipients: Vec<String> = sqlx::query_scalar(
