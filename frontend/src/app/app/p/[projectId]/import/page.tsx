@@ -7,7 +7,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ListSkeleton, LoadError, MicroLabel, Td, Th, toastError, Tr } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Field, Select } from "@/components/ui/form";
-import { Card, EmptyState, Spinner } from "@/components/ui/misc";
+import { Card, EmptyState, FileName, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Import, SegmentWithStats } from "@/lib/types";
 import { dateTime, num } from "@/lib/utils";
@@ -212,8 +212,11 @@ function MappingStep({
 function ImportResult({ result }: { result: Import }) {
   return (
     <Card className="p-5">
-      <p className="flex items-center gap-2 font-medium">
-        <CircleCheck className="size-4 text-brand-600" /> Imported {num(result.imported)} of {num(result.total)} rows from {result.filename}
+      <p className="flex items-start gap-2 font-medium">
+        <CircleCheck className="mt-1 size-4 shrink-0 text-brand-600" />
+        <span className="min-w-0 wrap-anywhere">
+          Imported {num(result.imported)} of {num(result.total)} rows from <FileName name={result.filename} />
+        </span>
       </p>
       {result.skipped > 0 && <p className="mt-1 text-sm text-muted-foreground">{num(result.skipped)} skipped.</p>}
       {result.errors.length > 0 && (
@@ -244,30 +247,32 @@ function PastImports({ projectId }: { projectId: string }) {
       ) : data.length === 0 ? (
         <EmptyState title="No imports yet" className="py-8" />
       ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr>
-              <Th>File</Th>
-              <Th>Campaign</Th>
-              <Th className="text-right">Rows</Th>
-              <Th className="text-right">Imported</Th>
-              <Th className="text-right">Skipped</Th>
-              <Th className="text-right">Date</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((i) => (
-              <Tr key={i.id}>
-                <Td className="font-medium">{i.filename}</Td>
-                <Td className="text-muted-foreground">{segmentName(i.segment_id)}</Td>
-                <Td className="text-right tabular-nums">{num(i.total)}</Td>
-                <Td className="text-right tabular-nums">{num(i.imported)}</Td>
-                <Td className="text-right tabular-nums">{num(i.skipped)}</Td>
-                <Td className="text-right whitespace-nowrap text-muted-foreground">{dateTime(i.created_at)}</Td>
-              </Tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                <Th>File</Th>
+                <Th>Campaign</Th>
+                <Th className="text-right">Rows</Th>
+                <Th className="text-right">Imported</Th>
+                <Th className="text-right">Skipped</Th>
+                <Th className="text-right">Date</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((i) => (
+                <Tr key={i.id}>
+                  <Td className="font-medium whitespace-nowrap">{i.filename}</Td>
+                  <Td className="whitespace-nowrap text-muted-foreground">{segmentName(i.segment_id)}</Td>
+                  <Td className="text-right tabular-nums">{num(i.total)}</Td>
+                  <Td className="text-right tabular-nums">{num(i.imported)}</Td>
+                  <Td className="text-right tabular-nums">{num(i.skipped)}</Td>
+                  <Td className="text-right whitespace-nowrap text-muted-foreground">{dateTime(i.created_at)}</Td>
+                </Tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );
