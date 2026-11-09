@@ -100,10 +100,11 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 9] = [
+pub const EVENTS: [&str; 10] = [
     "hot_lead",
     "lead_replied",
     "meeting_booked",
+    "meeting_rescheduled",
     "meeting_cancelled",
     "lead_unsubscribed",
     "lead_bounced",
@@ -112,8 +113,8 @@ pub const EVENTS: [&str; 9] = [
     "form_submitted",
 ];
 
-/// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder or a form's answers.
-/// Its key is "reply", "email", "reminder" or "form", and "reply" stays in every payload, null when there's none.
+/// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder, a form's answers or
+/// a moved call's old time. Its key is "reply", "email", "reminder", "form" or "previous_meeting_at", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;
 
 /// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
@@ -337,6 +338,19 @@ pub fn announce_booked(state: &AppState, lead: &Lead) {
 
 /// Tells the team in chat, the webhook and the CRMs that a lead cancelled the call they booked. `was` is when it would have
 /// been, since the lead no longer has the time.
+/// Tells chat, the webhook and the CRMs that a booked lead moved their call. `lead.meeting_at` is the new time.
+pub fn announce_rescheduled(state: &AppState, lead: &Lead, was: Option<Ts>) {
+    let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
+    let link = lead_url(&state.cfg.public_url, project_id, lead.id);
+    tokio::spawn(async move {
+        let summary = meeting_summary(&state.db, &lead, lead.meeting_at).await;
+        let alert = ChatAlert { label: "Meeting moved", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
+        post_chat(&state.db, project_id, &alert).await;
+        send_lead_event(&state, project_id, "meeting_rescheduled", &lead, Some(("previous_meeting_at", json!(was)))).await;
+        crate::crm::sync(&state, project_id, &lead, &format!("Moved the meeting they booked.\n{link}")).await;
+    });
+}
+
 pub fn announce_cancelled(state: &AppState, lead: &Lead, was: Option<Ts>) {
     let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
     let link = lead_url(&state.cfg.public_url, project_id, lead.id);

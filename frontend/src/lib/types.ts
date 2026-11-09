@@ -164,6 +164,7 @@ export type WebhookEvent =
   | "hot_lead"
   | "lead_replied"
   | "meeting_booked"
+  | "meeting_rescheduled"
   | "meeting_cancelled"
   | "lead_unsubscribed"
   | "lead_bounced"
