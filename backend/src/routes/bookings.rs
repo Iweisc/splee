@@ -29,13 +29,17 @@ fn attendees(body: &Value) -> Vec<&Value> {
 /// Calendly sends `invitee.created` with `payload.email` (a reschedule is a new invitee), Cal.com `BOOKING_CREATED` or
 /// `BOOKING_RESCHEDULED` and SavvyCal `event.created` or `event.rescheduled` with `payload.attendees[].email`, OnceHub
 /// `booking.scheduled` or `booking.rescheduled` with `data.form_submission.email`, Zcal `event.created` or
-/// `event.rescheduled` with `data.attendees[].email` (the same names as SavvyCal's), and anything else, like a Zapier step,
-/// can send `{"email": ...}`.
+/// `event.rescheduled` with `data.attendees[].email` (the same names as SavvyCal's), TidyCal `booking.created`,
+/// `booking.approved` (a booking that needed approval) or `booking.rescheduled` with `data.contact.email`, and anything
+/// else, like a Zapier step, can send `{"email": ...}`.
 fn booked_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
         (Some("invitee.created"), _, _) => vec![&body["payload"]["email"]],
         (_, Some("BOOKING_CREATED" | "BOOKING_RESCHEDULED"), _) | (_, _, Some("event.created" | "event.rescheduled")) => attendees(body),
-        (_, _, Some("booking.scheduled" | "booking.rescheduled")) => vec![&body["data"]["form_submission"]["email"]],
+        (_, _, Some("booking.scheduled")) => vec![&body["data"]["form_submission"]["email"]],
+        (_, _, Some("booking.created" | "booking.approved")) => vec![&body["data"]["contact"]["email"]],
+        // OnceHub and TidyCal both call it this, and each has only its own field.
+        (_, _, Some("booking.rescheduled")) => vec![&body["data"]["form_submission"]["email"], &body["data"]["contact"]["email"]],
         (None, None, None) => vec![&body["email"]],
         _ => vec![],
     };
@@ -51,17 +55,19 @@ fn cancelled_emails(body: &Value) -> Vec<String> {
         // SavvyCal spells it canceled, Zcal cancelled.
         (_, Some("BOOKING_CANCELLED"), _) | (_, _, Some("event.canceled" | "event.cancelled")) => attendees(body),
         (_, _, Some("booking.canceled" | "booking.canceled_reschedule_requested")) => vec![&body["data"]["form_submission"]["email"]],
+        // TidyCal spells it cancelled, OnceHub canceled.
+        (_, _, Some("booking.cancelled")) => vec![&body["data"]["contact"]["email"]],
         _ => vec![],
     };
     found.into_iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect()
 }
 
 /// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`,
-/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, or a plain `start_time`. None
-/// when the tool didn't say.
+/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, TidyCal's `data.starts_at`, or
+/// a plain `start_time`. None when the tool didn't say.
 fn meeting_start(body: &Value) -> Option<Ts> {
     let (payload, data) = (&body["payload"], &body["data"]);
-    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &body["start_time"]]
+    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &data["starts_at"], &body["start_time"]]
         .into_iter()
         .find_map(|v| DateTime::parse_from_rfc3339(v.as_str()?).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -227,6 +233,27 @@ mod tests {
         assert!(booked_emails(&event("event.cancelled")).is_empty());
         let at = chrono::DateTime::parse_from_rfc3339("2025-02-12T20:30:00Z").unwrap().with_timezone(&chrono::Utc);
         assert_eq!(meeting_start(&event("event.created")), Some(at));
+    }
+
+    #[test]
+    fn reads_tidycal_bookings() {
+        // TidyCal's documented booking.created, trimmed. The other booking events have the same shape.
+        let booking = |kind: &str| {
+            let contact = json!({"id": 55, "name": "Ada Lovelace", "email": "Ada@Example.com", "timezone": "Europe/London"});
+            let data = json!({"id": 101, "starts_at": "2026-10-28T16:00:00.000000Z", "contact": contact, "hosts": [{"id": 3, "name": "Grace"}]});
+            json!({"id": "6f1b7c52", "type": kind, "created_at": "2026-10-21T15:04:05+00:00", "data": data})
+        };
+        for kind in ["booking.created", "booking.approved", "booking.rescheduled"] {
+            assert_eq!(booked_emails(&booking(kind)), ["ada@example.com"], "{kind}");
+            assert!(cancelled_emails(&booking(kind)).is_empty(), "{kind}");
+        }
+        assert_eq!(cancelled_emails(&booking("booking.cancelled")), ["ada@example.com"]);
+        assert!(booked_emails(&booking("booking.cancelled")).is_empty());
+        for kind in ["contact.created", "payment.completed", "webhook.test"] {
+            assert!(booked_emails(&booking(kind)).is_empty() && cancelled_emails(&booking(kind)).is_empty(), "{kind}");
+        }
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-28T16:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(meeting_start(&booking("booking.created")), Some(at));
     }
 
     #[test]

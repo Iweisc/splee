@@ -873,6 +873,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <li>Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled.</li>
                 <li>SavvyCal: Settings → Integrations, then + next to Webhooks.</li>
                 <li>Zcal: Integrations, then Connect next to Webhooks, and paste this URL as the Subscriber URL.</li>
+                <li>TidyCal: Integrations → Automations → Add webhook, with booking created, approved, rescheduled and cancelled.</li>
                 <li>OnceHub: Account Integrations → APIs &amp; Webhooks → Create webhook, with booking scheduled, rescheduled and canceled.</li>
                 <li>
                   Calendly: subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API.
