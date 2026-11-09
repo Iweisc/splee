@@ -286,6 +286,12 @@ function useConnection(projectId: string, path: string) {
   return { busy, call };
 }
 
+/** For a field with its own Add or Connect button: Enter there presses it. A disabled button already stops an empty or repeat submit. */
+const submit = (run: () => void) => (e: React.FormEvent) => {
+  e.preventDefault();
+  run();
+};
+
 /** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
 function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
   const { name, record, field, hint } = CRMS[crm];
@@ -317,15 +323,17 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
       {connected ? (
         <p className="text-sm">Connected. Splee matches by email, so people already in {name} get updated, not duplicated.</p>
       ) : (
-        <Field label={field} hint={hint}>
-          <div className="flex gap-2">
-            {/* The label also wraps Connect, so name the input itself. */}
-            <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-            <Button onClick={connect} loading={busy} disabled={!token}>
-              Connect
-            </Button>
-          </div>
-        </Field>
+        <form onSubmit={submit(connect)}>
+          <Field label={field} hint={hint}>
+            <div className="flex gap-2">
+              {/* The label also wraps Connect, so name the input itself. */}
+              <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+              <Button type="submit" loading={busy} disabled={!token}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </form>
       )}
       <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} what="sync" />
     </Section>
@@ -407,15 +415,17 @@ function EndpointList({
           ))}
         </ul>
       )}
-      <Field label={data?.length ? labels.next : labels.first} hint={hint}>
-        <div className="flex gap-2">
-          {/* The label also wraps Add, so name the input itself. */}
-          <Input aria-label={labels.input} type="url" value={url} onChange={(ev) => setUrl(ev.target.value.trim())} placeholder={placeholder} />
-          <Button onClick={add} loading={pending === "add"} disabled={!isUrl(url)}>
-            Add
-          </Button>
-        </div>
-      </Field>
+      <form onSubmit={submit(add)}>
+        <Field label={data?.length ? labels.next : labels.first} hint={hint}>
+          <div className="flex gap-2">
+            {/* The label also wraps Add, so name the input itself. */}
+            <Input aria-label={labels.input} type="url" value={url} onChange={(ev) => setUrl(ev.target.value.trim())} placeholder={placeholder} />
+            <Button type="submit" loading={pending === "add"} disabled={!isUrl(url)}>
+              Add
+            </Button>
+          </div>
+        </Field>
+      </form>
     </>
   );
 }
@@ -500,7 +510,7 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
           {settings.verifier === "hunter" && " Guessed addresses are looked up with Hunter's Email Finder first."}
         </p>
       ) : (
-        <div className="flex flex-col gap-4 sm:flex-row">
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
           <Field label="Service" className="sm:w-44">
             <Select value={provider} onChange={(e) => setProvider(e.target.value as keyof typeof VERIFIERS)}>
               {Object.entries(VERIFIERS).map(([value, label]) => (
@@ -513,12 +523,12 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
           <Field label="API key" className="flex-1" hint="Each check uses one of the service's credits.">
             <div className="flex gap-2">
               <Input aria-label="API key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value.trim())} />
-              <Button onClick={connect} loading={busy} disabled={!key}>
+              <Button type="submit" loading={busy} disabled={!key}>
                 Connect
               </Button>
             </div>
           </Field>
-        </div>
+        </form>
       )}
       <LastFailure error={settings.verifier_error} at={settings.verifier_failed_at} what="check" />
     </Section>
@@ -558,19 +568,19 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
           messages wait until they accept the connect note. A reply on LinkedIn stops their sequence and emails.
         </p>
       ) : (
-        <div className="flex flex-col gap-4 sm:flex-row">
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
           <Field label="DSN" className="sm:w-56" hint="On your Unipile dashboard.">
             <Input placeholder="api8.unipile.com:13851" autoComplete="off" value={dsn} onChange={(e) => setDsn(e.target.value.trim())} />
           </Field>
           <Field label="Access token" className="flex-1" hint="Connect your LinkedIn account in Unipile, then generate a token under Access Tokens.">
             <div className="flex gap-2">
               <Input aria-label="Access token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-              <Button onClick={connect} loading={busy} disabled={!dsn || !token}>
+              <Button type="submit" loading={busy} disabled={!dsn || !token}>
                 Connect
               </Button>
             </div>
           </Field>
-        </div>
+        </form>
       )}
       <LastFailure error={settings.unipile_error} at={settings.unipile_failed_at} what="send" />
     </Section>
