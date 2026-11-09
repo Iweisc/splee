@@ -80,10 +80,18 @@ pub async fn first_uid(state: &AppState, mb: &Mailbox, since: chrono::NaiveDate)
     })
 }
 
-/// Raw RFC 822 messages in INBOX with a UID above `after`, oldest first.
-pub async fn fetch_new(state: &AppState, mb: &Mailbox, after: u32) -> anyhow::Result<Vec<(u32, Vec<u8>)>> {
+/// INBOX's UIDVALIDITY and its raw RFC 822 messages with a UID above `after`, oldest first. When UIDVALIDITY isn't the
+/// one `after` was taken under, the UIDs were renumbered and `after` means nothing, so it fetches nothing.
+pub async fn fetch_new(state: &AppState, mb: &Mailbox, after: u32) -> anyhow::Result<(Option<u32>, Vec<(u32, Vec<u8>)>)> {
     let mut session = connect(state, mb).await?;
-    session.select("INBOX").await.map_err(|e| anyhow!("IMAP: could not open INBOX: {e}"))?;
+    let inbox = session.select("INBOX").await.map_err(|e| anyhow!("IMAP: could not open INBOX: {e}"))?;
+    let validity = inbox.uid_validity;
+    if let (Some(old), Some(new)) = (mb.imap_uid_validity, validity)
+        && old != i64::from(new)
+    {
+        let _ = session.logout().await;
+        return Ok((validity, vec![]));
+    }
     let mut out = vec![];
     {
         let fetches = session.uid_fetch(format!("{}:*", after + 1), "(UID BODY.PEEK[])").await.map_err(|e| anyhow!("IMAP fetch failed: {e}"))?;
@@ -102,5 +110,5 @@ pub async fn fetch_new(state: &AppState, mb: &Mailbox, after: u32) -> anyhow::Re
     }
     let _ = session.logout().await;
     out.sort_by_key(|(uid, _)| *uid);
-    Ok(out)
+    Ok((validity, out))
 }

@@ -202,6 +202,8 @@ pub struct Mailbox {
     pub status: String,
     pub last_error: String,
     pub imap_last_uid: i64,
+    /// INBOX's UIDVALIDITY when imap_last_uid was taken. When the server changes it, the cursor starts over.
+    pub imap_uid_validity: Option<i64>,
     pub dns: Value,
     pub created_at: Ts,
 }

@@ -40,7 +40,24 @@ async fn poll(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
             start
         }
     };
-    let messages = imap::fetch_new(state, mb, after).await?;
+    let (validity, messages) = imap::fetch_new(state, mb, after).await?;
+    if let Some(validity) = validity.map(i64::from)
+        && mb.imap_uid_validity != Some(validity)
+    {
+        // The server renumbered its messages, so start over like a new mailbox on the next poll. On a mailbox's first
+        // poll this only records it.
+        let renumbered = mb.imap_uid_validity.is_some();
+        sqlx::query("update mailboxes set imap_uid_validity = $2, imap_last_uid = case when $3 then -1 else imap_last_uid end where id = $1")
+            .bind(mb.id)
+            .bind(validity)
+            .bind(renumbered)
+            .execute(&state.db)
+            .await?;
+        if renumbered {
+            tracing::warn!(mailbox = %mb.email, "IMAP UIDVALIDITY changed, rereading from the first send");
+            return Ok(());
+        }
+    }
     for (uid, raw) in messages {
         if let Err(e) = store(state, mb, &raw).await {
             tracing::warn!(mailbox = %mb.email, uid, error = ?e, "could not store inbound message");
