@@ -203,12 +203,16 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const reminderDue = !!data?.lead.remind_at && isPast(data.lead.remind_at);
   const awaiting = (last?.direction === "inbound" && !last.handled_at) || reminderDue;
 
+  const [marking, setMarking] = useState(false);
   const markDone = async () => {
+    setMarking(true);
     try {
       await api(`/inbox/threads/${leadId}/done`, { method: "POST" });
       await refresh();
     } catch (e) {
       toastError(e);
+    } finally {
+      setMarking(false);
     }
   };
   // Only while the Done button shows: Done also clears a reminder, which e on a thread that isn't waiting shouldn't.
@@ -350,7 +354,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             </Button>
           ))}
           {awaiting && (
-            <Button size="sm" variant="outline" onClick={markDone} title="Needs no reply. Takes it out of Needs reply until they write again.">
+            <Button size="sm" variant="outline" onClick={markDone} loading={marking} title="Needs no reply. Takes it out of Needs reply until they write again.">
               <Check className="size-3.5" /> Done
             </Button>
           )}

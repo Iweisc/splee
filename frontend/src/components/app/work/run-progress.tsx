@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Check, CircleAlert, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { Button } from "@/components/ui/button";
@@ -78,12 +79,16 @@ export function RunProgress({ run, className }: { run: AgentRun; className?: str
   // Each tool call also arrives as a `log` event with a readable line, so the raw `tool` events stay out.
   const logs = events.filter((e) => e.kind === "log" && stepOf(e) === current).slice(-5);
 
+  const [cancelling, setCancelling] = useState(false);
   const cancel = async () => {
+    setCancelling(true);
     try {
       await api(`/runs/${run.id}/cancel`, { method: "POST" });
-      mutate(() => true);
+      await mutate(() => true);
     } catch (e) {
       toastError(e);
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -114,7 +119,7 @@ export function RunProgress({ run, className }: { run: AgentRun; className?: str
                 : "Splee agent is working"}
         </p>
         {!ended && (
-          <Button variant="ghost" size="sm" onClick={cancel}>
+          <Button variant="ghost" size="sm" onClick={cancel} loading={cancelling}>
             <X className="size-3.5" /> Cancel
           </Button>
         )}
