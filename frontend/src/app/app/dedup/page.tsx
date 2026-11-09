@@ -80,7 +80,8 @@ export default function DoNotContactPage() {
           </Section>
 
           <Card>
-            <div className="flex items-center justify-between gap-4 border-b border-border p-4">
+            {/* On phones the search gets its own row, so the count and Export button don't squeeze it to a few letters. */}
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-border p-4">
               <SearchField
                 value={query}
                 onChange={(v) => {
@@ -88,10 +89,10 @@ export default function DoNotContactPage() {
                   setPage(1);
                 }}
                 label="Search the list"
-                className="max-w-xs flex-1"
+                className="max-w-xs flex-1 max-sm:max-w-none"
               />
               {data && (
-                <div className="flex shrink-0 items-center gap-3">
+                <div className="flex shrink-0 items-center gap-3 max-sm:w-full max-sm:justify-between">
                   <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>
                   {data.total > 0 && (
                     // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
