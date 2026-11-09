@@ -4,15 +4,17 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { useFieldLabelId } from "@/components/ui/form";
 
-/** Free-text tags. Enter, comma or paste adds; Backspace on an empty input removes the last one. Put it in a `group` Field. */
+/** Free-text tags. Enter, comma or paste adds; Backspace on an empty input removes the last one. Put it in a `group` Field, or pass `label` to name it. */
 export function ChipInput({
   value,
   onChange,
   placeholder,
+  label,
 }: {
   value: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
+  label?: string;
 }) {
   const [text, setText] = useState("");
   const labelId = useFieldLabelId();
@@ -59,6 +61,7 @@ export function ChipInput({
         }}
         onBlur={() => text && add(text)}
         aria-labelledby={labelId}
+        aria-label={label}
         placeholder={value.length ? undefined : placeholder}
         className="h-7 min-w-32 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-subtle-foreground"
       />
