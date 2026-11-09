@@ -44,8 +44,9 @@ export function Footer() {
           <Column title="B2B Databases" links={regionLinks} className="lg:col-span-2" listClassName="lg:grid lg:grid-flow-col lg:grid-cols-2 lg:grid-rows-5" />
           <Column title="Resources" links={resources} />
         </div>
-        {/* Each line needs about 330px at 16px. Smaller text on phones and stacking until md keep both on one line. */}
-        <div className="mt-20 flex flex-col justify-between gap-3 text-muted-foreground max-sm:text-sm md:flex-row">
+        {/* Each line needs about 330px at 16px, and 290px at 14px, just over the 280px a 320px phone has. 13px on phones
+            and stacking until md keep both on one line. */}
+        <div className="mt-20 flex flex-col justify-between gap-3 text-muted-foreground max-sm:text-[13px] md:flex-row">
           <p>© {new Date().getFullYear()} Splee, a self-hosted outbound agent</p>
           <p>
             <a href={SOURCE_URL} target="_blank" rel="noreferrer" className="hover:text-foreground">
