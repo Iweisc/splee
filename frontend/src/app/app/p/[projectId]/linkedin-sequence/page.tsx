@@ -153,7 +153,7 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
     setMarking(true);
     try {
       await api(`/leads/${lead.id}/linkedin/replied`, { method: "POST" });
-      toast.success(`Stopped emailing ${lead.full_name || "them"} and their LinkedIn steps`);
+      toast.success(`Marked ${lead.full_name || "them"} as replied and stopped their emails and LinkedIn steps`);
       onChange();
     } catch (e) {
       toastError(e);
