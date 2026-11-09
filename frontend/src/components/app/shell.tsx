@@ -28,6 +28,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const menuOpen = menuPath === pathname;
   const navRef = useRef<HTMLElement>(null);
+  const openRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (params.projectId) localStorage.setItem(LAST_PROJECT_KEY, params.projectId);
@@ -45,6 +47,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (l.bottom > n.bottom - 32) nav.scrollTop += l.bottom - n.bottom + 32;
     else if (l.top < n.top + 16) nav.scrollTop -= n.top + 16 - l.top;
   }, [pathname, menuOpen, me, projects]);
+
+  // The phone menu covers the page, so it works like a dialog: focus moves into it, the page behind is inert, and
+  // Escape closes it. Widening the window to the desktop layout closes it too, or the page would stay inert.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const opener = openRef.current;
+    closeRef.current?.focus();
+    const close = () => setMenuPath(null);
+    // The project switcher takes its own Escape first.
+    const key = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && close();
+    const wide = matchMedia("(min-width: 64rem)");
+    document.addEventListener("keydown", key);
+    wide.addEventListener("change", close);
+    return () => {
+      document.removeEventListener("keydown", key);
+      wide.removeEventListener("change", close);
+      opener?.focus();
+    };
+  }, [menuOpen]);
 
   useEffect(() => {
     if (me === null) router.replace(`/signin?next=${encodeURIComponent(pathname)}`);
@@ -76,8 +97,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
       <PageTitle title={pageTitle} />
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background px-4 lg:hidden">
-        <button onClick={() => setMenuPath(pathname)} className="-ml-1.5 rounded-md p-1.5 hover:bg-accent" aria-label="Open menu">
+      <header inert={menuOpen} className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background px-4 lg:hidden">
+        <button ref={openRef} onClick={() => setMenuPath(pathname)} className="-ml-1.5 rounded-md p-1.5 hover:bg-accent" aria-label="Open menu">
           <Menu className="size-5" />
         </button>
         <Logo href="/app" className="text-lg" />
@@ -93,7 +114,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <div className="flex items-center justify-between px-4 pt-4 pb-3">
           <Logo href="/app" className="text-lg" />
-          <button onClick={() => setMenuPath(null)} className="rounded-md p-1 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Close menu">
+          <button ref={closeRef} onClick={() => setMenuPath(null)} className="rounded-md p-1 text-muted-foreground hover:bg-accent lg:hidden" aria-label="Close menu">
             <X className="size-4" />
           </button>
         </div>
@@ -152,7 +173,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1">{children}</main>
+      <main inert={menuOpen} className="min-w-0 flex-1">{children}</main>
       <Toaster position="bottom-right" />
     </div>
   );
@@ -240,14 +261,16 @@ function ProjectSwitcher({ projects, current }: { projects?: ProjectSummary[]; c
     const press = (e: PointerEvent) => ref.current?.contains(e.target as Node) || setOpen(false);
     const key = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Marked handled, so the phone menu around it stays open. Capture runs this before the phone menu's listener.
+      e.preventDefault();
       setOpen(false);
       ref.current?.querySelector("button")?.focus();
     };
     document.addEventListener("pointerdown", press);
-    document.addEventListener("keydown", key);
+    document.addEventListener("keydown", key, true);
     return () => {
       document.removeEventListener("pointerdown", press);
-      document.removeEventListener("keydown", key);
+      document.removeEventListener("keydown", key, true);
     };
   }, [open]);
 
