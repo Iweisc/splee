@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::FromRow;
@@ -15,7 +16,7 @@ use super::util_scope;
 use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
-use crate::models::{EmailMessage, Lead};
+use crate::models::{EmailMessage, Lead, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -347,21 +348,23 @@ async fn mark_done(State(state): State<AppState>, auth: Auth, Path(lead_id): Pat
 #[derive(Deserialize)]
 struct RemindBody {
     days: Option<i32>,
+    /// An exact time, for a reminder picked on a calendar. Takes the place of `days`.
+    at: Option<Ts>,
 }
 
-/// Takes the thread out of Needs reply like Done, and brings it back after `days`. No days clears the reminder.
+/// Takes the thread out of Needs reply like Done, and brings it back after `days` or at `at`. Neither clears the reminder.
 async fn remind(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>, Json(body): Json<RemindBody>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
     if body.days.is_some_and(|d| !(1..=30).contains(&d)) {
         return Err(AppError::BadRequest("Pick a reminder between 1 and 30 days away".into()));
     }
+    if body.at.is_some_and(|at| at <= Utc::now() || at > Utc::now() + Duration::days(365)) {
+        return Err(AppError::BadRequest("Pick a reminder time in the next year".into()));
+    }
+    let at = body.at.or(body.days.map(|d| Utc::now() + Duration::days(d.into())));
     let mut tx = state.db.begin().await?;
-    sqlx::query("update leads set remind_at = now() + $2 * interval '1 day' where id = $1")
-        .bind(lead.id)
-        .bind(body.days)
-        .execute(&mut *tx)
-        .await?;
-    if body.days.is_some() {
+    sqlx::query("update leads set remind_at = $2 where id = $1").bind(lead.id).bind(at).execute(&mut *tx).await?;
+    if at.is_some() {
         sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
             .bind(lead.id)
             .execute(&mut *tx)

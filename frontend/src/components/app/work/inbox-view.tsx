@@ -6,8 +6,8 @@ import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, MessageSquareText,
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
-import { Select, Textarea } from "@/components/ui/form";
-import { Avatar, Badge, Card, EmptyState, Spinner, Tabs } from "@/components/ui/misc";
+import { Field, Input, Select, Textarea } from "@/components/ui/form";
+import { Avatar, Badge, Card, EmptyState, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
@@ -175,6 +175,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const [sending, setSending] = useState(false);
   const [draftRun, setDraftRun] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [picking, setPicking] = useState(false);
   const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
 
   // A run started before this thread was opened, by the button or by a reply coming in, is picked up from the thread.
@@ -220,11 +221,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
 
   const { lead } = data;
 
-  const remind = async (days: number | null) => {
+  // An empty body clears the reminder.
+  const remind = async (when: { days: number } | { at: string } | Record<string, never>) => {
     try {
-      await api(`/inbox/threads/${leadId}/remind`, { body: { days } });
+      await api(`/inbox/threads/${leadId}/remind`, { body: when });
       await refresh();
-      toast.success(days ? "We'll bring this back to Needs reply then" : "Reminder cleared");
+      setPicking(false);
+      toast.success(Object.keys(when).length ? "We'll bring this back to Needs reply then" : "Reminder cleared");
     } catch (e) {
       toastError(e);
     }
@@ -323,7 +326,11 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             <select
               aria-label="Remind me"
               value=""
-              onChange={(e) => remind(e.target.value === "clear" ? null : Number(e.target.value))}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "pick") setPicking(true);
+                else remind(v === "clear" ? {} : { days: Number(v) });
+              }}
               className="absolute inset-0 cursor-pointer opacity-0"
             >
               <option value="" disabled>
@@ -332,11 +339,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
               <option value="1">Tomorrow</option>
               <option value="3">In 3 days</option>
               <option value="7">In a week</option>
+              <option value="pick">Pick a date and time…</option>
               {lead.remind_at && <option value="clear">Clear reminder</option>}
             </select>
           </label>
         </div>
       </div>
+      {picking && <ReminderPicker current={lead.remind_at} onPick={(at) => remind({ at })} onClose={() => setPicking(false)} />}
       <div className="border-b border-border px-5 py-2">
         <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
@@ -424,6 +433,62 @@ function SavedReplyMenu({ lead, onPick }: { lead: Lead; onPick: (text: string) =
         <option value="manage">{data?.length ? "Manage saved replies…" : "Add saved replies…"}</option>
       </select>
     </label>
+  );
+}
+
+/** A Date as a datetime-local input's value, in the browser's time zone. */
+function localInput(d: Date) {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+/** Picks an exact reminder time. It starts on the current reminder, or tomorrow at 9 in the morning. */
+function ReminderPicker({ current, onPick, onClose }: { current: string | null; onPick: (at: string) => Promise<void>; onClose: () => void }) {
+  const [value, setValue] = useState(() => {
+    if (current && !isPast(current)) return localInput(new Date(current));
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    return localInput(tomorrow);
+  });
+  const [saving, setSaving] = useState(false);
+  const [left, setLeft] = useState(false);
+  // When the picker opened. The server turns away a time that has passed since.
+  const [now] = useState(() => Date.now());
+  const at = value ? new Date(value) : null;
+  const valid = !!at && !Number.isNaN(at.getTime()) && at.getTime() > now;
+  return (
+    <Modal open onClose={onClose} title="Remind me" className="max-w-sm">
+      <form
+        className="grid gap-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!valid) return;
+          setSaving(true);
+          await onPick(at.toISOString());
+          setSaving(false);
+        }}
+      >
+        {/* Only after leaving the field: typing a date passes through past ones, like 01/10 on the way to 11/10. */}
+        <Field label="When" error={left && !valid ? "Pick a time in the future" : null}>
+          <Input
+            type="datetime-local"
+            value={value}
+            min={localInput(new Date(now))}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={() => setLeft(true)}
+            required
+          />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!valid} loading={saving}>
+            Set reminder
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
