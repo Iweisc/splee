@@ -134,7 +134,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
   };
   return (
     <Button size="sm" variant="outline" onClick={send} loading={busy} disabled={!isUrl(url)} aria-label="Send a test">
-      {!busy && <Send className="size-3.5" />} <span className={compact ? "max-sm:hidden" : undefined}>Send a test</span>
+      <Send className="size-3.5" /> <span className={compact ? "max-sm:hidden" : undefined}>Send a test</span>
     </Button>
   );
 }
@@ -196,7 +196,7 @@ function RecentDeliveries({ projectId }: { projectId: string }) {
               </div>
               {/* Just the icon on phones, so the event name fits beside the badge. */}
               <Button variant="ghost" size="sm" onClick={() => resend(d)} loading={resending === d.id} disabled={!!resending} aria-label="Resend">
-                {resending !== d.id && <RefreshCw className="size-3.5" />} <span className="max-sm:hidden">Resend</span>
+                <RefreshCw className="size-3.5" /> <span className="max-sm:hidden">Resend</span>
               </Button>
             </li>
           ))}
@@ -361,7 +361,7 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
                 </div>
                 <TestButton projectId={projectId} target="slack" url={c.url} compact />
                 <Button size="sm" variant="ghost" onClick={() => remove(c)} loading={pending === c.id} aria-label={`Remove ${chatApp(c.url)}`}>
-                  {pending !== c.id && <Trash2 className="size-3.5" />}
+                  <Trash2 className="size-3.5" />
                 </Button>
               </div>
               <LastFailure error={c.error} at={c.failed_at} />
@@ -490,7 +490,7 @@ function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onR
   };
   return (
     <Button size="sm" variant="outline" onClick={replace} loading={busy}>
-      {!busy && <RefreshCw className="size-3.5" />} Replace
+      <RefreshCw className="size-3.5" /> Replace
     </Button>
   );
 }

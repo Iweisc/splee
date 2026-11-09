@@ -397,11 +397,11 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         />
         {canDraft && !reply.trim() && (
           <Button variant="outline" onClick={draftReply} loading={requesting} aria-label="Draft reply" title="Have the agent write a reply for you to check and send">
-            {!requesting && <Sparkles className="size-4" />} <span className="@max-lg:hidden">Draft reply</span>
+            <Sparkles className="size-4" /> <span className="@max-lg:hidden">Draft reply</span>
           </Button>
         )}
         <Button onClick={send} loading={sending} disabled={!reply.trim()} aria-label="Send reply">
-          {!sending && <Send className="size-4" />} <span className="@max-lg:hidden">Send</span>
+          <Send className="size-4" /> <span className="@max-lg:hidden">Send</span>
         </Button>
       </div>
     </div>

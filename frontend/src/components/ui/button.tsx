@@ -1,3 +1,4 @@
+import { Children, isValidElement } from "react";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -37,10 +38,13 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 export function Button({ variant, size, loading, className, children, disabled, ...props }: ButtonProps) {
+  // While loading, the spinner takes the place and size of a leading icon, so the button keeps its width and never shows two.
+  const [first, ...rest] = Children.toArray(children);
+  const icon = isValidElement<{ className?: string }>(first) && typeof first.type !== "string" ? first : null;
   return (
     <button className={buttonClass(variant, size, className)} disabled={disabled || loading} {...props}>
-      {loading && <Loader2 className="size-4 animate-spin" />}
-      {children}
+      {loading && <Loader2 className={cn("size-4", icon?.props.className, "animate-spin")} />}
+      {loading && icon ? rest : children}
     </button>
   );
 }

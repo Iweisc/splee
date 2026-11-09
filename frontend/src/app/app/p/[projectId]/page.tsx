@@ -106,7 +106,7 @@ function SendingToggle({ projectId, sending }: { projectId: string; sending: boo
 
   return (
     <Button onClick={toggle} loading={busy} variant={sending ? "outline" : "primary"}>
-      {!busy && (sending ? <Pause className="size-4" /> : <Play className="size-4" />)}
+      {sending ? <Pause className="size-4" /> : <Play className="size-4" />}
       {sending ? "Pause sending" : "Start sending"}
     </Button>
   );

@@ -152,7 +152,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
         </dl>
         {isDraft && !rewriteRun && (
           <Button size="sm" variant="ghost" className="-my-2 ml-auto shrink-0" onClick={sendTest} loading={busy === "test"}>
-            {busy !== "test" && <Send className="size-3.5" />} Send me a test
+            <Send className="size-3.5" /> Send me a test
           </Button>
         )}
       </div>

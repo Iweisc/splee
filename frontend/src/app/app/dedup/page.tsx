@@ -123,7 +123,7 @@ export default function DoNotContactPage() {
                     <Badge tone={REASONS[s.reason].tone}>{REASONS[s.reason].label}</Badge>
                     <span className="hidden w-24 text-right text-xs text-muted-foreground sm:inline">{timeAgo(s.created_at)}</span>
                     <Button variant="ghost" size="icon" className="size-8" onClick={() => remove(s)} loading={pending === s.id} aria-label={`Remove ${s.value}`}>
-                      {pending !== s.id && <Trash2 className="size-4" />}
+                      <Trash2 className="size-4" />
                     </Button>
                   </li>
                 ))}

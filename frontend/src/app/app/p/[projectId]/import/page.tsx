@@ -242,7 +242,7 @@ function HunterImport({ projectId, onImported }: { projectId: string; onImported
           <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} className="min-w-40 flex-1" />
           {/* Level with the fields beside them. On phones the fields stack and it sits under them. */}
           <Button type="submit" className="sm:mt-6" loading={finding} disabled={!domain.trim()}>
-            {!finding && <Search className="size-4" />} Find people
+            <Search className="size-4" /> Find people
           </Button>
         </form>
       ) : (
