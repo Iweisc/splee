@@ -17,7 +17,8 @@ export function useProjectSettings() {
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // The backend sets the alert failure fields itself, so they come from the latest fetch even under an unsaved draft.
+  // The backend sets the alert failure fields and the HubSpot connection itself, so they come from the latest fetch even
+  // under an unsaved draft.
   const settings =
     draft && data
       ? {
@@ -26,6 +27,9 @@ export function useProjectSettings() {
           webhook_failed_at: data.webhook_failed_at,
           slack_error: data.slack_error,
           slack_failed_at: data.slack_failed_at,
+          hubspot_connected: data.hubspot_connected,
+          hubspot_error: data.hubspot_error,
+          hubspot_failed_at: data.hubspot_failed_at,
         }
       : (draft ?? data);
   const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);

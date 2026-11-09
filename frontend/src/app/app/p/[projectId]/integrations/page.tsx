@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, Hash, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, Contact, Hash, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -74,7 +74,6 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
 
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
 
-/** Posts a sample alert to the URL as typed, saved or not. */
 // Where each app hands out the URL. hooks::chat_payload formats alerts for the same apps.
 const CHAT_APPS = [
   ["Slack", "Apps → Incoming Webhooks → Add to Slack"],
@@ -83,6 +82,7 @@ const CHAT_APPS = [
   ["Google Chat", "Apps & integrations → Webhooks"],
 ];
 
+/** Posts a sample alert to the URL as typed, saved or not. */
 function TestButton({ projectId, target, url }: { projectId: string; target: "slack" | "webhook"; url: string }) {
   const { mutate } = useSWRConfig();
   const [busy, setBusy] = useState(false);
@@ -116,6 +116,63 @@ function LastFailure({ error, at }: { error: string | null; at: string | null })
       </p>
       <p className="mt-1 font-mono">{error}</p>
     </div>
+  );
+}
+
+/** The token is write-only, so once connected this only offers Disconnect. Connecting checks the token with HubSpot first. */
+function HubSpotSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const { mutate } = useSWRConfig();
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const call = async (method: "PUT" | "DELETE", done: string) => {
+    setBusy(true);
+    try {
+      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/hubspot`, { method, body: method === "PUT" ? { token } : undefined });
+      await mutate(`/projects/${projectId}/settings`, fresh, { revalidate: false });
+      setToken("");
+      toast.success(done);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect HubSpot? New hot leads and meetings won't be added to it.")) call("DELETE", "HubSpot disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Contact className="size-4" /> HubSpot
+        </span>
+      }
+      description="Adds hot leads and booked meetings to HubSpot as contacts, with a note holding their reply."
+      actions={
+        settings.hubspot_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.hubspot_connected ? (
+        <p className="text-sm">Connected. Splee matches contacts by email, so it updates people already in HubSpot.</p>
+      ) : (
+        <Field
+          label="Service key"
+          hint="In HubSpot: Settings → Integrations → Service Keys → Create, with the crm.objects.contacts.read and crm.objects.contacts.write scopes. An older private app's token works too."
+        >
+          <div className="flex gap-2">
+            <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+            <Button onClick={() => call("PUT", "Connected to HubSpot")} loading={busy} disabled={!token}>
+              Connect
+            </Button>
+          </div>
+        </Field>
+      )}
+      <LastFailure error={settings.hubspot_error} at={settings.hubspot_failed_at} />
+    </Section>
   );
 }
 
@@ -182,6 +239,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             </Field>
             <LastFailure error={s.slack_error} at={s.slack_failed_at} />
           </Section>
+
+          <HubSpotSection projectId={projectId} settings={s} />
 
           <Section
             title={

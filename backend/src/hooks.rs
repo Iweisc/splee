@@ -72,6 +72,8 @@ fn transient(e: &anyhow::Error) -> bool {
 pub enum Alert {
     Webhook,
     Slack,
+    /// Matched on hubspot_token_enc, the stored ciphertext.
+    HubSpot,
 }
 
 /// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
@@ -85,6 +87,10 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Slack => {
             "update project_settings set slack_error = $3, slack_failed_at = case when $3::text is null then null else now() end
              where project_id = $1 and slack_webhook_url = $2"
+        }
+        Alert::HubSpot => {
+            "update project_settings set hubspot_error = $3, hubspot_failed_at = case when $3::text is null then null else now() end
+             where project_id = $1 and hubspot_token_enc = $2"
         }
     };
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
@@ -223,17 +229,18 @@ pub fn booked(before: &str, lead: &Lead) -> bool {
     lead.status == "meeting_booked" && before != "meeting_booked"
 }
 
-/// Tells the team in chat that a lead booked a meeting. It runs in the background, so the request that set the status
-/// doesn't wait on the chat app.
-pub fn booked_in_chat(state: &AppState, lead: &Lead) {
-    let (db, project_id) = (state.db.clone(), lead.project_id);
+/// Tells the team in chat and HubSpot that a lead booked a meeting. It runs in the background, so the request that set
+/// the status doesn't wait on either.
+pub fn announce_booked(state: &AppState, lead: &Lead) {
+    let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
     let (who, link) = (format!("{} ({})", lead.full_name, lead.company_name), lead_url(&state.cfg.public_url, project_id, lead.id));
     tokio::spawn(async move {
         let project: String =
-            sqlx::query_scalar("select name from projects where id = $1").bind(project_id).fetch_one(&db).await.unwrap_or_default();
+            sqlx::query_scalar("select name from projects where id = $1").bind(project_id).fetch_one(&state.db).await.unwrap_or_default();
         let summary = format!("{who} for {project}");
         let alert = ChatAlert { label: "Meeting booked", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
-        post_chat(&db, project_id, &alert).await;
+        post_chat(&state.db, project_id, &alert).await;
+        crate::hubspot::sync(&state, project_id, &lead, &format!("Booked a meeting through Splee.\n{link}")).await;
     });
 }
 
@@ -241,7 +248,7 @@ pub fn booked_in_chat(state: &AppState, lead: &Lead) {
 /// (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
     if booked(before, lead) {
-        booked_in_chat(state, lead);
+        announce_booked(state, lead);
         send_lead_event(state, lead.project_id, "meeting_booked", lead, None).await;
     }
 }

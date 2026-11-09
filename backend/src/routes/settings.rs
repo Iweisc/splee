@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -8,8 +8,10 @@ use uuid::Uuid;
 
 use super::util_input;
 use crate::auth::Auth;
+use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
+use crate::hubspot;
 use crate::models::ProjectSettings;
 use crate::state::AppState;
 
@@ -18,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/settings", get(get_settings).put(update_settings))
         .route("/projects/{id}/integrations/test", post(test_integration))
         .route("/projects/{id}/integrations/webhook-secret", post(replace_webhook_secret))
+        .route("/projects/{id}/integrations/hubspot", put(connect_hubspot).delete(disconnect_hubspot))
 }
 
 /// Settings rows are created with the project, but older demo projects may not have one yet.
@@ -214,6 +217,45 @@ async fn replace_webhook_secret(State(state): State<AppState>, auth: Auth, Path(
     )
     .bind(id)
     .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct HubSpotBody {
+    token: String,
+}
+
+/// Saves a HubSpot access token once HubSpot accepts it, so a typo shows up here and not on the first hot lead.
+async fn connect_hubspot(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<HubSpotBody>,
+) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let token = body.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("Paste your HubSpot access token".into()));
+    }
+    hubspot::check(token).await.map_err(|e| AppError::BadRequest(format!("HubSpot didn't accept that token: {e:#}")))?;
+    set_hubspot_token(&state.db, id, &crypto::encrypt(&state.cfg.app_secret, token)).await
+}
+
+async fn disconnect_hubspot(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_hubspot_token(&state.db, id, "").await
+}
+
+async fn set_hubspot_token(db: &PgPool, id: Uuid, enc: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set hubspot_token_enc = $2, hubspot_error = null, hubspot_failed_at = null where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(enc)
+    .fetch_one(db)
     .await?;
     Ok(Json(settings))
 }
