@@ -46,9 +46,9 @@ async fn stats(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<
     Ok(Json(org_stats(&state.db, auth.org_id).await?))
 }
 
-async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>> {
+pub async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>> {
     let stats = sqlx::query_as::<_, MailboxStats>(
-        "select m.id as mailbox_id,
+        "select m.id as mailbox_id, m.email::text,
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at > now() - interval '30 days') as emailed,
            (select count(distinct e.lead_id) from email_messages e
@@ -57,7 +57,7 @@ async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>>
            (select count(distinct e.lead_id) from email_messages e
              where e.mailbox_id = m.id and e.direction = 'inbound' and e.classification is distinct from 'bounce'
                and e.created_at > now() - interval '30 days') as replied
-         from mailboxes m where m.org_id = $1",
+         from mailboxes m where m.org_id = $1 order by m.email",
     )
     .bind(org_id)
     .fetch_all(db)

@@ -4,6 +4,7 @@
 use chrono::{Datelike, Timelike, Utc, Weekday};
 use uuid::Uuid;
 
+use crate::models::MailboxStats;
 use crate::state::AppState;
 
 const DIGEST_HOUR_UTC: u32 = 8;
@@ -57,13 +58,14 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         .bind(org_id)
         .fetch_all(&state.db)
         .await?;
-        // A stopped mailbox gets a digest even on a quiet day: it may be why the day was quiet.
+        let bouncing: Vec<_> = crate::routes::mailboxes::org_stats(&state.db, org_id).await?.into_iter().filter(MailboxStats::bouncing).collect();
+        // A stopped or bouncing mailbox gets a digest even on a quiet day: it may be why the day was quiet.
         let active: Vec<_> = activity.into_iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
-        if active.is_empty() && stopped.is_empty() {
+        if active.is_empty() && stopped.is_empty() && bouncing.is_empty() {
             continue;
         }
         let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id).await?;
-        let body = digest_body(days, &active, waiting, &stopped, &state.cfg.public_url);
+        let body = digest_body(days, &active, waiting, &stopped, &bouncing, &state.cfg.public_url);
         let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
 
         for (user_id, to) in recipients(state, org_id, kind).await? {
@@ -77,7 +79,15 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
 }
 
 /// `stopped` is each stopped mailbox's address, error, and whether the sender tests it again by itself.
-fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(String, String, bool)], public_url: &str) -> String {
+/// `bouncing` is the mailboxes whose last 30 days bounced too often.
+fn digest_body(
+    days: i32,
+    active: &[ProjectActivity],
+    waiting: i64,
+    stopped: &[(String, String, bool)],
+    bouncing: &[MailboxStats],
+    public_url: &str,
+) -> String {
     let period = if days == 1 { "the last 24 hours" } else { "the last 7 days" };
     let mut body = String::new();
     if !active.is_empty() {
@@ -95,6 +105,13 @@ fn digest_body(days: i32, active: &[ProjectActivity], waiting: i64, stopped: &[(
         if stopped.iter().any(|(_, _, retrying)| !retrying) {
             body += &format!("Fix it and press Test on {public_url}/app/domains\n");
         }
+    }
+    if !bouncing.is_empty() {
+        body += if body.is_empty() { "" } else { "\n" };
+        for s in bouncing {
+            body += &format!("{} bounced {}% of the {} leads it emailed in the last 30 days.\n", s.email, s.bounce_percent(), s.emailed);
+        }
+        body += "Past 5%, providers start sending a mailbox's mail to spam. Check the addresses in your lead lists before you send more.\n";
     }
     if waiting > 0 {
         let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
@@ -140,20 +157,32 @@ mod tests {
     #[test]
     fn a_stopped_mailbox_is_in_the_digest_even_on_a_quiet_day() {
         let stopped = [("lewis@acme.test".to_string(), "SMTP: authentication failed".to_string(), false)];
-        let quiet = digest_body(1, &[], 0, &stopped, "https://app.test");
+        let quiet = digest_body(1, &[], 0, &stopped, &[], "https://app.test");
         assert!(quiet.starts_with("lewis@acme.test has stopped sending: SMTP: authentication failed\n"), "{quiet}");
         assert!(quiet.contains("press Test on https://app.test/app/domains"), "{quiet}");
 
         let retrying = [("maya@acme.test".to_string(), "SMTP: 5.4.5 Daily user sending limit exceeded".to_string(), true)];
-        let waits = digest_body(1, &[], 0, &retrying, "https://app.test");
+        let waits = digest_body(1, &[], 0, &retrying, &[], "https://app.test");
         assert!(waits.starts_with("maya@acme.test has stopped sending, and Splee tests it again on its own: SMTP: 5.4.5"), "{waits}");
         assert!(!waits.contains("press Test"), "{waits}");
 
         let busy = [ProjectActivity { name: "Northwind".into(), sent: 12, replies: 2, hot: 1, spend_micros: 1_500_000 }];
-        let normal = digest_body(1, &busy, 2, &[], "https://app.test");
+        let normal = digest_body(1, &busy, 2, &[], &[], "https://app.test");
         assert!(normal.contains("Northwind: 12 emails sent, 2 replies, 1 hot, $1.50 spent\n"), "{normal}");
         assert!(!normal.contains("stopped sending"), "{normal}");
         assert!(normal.contains("2 replies are waiting for an answer."), "{normal}");
+    }
+
+    #[test]
+    fn a_bouncing_mailbox_is_in_the_digest() {
+        let stats = |emailed, bounced| MailboxStats { mailbox_id: Uuid::nil(), email: "lewis@acme.test".into(), emailed, bounced, replied: 0 };
+        assert!(!stats(19, 5).bouncing(), "too few leads to tell");
+        assert!(!stats(40, 2).bouncing(), "exactly 5% is fine");
+        assert!(stats(40, 3).bouncing());
+
+        let body = digest_body(1, &[], 0, &[], &[stats(48, 7)], "https://app.test");
+        assert!(body.starts_with("lewis@acme.test bounced 15% of the 48 leads it emailed in the last 30 days.\n"), "{body}");
+        assert!(body.contains("Check the addresses in your lead lists"), "{body}");
     }
 
     #[sqlx::test]

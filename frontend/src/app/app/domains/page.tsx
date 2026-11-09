@@ -238,7 +238,7 @@ function nextStep(m: Mailbox): string {
 
 /**
  * Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
- * crosses that, so the warning waits for enough sends to mean something.
+ * crosses that, so the warning waits for enough sends to mean something. Keep in sync with MailboxStats::bouncing.
  */
 function Health({ stats }: { stats?: MailboxStats }) {
   if (!stats?.emailed) return null;

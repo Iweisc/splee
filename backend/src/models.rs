@@ -188,9 +188,24 @@ pub struct Lead {
 #[derive(Debug, Serialize, FromRow)]
 pub struct MailboxStats {
     pub mailbox_id: Uuid,
+    pub email: String,
     pub emailed: i64,
     pub bounced: i64,
     pub replied: i64,
+}
+
+impl MailboxStats {
+    /// Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
+    /// crosses that, so it waits for enough sends to mean something. Keep in sync with Health on the Mailboxes page.
+    pub fn bouncing(&self) -> bool {
+        self.emailed >= 20 && self.bounced * 20 > self.emailed
+    }
+
+    /// Rounded, like the Mailboxes page shows it.
+    pub fn bounce_percent(&self) -> i64 {
+        let emailed = self.emailed.max(1);
+        ((self.bounced * 100 + emailed / 2) / emailed).min(100)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
