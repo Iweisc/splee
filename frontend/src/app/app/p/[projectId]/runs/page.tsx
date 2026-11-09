@@ -47,6 +47,10 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
   const segmentName = (run: AgentRun) => segments?.find((s) => s.id === run.input.segment_id)?.name;
   // Runs already queued again, so a second click doesn't queue a duplicate.
   const [retried, setRetried] = useState<string[]>([]);
+  // After a reload that list is empty, so a run also counts as queued again once a newer one has the same input.
+  const rerun = (run: AgentRun) =>
+    retried.includes(run.id) ||
+    !!runs?.some((r) => r.kind === run.kind && r.created_at > run.created_at && JSON.stringify(r.input) === JSON.stringify(run.input));
 
   const retry = async (run: AgentRun) => {
     setRetried((ids) => [...ids, run.id]);
@@ -109,7 +113,7 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
                           {r.error}
                         </p>
                       )}
-                      {(r.status === "failed" || r.status === "cancelled") && !retried.includes(r.id) && (
+                      {(r.status === "failed" || r.status === "cancelled") && !rerun(r) && (
                         <button onClick={() => retry(r)} className="mt-1 text-xs font-medium text-foreground/75 underline-offset-2 hover:text-foreground hover:underline">
                           Run again
                         </button>
