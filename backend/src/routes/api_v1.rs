@@ -135,22 +135,31 @@ async fn get_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Pat
 }
 
 #[derive(Deserialize)]
-struct LeadStatusBody {
-    status: String,
+struct LeadUpdateBody {
+    status: Option<String>,
+    notes: Option<String>,
 }
 
-/// Lets a CRM or calendar mark a lead, e.g. meeting_booked. Follow-ups only go to contacted leads, so any other status stops them.
+/// Lets a CRM or calendar mark a lead, e.g. meeting_booked, or write its notes. Follow-ups only go to contacted leads,
+/// so any other status stops them.
 async fn update_lead(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
-    Json(body): Json<LeadStatusBody>,
+    Json(body): Json<LeadUpdateBody>,
 ) -> AppResult<Json<LeadDetail>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    util_input::one_of("status", &body.status, LEAD_STATUSES)?;
-    let lead = sqlx::query_as::<_, Lead>("update leads set status = $2 where id = $1 returning *")
+    if body.status.is_none() && body.notes.is_none() {
+        return Err(AppError::BadRequest("Send status, notes or both".into()));
+    }
+    if let Some(status) = &body.status {
+        util_input::one_of("status", status, LEAD_STATUSES)?;
+    }
+    let notes = util_input::notes(body.notes.as_deref())?;
+    let lead = sqlx::query_as::<_, Lead>("update leads set status = coalesce($2, status), notes = coalesce($3, notes) where id = $1 returning *")
         .bind(lead.id)
         .bind(&body.status)
+        .bind(notes)
         .fetch_one(&state.db)
         .await?;
     Ok(Json(leads::detail(&state.db, lead).await?))

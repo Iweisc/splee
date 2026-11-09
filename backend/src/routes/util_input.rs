@@ -33,6 +33,15 @@ pub fn like_pattern(q: Option<&str>) -> Option<String> {
     Some(format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
 }
 
+/// A lead's notes, trimmed. Blank clears them.
+pub fn notes(raw: Option<&str>) -> AppResult<Option<&str>> {
+    let notes = raw.map(str::trim);
+    if notes.is_some_and(|n| n.chars().count() > 5000) {
+        return Err(AppError::BadRequest("Keep notes under 5,000 characters".into()));
+    }
+    Ok(notes)
+}
+
 /// Mirrors the check constraints in the migration so bad input is a 400 instead of a 500.
 pub fn one_of(field: &str, value: &str, allowed: &[&str]) -> AppResult<()> {
     if allowed.contains(&value) {
