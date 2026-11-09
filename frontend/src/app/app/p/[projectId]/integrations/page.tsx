@@ -65,6 +65,7 @@ function fromSplee(rawBody, headers, secret) {
 const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "hot_lead", label: "Hot lead", hint: "A reply that shows interest, like asking for a call." },
   { value: "lead_replied", label: "Every reply", hint: "Any reply a person wrote, with how Splee classified it." },
+  { value: "meeting_booked", label: "Meeting booked", hint: "Someone on your team marked the lead Meeting booked." },
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
 ];
@@ -227,7 +228,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 {/* Keep PAYLOAD in sync with the json! in lead_event, backend/src/hooks.rs. */}
                 <p className="mt-2 text-xs text-muted-foreground">
                   These are all the fields Splee sends. The values are examples. <code>lead_replied</code> has the same shape, with the reply&apos;s{" "}
-                  <code>classification</code>: hot, question, not_interested or other. <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
+                  <code>classification</code>: hot, question, not_interested or other. <code>meeting_booked</code>, <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
                   <code>&quot;reply&quot;: null</code>. &quot;Send a test&quot; posts the hot_lead shape with <code>&quot;event&quot;: &quot;test&quot;</code>.
                 </p>
                 <div className="mt-4">
