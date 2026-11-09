@@ -59,7 +59,7 @@ export default function SchedulePage() {
             </Section>
 
             <Section title="Send window" description="Emails due outside this window wait until it opens again.">
-              <Field label="Days">
+              <Field label="Days" group>
                 {/* Seven columns as wide as the From/Until row below, so the week stays on one row on phones instead of breaking 4 + 3. */}
                 <div className="grid max-w-sm grid-cols-7 gap-1 sm:gap-1.5">
                   {DAYS.map((label, i) => {

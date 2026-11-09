@@ -29,10 +29,10 @@ export default function TargetingPage() {
           <>
             <Section title="Countries" description="The agent only looks for companies in these countries and skips the excluded ones. Leave empty to search anywhere.">
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Include">
+                <Field label="Include" group>
                   <ChipInput value={s.targeting.countries ?? []} onChange={(v) => set("countries", v)} placeholder="e.g. United States, Germany" />
                 </Field>
-                <Field label="Exclude">
+                <Field label="Exclude" group>
                   <ChipInput value={s.targeting.exclude_countries ?? []} onChange={(v) => set("exclude_countries", v)} placeholder="e.g. Russia" />
                 </Field>
               </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { createContext, useContext, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const field =
@@ -50,26 +50,49 @@ export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLab
   return <label className={cn("text-sm font-medium text-foreground", className)} {...props} />;
 }
 
-/** Label + control + optional hint/error, stacked. The <label> wraps the control so it gets an accessible name without ids. */
+const FieldLabelId = createContext<string | undefined>(undefined);
+
+/** The id of the enclosing `group` Field's label, for an input inside it to name itself with. */
+export const useFieldLabelId = () => useContext(FieldLabelId);
+
+/**
+ * Label + control + optional hint/error, stacked. The <label> wraps the control so it gets an accessible name without ids.
+ * A label sends its clicks to the first button or input inside it, so a control that starts with buttons, like a row of
+ * day toggles or chips with remove buttons, passes `group`: the label is then plain text naming the group, and clicking
+ * it no longer toggles a day or removes a chip.
+ */
 export function Field({
   label,
   hint,
   error,
+  group,
   children,
   className,
 }: {
   label: React.ReactNode;
   hint?: React.ReactNode;
   error?: string | null;
+  group?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
+  const id = useId();
+  const labelClass = "text-sm font-medium text-foreground";
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      <label className="flex flex-col gap-1.5">
-        <span className="text-sm font-medium text-foreground">{label}</span>
-        {children}
-      </label>
+      {group ? (
+        <div role="group" aria-labelledby={id} className="flex flex-col gap-1.5">
+          <span id={id} className={labelClass}>
+            {label}
+          </span>
+          <FieldLabelId.Provider value={id}>{children}</FieldLabelId.Provider>
+        </div>
+      ) : (
+        <label className="flex flex-col gap-1.5">
+          <span className={labelClass}>{label}</span>
+          {children}
+        </label>
+      )}
       {error ? <p className="text-xs text-danger">{error}</p> : hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
