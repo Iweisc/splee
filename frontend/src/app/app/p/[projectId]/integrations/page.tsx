@@ -812,6 +812,7 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
           <li>Fillout: Integrate → Webhook, in Simple mode.</li>
           <li>Jotform: Settings → Integrations → WebHooks.</li>
           <li>Paperform: After Submission → Integrations &amp; Webhooks → Add Webhook, on New Submission.</li>
+          <li>Formbricks: Configuration → Integrations → Manage Webhooks, on Response Finished.</li>
           <li>Webflow: Site settings → Integrations → Webhooks, with Form submission.</li>
           <li>
             Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>.

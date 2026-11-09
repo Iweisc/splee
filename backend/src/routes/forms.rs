@@ -1,4 +1,4 @@
-//! A website form (Tally, Typeform, Fillout, Jotform, Paperform, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
+//! A website form (Tally, Typeform, Fillout, Jotform, Paperform, Formbricks, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
 //! The secret in the URL picks the project, like the booking webhook's.
 
 use std::collections::HashMap;
@@ -8,7 +8,7 @@ use axum::http::header::CONTENT_TYPE;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::util_input;
@@ -23,10 +23,20 @@ pub fn router() -> Router<AppState> {
 
 /// The (question, answer) pairs in a submission. Tally sends `data.fields[]`, Typeform `form_response.answers[]` with the
 /// questions in `form_response.definition.fields[]`, Fillout `questions[]` and its hidden fields in `urlParameters[]`,
-/// Jotform a `rawRequest` field holding JSON, Paperform `data[]`, Webflow `payload.data`, and anything else flat JSON.
+/// Jotform a `rawRequest` field holding JSON, Paperform `data[]`, Formbricks `data.data`, Webflow `payload.data`, and
+/// anything else flat JSON.
 fn answers(body: &Value) -> Vec<(String, String)> {
     if let Some(raw) = body["rawRequest"].as_str() {
         return jotform(&serde_json::from_str(raw).unwrap_or_default());
+    }
+    if body["webhookId"].is_string()
+        && let Some(data) = body["data"]["data"].as_object()
+    {
+        // Formbricks also posts a response that isn't finished yet, which would add the lead before their name is in.
+        if body["data"]["finished"] != true {
+            return Vec::new();
+        }
+        return formbricks(body["data"]["dataByQuestionCode"].as_object(), data);
     }
     if let Some(questions) = body["questions"].as_array() {
         let hidden = body["urlParameters"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -101,6 +111,30 @@ fn jotform(raw: &Value) -> Vec<(String, String)> {
             answers.extend(["first", "last"].into_iter().filter_map(|part| Some((format!("{question} {part}"), text(&value[part])?))));
         } else if let Some(answer) = jotform_text(value) {
             answers.push((question, answer));
+        }
+    }
+    answers
+}
+
+/// Formbricks keys each answer by its question's id, and a question with a code again by that code without saying which id
+/// it belongs to, so a code names an answer only when no other answer has the same value. A contact info answer is
+/// `[first name, last name, email, phone, company]`.
+fn formbricks(coded: Option<&Map<String, Value>>, data: &Map<String, Value>) -> Vec<(String, String)> {
+    let coded = coded.into_iter().flatten();
+    let mut answers = Vec::new();
+    for (id, value) in data {
+        let mut codes = coded.clone().filter(|(_, v)| *v == value);
+        let question = match (codes.next(), codes.next(), data.values().filter(|v| *v == value).count()) {
+            (Some((code, _)), None, 1) => code,
+            _ => id,
+        };
+        match value.as_array().and_then(|parts| parts.iter().map(Value::as_str).collect::<Option<Vec<_>>>()) {
+            // A choice question's answer is a list of text too, but never with an email address third.
+            Some(parts) if parts.len() == 5 && (parts[2].is_empty() || util_input::email(parts[2]).is_some()) => {
+                let labels = ["First name", "Last name", "Email", "Phone", "Company"];
+                answers.extend(labels.into_iter().zip(parts).map(|(label, part)| (label.to_string(), part.to_string())));
+            }
+            _ => answers.extend(text(value).map(|answer| (question.clone(), answer))),
         }
     }
     answers
@@ -337,6 +371,24 @@ mod tests {
         let (lead, rest) = lead_from(answers(&paperform));
         assert_eq!((lead.full_name.as_str(), lead.email.as_str()), ("Ravi Patel", "ravi@lumen.example"));
         assert_eq!(rest, [("budget".to_string(), "5k".to_string())]);
+
+        // Formbricks: a contact info question, a coded question under both its code and its id, a hidden field, and an
+        // address. An unfinished response adds nothing.
+        let formbricks = json!({"webhookId": "w1", "event": "responseFinished", "data": {"id": "r1", "finished": true,
+            "data": {"k3x9contact": ["Mia", "Chen", "mia@delta.example", "", "Delta"], "q8budget": "10k", "utm_source": "x",
+                "q9where": ["1 Main St", "", "Austin", "TX", "78701", "US"]},
+            "dataByQuestionCode": {"budget": "10k", "notes": null}}});
+        let (lead, rest) = lead_from(answers(&formbricks));
+        let got = (lead.first_name.as_str(), lead.last_name.as_str(), lead.email.as_str(), lead.company_name.as_str());
+        assert_eq!(got, ("Mia", "Chen", "mia@delta.example", "Delta"));
+        let rest: Vec<(&str, &str)> = rest.iter().map(|(q, a)| (q.as_str(), a.as_str())).collect();
+        assert_eq!(rest, [("budget", "10k"), ("q9where", "1 Main St, Austin, TX, 78701, US"), ("utm_source", "x")]);
+        // Two answers with the same value keep their ids, since either could be the coded one.
+        let same = json!({"webhookId": "w1", "data": {"finished": true, "data": {"q2": "Google", "utm_source": "Google"}, "dataByQuestionCode": {"heard": "Google"}}});
+        assert_eq!(answers(&same), [("q2".to_string(), "Google".to_string()), ("utm_source".to_string(), "Google".to_string())]);
+        let mut unfinished = formbricks.clone();
+        unfinished["data"]["finished"] = json!(false);
+        assert!(answers(&unfinished).is_empty());
 
         // Jotform's webhook, as multipart fields, with the answers in rawRequest.
         let raw = json!({"slug": "submit/2531", "q11_message": "Pricing for 12 seats", "q3_yourName": {"first": "Ana", "last": "Ruiz"},
