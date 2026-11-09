@@ -81,7 +81,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
         }
         actions={
           <>
-            <Button variant="ghost" size="icon" onClick={remove} aria-label="Delete campaign">
+            <Button variant="ghost" size="icon" className="size-10" onClick={remove} aria-label="Delete campaign">
               <Trash2 className="size-4" />
             </Button>
             <SegmentToggle segment={segment} size="md" />
