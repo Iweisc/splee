@@ -263,7 +263,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     };
     let transport = match smtp::transport(state, &mb) {
         Ok(t) => t,
-        Err(e) => return mailbox_failed(state, &mb, &email, &e.to_string(), false).await,
+        Err(e) => return mailbox_failed(state, &mb, &email, &e.to_string(), None).await,
     };
 
     match smtp::send(&transport, message).await {
@@ -282,7 +282,14 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             } else if e.is_transient() {
                 defer(&state.db, &email, &e.to_string()).await
             } else {
-                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}"), smtp::unreachable(&e)).await
+                let recheck = if smtp::unreachable(&e) {
+                    Some(RECHECK_MINUTES)
+                } else if smtp::over_quota(&e) {
+                    Some(QUOTA_RECHECK_MINUTES)
+                } else {
+                    None
+                };
+                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}"), recheck).await
             }
         }
     }
@@ -333,27 +340,31 @@ async fn defer(db: &sqlx::PgPool, email: &EmailMessage, error: &str) -> anyhow::
 
 /// How long a mailbox whose server couldn't be reached waits before the sender tests it again.
 const RECHECK_MINUTES: i32 = 15;
+/// Gmail doesn't say when its daily limit resets, so a mailbox over quota tries once an hour. Each try costs one rejected
+/// send, and the email goes back in the queue.
+const QUOTA_RECHECK_MINUTES: i32 = 60;
 
-/// Stops a mailbox. An unreachable server is often a short outage, so the sender tests it again later. Anything else, like
-/// a rejected login, waits for someone to fix it and press Test, since retrying a bad password can lock the account.
-async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, error: &str, recheck: bool) -> anyhow::Result<()> {
+/// Stops a mailbox. An unreachable server is often a short outage and a sending quota resets, so those are tested again
+/// after `recheck` minutes. Anything else, like a rejected login, waits for someone to fix it and press Test, since
+/// retrying a bad password can lock the account.
+async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, error: &str, recheck: Option<i32>) -> anyhow::Result<()> {
     tracing::warn!(mailbox = %mb.email, %error, "mailbox failed, pausing it");
     sqlx::query(
         "update mailboxes set status = 'error', last_error = $2,
-           recheck_at = case when $3 then now() + make_interval(mins => $4) end
+           recheck_at = now() + make_interval(mins => $3)
          where id = $1",
     )
     .bind(mb.id)
     .bind(error)
     .bind(recheck)
-    .bind(RECHECK_MINUTES)
     .execute(&state.db)
     .await?;
     sqlx::query("update email_messages set status = 'approved', error = $2 where id = $1").bind(email.id).bind(error).execute(&state.db).await?;
     Ok(())
 }
 
-/// Tests the mailboxes stopped by an unreachable server and puts each one back to work once its server answers again.
+/// Tests the mailboxes stopped by an unreachable server or a sending quota, and puts each one back to work once its server
+/// answers again. A quota that hasn't reset yet stops it again on its next send.
 pub async fn recheck_mailboxes(state: &AppState) -> anyhow::Result<()> {
     let due = sqlx::query_as::<_, Mailbox>("select * from mailboxes where status = 'error' and recheck_at <= now()").fetch_all(&state.db).await?;
     for mb in due {

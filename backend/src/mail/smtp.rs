@@ -88,6 +88,13 @@ pub fn recipient_rejected(e: &lettre::transport::smtp::Error) -> bool {
     enhanced_code(&reply).is_none_or(|code| code.starts_with("5.1."))
 }
 
+/// The mailbox ran out of its sending quota, like Gmail's "550 5.4.5 Daily user sending limit exceeded". It sends again
+/// once the quota resets.
+pub fn over_quota(e: &lettre::transport::smtp::Error) -> bool {
+    let reply = std::error::Error::source(e).map(ToString::to_string).unwrap_or_default();
+    e.is_permanent() && enhanced_code(&reply) == Some("5.4.5")
+}
+
 /// The "5.1.1" that starts a reply like "5.1.1 The email account that you tried to reach does not exist".
 fn enhanced_code(reply: &str) -> Option<&str> {
     let first = reply.split_whitespace().next()?;
@@ -113,7 +120,7 @@ mod tests {
     use lettre::{AsyncTransport, Message};
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    use super::{Transport, recipient_rejected, unreachable};
+    use super::{Transport, over_quota, recipient_rejected, unreachable};
 
     async fn test_on(port: u16) -> lettre::transport::smtp::Error {
         let transport: Transport = Transport::builder_dangerous("127.0.0.1").port(port).build();
@@ -148,6 +155,15 @@ mod tests {
         for reply in ["550 5.4.5 Daily user sending limit exceeded", "550 5.7.1 Message rejected as spam", "554 5.7.1 Relay denied"] {
             let err = send_rejected(reply).await;
             assert!(!recipient_rejected(&err), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_sending_limit_counts_as_over_quota() {
+        assert!(over_quota(&send_rejected("550 5.4.5 Daily user sending limit exceeded").await));
+        for reply in ["550 5.1.1 No such user", "550 5.7.1 Message rejected as spam", "550 sorry"] {
+            let err = send_rejected(reply).await;
+            assert!(!over_quota(&err), "{err}");
         }
     }
 
