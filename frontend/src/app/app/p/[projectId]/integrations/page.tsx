@@ -94,6 +94,8 @@ const CHAT_APPS = [
   ["ntfy", "https://ntfy.sh/ and a topic only you know"],
   ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
   ["Lark or Feishu", "group Settings → Bots → Custom Bot"],
+  ["DingTalk", "group Bots → Custom, with IP security"],
+  ["WeCom", "the group chat's ⋯ → Add Group Robot"],
 ];
 
 /** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */
@@ -114,6 +116,8 @@ function chatApp(url: string): string {
   if (host === "api.pushover.net") return "Pushover";
   if (host === "open.larksuite.com") return "Lark";
   if (host === "open.feishu.cn") return "Feishu";
+  if (host === "oapi.dingtalk.com") return "DingTalk";
+  if (host === "qyapi.weixin.qq.com") return "WeCom";
   return host;
 }
 
@@ -426,7 +430,7 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
           <Hash className="size-4" /> Chat alerts
         </span>
       }
-      description="Posts to every chat you add, in Slack, Discord, Teams, Google Chat, Telegram, Lark or Feishu, or on your phone with ntfy or Pushover, about hot leads, booked meetings and follow-ups that come due."
+      description="Posts hot leads, booked meetings and due follow-ups to every chat you add, or to your phone."
     >
       <EndpointList
         projectId={projectId}
