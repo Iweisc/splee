@@ -131,6 +131,8 @@ export interface ProjectSettings {
   webhook_failed_at: string | null;
   slack_error: string | null;
   slack_failed_at: string | null;
+  /** Posts the last 7 days' numbers to the chat channel every Monday. */
+  chat_weekly_report: boolean;
   paused: boolean;
   webhook_events: WebhookEvent[];
   /** The secret in the booking webhook URL, /api/bookings/{booking_token}. */

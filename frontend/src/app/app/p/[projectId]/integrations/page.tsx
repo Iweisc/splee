@@ -12,7 +12,7 @@ import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
-import { Field, Input, Select } from "@/components/ui/form";
+import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
@@ -418,6 +418,18 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
               />
             </Field>
             <LastFailure error={s.slack_error} at={s.slack_failed_at} />
+            <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
+              <span>
+                <span className="block text-sm font-medium">Weekly report</span>
+                <span className="block text-xs text-muted-foreground">Mondays at 08:00 UTC: emails, replies, hot leads and spend.</span>
+              </span>
+              <Switch
+                checked={s.chat_weekly_report}
+                onChange={(chat_weekly_report) => update({ chat_weekly_report })}
+                disabled={!s.slack_webhook_url}
+                label="Weekly report"
+              />
+            </div>
           </Section>
 
           <CrmSection projectId={projectId} settings={s} crm="hubspot" />

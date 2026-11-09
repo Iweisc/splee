@@ -68,6 +68,7 @@ struct SettingsBody {
     webhook_url: Option<String>,
     slack_webhook_url: Option<String>,
     webhook_events: Option<Vec<String>>,
+    chat_weekly_report: Option<bool>,
 }
 
 async fn update_settings(
@@ -139,6 +140,7 @@ async fn update_settings(
            webhook_url = coalesce($20, webhook_url),
            slack_webhook_url = coalesce($21, slack_webhook_url),
            webhook_events = coalesce($22, webhook_events),
+           chat_weekly_report = coalesce($23, chat_weekly_report),
            -- The right-hand sides see the old row, so a new URL drops the old URL's failure.
            webhook_error = case when coalesce($20, webhook_url) = webhook_url then webhook_error end,
            webhook_failed_at = case when coalesce($20, webhook_url) = webhook_url then webhook_failed_at end,
@@ -168,6 +170,7 @@ async fn update_settings(
     .bind(body.webhook_url.as_deref().map(str::trim))
     .bind(body.slack_webhook_url.as_deref().map(str::trim))
     .bind(body.webhook_events)
+    .bind(body.chat_weekly_report)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

@@ -1,9 +1,10 @@
-//! Emails to the team itself (not to leads), driven by notification_prefs.
+//! Emails to the team itself (not to leads), driven by notification_prefs, and the weekly report in each project's chat.
 //! Hot-lead emails live in agent::replies next to the webhook and Slack alerts.
 
 use chrono::{Datelike, Timelike, Utc, Weekday};
 use uuid::Uuid;
 
+use crate::hooks::{self, ChatAlert};
 use crate::models::MailboxStats;
 use crate::state::AppState;
 
@@ -15,9 +16,16 @@ pub async fn digests(state: &AppState) -> anyhow::Result<()> {
     if now.hour() != DIGEST_HOUR_UTC {
         return Ok(());
     }
-    send_digests(state, "daily_digest", 1).await?;
+    // Each step runs whatever the one before did, so one organization's broken mailbox doesn't stop the chat reports.
+    let mut results = vec![("daily digests", send_digests(state, "daily_digest", 1).await)];
     if now.weekday() == Weekday::Mon {
-        send_digests(state, "weekly_report", 7).await?;
+        results.push(("weekly reports", send_digests(state, "weekly_report", 7).await));
+        results.push(("weekly chat reports", post_weekly_reports(state).await));
+    }
+    for (what, result) in results {
+        if let Err(e) = result {
+            tracing::error!(error = ?e, "{what} failed");
+        }
     }
     Ok(())
 }
@@ -31,27 +39,38 @@ struct ProjectActivity {
     spend_micros: i64,
 }
 
+impl ProjectActivity {
+    fn summary(&self) -> String {
+        format!("{}: {} emails sent, {} replies, {} hot, {} spent", self.name, self.sent, self.replies, self.hot, usd(self.spend_micros))
+    }
+}
+
+/// Each project's numbers for the last `days` days. `filter` picks the projects by $1 and is one of our own strings.
+async fn activity(db: &sqlx::PgPool, filter: &str, id: Uuid, days: i32) -> sqlx::Result<Vec<ProjectActivity>> {
+    sqlx::query_as::<_, ProjectActivity>(&format!(
+        "select p.name,
+                (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'outbound'
+                   and e.status = 'sent' and e.sent_at > now() - make_interval(days => $2)) as sent,
+                (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
+                   and e.classification is distinct from 'bounce' and e.created_at > now() - make_interval(days => $2)) as replies,
+                (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
+                   and e.classification = 'hot' and e.created_at > now() - make_interval(days => $2)) as hot,
+                (select coalesce(sum(e.cost_micros), 0)::bigint from email_messages e where e.project_id = p.id
+                   and e.status = 'sent' and e.sent_at > now() - make_interval(days => $2))
+                + (select (coalesce(sum(r.cost_usd), 0) * 1000000)::bigint from agent_runs r where r.project_id = p.id
+                   and r.created_at > now() - make_interval(days => $2)) as spend_micros
+         from projects p where {filter} order by p.created_at"
+    ))
+    .bind(id)
+    .bind(days)
+    .fetch_all(db)
+    .await
+}
+
 async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result<()> {
     let orgs: Vec<Uuid> = sqlx::query_scalar("select id from organizations").fetch_all(&state.db).await?;
     for org_id in orgs {
-        let activity = sqlx::query_as::<_, ProjectActivity>(
-            "select p.name,
-                    (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'outbound'
-                       and e.status = 'sent' and e.sent_at > now() - make_interval(days => $2)) as sent,
-                    (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
-                       and e.classification is distinct from 'bounce' and e.created_at > now() - make_interval(days => $2)) as replies,
-                    (select count(*) from email_messages e where e.project_id = p.id and e.direction = 'inbound'
-                       and e.classification = 'hot' and e.created_at > now() - make_interval(days => $2)) as hot,
-                    (select coalesce(sum(e.cost_micros), 0)::bigint from email_messages e where e.project_id = p.id
-                       and e.status = 'sent' and e.sent_at > now() - make_interval(days => $2))
-                    + (select (coalesce(sum(r.cost_usd), 0) * 1000000)::bigint from agent_runs r where r.project_id = p.id
-                       and r.created_at > now() - make_interval(days => $2)) as spend_micros
-             from projects p where p.org_id = $1 order by p.created_at",
-        )
-        .bind(org_id)
-        .bind(days)
-        .fetch_all(&state.db)
-        .await?;
+        let activity = activity(&state.db, "p.org_id = $1", org_id, days).await?;
         let stopped: Vec<(String, String, bool)> = sqlx::query_as(
             "select email::text, last_error, recheck_at is not null from mailboxes where org_id = $1 and status = 'error' order by email",
         )
@@ -64,7 +83,7 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         if active.is_empty() && stopped.is_empty() && bouncing.is_empty() {
             continue;
         }
-        let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id).await?;
+        let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id, None).await?;
         let body = digest_body(days, &active, waiting, &stopped, &bouncing, &state.cfg.public_url);
         let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
 
@@ -74,6 +93,37 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
                 break;
             }
         }
+    }
+    Ok(())
+}
+
+/// Marks today's weekly chat report as sent for every project that wants one and has a chat channel, and returns them.
+/// Claiming first keeps a second check in the digest hour from posting it twice.
+async fn claim_weekly_reports(db: &sqlx::PgPool) -> sqlx::Result<Vec<(Uuid, Uuid)>> {
+    sqlx::query_as(
+        "update project_settings s set chat_report_on = current_date from projects p
+         where p.id = s.project_id and p.org_id is not null and s.chat_weekly_report and s.slack_webhook_url <> ''
+           and s.chat_report_on is distinct from current_date
+         returning s.project_id, p.org_id",
+    )
+    .fetch_all(db)
+    .await
+}
+
+/// Posts the last 7 days' numbers to each project's chat that asked for them, quiet weeks too: a week of zeros is news.
+async fn post_weekly_reports(state: &AppState) -> anyhow::Result<()> {
+    for (project_id, org_id) in claim_weekly_reports(&state.db).await? {
+        let Some(week) = activity(&state.db, "p.id = $1", project_id, 7).await?.pop() else { continue };
+        let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id, Some(project_id)).await?;
+        let summary = week.summary();
+        let quote = match waiting {
+            0 => None,
+            1 => Some("1 reply is waiting for an answer.".to_string()),
+            n => Some(format!("{n} replies are waiting for an answer.")),
+        };
+        let link = format!("{}/app/p/{project_id}", state.cfg.public_url);
+        let alert = ChatAlert { label: "Last 7 days", summary: &summary, quote: quote.as_deref(), link: &link, link_text: "Open the project" };
+        hooks::post_chat(&state.db, project_id, &alert).await;
     }
     Ok(())
 }
@@ -93,7 +143,7 @@ fn digest_body(
     if !active.is_empty() {
         body += &format!("Here's what your Splee agent did in {period}:\n\n");
         for a in active {
-            body += &format!("{}: {} emails sent, {} replies, {} hot, {} spent\n", a.name, a.sent, a.replies, a.hot, usd(a.spend_micros));
+            body += &format!("{}\n", a.summary());
         }
     }
     if !stopped.is_empty() {
@@ -183,6 +233,34 @@ mod tests {
         let body = digest_body(1, &[], 0, &[], &[stats(48, 7)], "https://app.test");
         assert!(body.starts_with("lewis@acme.test bounced 15% of the 48 leads it emailed in the last 30 days.\n"), "{body}");
         assert!(body.contains("Check the addresses in your lead lists"), "{body}");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_weekly_chat_report_goes_out_once_to_projects_that_want_it(db: sqlx::PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project = |chat: &'static str, weekly: bool| {
+            let db = db.clone();
+            async move {
+                let id: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(org).fetch_one(&db).await.unwrap();
+                sqlx::query("insert into project_settings (project_id, slack_webhook_url, chat_weekly_report) values ($1, $2, $3)")
+                    .bind(id)
+                    .bind(chat)
+                    .bind(weekly)
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                id
+            }
+        };
+        let wants = project("https://ntfy.sh/acme", true).await;
+        project("", true).await;
+        project("https://ntfy.sh/acme", false).await;
+
+        assert_eq!(claim_weekly_reports(&db).await.unwrap(), [(wants, org)]);
+        assert!(claim_weekly_reports(&db).await.unwrap().is_empty());
+        let week = activity(&db, "p.id = $1", wants, 7).await.unwrap();
+        assert_eq!(week[0].summary(), "P: 0 emails sent, 0 replies, 0 hot, $0.00 spent");
     }
 
     #[sqlx::test]
