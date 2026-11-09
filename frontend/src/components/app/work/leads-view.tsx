@@ -8,7 +8,7 @@ import { Button, buttonClass, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Modal } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { LeadRow, Paginated, SegmentWithStats } from "@/lib/types";
+import type { LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { LeadModal } from "./lead-modal";
@@ -244,6 +244,10 @@ function PickedBar({
     const segment = segments.find((s) => s.id === value);
     run("move", { segment_id: segment?.id ?? null }, segment ? `Moved ${count} to ${segment.name}` : `Took ${count} out of their campaign`);
   };
+  const mark = (value: string) => {
+    if (value === "") return;
+    run("status", { status: value }, `Set ${count} to ${LEAD_STATUS[value as LeadStatus].label}`);
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
@@ -251,8 +255,8 @@ function PickedBar({
         <X className="size-4" />
       </Button>
       <p className="mr-auto text-sm font-medium">{count} selected</p>
-      {/* Delete comes before the campaign menu so that on a phone it shares the first row with the count and the menu
-          fills the second. After the menu, it took a third row of its own. */}
+      {/* Delete comes before the menus so that on a phone it shares the first row with the count and each menu takes a
+          full row below. After them, it took a row of its own. */}
       <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
         <Trash2 className="size-3.5" /> Delete
       </Button>
@@ -262,7 +266,7 @@ function PickedBar({
         value=""
         onChange={(e) => move(e.target.value)}
         disabled={busy}
-        className="h-9 w-auto flex-auto sm:w-52 sm:flex-none"
+        className="h-9 w-auto flex-auto sm:w-52 md:flex-none"
         aria-label="Move to campaign"
       >
         <option value="">Move to campaign…</option>
@@ -272,6 +276,15 @@ function PickedBar({
           </option>
         ))}
         <option value="none">No campaign</option>
+      </Select>
+      {/* Both menus only fit beside Delete from md up. Below that this one wraps, and both grow so no row ends in a gap. */}
+      <Select value="" onChange={(e) => mark(e.target.value)} disabled={busy} className="h-9 w-auto flex-auto sm:w-40 md:flex-none" aria-label="Set status">
+        <option value="">Set status…</option>
+        {Object.entries(LEAD_STATUS).map(([value, s]) => (
+          <option key={value} value={value}>
+            {s.label}
+          </option>
+        ))}
       </Select>
       <Modal open={confirming} onClose={() => setConfirming(false)} title={`Delete ${count}?`} className="max-w-md">
         <p className="text-sm text-muted-foreground">Their emails, notes and webhook history go too. You can&apos;t undo this.</p>

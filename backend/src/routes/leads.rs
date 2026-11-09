@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/leads/export", get(export_leads))
         .route("/projects/{id}/leads/move", post(move_leads))
         .route("/projects/{id}/leads/delete", post(delete_leads))
+        .route("/projects/{id}/leads/status", post(set_status))
         .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
         .route("/projects/{id}/linkedin", get(list_linkedin))
@@ -334,6 +335,8 @@ struct PickedLeads {
     ids: Vec<Uuid>,
     /// For a move, the campaign they join, or null for none.
     segment_id: Option<Uuid>,
+    /// For a status change, the new status.
+    status: Option<String>,
 }
 
 /// A page of the Leads table holds at most 100, so a bigger pick isn't from the page.
@@ -358,6 +361,36 @@ async fn move_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
         .await?
         .rows_affected();
     Ok(Json(json!({ "moved": moved })))
+}
+
+/// A lead whose status a bulk change moved, with the status it had.
+#[derive(FromRow)]
+struct Changed {
+    before: String,
+    #[sqlx(flatten)]
+    lead: Lead,
+}
+
+/// Leads already in the status are left alone, so only real changes announce a booked meeting.
+async fn set_status(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
+    picked(&state, &auth, id, &body).await?;
+    let status = body.status.as_deref().ok_or_else(|| AppError::BadRequest("Pick a status".into()))?;
+    util_input::one_of("status", status, LEAD_STATUSES)?;
+    // The joined copy of the row still has the old status, so it can be returned next to the new one.
+    let changed: Vec<Changed> = sqlx::query_as(
+        "update leads l set status = $3 from leads old
+         where old.id = l.id and l.project_id = $1 and l.id = any($2) and l.status <> $3
+         returning old.status as before, l.*",
+    )
+    .bind(id)
+    .bind(&body.ids)
+    .bind(status)
+    .fetch_all(&state.db)
+    .await?;
+    for c in &changed {
+        crate::hooks::status_changed(&state, &c.before, &c.lead).await;
+    }
+    Ok(Json(json!({ "changed": changed.len() })))
 }
 
 async fn delete_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
