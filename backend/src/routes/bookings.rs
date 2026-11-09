@@ -18,16 +18,18 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/bookings/{token}", post(booked))
 }
 
-/// The emails in `payload.attendees`, leaving out the host. SavvyCal lists the organizer there too, Cal.com doesn't.
+/// The emails in `payload.attendees`, or Zcal's `data.attendees`, leaving out the host. SavvyCal lists the organizer there
+/// too, Cal.com and Zcal don't.
 fn attendees(body: &Value) -> Vec<&Value> {
-    let list = body["payload"]["attendees"].as_array();
+    let list = body["payload"]["attendees"].as_array().or(body["data"]["attendees"].as_array());
     list.map(|a| a.iter().filter(|x| x["is_organizer"] != true).map(|x| &x["email"]).collect()).unwrap_or_default()
 }
 
 /// The invitee emails in a new or moved booking, or none for other events (cancellations, pings).
 /// Calendly sends `invitee.created` with `payload.email` (a reschedule is a new invitee), Cal.com `BOOKING_CREATED` or
 /// `BOOKING_RESCHEDULED` and SavvyCal `event.created` or `event.rescheduled` with `payload.attendees[].email`, OnceHub
-/// `booking.scheduled` or `booking.rescheduled` with `data.form_submission.email`, and anything else, like a Zapier step,
+/// `booking.scheduled` or `booking.rescheduled` with `data.form_submission.email`, Zcal `event.created` or
+/// `event.rescheduled` with `data.attendees[].email` (the same names as SavvyCal's), and anything else, like a Zapier step,
 /// can send `{"email": ...}`.
 fn booked_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
@@ -46,7 +48,8 @@ fn booked_emails(body: &Value) -> Vec<String> {
 fn cancelled_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
         (Some("invitee.canceled"), _, _) if body["payload"]["rescheduled"] != true => vec![&body["payload"]["email"]],
-        (_, Some("BOOKING_CANCELLED"), _) | (_, _, Some("event.canceled")) => attendees(body),
+        // SavvyCal spells it canceled, Zcal cancelled.
+        (_, Some("BOOKING_CANCELLED"), _) | (_, _, Some("event.canceled" | "event.cancelled")) => attendees(body),
         (_, _, Some("booking.canceled" | "booking.canceled_reschedule_requested")) => vec![&body["data"]["form_submission"]["email"]],
         _ => vec![],
     };
@@ -54,10 +57,11 @@ fn cancelled_emails(body: &Value) -> Vec<String> {
 }
 
 /// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`,
-/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, or a plain `start_time`. None when the tool didn't say.
+/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, or a plain `start_time`. None
+/// when the tool didn't say.
 fn meeting_start(body: &Value) -> Option<Ts> {
-    let payload = &body["payload"];
-    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &body["data"]["starting_time"], &body["start_time"]]
+    let (payload, data) = (&body["payload"], &body["data"]);
+    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &body["start_time"]]
         .into_iter()
         .find_map(|v| DateTime::parse_from_rfc3339(v.as_str()?).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -205,6 +209,24 @@ mod tests {
         }
         let at = chrono::DateTime::parse_from_rfc3339("2026-11-10T16:45:00Z").unwrap().with_timezone(&chrono::Utc);
         assert_eq!(meeting_start(&booking("booking.scheduled")), Some(at));
+    }
+
+    #[test]
+    fn reads_zcal_bookings() {
+        // Zcal's documented sample: the invitee and a guest are attendees, the host isn't.
+        let event = |kind: &str| {
+            let attendees = json!([{"name": "Jane", "email": "Jane@Acme.com", "type": "invitee"}, {"email": "guest@acme.com", "type": "guest"}]);
+            let hosts = json!([{"name": "Host", "email": "host@us.com"}]);
+            json!({"type": kind, "created_at": "2025-02-12T19:00:00.000Z", "data": {"startDate": "2025-02-12T20:30:00.000Z", "hosts": hosts, "attendees": attendees}})
+        };
+        for kind in ["event.created", "event.rescheduled"] {
+            assert_eq!(booked_emails(&event(kind)), ["jane@acme.com", "guest@acme.com"]);
+            assert!(cancelled_emails(&event(kind)).is_empty());
+        }
+        assert_eq!(cancelled_emails(&event("event.cancelled")), ["jane@acme.com", "guest@acme.com"]);
+        assert!(booked_emails(&event("event.cancelled")).is_empty());
+        let at = chrono::DateTime::parse_from_rfc3339("2025-02-12T20:30:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(meeting_start(&event("event.created")), Some(at));
     }
 
     #[test]
