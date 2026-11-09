@@ -90,7 +90,7 @@ export function SignupForm({
       </p>
       <p className="mt-4 text-center text-xs text-muted-foreground">
         By signing up you agree to the{" "}
-        <Link href="/terms-of-use" className="underline underline-offset-2">
+        <Link href="/terms-of-use" className="whitespace-nowrap underline underline-offset-2">
           terms of use
         </Link>
         .
