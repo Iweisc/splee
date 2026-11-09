@@ -115,12 +115,12 @@ async fn first_bytes(mut res: reqwest::Response) -> Vec<u8> {
 }
 
 /// What an endpoint said when it refused a post. The chat apps put it in different places: Telegram in description,
-/// Discord in message, Google Chat and Teams in error.message, ntfy in error, Pushover in errors, and Slack in a
-/// plain-text body.
+/// Discord in message, Google Chat and Teams in error.message, Gotify in errorDescription, ntfy in error, Pushover in
+/// errors, and Slack in a plain-text body.
 fn reason(body: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(body);
     let said = match serde_json::from_str::<Value>(&text) {
-        Ok(json) => ["/description", "/message", "/error/message", "/error", "/errors/0"].iter().find_map(|p| json.pointer(p)?.as_str())?.to_string(),
+        Ok(json) => ["/description", "/message", "/error/message", "/errorDescription", "/error", "/errors/0"].iter().find_map(|p| json.pointer(p)?.as_str())?.to_string(),
         // An HTML error page says nothing a person can act on.
         Err(_) if text.trim_start().starts_with('<') => return None,
         Err(_) => text.into_owned(),
@@ -360,6 +360,12 @@ pub fn chat_endpoint(url: &str) -> String {
 
 const PUSHOVER: &str = "api.pushover.net";
 
+/// A Gotify server can be on any host, so it's told apart by its URL for sending a message: /message with the app's
+/// `?token=`. Keep in sync with chatApp in the integrations page.
+fn gotify(url: &str) -> bool {
+    Url::parse(url).is_ok_and(|u| u.path_segments().and_then(|mut s| s.next_back()) == Some("message") && u.query_pairs().any(|(k, _)| k == "token"))
+}
+
 /// A Mattermost server can be on any host, so its incoming webhook is told apart by the path, which ends in /hooks/ and
 /// the webhook's 26-character id. Keep in sync with chatApp in the integrations page.
 fn mattermost(url: &str) -> bool {
@@ -375,7 +381,7 @@ fn query(url: &str, key: &str) -> Option<String> {
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
-/// (an incoming webhook's URL) have their own shapes, and Mattermost wants markdown. Anything else gets Slack's `{text}`,
+/// (an incoming webhook's URL) have their own shapes, and Gotify (its /message?token= URL) and Mattermost want markdown. Anything else gets Slack's `{text}`,
 /// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
@@ -424,6 +430,15 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
         }
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
+    } else if gotify(url) {
+        // Markdown, so the link can be followed in the web app too. Tapping the phone notification opens it. Without a
+        // priority it gets the app's, 0 by default, which the phone app doesn't notify about. Markdown joins a reply's lines
+        // unless each ends in a hard break.
+        let quote = quote.replace("\n>", "  \n>");
+        json!({
+            "title": a.label, "message": format!("{}{quote}\n\n[{}]({})", a.summary, a.link_text, a.link), "priority": 5,
+            "extras": {"client::display": {"contentType": "text/markdown"}, "client::notification": {"click": {"url": a.link}}},
+        })
     } else if mattermost(url) {
         // Mattermost reads Slack's links but shows Slack's *bold* as italics.
         json!({"text": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
@@ -712,6 +727,13 @@ mod tests {
         let mattermost = "**Hot lead:** Sarah replied to Acme\n> Sounds good\n> Tuesday?\n[Open the inbox](https://app/x)";
         assert_eq!(chat_payload("https://chat.acme.dev/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a), json!({"text": mattermost}));
         assert_eq!(chat_payload("https://acme.dev/mattermost/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a)["text"], mattermost);
+        let gotify = chat_payload("https://push.acme.dev/gotify/message?token=AbCdEf", &a);
+        assert_eq!(gotify["title"], "Hot lead");
+        assert_eq!(gotify["message"], "Sarah replied to Acme  \n> Sounds good  \n> Tuesday?\n\n[Open the inbox](https://app/x)");
+        assert_eq!(gotify["extras"]["client::notification"]["click"]["url"], "https://app/x");
+        assert_eq!(gotify["priority"], 5);
+        assert!(chat_payload("https://push.acme.dev/message", &a)["text"].is_string());
+        assert_eq!(reason(br#"{"error":"Unauthorized","errorCode":401,"errorDescription":"you need to provide a valid access token"}"#).as_deref(), Some("you need to provide a valid access token"));
         // Rocket.Chat's /hooks/{id}/{token} and Zulip read Slack's format.
         assert_eq!(chat_payload("https://chat.acme.dev/hooks/66c9b2b8b6a2d5a1e8c1f0a2/AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdefghij", &a)["text"], slack);
         assert_eq!(chat_payload("https://acme.zulipchat.com/api/v1/external/slack_incoming?api_key=k&stream=sales", &a)["text"], slack);

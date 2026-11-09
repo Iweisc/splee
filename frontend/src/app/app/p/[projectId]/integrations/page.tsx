@@ -93,6 +93,7 @@ const CHAT_APPS = [
   ["Telegram", "bot's sendMessage URL with ?chat_id="],
   ["ntfy", "https://ntfy.sh/ and a topic only you know"],
   ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
+  ["Gotify", "your server's /message?token=APP_TOKEN"],
   ["Lark or Feishu", "group Settings → Bots → Custom Bot"],
   ["DingTalk", "group Bots → Custom, with IP security"],
   ["WeCom", "the group chat's ⋯ → Add Group Robot"],
@@ -106,10 +107,12 @@ const CHAT_APPS = [
 function chatApp(url: string): string {
   let host: string;
   let path: string[];
+  let token: boolean;
   try {
     const parsed = new URL(url);
     host = parsed.hostname.toLowerCase();
     path = parsed.pathname.split("/").filter(Boolean);
+    token = parsed.searchParams.has("token");
   } catch {
     return url;
   }
@@ -126,7 +129,9 @@ function chatApp(url: string): string {
   if (host === "oapi.dingtalk.com") return "DingTalk";
   if (host === "qyapi.weixin.qq.com") return "WeCom";
   if (host === "webexapis.com") return "Webex";
-  // Self-hosted chats can be on any host, so their webhook paths tell them apart. Mattermost's is hooks::mattermost.
+  // Self-hosted chats can be on any host, so their webhook paths tell them apart, the same way hooks::gotify and
+  // hooks::mattermost do.
+  if (path.at(-1) === "message" && token) return "Gotify";
   if (path.at(-2) === "hooks" && /^[a-z0-9]{26}$/.test(path.at(-1) ?? "")) return "Mattermost";
   if (path.at(-3) === "hooks") return "Rocket.Chat";
   if (path.join("/").includes("api/v1/external/slack_incoming")) return "Zulip";
