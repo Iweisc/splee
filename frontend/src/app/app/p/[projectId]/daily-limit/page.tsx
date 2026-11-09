@@ -66,7 +66,7 @@ export default function DailyLimitPage() {
           {capacity === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">
               Nothing sends until you{" "}
-              <Link href="/app/domains" className="font-medium text-foreground hover:underline">
+              <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
                 connect a mailbox
               </Link>
               .
