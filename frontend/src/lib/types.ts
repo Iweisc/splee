@@ -145,7 +145,7 @@ export interface ProjectSettings extends CrmStatus {
   /** The secret in the form webhook URL, /api/forms/{form_token}. */
   form_token: string;
   /** Its key is write-only, through PUT /integrations/verifier. */
-  verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable";
+  verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable" | "clearout" | "reoon";
   verifier_error: string | null;
   verifier_failed_at: string | null;
   /** Unipile sends due LinkedIn steps from this account. Its token is write-only. */
