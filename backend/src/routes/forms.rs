@@ -1,4 +1,4 @@
-//! A website form (Tally, Typeform, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
+//! A website form (Tally, Typeform, Fillout, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
 //! The secret in the URL picks the project, like the booking webhook's.
 
 use std::collections::HashMap;
@@ -21,8 +21,13 @@ pub fn router() -> Router<AppState> {
 }
 
 /// The (question, answer) pairs in a submission. Tally sends `data.fields[]`, Typeform `form_response.answers[]` with the
-/// questions in `form_response.definition.fields[]`, Webflow `payload.data`, and anything else flat JSON.
+/// questions in `form_response.definition.fields[]`, Fillout `questions[]` and its hidden fields in `urlParameters[]`,
+/// Webflow `payload.data`, and anything else flat JSON.
 fn answers(body: &Value) -> Vec<(String, String)> {
+    if let Some(questions) = body["questions"].as_array() {
+        let hidden = body["urlParameters"].as_array().map(Vec::as_slice).unwrap_or_default();
+        return questions.iter().chain(hidden).filter_map(|q| Some((q["name"].as_str()?.to_string(), text(&q["value"])?))).collect();
+    }
     if let Some(fields) = body["data"]["fields"].as_array() {
         return fields
             .iter()
@@ -234,6 +239,17 @@ mod tests {
         let webflow = json!({"triggerType": "form_submission", "payload": {"name": "Contact", "data": {"Name": "Priya", "Email": "priya@corvid.example", "Company Website": "corvid.example"}}});
         let (lead, _) = lead_from(answers(&webflow));
         assert_eq!((lead.full_name.as_str(), lead.company_domain.as_str()), ("Priya", "corvid.example"));
+
+        // Fillout's submission, as its webhook sends it: a choice is its text, and a hidden field a URL parameter.
+        let fillout = json!({"submissionId": "abc", "submissionTime": "2026-11-10T10:00:00.000Z", "questions": [
+            {"id": "q1", "name": "Your name", "type": "ShortAnswer", "value": "Lena Ortiz"},
+            {"id": "q2", "name": "Email", "type": "EmailInput", "value": "lena@quarry.example"},
+            {"id": "q3", "name": "Which tools do you use?", "type": "MultipleChoice", "value": ["HubSpot", "Gmail"]},
+            {"id": "q4", "name": "Phone", "type": "PhoneNumber", "value": null},
+        ], "urlParameters": [{"id": "utm_source", "name": "utm_source", "value": "linkedin"}]});
+        let (lead, rest) = lead_from(answers(&fillout));
+        assert_eq!((lead.full_name.as_str(), lead.email.as_str()), ("Lena Ortiz", "lena@quarry.example"));
+        assert_eq!(rest, [("Which tools do you use?".to_string(), "HubSpot, Gmail".to_string()), ("utm_source".to_string(), "linkedin".to_string())]);
 
         let plain = json!({"email": " Tom@Halcyon.example ", "first_name": "Tom", "lastName": "Alvarez", "job_title": "Director of Ops", "linkedin": "https://linkedin.com/in/tom"});
         let (lead, _) = lead_from(answers(&plain));

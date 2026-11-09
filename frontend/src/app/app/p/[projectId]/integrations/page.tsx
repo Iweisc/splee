@@ -725,7 +725,7 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
           <ClipboardList className="size-4" /> Website forms
         </span>
       }
-      description="Whoever fills in your Tally, Typeform or Webflow form becomes a lead and pings your chat."
+      description="Whoever fills in your Tally, Typeform, Fillout or Webflow form becomes a lead and pings your chat."
     >
       <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} />
       {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
@@ -733,8 +733,8 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
         <span className="text-sm font-medium">Form webhook URL</span>
         <CopyField value={`${origin}/api/forms/${token}${segmentId ? `?campaign=${segmentId}` : ""}`} />
         <p className="text-xs text-pretty text-muted-foreground">
-          Tally: Integrations → Webhooks. Typeform: Connect → Webhooks. Webflow: Site settings → Integrations → Webhooks, Form
-          submission. Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>. Answers that aren&apos;t a name, email,
+          Tally: Integrations → Webhooks. Typeform: Connect → Webhooks. Fillout: Integrate → Webhook, in Simple mode. Webflow: Site
+          settings → Integrations → Webhooks, Form submission. Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>. Answers that aren&apos;t a name, email,
           company, title, website or LinkedIn go in the lead&apos;s notes.
         </p>
       </div>
