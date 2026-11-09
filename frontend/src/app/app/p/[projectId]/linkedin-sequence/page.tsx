@@ -106,10 +106,7 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
                 key={s.lead.id}
                 sequence={s}
                 writing={writing(s.lead.id)}
-                onChange={() => {
-                  mutate();
-                  refreshRuns();
-                }}
+                onChange={() => Promise.all([mutate(), refreshRuns()])}
               />
             ))}
           </Card>
@@ -119,7 +116,7 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   );
 }
 
-function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { sequence: Sequence; writing: string | null; onChange: () => void }) {
+function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { sequence: Sequence; writing: string | null; onChange: () => Promise<unknown> }) {
   const [started, setStarted] = useState<string | null>(null);
   const runId = started ?? writing;
   const [starting, setStarting] = useState(false);
@@ -219,14 +216,19 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
 
 const stepName = (m: LinkedinMessage) => (m.kind === "connect" ? "Connect note" : `Message ${m.step}`);
 
-function MessageCard({ message: m, before, onChange }: { message: LinkedinMessage; before?: LinkedinMessage; onChange: () => void }) {
+function MessageCard({ message: m, before, onChange }: { message: LinkedinMessage; before?: LinkedinMessage; onChange: () => Promise<unknown> }) {
   const sentBySplee = m.status === "done" && m.sent_via === "unipile";
+  // Busy until the list has reloaded too, so the step never looks clickable again before it changes.
+  const [saving, setSaving] = useState<LinkedinMessage["status"] | null>(null);
   const setStatus = async (status: LinkedinMessage["status"]) => {
+    setSaving(status);
     try {
       await api(`/linkedin/${m.id}`, { method: "PATCH", body: { status } });
-      onChange();
+      await onChange();
     } catch (e) {
       toastError(e);
+    } finally {
+      setSaving(null);
     }
   };
 
@@ -268,17 +270,17 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
         <span className="flex-1" />
         {m.status === "todo" ? (
           <>
-            <Button size="sm" variant="ghost" onClick={() => setStatus("skipped")} className="px-2">
+            <Button size="sm" variant="ghost" onClick={() => setStatus("skipped")} loading={saving === "skipped"} disabled={!!saving} className="px-2">
               <SkipForward className="size-3.5" /> Skip
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setStatus("done")}>
+            <Button size="sm" variant="outline" onClick={() => setStatus("done")} loading={saving === "done"} disabled={!!saving}>
               <Check className="size-3.5" /> Done
             </Button>
           </>
         ) : (
           // A step Splee sent is out on LinkedIn, so there's nothing to undo.
           !sentBySplee && (
-            <Button size="sm" variant="ghost" onClick={() => setStatus("todo")}>
+            <Button size="sm" variant="ghost" onClick={() => setStatus("todo")} loading={saving === "todo"}>
               Undo
             </Button>
           )
