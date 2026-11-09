@@ -731,7 +731,7 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
           <ClipboardList className="size-4" /> Website forms
         </span>
       }
-      description="Whoever fills in your Tally, Typeform, Fillout, Jotform or Webflow form becomes a lead and pings your chat."
+      description="Whoever fills in one of your forms becomes a lead and pings your chat."
     >
       <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} />
       {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
@@ -743,6 +743,7 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
           <li>Typeform: Connect → Webhooks.</li>
           <li>Fillout: Integrate → Webhook, in Simple mode.</li>
           <li>Jotform: Settings → Integrations → WebHooks.</li>
+          <li>Paperform: After Submission → Integrations &amp; Webhooks → Add Webhook, on New Submission.</li>
           <li>Webflow: Site settings → Integrations → Webhooks, with Form submission.</li>
           <li>
             Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>.

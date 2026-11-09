@@ -1,4 +1,4 @@
-//! A website form (Tally, Typeform, Fillout, Jotform, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
+//! A website form (Tally, Typeform, Fillout, Jotform, Paperform, Webflow, or anything that can POST JSON) adds whoever fills it in as a lead.
 //! The secret in the URL picks the project, like the booking webhook's.
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ pub fn router() -> Router<AppState> {
 
 /// The (question, answer) pairs in a submission. Tally sends `data.fields[]`, Typeform `form_response.answers[]` with the
 /// questions in `form_response.definition.fields[]`, Fillout `questions[]` and its hidden fields in `urlParameters[]`,
-/// Jotform a `rawRequest` field holding JSON, Webflow `payload.data`, and anything else flat JSON.
+/// Jotform a `rawRequest` field holding JSON, Paperform `data[]`, Webflow `payload.data`, and anything else flat JSON.
 fn answers(body: &Value) -> Vec<(String, String)> {
     if let Some(raw) = body["rawRequest"].as_str() {
         return jotform(&serde_json::from_str(raw).unwrap_or_default());
@@ -31,6 +31,16 @@ fn answers(body: &Value) -> Vec<(String, String)> {
     if let Some(questions) = body["questions"].as_array() {
         let hidden = body["urlParameters"].as_array().map(Vec::as_slice).unwrap_or_default();
         return questions.iter().chain(hidden).filter_map(|q| Some((q["name"].as_str()?.to_string(), text(&q["value"])?))).collect();
+    }
+    if let Some(questions) = body["data"].as_array() {
+        // Paperform sends a blank title for an untitled question, which its pre-fill key names instead.
+        return questions
+            .iter()
+            .filter_map(|q| {
+                let title = [&q["title"], &q["custom_key"], &q["key"]].into_iter().filter_map(Value::as_str).find(|t| !t.is_empty())?;
+                Some((title.to_string(), text(&q["value"])?))
+            })
+            .collect();
     }
     if let Some(fields) = body["data"]["fields"].as_array() {
         return fields
@@ -316,6 +326,17 @@ mod tests {
         let (lead, rest) = lead_from(answers(&fillout));
         assert_eq!((lead.full_name.as_str(), lead.email.as_str()), ("Lena Ortiz", "lena@quarry.example"));
         assert_eq!(rest, [("Which tools do you use?".to_string(), "HubSpot, Gmail".to_string()), ("utm_source".to_string(), "linkedin".to_string())]);
+
+        // Paperform's submission: an untitled question goes by its pre-fill key, and an unanswered one is null.
+        let paperform = json!({"submission_id": "x1", "data": [
+            {"title": "Full name", "description": null, "type": "text", "key": "a1", "custom_key": null, "value": "Ravi Patel"},
+            {"title": "Email", "description": null, "type": "email", "key": "b2", "custom_key": null, "value": "ravi@lumen.example"},
+            {"title": "", "description": null, "type": "text", "key": "c3", "custom_key": "budget", "value": "5k"},
+            {"title": "Phone", "description": null, "type": "phone", "key": "d4", "custom_key": null, "value": null},
+        ]});
+        let (lead, rest) = lead_from(answers(&paperform));
+        assert_eq!((lead.full_name.as_str(), lead.email.as_str()), ("Ravi Patel", "ravi@lumen.example"));
+        assert_eq!(rest, [("budget".to_string(), "5k".to_string())]);
 
         // Jotform's webhook, as multipart fields, with the answers in rawRequest.
         let raw = json!({"slug": "submit/2531", "q11_message": "Pricing for 12 seats", "q3_yourName": {"first": "Ana", "last": "Ruiz"},
