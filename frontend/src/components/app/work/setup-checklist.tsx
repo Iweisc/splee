@@ -47,7 +47,8 @@ export function SetupChecklist({ projectId, settings, className }: { projectId: 
       <ul className="flex flex-col">
         {items.map((item) => (
           <li key={item.label} className="border-t border-border first:border-t-0">
-            <Link href={item.href} className="group flex items-center gap-3 py-2.5">
+            {/* The gaps are tight on purpose. At 320px a 12px gap wrapped "Review and start a campaign" by 1px. */}
+            <Link href={item.href} className="group flex items-center gap-2 py-2.5">
               <span
                 className={cn(
                   "inline-flex size-5 shrink-0 items-center justify-center rounded-full",
