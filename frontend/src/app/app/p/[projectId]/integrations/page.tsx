@@ -75,6 +75,14 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
 const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
 
 /** Posts a sample alert to the URL as typed, saved or not. */
+// Where each app hands out the URL. hooks::chat_payload formats alerts for the same apps.
+const CHAT_APPS = [
+  ["Slack", "Apps → Incoming Webhooks → Add to Slack"],
+  ["Discord", "channel settings → Integrations → Webhooks"],
+  ["Teams", "the channel's Workflows → Post to a channel when a webhook request is received"],
+  ["Google Chat", "Apps & integrations → Webhooks"],
+];
+
 function TestButton({ projectId, target, url }: { projectId: string; target: "slack" | "webhook"; url: string }) {
   const { mutate } = useSWRConfig();
   const [busy, setBusy] = useState(false);
@@ -84,7 +92,7 @@ function TestButton({ projectId, target, url }: { projectId: string; target: "sl
       await api(`/projects/${projectId}/integrations/test`, { body: { target, url } });
       // A test that passes on the saved URL clears its last failure.
       mutate(`/projects/${projectId}/settings`);
-      toast.success(target === "slack" ? "Test sent. Check the Slack channel." : "Test sent. Your endpoint accepted it.");
+      toast.success(target === "slack" ? "Test sent. Check the channel." : "Test sent. Your endpoint accepted it.");
     } catch (e) {
       toastError(e);
     } finally {
@@ -143,23 +151,27 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
     <ProjectSettingsPage
       title="Integrations"
       description="Get told the moment a lead replies, in your own tools."
-      problem={(s) => problemFor("Webhook URL", s.webhook_url) ?? problemFor("Slack webhook URL", s.slack_webhook_url)}
+      problem={(s) => problemFor("Webhook URL", s.webhook_url) ?? problemFor("Chat webhook URL", s.slack_webhook_url)}
     >
       {(s, update) => (
         <>
           <Section
             title={
               <span className="flex items-center gap-2">
-                <Hash className="size-4" /> Slack
+                <Hash className="size-4" /> Chat alerts
               </span>
             }
-            description="Posts to a Slack channel when a lead turns hot or books a meeting."
+            description="Posts to a Slack, Discord, Microsoft Teams or Google Chat channel when a lead turns hot or books a meeting."
             actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field
               label="Incoming webhook URL"
-              error={problemFor("Slack webhook URL", s.slack_webhook_url)}
-              hint="In Slack: Apps → Incoming Webhooks → Add to Slack, pick a channel, copy the URL."
+              error={problemFor("Chat webhook URL", s.slack_webhook_url)}
+              hint={CHAT_APPS.map(([app, where]) => (
+                <span key={app} className="block">
+                  {app}: {where}
+                </span>
+              ))}
             >
               <Input
                 type="url"
@@ -220,8 +232,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <ReplaceSecretButton projectId={projectId} onReplaced={(webhook_secret) => update({ webhook_secret })} />
               </CopyField>
               <p className="text-xs text-muted-foreground">
-                Every webhook request is signed with this, so your endpoint can reject requests that didn&apos;t come from Splee. Slack messages aren&apos;t
-                signed.
+                Every webhook request is signed with this, so your endpoint can reject requests that didn&apos;t come from Splee. Chat alerts aren&apos;t signed.
               </p>
             </div>
             <details className="group mt-5">
@@ -252,7 +263,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <CalendarCheck className="size-4" /> Calendly and Cal.com
               </span>
             }
-            description="When a lead books a call, Splee marks them Meeting booked. That stops their follow-ups and tells Slack and your webhook."
+            description="When a lead books a call, Splee marks them Meeting booked. That stops their follow-ups and tells your chat channel and webhook."
           >
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="flex flex-col gap-1.5">

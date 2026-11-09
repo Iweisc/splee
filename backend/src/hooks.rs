@@ -162,8 +162,45 @@ pub fn lead_url(public_url: &str, project_id: Uuid, lead_id: Uuid) -> String {
     format!("{public_url}/app/p/{project_id}/inbox?lead={lead_id}")
 }
 
-/// Posts `text` to the project's Slack channel when it has one, and records how it went for the integrations page.
-pub async fn post_slack(db: &sqlx::PgPool, project_id: Uuid, text: &str) {
+/// A chat alert, written once and formatted for whichever app the project's chat webhook belongs to.
+pub struct ChatAlert<'a> {
+    /// Bold, before the summary, like "Hot lead".
+    pub label: &'a str,
+    pub summary: &'a str,
+    /// Quoted under the summary, like the lead's reply.
+    pub quote: Option<&'a str>,
+    pub link: &'a str,
+    pub link_text: &'a str,
+}
+
+/// The JSON a chat webhook takes. Discord and Teams (Workflows and the older connectors) have their own shapes. Anything
+/// else gets Slack's `{text}`, which Google Chat also reads, links included.
+pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
+    let host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
+    let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    let quote = a.quote.map(|q| format!("\n> {}", q.replace('\n', "\n> "))).unwrap_or_default();
+    if on("discord.com") || on("discordapp.com") {
+        json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
+    } else if on("logic.azure.com") || on("powerplatform.com") || on("webhook.office.com") {
+        let mut body = vec![json!({"type": "TextBlock", "text": format!("**{}:** {}", a.label, a.summary), "wrap": true})];
+        if let Some(q) = a.quote {
+            body.push(json!({"type": "TextBlock", "text": q, "wrap": true, "isSubtle": true}));
+        }
+        json!({"type": "message", "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.4", "body": body,
+                "actions": [{"type": "Action.OpenUrl", "title": a.link_text, "url": a.link}],
+            },
+        }]})
+    } else {
+        json!({"text": format!("*{}:* {}{quote}\n<{}|{}>", a.label, a.summary, a.link, a.link_text)})
+    }
+}
+
+/// Posts an alert to the project's chat webhook (slack_webhook_url, which also takes Discord, Teams and Google Chat) when
+/// it has one, and records how it went for the integrations page.
+pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_>) {
     let url: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
         .bind(project_id)
         .fetch_optional(db)
@@ -174,9 +211,9 @@ pub async fn post_slack(db: &sqlx::PgPool, project_id: Uuid, text: &str) {
     if url.trim().is_empty() {
         return;
     }
-    let result = post_json_retrying(&url, &json!({"text": text}), None).await;
+    let result = post_json_retrying(&url, &chat_payload(&url, alert), None).await;
     if let Err(e) = &result {
-        tracing::warn!(error = %e, "slack notification failed");
+        tracing::warn!(error = %e, "chat notification failed");
     }
     record(db, project_id, Alert::Slack, &url, &result).await;
 }
@@ -186,23 +223,25 @@ pub fn booked(before: &str, lead: &Lead) -> bool {
     lead.status == "meeting_booked" && before != "meeting_booked"
 }
 
-/// Tells the team in Slack that a lead booked a meeting. It runs in the background, so the request that set the status
-/// doesn't wait on Slack.
-pub fn booked_in_slack(state: &AppState, lead: &Lead) {
+/// Tells the team in chat that a lead booked a meeting. It runs in the background, so the request that set the status
+/// doesn't wait on the chat app.
+pub fn booked_in_chat(state: &AppState, lead: &Lead) {
     let (db, project_id) = (state.db.clone(), lead.project_id);
     let (who, link) = (format!("{} ({})", lead.full_name, lead.company_name), lead_url(&state.cfg.public_url, project_id, lead.id));
     tokio::spawn(async move {
         let project: String =
             sqlx::query_scalar("select name from projects where id = $1").bind(project_id).fetch_one(&db).await.unwrap_or_default();
-        post_slack(&db, project_id, &format!("*Meeting booked:* {who} for {project}\n<{link}|Open the conversation>")).await;
+        let summary = format!("{who} for {project}");
+        let alert = ChatAlert { label: "Meeting booked", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
+        post_chat(&db, project_id, &alert).await;
     });
 }
 
-/// Sends meeting_booked to Slack and the webhook when someone in the app moves a lead there. The API only posts to Slack
+/// Sends meeting_booked to chat and the webhook when someone in the app moves a lead there. The API only posts to chat
 /// (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
     if booked(before, lead) {
-        booked_in_slack(state, lead);
+        booked_in_chat(state, lead);
         send_lead_event(state, lead.project_id, "meeting_booked", lead, None).await;
     }
 }
@@ -240,6 +279,23 @@ fn is_public(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_alerts_match_each_app() {
+        let a = ChatAlert { label: "Hot lead", summary: "Sarah replied to Acme", quote: Some("Sounds good\nTuesday?"), link: "https://app/x", link_text: "Open the inbox" };
+        let discord = chat_payload("https://discord.com/api/webhooks/1/abc", &a);
+        assert_eq!(discord["content"], "**Hot lead:** Sarah replied to Acme\n> Sounds good\n> Tuesday?\n[Open the inbox](https://app/x)");
+        let teams = chat_payload("https://prod-12.westus.logic.azure.com:443/workflows/abc", &a);
+        let card = &teams["attachments"][0]["content"];
+        assert_eq!(card["body"][0]["text"], "**Hot lead:** Sarah replied to Acme");
+        assert_eq!(card["body"][1]["text"], "Sounds good\nTuesday?");
+        assert_eq!(card["actions"][0]["url"], "https://app/x");
+        let slack = "*Hot lead:* Sarah replied to Acme\n> Sounds good\n> Tuesday?\n<https://app/x|Open the inbox>";
+        assert_eq!(chat_payload("https://hooks.slack.com/services/T/B/x", &a)["text"], slack);
+        assert_eq!(chat_payload("https://chat.googleapis.com/v1/spaces/x/messages?key=k", &a)["text"], slack);
+        // A lookalike host isn't Discord.
+        assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
+    }
 
     #[test]
     fn only_public_addresses_pass() {

@@ -167,7 +167,7 @@ async fn update_lead(
         .await?;
     // No meeting_booked webhook here: it would echo a booking straight back to the tool that sent it.
     if hooks::booked(&before, &lead) {
-        hooks::booked_in_slack(&state, &lead);
+        hooks::booked_in_chat(&state, &lead);
     }
     Ok(Json(leads::detail(&state.db, lead).await?))
 }
