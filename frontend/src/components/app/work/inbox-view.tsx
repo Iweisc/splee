@@ -14,7 +14,7 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
-import { ListKeysHint, useListKeys } from "./list-keys";
+import { Kbd, ListKeysHint, useListKeys, useShortcut } from "./list-keys";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
@@ -37,6 +37,14 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const selectedId = data?.items.find((t) => t.lead.id === selectedLead)?.lead.id ?? (linked ? selectedLead : data?.items[0]?.lead.id);
   // Phones show one pane at a time, so the keys start at md, where the list and the thread sit side by side.
   const listRef = useListKeys(data?.items.map((t) => t.lead.id), selectedId ?? undefined, setSelectedLead, "48rem");
+  // After e marks a thread done, open the one below it, or the one above when it was last. In Needs reply the done
+  // thread leaves the list, so staying put would jump to the top.
+  const selectNext = () => {
+    const items = data?.items ?? [];
+    const at = items.findIndex((t) => t.lead.id === selectedId);
+    const next = items[at + 1] ?? items[at - 1];
+    if (next) setSelectedLead(next.lead.id);
+  };
 
   return (
     <Card className="grid min-h-[520px] flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -137,7 +145,9 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
         </div>
         {data && <Pager page={page} total={data.total} onChange={setPage} />}
         {!!data?.items.length && (
-          <ListKeysHint what="replies" className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block" />
+          <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block">
+            , <Kbd>e</Kbd> to mark done
+          </ListKeysHint>
         )}
       </div>
       <div className={cn("min-h-0 flex-col md:flex", selectedLead ? "flex" : "hidden")}>
@@ -148,7 +158,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           <ArrowLeft className="size-4" /> All replies
         </button>
         {selectedId ? (
-          <ThreadPane key={selectedId} leadId={selectedId} />
+          <ThreadPane key={selectedId} leadId={selectedId} onDone={selectNext} />
         ) : (
           !!data?.items.length && <EmptyState className="flex-1" title="Select a conversation" />
         )}
@@ -157,7 +167,8 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   );
 }
 
-function ThreadPane({ leadId }: { leadId: string }) {
+/** `onDone` runs when e marks the thread done, to move on to the next one. */
+function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) {
   const { mutate: mutateAll } = useSWRConfig();
   const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: EmailMessage[]; draft_run: string | null }>(
     `/inbox/threads/${leadId}`,
@@ -179,15 +190,12 @@ function ThreadPane({ leadId }: { leadId: string }) {
     }
   });
 
-  if (error) return <LoadError error={error} retry={() => mutate()} className="flex-1" />;
-  if (!data) return <ListSkeleton className="flex-1" />;
-
-  const { lead, messages } = data;
+  const messages = data?.messages ?? [];
   const pendingDraft = messages.find((m) => m.kind === "auto_reply" && m.status === "draft");
   const conversation = messages.filter((m) => m !== pendingDraft && m.status !== "cancelled");
   // The lead wrote last and nobody has dealt with it yet.
   const last = conversation.at(-1);
-  const reminderDue = !!lead.remind_at && isPast(lead.remind_at);
+  const reminderDue = !!data?.lead.remind_at && isPast(data.lead.remind_at);
   const awaiting = (last?.direction === "inbound" && !last.handled_at) || reminderDue;
 
   const markDone = async () => {
@@ -198,6 +206,21 @@ function ThreadPane({ leadId }: { leadId: string }) {
       toastError(e);
     }
   };
+  // Only while the Done button shows: Done also clears a reminder, which e on a thread that isn't waiting shouldn't.
+  useShortcut(
+    "e",
+    awaiting
+      ? () => {
+          onDone();
+          markDone();
+        }
+      : null,
+  );
+
+  if (error) return <LoadError error={error} retry={() => mutate()} className="flex-1" />;
+  if (!data) return <ListSkeleton className="flex-1" />;
+
+  const { lead } = data;
 
   const remind = async (days: number | null) => {
     try {
