@@ -66,9 +66,11 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
         ) : !runs ? (
           <ListSkeleton />
         ) : runs.length === 0 ? (
-          <EmptyState icon={<Bot className="size-6" />} title="No runs yet">
-            Research, finding companies and people, and writing emails all show up here.
-          </EmptyState>
+          <Card>
+            <EmptyState icon={<Bot className="size-6" />} title="No runs yet">
+              Research, finding companies and people, and writing emails all show up here.
+            </EmptyState>
+          </Card>
         ) : (
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
