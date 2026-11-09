@@ -177,8 +177,8 @@ async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<
 }
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
-async fn pick_mailbox(state: &AppState, org_id: Uuid, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
-    let available = mailboxes_with_room(&state.db, org_id).await?;
+async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
+    let available = mailboxes_with_room(db, org_id).await?;
     if email.kind == "initial" {
         return Ok(available.into_iter().next());
     }
@@ -189,7 +189,7 @@ async fn pick_mailbox(state: &AppState, org_id: Uuid, email: &EmailMessage) -> a
              order by created_at desc limit 1",
         )
         .bind(email.lead_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(db)
         .await?
         .flatten(),
     };
@@ -197,12 +197,17 @@ async fn pick_mailbox(state: &AppState, org_id: Uuid, email: &EmailMessage) -> a
     if let Some(mb) = available.iter().find(|m| m.id == wanted) {
         return Ok(Some(mb.clone()));
     }
-    let still_usable: bool = sqlx::query_scalar("select exists (select 1 from mailboxes where id = $1 and status = 'active')")
+    let thread_mailbox = sqlx::query_as::<_, Mailbox>("select * from mailboxes where id = $1 and status = 'active'")
         .bind(wanted)
-        .fetch_one(&state.db)
+        .fetch_optional(db)
         .await?;
-    // The thread's mailbox is only out of quota for today: wait for it rather than switch senders mid-thread.
-    if still_usable { Ok(None) } else { Ok(available.into_iter().next()) }
+    match thread_mailbox {
+        // The daily limit paces cold email. A lead waiting for an answer gets it today.
+        Some(mb) if REPLY_KINDS.contains(&email.kind.as_str()) => Ok(Some(mb)),
+        // A follow-up waits for the thread's mailbox to have room again rather than switch senders mid-thread.
+        Some(_) => Ok(None),
+        None => Ok(available.into_iter().next()),
+    }
 }
 
 /// Cold emails carry an unsubscribe footer. Replies go without one, like any other message in a conversation.
@@ -227,7 +232,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     if let Some(skip) = check_recipient(state, org_id, &email, &lead).await? {
         return release(state, &email, skip).await;
     }
-    let Some(mb) = pick_mailbox(state, org_id, &email).await? else {
+    let Some(mb) = pick_mailbox(&state.db, org_id, &email).await? else {
         return release(state, &email, Skip::Wait).await;
     };
     let to = lead.email.clone().unwrap_or_default();
@@ -525,7 +530,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox};
     use crate::models::EmailMessage;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -576,6 +581,51 @@ mod tests {
         assert!(has_room().await);
         send(1).await.unwrap();
         assert!(!has_room().await);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_goes_out_after_the_mailbox_hits_its_daily_limit(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let mailbox: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, daily_limit)
+             values ($1, 'full@example.test', 'smtp.example.test', 'full', 'x', 3) returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        // The lead's thread started from this mailbox, which has used up today's limit.
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+             select $1, $2, $3, 'outbound', 'initial', 'sent', now() from generate_series(1, 3)",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(mailbox)
+        .execute(&db)
+        .await
+        .unwrap();
+        let queued = |kind: &'static str| {
+            sqlx::query_as::<_, EmailMessage>(
+                "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', $3, 'approved') returning *",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(kind)
+            .fetch_one(&db)
+        };
+
+        for kind in ["manual_reply", "auto_reply"] {
+            let reply = queued(kind).await.unwrap();
+            assert_eq!(pick_mailbox(&db, org, &reply).await.unwrap().map(|m| m.id), Some(mailbox), "{kind}");
+        }
+        let follow_up = queued("follow_up").await.unwrap();
+        assert!(pick_mailbox(&db, org, &follow_up).await.unwrap().is_none());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
