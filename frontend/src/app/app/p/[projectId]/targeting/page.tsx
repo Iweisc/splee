@@ -6,7 +6,7 @@ import useSWR from "swr";
 import { ArrowRight } from "lucide-react";
 import { ChipInput } from "@/components/app/settings/chip-input";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
-import { MicroLabel } from "@/components/app/work/states";
+import { LoadError, MicroLabel } from "@/components/app/work/states";
 import { Field } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
@@ -74,7 +74,7 @@ export default function TargetingPage() {
 
 function ResearchProfile() {
   const { projectId } = useParams<{ projectId: string }>();
-  const { data } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
+  const { data, error, mutate } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
   const company: CompanyProfile | undefined = data?.project.company;
 
   return (
@@ -87,7 +87,9 @@ function ResearchProfile() {
         </Link>
       }
     >
-      {!data ? (
+      {error ? (
+        <LoadError error={error} what="the research profile" retry={() => mutate()} />
+      ) : !data ? (
         <div className="space-y-2">
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-2/3" />

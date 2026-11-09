@@ -17,7 +17,7 @@ const MAX = 5000;
 const SLIDER_MAX = 1000;
 
 export default function DailyLimitPage() {
-  const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
+  const { data: mailboxes, error: mailboxesError } = useSWR<Mailbox[]>("/mailboxes", fetcher);
   const capacity = mailboxes?.filter((m) => m.status === "active").reduce((sum, m) => sum + todayLimit(m), 0);
 
   return (
@@ -61,7 +61,7 @@ export default function DailyLimitPage() {
           </div>
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <Stat label="Per 30 days" value={`up to ${num(s.daily_email_limit * 30)}`} />
-            <Stat label="Your active mailboxes allow" value={capacity === undefined ? null : `${num(capacity)}/day`} />
+            <Stat label="Your active mailboxes allow" value={capacity !== undefined ? `${num(capacity)}/day` : mailboxesError ? "Couldn't load" : null} />
           </div>
           {capacity === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">
