@@ -326,7 +326,9 @@ function ThreadPane({ leadId }: { leadId: string }) {
         )}
       </ol>
 
-      <div className="flex items-end gap-2 border-t border-border p-3">
+      {/* The buttons drop their labels when the row is narrow, not just on phones: on a tablet or small laptop the thread
+          sits beside the list, and the labels squeezed the reply box to a third of the row. */}
+      <div className="@container flex items-end gap-2 border-t border-border p-3">
         {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
           value={reply}
@@ -339,11 +341,11 @@ function ThreadPane({ leadId }: { leadId: string }) {
         />
         {canDraft && !reply.trim() && (
           <Button variant="outline" onClick={draftReply} loading={requesting} aria-label="Draft reply" title="Have the agent write a reply for you to check and send">
-            {!requesting && <Sparkles className="size-4" />} <span className="max-sm:hidden">Draft reply</span>
+            {!requesting && <Sparkles className="size-4" />} <span className="@max-lg:hidden">Draft reply</span>
           </Button>
         )}
         <Button onClick={send} loading={sending} disabled={!reply.trim()} aria-label="Send reply">
-          {!sending && <Send className="size-4" />} <span className="max-sm:hidden">Send</span>
+          {!sending && <Send className="size-4" />} <span className="@max-lg:hidden">Send</span>
         </Button>
       </div>
     </div>
