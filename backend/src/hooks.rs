@@ -133,6 +133,7 @@ fn transient(e: &anyhow::Error) -> bool {
 
 #[derive(Clone, Copy)]
 pub enum Alert {
+    /// Matched on webhook_endpoints.url.
     Webhook,
     /// Matched on chat_channels.url.
     Chat,
@@ -149,8 +150,8 @@ pub enum Alert {
 pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url: &str, result: &anyhow::Result<()>) {
     // The names are fixed strings, never user input.
     let (prefix, column) = match alert {
-        Alert::Webhook => ("webhook", "webhook_url".to_string()),
-        Alert::Chat => return record_chat(db, project_id, url, result).await,
+        Alert::Webhook => return record_endpoint(db, "webhook_endpoints", project_id, url, result).await,
+        Alert::Chat => return record_endpoint(db, "chat_channels", project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
         Alert::Unipile => ("unipile", "unipile_token_enc".to_string()),
@@ -165,10 +166,11 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
     }
 }
 
-async fn record_chat(db: &sqlx::PgPool, project_id: Uuid, url: &str, result: &anyhow::Result<()>) {
+/// `table` is chat_channels or webhook_endpoints, never user input.
+async fn record_endpoint(db: &sqlx::PgPool, table: &str, project_id: Uuid, url: &str, result: &anyhow::Result<()>) {
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
-    let sql = "update chat_channels set error = $3, failed_at = case when $3::text is null then null else now() end where project_id = $1 and url = $2";
-    if let Err(e) = sqlx::query(sql).bind(project_id).bind(url).bind(error).execute(db).await {
+    let sql = format!("update {table} set error = $3, failed_at = case when $3::text is null then null else now() end where project_id = $1 and url = $2");
+    if let Err(e) = sqlx::query(&sql).bind(project_id).bind(url).bind(error).execute(db).await {
         tracing::warn!(error = %e, "couldn't save the alert outcome");
     }
 }
@@ -192,7 +194,7 @@ pub const EVENTS: [&str; 11] = [
 /// a moved call's old time or status. Its key is "reply", "email", "reminder", "form", "previous_meeting_at" or "previous_status", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;
 
-/// The URL, secret and payload for a lead event, or None when the project's webhook doesn't want it.
+/// The endpoint URLs, secret and payload for a lead event, or None when the project has no endpoint or doesn't send it.
 async fn lead_event(
     db: &sqlx::PgPool,
     public_url: &str,
@@ -200,16 +202,22 @@ async fn lead_event(
     event: &str,
     lead: &Lead,
     detail: Detail,
-) -> sqlx::Result<Option<(String, String, Value)>> {
-    let settings: Option<(String, String, Vec<String>, String)> = sqlx::query_as(
-        "select s.webhook_url, s.webhook_secret, s.webhook_events, p.name from project_settings s join projects p on p.id = s.project_id
-         where s.project_id = $1",
+) -> sqlx::Result<Option<(Vec<String>, String, Value)>> {
+    let settings: Option<(String, Vec<String>, String)> = sqlx::query_as(
+        "select s.webhook_secret, s.webhook_events, p.name from project_settings s join projects p on p.id = s.project_id where s.project_id = $1",
     )
     .bind(project_id)
     .fetch_optional(db)
     .await?;
-    let Some((url, secret, events, name)) = settings else { return Ok(None) };
-    if url.trim().is_empty() || !events.iter().any(|e| e == event) {
+    let Some((secret, events, name)) = settings else { return Ok(None) };
+    if !events.iter().any(|e| e == event) {
+        return Ok(None);
+    }
+    let urls: Vec<String> = sqlx::query_scalar("select url from webhook_endpoints where project_id = $1 order by created_at")
+        .bind(project_id)
+        .fetch_all(db)
+        .await?;
+    if urls.is_empty() {
         return Ok(None);
     }
     // Keep in sync with PAYLOAD on the integrations page.
@@ -227,25 +235,28 @@ async fn lead_event(
     if let Some((key, value)) = detail {
         payload[key] = value;
     }
-    Ok(Some((url, secret, payload)))
+    Ok(Some((urls, secret, payload)))
 }
 
-/// Posts a lead event to the project's webhook when it subscribes to it. Delivery runs in the background, so a slow
-/// receiver never holds up a run or a request. Failures are logged and shown on the integrations page.
+/// Posts a lead event to each of the project's webhook endpoints when it sends that event. Delivery runs in the
+/// background, one task per endpoint, so a slow receiver never holds up a run, a request or the other endpoints.
+/// Failures are logged and shown on the integrations page.
 pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, detail: Detail) {
     match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, detail).await {
-        Ok(Some((url, secret, payload))) => {
-            let db = state.db.clone();
-            tokio::spawn(async move {
-                let result = post_json_retrying(&url, &payload, Some(&secret)).await;
-                if let Err(e) = &result {
-                    tracing::warn!(error = %e, event, "webhook failed");
-                }
-                record(&db, project_id, Alert::Webhook, &url, &result).await;
-                if let Err(e) = log_delivery(&db, project_id, event, &payload, &result).await {
-                    tracing::warn!(error = %e, "couldn't log the webhook delivery");
-                }
-            });
+        Ok(Some((urls, secret, payload))) => {
+            for url in urls {
+                let (db, secret, payload) = (state.db.clone(), secret.clone(), payload.clone());
+                tokio::spawn(async move {
+                    let result = post_json_retrying(&url, &payload, Some(&secret)).await;
+                    if let Err(e) = &result {
+                        tracing::warn!(error = %e, event, "webhook failed");
+                    }
+                    record(&db, project_id, Alert::Webhook, &url, &result).await;
+                    if let Err(e) = log_delivery(&db, project_id, event, &url, &payload, &result).await {
+                        tracing::warn!(error = %e, "couldn't log the webhook delivery");
+                    }
+                });
+            }
         }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, event, "couldn't load the webhook settings"),
@@ -256,13 +267,21 @@ pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static
 const DELIVERIES_KEPT: i64 = 50;
 
 /// Keeps a webhook delivery for the integrations page and drops the oldest past DELIVERIES_KEPT.
-pub async fn log_delivery(db: &sqlx::PgPool, project_id: Uuid, event: &str, payload: &Value, result: &anyhow::Result<()>) -> sqlx::Result<WebhookDelivery> {
+pub async fn log_delivery(
+    db: &sqlx::PgPool,
+    project_id: Uuid,
+    event: &str,
+    url: &str,
+    payload: &Value,
+    result: &anyhow::Result<()>,
+) -> sqlx::Result<WebhookDelivery> {
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
     let delivery = sqlx::query_as::<_, WebhookDelivery>(
-        "insert into webhook_deliveries (project_id, event, payload, error) values ($1, $2, $3, $4) returning *",
+        "insert into webhook_deliveries (project_id, event, url, payload, error) values ($1, $2, $3, $4, $5) returning *",
     )
     .bind(project_id)
     .bind(event)
+    .bind(url)
     .bind(payload)
     .bind(error)
     .fetch_one(db)
@@ -626,7 +645,7 @@ mod tests {
         let mut first = None;
         for i in 0..DELIVERIES_KEPT + 2 {
             let result = if i == 0 { Err(anyhow::anyhow!("refused")) } else { Ok(()) };
-            let d = log_delivery(&db, project, "hot_lead", &json!({"n": i}), &result).await.unwrap();
+            let d = log_delivery(&db, project, "hot_lead", "https://crm.example/hook", &json!({"n": i}), &result).await.unwrap();
             first.get_or_insert(d);
         }
         assert_eq!(first.unwrap().error.as_deref(), Some("refused"));
@@ -732,7 +751,10 @@ mod tests {
         let project: Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
         // Settings saved before webhook_events existed get the default: hot leads only.
-        sqlx::query("insert into project_settings (project_id, webhook_url) values ($1, 'https://crm.example/hook')").bind(project).execute(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1)").bind(project).execute(&db).await.unwrap();
+        for url in ["https://crm.example/hook", "https://hooks.zapier.example/1"] {
+            sqlx::query("insert into webhook_endpoints (project_id, url) values ($1, $2)").bind(project).bind(url).execute(&db).await.unwrap();
+        }
         let lead = sqlx::query_as::<_, Lead>("insert into leads (project_id, full_name, email) values ($1, 'Sarah Chen', 'sarah@northwind.example') returning *")
             .bind(project)
             .fetch_one(&db)
@@ -740,8 +762,8 @@ mod tests {
             .unwrap();
         let event = |name: &'static str| lead_event(&db, "https://app.test", project, name, &lead, None);
 
-        let (url, _, payload) = event("hot_lead").await.unwrap().unwrap();
-        assert_eq!(url, "https://crm.example/hook");
+        let (urls, _, payload) = event("hot_lead").await.unwrap().unwrap();
+        assert_eq!(urls, ["https://crm.example/hook", "https://hooks.zapier.example/1"]);
         assert_eq!(payload["event"], "hot_lead");
         assert_eq!(payload["project"]["name"], "Acme");
         assert_eq!(payload["lead"]["email"], "sarah@northwind.example");
@@ -763,31 +785,38 @@ mod tests {
         assert_eq!(sent["email"]["subject"], "Hi Sarah");
         assert_eq!(sent["reply"], Value::Null);
 
-        sqlx::query("update project_settings set webhook_url = '' where project_id = $1").bind(project).execute(&db).await.unwrap();
+        sqlx::query("update project_settings set webhook_events = '{lead_bounced}' where project_id = $1").bind(project).execute(&db).await.unwrap();
+        sqlx::query("delete from webhook_endpoints where project_id = $1").bind(project).execute(&db).await.unwrap();
         assert!(event("lead_bounced").await.unwrap().is_none());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
-    async fn record_keeps_the_last_failure_for_the_saved_url(db: sqlx::PgPool) {
+    async fn record_keeps_the_last_failure_on_its_own_endpoint(db: sqlx::PgPool) {
         let org: uuid::Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
         let project: uuid::Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
-        sqlx::query("insert into project_settings (project_id, webhook_url) values ($1, 'https://new.example/hook')").bind(project).execute(&db).await.unwrap();
+        for url in ["https://new.example/hook", "https://other.example/hook"] {
+            sqlx::query("insert into webhook_endpoints (project_id, url) values ($1, $2)").bind(project).bind(url).execute(&db).await.unwrap();
+        }
         let state = || async {
-            sqlx::query_as::<_, (Option<String>, bool)>("select webhook_error, webhook_failed_at is not null from project_settings where project_id = $1")
-                .bind(project)
-                .fetch_one(&db)
-                .await
-                .unwrap()
+            sqlx::query_as::<_, (String, Option<String>, bool)>(
+                "select url, error, failed_at is not null from webhook_endpoints where project_id = $1 order by url",
+            )
+            .bind(project)
+            .fetch_all(&db)
+            .await
+            .unwrap()
         };
+        let fine = |url: &str| (url.to_string(), None, false);
 
+        // A delivery to a URL that was removed since changes nothing.
         record(&db, project, Alert::Webhook, "https://old.example/hook", &Err(anyhow::anyhow!("stale"))).await;
-        assert_eq!(state().await, (None, false));
+        assert_eq!(state().await, [fine("https://new.example/hook"), fine("https://other.example/hook")]);
         record(&db, project, Alert::Webhook, "https://new.example/hook", &Err(anyhow::anyhow!("HTTP 500"))).await;
-        assert_eq!(state().await, (Some("HTTP 500".into()), true));
+        assert_eq!(state().await, [("https://new.example/hook".into(), Some("HTTP 500".into()), true), fine("https://other.example/hook")]);
         record(&db, project, Alert::Webhook, "https://new.example/hook", &Ok(())).await;
-        assert_eq!(state().await, (None, false));
+        assert_eq!(state().await, [fine("https://new.example/hook"), fine("https://other.example/hook")]);
     }
 }

@@ -17,7 +17,7 @@ import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import { CRM_NAMES, type ChatChannel, type CrmName, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
+import { CRM_NAMES, type CrmName, type Endpoint, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -83,7 +83,6 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "status_changed", label: "Status changed", hint: "Someone on your team changed a lead's status in Splee." },
 ];
 
-const problemFor = (label: string, value: string) => (value && !isUrl(value) ? `${label} must be a full URL starting with https://` : null);
 
 // Where each app hands out the URL. hooks::chat_payload formats alerts for the same apps.
 const CHAT_APPS = [
@@ -124,7 +123,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
     try {
       await api(`/projects/${projectId}/integrations/test`, { body: { target, url } });
       // A test that passes on a saved URL clears its last failure.
-      mutate(target === "slack" ? `/projects/${projectId}/chat-channels` : `/projects/${projectId}/settings`);
+      mutate(`/projects/${projectId}/${target === "slack" ? "chat-channels" : "webhook-endpoints"}`);
       toast.success(target === "slack" ? "Test sent. Check the channel." : "Test sent. Your endpoint accepted it.");
     } catch (e) {
       toastError(e);
@@ -166,7 +165,7 @@ function RecentDeliveries({ projectId }: { projectId: string }) {
       const again = await api<WebhookDelivery>(`${key}/${d.id}/resend`, { method: "POST" });
       if (again.error) toast.error(`It didn't go through: ${again.error}`);
       else toast.success("Sent again");
-      await mutate((k) => k === key || k === `/projects/${projectId}/settings`);
+      await mutate((k) => k === key || k === `/projects/${projectId}/webhook-endpoints`);
     } catch (e) {
       toastError(e);
     } finally {
@@ -189,7 +188,7 @@ function RecentDeliveries({ projectId }: { projectId: string }) {
                   <span className="truncate font-medium">{label(d.event)}</span>
                 </p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {d.payload.lead?.full_name && `${d.payload.lead.full_name} · `}
+                  {[d.payload.lead?.full_name, d.url && hostOf(d.url)].filter(Boolean).map((part) => `${part} · `)}
                   <span title={dateTime(d.created_at)}>{timeAgo(d.created_at)}</span>
                 </p>
                 {d.error && <p className="mt-1 font-mono text-xs break-words text-red-700">{d.error}</p>}
@@ -318,26 +317,93 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
   );
 }
 
-/** The chats that get the project's alerts. Each is added or removed on its own, not with the page's Save. */
-function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; weekly: boolean; setWeekly: (on: boolean) => void }) {
-  const key = `/projects/${projectId}/chat-channels`;
-  const { data, mutate } = useSWR<ChatChannel[]>(key, fetcher);
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+};
+
+/** URLs the project sends to, each added, tested and removed on its own, not with the page's Save. */
+function EndpointList({
+  projectId,
+  kind,
+  name,
+  added,
+  confirmRemove,
+  labels,
+  hint,
+  placeholder,
+}: {
+  projectId: string;
+  kind: "chat-channels" | "webhook-endpoints";
+  /** What to call a URL in the list and the toasts, like "Slack" or its host. */
+  name: (url: string) => string;
+  added: (url: string) => string;
+  confirmRemove: (url: string) => string;
+  labels: { first: string; next: string; input: string };
+  hint: React.ReactNode;
+  placeholder: string;
+}) {
+  const key = `/projects/${projectId}/${kind}`;
+  const { data, mutate } = useSWR<Endpoint[]>(key, fetcher);
   const { pending, run } = useAction();
   const [url, setUrl] = useState("");
   const add = async () => {
-    const added = await run("add", async () => {
+    const done = await run("add", async () => {
       await api(key, { body: { url } });
       await mutate();
-    }, `Alerts will post to ${chatApp(url)} too`);
-    if (added) setUrl("");
+    }, added(url));
+    if (done) setUrl("");
   };
-  const remove = (c: ChatChannel) => {
-    if (!confirm(`Stop posting alerts to this ${chatApp(c.url)} chat?`)) return;
-    run(c.id, async () => {
-      await api(`/chat-channels/${c.id}`, { method: "DELETE" });
+  const remove = (e: Endpoint) => {
+    if (!confirm(confirmRemove(e.url))) return;
+    run(e.id, async () => {
+      await api(`/${kind}/${e.id}`, { method: "DELETE" });
       await mutate();
-    }, `Removed ${chatApp(c.url)}`);
+    }, `Removed ${name(e.url)}`);
   };
+  return (
+    <>
+      {!!data?.length && (
+        <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          {data.map((e) => (
+            <li key={e.id} className="px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{name(e.url)}</p>
+                  {/* Two lines without the scheme, so two URLs on the same host still read apart on a phone. */}
+                  <p className="line-clamp-2 font-mono text-xs break-all text-muted-foreground" title={e.url}>
+                    {e.url.replace(/^https:\/\//, "")}
+                  </p>
+                </div>
+                <TestButton projectId={projectId} target={kind === "chat-channels" ? "slack" : "webhook"} url={e.url} compact />
+                <Button size="sm" variant="ghost" onClick={() => remove(e)} loading={pending === e.id} aria-label={`Remove ${name(e.url)}`}>
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+              <LastFailure error={e.error} at={e.failed_at} />
+            </li>
+          ))}
+        </ul>
+      )}
+      <Field label={data?.length ? labels.next : labels.first} hint={hint}>
+        <div className="flex gap-2">
+          {/* The label also wraps Add, so name the input itself. */}
+          <Input aria-label={labels.input} type="url" value={url} onChange={(ev) => setUrl(ev.target.value.trim())} placeholder={placeholder} />
+          <Button onClick={add} loading={pending === "add"} disabled={!isUrl(url)}>
+            Add
+          </Button>
+        </div>
+      </Field>
+    </>
+  );
+}
+
+/** The chats that get the project's alerts. */
+function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; weekly: boolean; setWeekly: (on: boolean) => void }) {
+  const { data } = useSWR<Endpoint[]>(`/projects/${projectId}/chat-channels`, fetcher);
   return (
     <Section
       title={
@@ -347,50 +413,20 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
       }
       description="Posts to every chat you add, in Slack, Discord, Teams, Google Chat or Telegram, or on your phone with ntfy or Pushover, about hot leads, booked meetings and follow-ups that come due."
     >
-      {!!data?.length && (
-        <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
-          {data.map((c) => (
-            <li key={c.id} className="px-3 py-2.5">
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{chatApp(c.url)}</p>
-                  {/* Two lines without the scheme, so two chats in the same app still read apart on a phone. */}
-                  <p className="line-clamp-2 font-mono text-xs break-all text-muted-foreground" title={c.url}>
-                    {c.url.replace(/^https:\/\//, "")}
-                  </p>
-                </div>
-                <TestButton projectId={projectId} target="slack" url={c.url} compact />
-                <Button size="sm" variant="ghost" onClick={() => remove(c)} loading={pending === c.id} aria-label={`Remove ${chatApp(c.url)}`}>
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </div>
-              <LastFailure error={c.error} at={c.failed_at} />
-            </li>
-          ))}
-        </ul>
-      )}
-      <Field
-        label={data?.length ? "Add another chat" : "Incoming webhook URL"}
+      <EndpointList
+        projectId={projectId}
+        kind="chat-channels"
+        name={chatApp}
+        added={(url) => `Alerts will post to ${chatApp(url)} too`}
+        confirmRemove={(url) => `Stop posting alerts to this ${chatApp(url)} chat?`}
+        labels={{ first: "Incoming webhook URL", next: "Add another chat", input: "Chat webhook URL" }}
         hint={CHAT_APPS.map(([app, where]) => (
           <span key={app} className="block">
             {app}: {where}
           </span>
         ))}
-      >
-        <div className="flex gap-2">
-          {/* The label also wraps Add, so name the input itself. */}
-          <Input
-            aria-label="Chat webhook URL"
-            type="url"
-            value={url}
-            onChange={(e) => setUrl(e.target.value.trim())}
-            placeholder="https://hooks.slack.com/…"
-          />
-          <Button onClick={add} loading={pending === "add"} disabled={!isUrl(url)}>
-            Add
-          </Button>
-        </div>
-      </Field>
+        placeholder="https://hooks.slack.com/…"
+      />
       <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
         <span>
           <span className="block text-sm font-medium">Weekly report</span>
@@ -582,7 +618,6 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
     <ProjectSettingsPage
       title="Integrations"
       description="Get told the moment a lead replies, in your own tools."
-      problem={(s) => problemFor("Webhook URL", s.webhook_url)}
     >
       {(s, update) => (
         <>
@@ -597,20 +632,21 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <Section
             title={
               <span className="flex items-center gap-2">
-                <Webhook className="size-4" /> Webhook
+                <Webhook className="size-4" /> Webhooks
               </span>
             }
-            description="Sends a JSON POST when something happens to a lead, for your CRM, Zapier, Make or your own backend."
-            actions={<TestButton projectId={projectId} target="webhook" url={s.webhook_url} />}
+            description="Sends a JSON POST to every endpoint you add when something happens to a lead, for your CRM, Zapier, Make or your own backend."
           >
-            <Field label="Endpoint URL" error={problemFor("Webhook URL", s.webhook_url)}>
-              <Input
-                type="url"
-                value={s.webhook_url}
-                onChange={(e) => update({ webhook_url: e.target.value.trim() })}
-                placeholder="https://example.com/hooks/splee"
-              />
-            </Field>
+            <EndpointList
+              projectId={projectId}
+              kind="webhook-endpoints"
+              name={hostOf}
+              added={(url) => `Lead events will go to ${hostOf(url)} too`}
+              confirmRemove={(url) => `Stop sending lead events to ${hostOf(url)}?`}
+              labels={{ first: "Endpoint URL", next: "Add another endpoint", input: "Webhook endpoint URL" }}
+              hint="Each endpoint gets the events below, signed with the same secret."
+              placeholder="https://example.com/hook"
+            />
             <fieldset className="mt-4">
               <legend className="text-sm font-medium">Send these events</legend>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -634,7 +670,6 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 ))}
               </div>
             </fieldset>
-            <LastFailure error={s.webhook_error} at={s.webhook_failed_at} />
             {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
             <div className="mt-4 flex flex-col gap-1.5">
               <span className="text-sm font-medium">Signing secret</span>
