@@ -246,19 +246,18 @@ async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let result = mail::test_mailbox(&state, &mailbox).await;
     // A passing test clears an error state. Either way a person has now seen the result, so the sender stops testing it
-    // on its own. A test never changes a paused mailbox, even one a bounce paused while the test ran: only Resume does,
-    // and its last_error keeps why it's paused.
+    // on its own. A test never changes a paused mailbox: only Resume does, and its last_error keeps why it's paused. The
+    // status comes from the row as it is now, since a bounce or Resume can change it while the test runs.
     let error = result.as_ref().err().map(|e| format!("{e:#}"));
-    let (status, last_error) = match &error {
-        None => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, ""),
-        Some(e) => ("error", e.as_str()),
-    };
-    sqlx::query("update mailboxes set status = $2, last_error = $3, recheck_at = null where id = $1 and status <> 'paused'")
-        .bind(mailbox.id)
-        .bind(status)
-        .bind(last_error)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "update mailboxes set status = case when $2::text is not null then 'error' when status = 'error' then 'active' else status end,
+           last_error = coalesce($2, ''), recheck_at = null
+         where id = $1 and status <> 'paused'",
+    )
+    .bind(mailbox.id)
+    .bind(&error)
+    .execute(&state.db)
+    .await?;
     Ok(Json(match error {
         None => json!({ "ok": true }),
         Some(e) => json!({ "ok": false, "error": e }),
