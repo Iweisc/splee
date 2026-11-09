@@ -164,9 +164,9 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
         <Avatar name={lead.full_name || "?"} />
         <div className="min-w-0 flex-1">
           <p className="font-medium">{lead.full_name}</p>
-          <p className="truncate text-sm text-muted-foreground">{[lead.title, lead.company_name].filter(Boolean).join(" at ")}</p>
+          <p className="text-sm wrap-anywhere text-muted-foreground">{[lead.title, lead.company_name].filter(Boolean).join(" at ")}</p>
         </div>
-        {/* On phones these get their own line under the name, so the title isn't cut short and nothing wraps alone. */}
+        {/* On phones these get their own line under the name, so a long title wraps over the full width and nothing wraps alone. */}
         <div className="flex items-center gap-3 max-sm:w-full max-sm:pl-11">
           {messages.length > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">
