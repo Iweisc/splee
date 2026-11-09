@@ -215,6 +215,11 @@ export interface WeekdayStats extends ReplyCounts {
   weekday: number;
 }
 
+/** One hour of the day in the project's time zone, 0 to 23. */
+export interface HourStats extends ReplyCounts {
+  hour: number;
+}
+
 export interface SegmentWithStats extends Segment {
   companies: number;
   leads: number;
