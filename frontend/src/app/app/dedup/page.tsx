@@ -15,7 +15,7 @@ import { Badge, Card, EmptyState, Skeleton, type BadgeTone } from "@/components/
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { Paginated, Suppression } from "@/lib/types";
-import { num, timeAgo } from "@/lib/utils";
+import { num, plural, timeAgo } from "@/lib/utils";
 
 const REASONS: Record<Suppression["reason"], { label: string; tone: BadgeTone }> = {
   manual: { label: "Added by you", tone: "neutral" },
@@ -70,7 +70,7 @@ export default function DoNotContactPage() {
               className="font-mono text-[13px]"
             />
             <div className="mt-3 flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">{pasted > 0 && `${num(pasted)} entries`}</span>
+              <span className="text-xs text-muted-foreground">{pasted > 0 && plural(pasted, "entry", "entries")}</span>
               <Button onClick={add} disabled={!pasted} loading={pending === "add"}>
                 Add to list
               </Button>

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, plural } from "@/lib/utils";
 import type { AgentRun, ExplorerCompany } from "@/lib/types";
 import { flag } from "./flag";
 
@@ -40,8 +40,8 @@ function downloadCsv(rows: ExplorerCompany[], query: string) {
 function statusLine(query: string, data: ExplorerResult | null): string {
   if (!data || data.run.status === "queued") return "Waiting for a free agent…";
   const n = data.results.length;
-  if (data.run.status === "running") return `Searching the web for "${query}"… ${n ? `${n} companies so far` : ""}`;
-  if (data.run.status === "succeeded") return `Found ${n} ${n === 1 ? "company" : "companies"}`;
+  if (data.run.status === "running") return `Searching the web for "${query}"… ${n ? `${plural(n, "company", "companies")} so far` : ""}`;
+  if (data.run.status === "succeeded") return `Found ${plural(n, "company", "companies")}`;
   return data.run.error || "The search stopped before it finished.";
 }
 
