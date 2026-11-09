@@ -13,7 +13,7 @@ import { Badge, Card, EmptyState, Modal, type BadgeTone } from "@/components/ui/
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
-import { todayLimit } from "@/lib/mailbox";
+import { bouncing, todayLimit } from "@/lib/mailbox";
 import { dateTime, isPast, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
@@ -236,14 +236,10 @@ function nextStep(m: Mailbox): string {
   return `Splee tests it again at ${dateTime(m.recheck_at)} and starts sending once it works.`;
 }
 
-/**
- * Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
- * crosses that, so the warning waits for enough sends to mean something. Keep in sync with MailboxStats::bouncing.
- */
 function Health({ stats }: { stats?: MailboxStats }) {
   if (!stats?.emailed) return null;
   const pct = (n: number) => `${Math.min(100, Math.round((n / stats.emailed) * 100))}%`;
-  const risky = stats.emailed >= 20 && stats.bounced / stats.emailed > 0.05;
+  const risky = bouncing(stats.emailed, stats.bounced);
   return (
     <>
       {/* Each part stays whole, so a narrow phone wraps between them rather than leaving a word alone. */}

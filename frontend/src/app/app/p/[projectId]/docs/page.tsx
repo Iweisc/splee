@@ -246,6 +246,7 @@ function endpoints(projectId: string): Endpoint[] {
       "sent": 230,
       "contacted": 118,
       "replies": 12,
+      "bounced": 2,
       "hot": 3,
       "spend_micros": 3120000,
       "cost_per_hot_micros": 1040000,

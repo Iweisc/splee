@@ -1,5 +1,13 @@
 import type { Mailbox } from "./types";
 
+/**
+ * Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
+ * crosses that, so it waits for enough sends to mean something. Keep in sync with MailboxStats::bouncing.
+ */
+export function bouncing(emailed: number, bounced: number): boolean {
+  return emailed >= 20 && bounced / emailed > 0.05;
+}
+
 const DAY_MS = 86_400_000;
 
 /**
