@@ -239,7 +239,7 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
   };
 
   return (
-    <li className={cn("flex flex-col gap-2 rounded-xl border border-border p-3", m.status !== "todo" && "bg-muted/60")}>
+    <li className={cn("flex flex-col gap-2 rounded-xl border border-border p-3 wrap-anywhere", m.status !== "todo" && "bg-muted/60")}>
       <div className="flex min-h-6 items-center justify-between">
         <MicroLabel>{stepName(m)}</MicroLabel>
         {m.status !== "todo" ? (
