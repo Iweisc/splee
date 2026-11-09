@@ -24,7 +24,8 @@ export function CompanyProfile({ project, className }: { project: Project; class
       <div className="mb-3 flex items-center justify-between gap-2">
         <MicroLabel>Company profile</MicroLabel>
         <Button variant="ghost" size="sm" onClick={() => setOpen(true)} disabled={project.status === "researching"}>
-          <RotateCw className="size-3.5" /> Re-run research
+          {/* No icon on phones, so the label beside it fits on one line down to 320px. */}
+          <RotateCw className="size-3.5 max-sm:hidden" /> Re-run research
         </Button>
       </div>
       <div className="flex items-center gap-2.5">
@@ -36,7 +37,7 @@ export function CompanyProfile({ project, className }: { project: Project; class
       </div>
       {researched ? (
         <>
-          <p className={cn("mt-3 text-sm leading-relaxed text-foreground/80", hasDetails && !details && "line-clamp-4")}>{c.description}</p>
+          <p className={cn("mt-3 text-sm leading-relaxed text-pretty text-foreground/80", hasDetails && !details && "line-clamp-4")}>{c.description}</p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {c.employees && (
               <Badge>
