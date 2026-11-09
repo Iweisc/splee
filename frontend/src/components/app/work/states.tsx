@@ -85,6 +85,17 @@ export function Pager({ page, total, onChange }: { page: number; total: number; 
   );
 }
 
+/**
+ * Removing the last rows of the last page would leave you past the end, where the empty state says the list is empty
+ * and hides the pager. Steps back to the new last page instead.
+ */
+export function useLastPageGuard(total: number | undefined, page: number, setPage: (page: number) => void) {
+  useEffect(() => {
+    const last = Math.max(1, Math.ceil((total ?? 0) / PER_PAGE));
+    if (total !== undefined && page > last) setPage(last);
+  }, [total, page, setPage]);
+}
+
 export function useDebounced<T>(value: T, ms = 300): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {

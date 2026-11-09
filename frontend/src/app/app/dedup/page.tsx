@@ -7,7 +7,7 @@ import { Download, ShieldBan, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { SearchField } from "@/components/app/work/search-field";
-import { LoadError, Pager, PER_PAGE } from "@/components/app/work/states";
+import { LoadError, Pager, PER_PAGE, useLastPageGuard } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
@@ -31,6 +31,7 @@ export default function DoNotContactPage() {
   const q = useDeferredValue(query.trim());
   const key = `/suppressions${qs({ q, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<Suppression>>(key, fetcher, { keepPreviousData: true });
+  useLastPageGuard(data?.total, page, setPage);
   const { pending, run } = useAction();
 
   const pasted = values.split(/[\s,;]+/).filter(Boolean).length;
