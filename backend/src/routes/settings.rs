@@ -179,7 +179,8 @@ async fn test_integration(State(state): State<AppState>, auth: Auth, Path(id): P
     let link = format!("{}/app/p/{}/inbox", state.cfg.public_url, project.id);
     // Same shape as a hot_lead event from hooks::lead_event, so tools like Zapier can map fields from it.
     let payload = if body.target == "slack" {
-        json!({"text": format!("*Splee test:* hot-lead alerts for {name} will post in this channel.\n<{link}|Open the inbox>")})
+        let summary = format!("hot-lead alerts for {name} will post in this channel.");
+        hooks::chat_payload(&body.url, &hooks::ChatAlert { label: "Splee test", summary: &summary, quote: None, link: &link, link_text: "Open the inbox" })
     } else {
         json!({
             "event": "test",
