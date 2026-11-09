@@ -216,12 +216,17 @@ async fn sent_emails(
 struct ProjectStats {
     totals: Totals,
     campaigns: Vec<SegmentWithStats>,
+    steps: Vec<stats::StepStats>,
 }
 
 /// Lifetime funnel and real cost, for reporting tools. Same numbers as the overview and campaign pages.
 async fn project_stats(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectStats>> {
     check_project(&state.db, id, auth.org_id).await?;
-    Ok(Json(ProjectStats { totals: stats::totals(&state.db, id).await?, campaigns: segments::with_stats(&state.db, id, None).await? }))
+    Ok(Json(ProjectStats {
+        totals: stats::totals(&state.db, id).await?,
+        campaigns: segments::with_stats(&state.db, id, None).await?,
+        steps: stats::steps(&state.db, id).await?,
+    }))
 }
 
 #[derive(Deserialize)]

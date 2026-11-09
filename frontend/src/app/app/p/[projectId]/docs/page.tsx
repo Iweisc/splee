@@ -220,7 +220,7 @@ function endpoints(projectId: string): Endpoint[] {
       method: "GET",
       path: `/projects/${projectId}/stats`,
       summary:
-        "Lifetime results and cost of a project and each of its campaigns. Money is in micro-dollars (1,000,000 = $1). AI cost is what Claude Code reports for the agent's runs, and email cost uses each mailbox's cost per email. Runs that research the whole project count only in totals. contacted counts leads sent at least one email and replies counts leads who wrote back, not bounces, so replies over contacted is the reply rate.",
+        "Lifetime results and cost of a project and each of its campaigns. Money is in micro-dollars (1,000,000 = $1). AI cost is what Claude Code reports for the agent's runs, and email cost uses each mailbox's cost per email. Runs that research the whole project count only in totals. contacted counts leads sent at least one email and replies counts leads who wrote back, not bounces, so replies over contacted is the reply rate. steps has one entry per email of the sequence that went out, step 0 being the first email: a lead's first reply counts for the last email they got before it.",
       response: `{
   "totals": {
     "leads": 240,
@@ -252,6 +252,11 @@ function endpoints(projectId: string): Endpoint[] {
       "cost_per_hot_micros": 1040000,
       "…": "…"
     }
+  ],
+  "steps": [
+    { "step": 0, "sent": 230, "replied": 13 },
+    { "step": 1, "sent": 140, "replied": 5 },
+    { "step": 2, "sent": 40, "replied": 1 }
   ]
 }`,
     },
