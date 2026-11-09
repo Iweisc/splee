@@ -155,7 +155,7 @@ function LastFailure({ error, at, what = "alert" }: { error: string | null; at: 
 function RecentDeliveries({ projectId }: { projectId: string }) {
   const { mutate } = useSWRConfig();
   const key = `/projects/${projectId}/integrations/webhook-deliveries`;
-  const { data } = useSWR<WebhookDelivery[]>(key, fetcher);
+  const { data, error, mutate: reload } = useSWR<WebhookDelivery[]>(key, fetcher);
   const [resending, setResending] = useState<string | null>(null);
   const label = (event: string) => EVENTS.find((e) => e.value === event)?.label ?? event;
 
@@ -176,7 +176,9 @@ function RecentDeliveries({ projectId }: { projectId: string }) {
   return (
     <details className="mt-3">
       <summary className="cursor-pointer text-sm font-medium select-none">Recent deliveries</summary>
-      {!data?.length ? (
+      {error ? (
+        <LoadError error={error} what="your deliveries" retry={() => reload()} className="mt-3 rounded-lg border border-border py-6" />
+      ) : !data?.length ? (
         <p className="mt-2 text-xs text-muted-foreground">Nothing sent yet. Each event shows up here with how your endpoint answered.</p>
       ) : (
         <ul className="mt-3 divide-y divide-border rounded-lg border border-border">
