@@ -149,6 +149,10 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                     <input
                       type="checkbox"
                       checked={allPicked}
+                      // A dash when only some rows are ticked. Plain unchecked read as nothing picked, to screen readers too.
+                      ref={(box) => {
+                        if (box) box.indeterminate = picked.size > 0 && !allPicked;
+                      }}
                       onChange={() => setPicked(allPicked ? new Set() : new Set(pageIds))}
                       aria-label="Select every lead on this page"
                       className="block accent-black"
