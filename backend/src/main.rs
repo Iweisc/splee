@@ -10,6 +10,7 @@ mod mail;
 mod models;
 mod routes;
 mod state;
+mod verify;
 
 use std::sync::Arc;
 

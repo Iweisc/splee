@@ -145,6 +145,10 @@ export interface ProjectSettings {
   attio_connected: boolean;
   attio_error: string | null;
   attio_failed_at: string | null;
+  /** Its key is write-only, through PUT /integrations/verifier. */
+  verifier: "" | "neverbounce" | "millionverifier";
+  verifier_error: string | null;
+  verifier_failed_at: string | null;
 }
 
 export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";

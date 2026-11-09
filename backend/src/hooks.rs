@@ -74,6 +74,8 @@ pub enum Alert {
     Slack,
     /// Matched on {name}_token_enc, the stored ciphertext.
     Crm(crate::crm::Crm),
+    /// Matched on verifier_key_enc.
+    Verifier,
 }
 
 /// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
@@ -84,6 +86,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Webhook => ("webhook", "webhook_url".to_string()),
         Alert::Slack => ("slack", "slack_webhook_url".to_string()),
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
+        Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
     };
     let sql = format!(
         "update project_settings set {prefix}_error = $3, {prefix}_failed_at = case when $3::text is null then null else now() end

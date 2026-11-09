@@ -17,7 +17,7 @@ export function useProjectSettings() {
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // The backend sets the alert failure fields and the CRM connections itself, so they come from the latest fetch even
+  // The backend sets the alert failure fields and the CRM and verifier connections itself, so they come from the latest fetch even
   // under an unsaved draft.
   const settings =
     draft && data
@@ -36,6 +36,9 @@ export function useProjectSettings() {
           attio_connected: data.attio_connected,
           attio_error: data.attio_error,
           attio_failed_at: data.attio_failed_at,
+          verifier: data.verifier,
+          verifier_error: data.verifier_error,
+          verifier_failed_at: data.verifier_failed_at,
         }
       : (draft ?? data);
   const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);

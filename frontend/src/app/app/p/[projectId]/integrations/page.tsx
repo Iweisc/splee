@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, Contact, Hash, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -10,7 +10,7 @@ import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/form";
+import { Field, Input, Select } from "@/components/ui/form";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
 import type { ProjectSettings, WebhookEvent } from "@/lib/types";
@@ -107,12 +107,12 @@ function TestButton({ projectId, target, url }: { projectId: string; target: "sl
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-function LastFailure({ error, at }: { error: string | null; at: string | null }) {
+function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
       <p className="font-medium">
-        The last alert didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
+        The last {what} didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
       </p>
       <p className="mt-1 font-mono">{error}</p>
     </div>
@@ -140,27 +140,37 @@ const CRMS = {
   },
 } as const;
 
-/** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
-function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: keyof typeof CRMS }) {
-  const { name, record, field, hint } = CRMS[crm];
+/** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
+function useConnection(projectId: string, path: string) {
   const { mutate } = useSWRConfig();
-  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
-  const call = async (method: "PUT" | "DELETE", done: string) => {
+  const call = async (body: Record<string, string> | undefined, done: string) => {
     setBusy(true);
     try {
-      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/${crm}`, { method, body: method === "PUT" ? { token } : undefined });
+      const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/${path}`, { method: body ? "PUT" : "DELETE", body });
       await mutate(`/projects/${projectId}/settings`, fresh, { revalidate: false });
-      setToken("");
       toast.success(done);
+      return true;
     } catch (e) {
       toastError(e);
+      return false;
     } finally {
       setBusy(false);
     }
   };
+  return { busy, call };
+}
+
+/** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
+function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: keyof typeof CRMS }) {
+  const { name, record, field, hint } = CRMS[crm];
+  const [token, setToken] = useState("");
+  const { busy, call } = useConnection(projectId, crm);
+  const connect = async () => {
+    if (await call({ token }, `Connected to ${name}`)) setToken("");
+  };
   const disconnect = () => {
-    if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call("DELETE", `${name} disconnected`);
+    if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call(undefined, `${name} disconnected`);
   };
   const connected = settings[`${crm}_connected`];
   return (
@@ -184,14 +194,75 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
       ) : (
         <Field label={field} hint={hint}>
           <div className="flex gap-2">
-            <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-            <Button onClick={() => call("PUT", `Connected to ${name}`)} loading={busy} disabled={!token}>
+            {/* The label also wraps Connect, so name the input itself. */}
+            <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+            <Button onClick={connect} loading={busy} disabled={!token}>
               Connect
             </Button>
           </div>
         </Field>
       )}
-      <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} />
+      <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} what="sync" />
+    </Section>
+  );
+}
+
+const VERIFIERS = { neverbounce: "NeverBounce", millionverifier: "MillionVerifier" } as const;
+
+/** The key is write-only, like a CRM token. Connecting checks it with the service first. */
+function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [provider, setProvider] = useState<keyof typeof VERIFIERS>("neverbounce");
+  const [key, setKey] = useState("");
+  const { busy, call } = useConnection(projectId, "verifier");
+  const connect = async () => {
+    if (await call({ provider, key }, `Connected to ${VERIFIERS[provider]}`)) setKey("");
+  };
+  const name = settings.verifier ? VERIFIERS[settings.verifier] : null;
+  const disconnect = () => {
+    if (confirm(`Disconnect ${name}? New addresses will be sent to without a check.`)) call(undefined, `${name} disconnected`);
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <MailCheck className="size-4" /> Email verification
+        </span>
+      }
+      description="Checks each address before its first email, so ones that don't exist fail here instead of bouncing."
+      actions={
+        name ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {name ? (
+        <p className="text-sm">
+          Connected to {name}. Addresses it can&apos;t confirm either way, like catch-all domains, still get their email.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-4 sm:flex-row">
+          <Field label="Service" className="sm:w-44">
+            <Select value={provider} onChange={(e) => setProvider(e.target.value as keyof typeof VERIFIERS)}>
+              {Object.entries(VERIFIERS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="API key" className="flex-1" hint="Each check uses one of the service's credits.">
+            <div className="flex gap-2">
+              <Input aria-label="API key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value.trim())} />
+              <Button onClick={connect} loading={busy} disabled={!key}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </div>
+      )}
+      <LastFailure error={settings.verifier_error} at={settings.verifier_failed_at} what="check" />
     </Section>
   );
 }
@@ -263,6 +334,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <CrmSection projectId={projectId} settings={s} crm="hubspot" />
           <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
           <CrmSection projectId={projectId} settings={s} crm="attio" />
+          <VerifierSection projectId={projectId} settings={s} />
 
           <Section
             title={

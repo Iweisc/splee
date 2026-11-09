@@ -11,6 +11,7 @@ use super::{dns, smtp};
 use crate::agent::{self, kind};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
+use crate::verify::{self, Verdict};
 
 /// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
 const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
@@ -157,6 +158,25 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
     Ok(None)
 }
 
+/// Checks a first email's address with the project's verifier. A follow-up's address was already sent to, and a reply's
+/// came from the lead.
+async fn verify_first(state: &AppState, email: &EmailMessage, lead: &Lead, to: &str) -> anyhow::Result<Option<Skip>> {
+    const INVALID: Skip = Skip::Fail("The email verifier says this address doesn't exist");
+    if email.kind != "initial" || lead.email_status == "verified" {
+        return Ok(None);
+    }
+    if lead.email_status == "invalid" {
+        return Ok(Some(INVALID));
+    }
+    let status = match verify::verify(state, email.project_id, to).await {
+        Some(Verdict::Valid) => "verified",
+        Some(Verdict::Invalid) => "invalid",
+        Some(Verdict::Unsure) | None => return Ok(None),
+    };
+    sqlx::query("update leads set email_status = $2 where id = $1").bind(lead.id).bind(status).execute(&state.db).await?;
+    Ok((status == "invalid").then_some(INVALID))
+}
+
 /// How many emails mailbox `m` may send today. A ramping mailbox starts at 10 on its first day and adds 4 a day until it
 /// reaches its daily limit. Keep in sync with todayLimit in frontend/src/lib/mailbox.ts.
 const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 * (current_date - coalesce(m.first_sent_on, current_date)))
@@ -236,6 +256,10 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
         return release(state, &email, Skip::Wait).await;
     };
     let to = lead.email.clone().unwrap_or_default();
+    // After a mailbox is free, so an email waiting for room isn't verified, and paid for, on every tick.
+    if let Some(skip) = verify_first(state, &email, &lead, &to).await? {
+        return release(state, &email, skip).await;
+    }
 
     let message_id = new_message_id(&mb.email);
     let references: Vec<String> = sqlx::query_scalar(
