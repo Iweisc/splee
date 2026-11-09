@@ -22,7 +22,7 @@ export function SaveBar({ form, problem }: { form: ProjectSettingsForm; problem?
           form.dirty && "pointer-events-auto",
         )}
       >
-        <span className={cn("text-pretty", problem ? "text-amber-300" : "text-white/80")}>{problem ?? "Unsaved changes"}</span>
+        <span className={problem ? "text-amber-300" : "text-white/80"}>{problem ?? "Unsaved changes"}</span>
         <div className="ml-auto flex gap-1">
           <Button variant="ghost" size="sm" className="text-white hover:bg-white/10" onClick={form.reset} disabled={form.saving} tabIndex={form.dirty ? 0 : -1}>
             Discard

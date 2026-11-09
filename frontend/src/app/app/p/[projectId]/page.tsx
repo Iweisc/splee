@@ -125,7 +125,7 @@ function MailboxNotice() {
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <MailWarning className="size-4 text-red-600" />
       {/* The basis pushes the button onto its own row on phones, so the addresses aren't squeezed into a narrow column. */}
-      <div className="min-w-0 flex-1 basis-64 space-y-1 text-pretty">
+      <div className="min-w-0 flex-1 basis-64 space-y-1">
         {broken.map((m) => (
           <p key={m.id}>
             <span className="font-medium">{m.email}</span>{" "}
@@ -150,7 +150,7 @@ function BounceNotice() {
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <TriangleAlert className="size-4 text-amber-600" />
-      <div className="min-w-0 flex-1 basis-64 space-y-1 text-pretty">
+      <div className="min-w-0 flex-1 basis-64 space-y-1">
         {bad.map((s) => (
           <p key={s.mailbox_id}>
             <span className="font-medium">{s.email}</span> bounced {wholePercent(s.bounced, s.emailed)} of the {num(s.emailed)} leads it
@@ -179,7 +179,7 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <Clock className="size-4 text-muted-foreground" />
-      <p className="min-w-0 flex-1 basis-64 text-pretty">
+      <p className="min-w-0 flex-1 basis-64">
         Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone}), {timeAgo(next.toISOString())}.
       </p>
       <LinkButton href={`/app/p/${projectId}/schedule`} variant="outline" size="sm" className="max-sm:grow">
