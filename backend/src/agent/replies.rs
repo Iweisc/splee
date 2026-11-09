@@ -243,14 +243,23 @@ struct ReplyDraft {
     body: String,
 }
 
+/// Someone asked for this draft from the inbox, so it is written even when the message already got one, and always waits
+/// for approval.
+#[derive(Deserialize)]
+struct DraftInput {
+    #[serde(default)]
+    manual: bool,
+}
+
 pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let t = load_thread(ctx).await?;
+    let manual = ctx.input::<DraftInput>()?.manual;
     let already: bool = sqlx::query_scalar("select exists (select 1 from email_messages where lead_id = $1 and kind = 'auto_reply' and in_reply_to = $2)")
         .bind(t.lead.id)
         .bind(&t.inbound.message_id)
         .fetch_one(ctx.db())
         .await?;
-    if already {
+    if already && !manual {
         return Ok(Outcome::new("A reply is already drafted"));
     }
     let (_, profile) = load_project(ctx, t.project.id).await?;
@@ -292,7 +301,7 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let draft: ReplyDraft = ctx.ask(&Call::writing(REPLIER, prompt, schema)).await?;
 
     let subject = if t.inbound.subject.to_lowercase().starts_with("re:") { t.inbound.subject.clone() } else { format!("Re: {}", t.inbound.subject) };
-    let auto = mode == "auto";
+    let auto = mode == "auto" && !manual;
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for,
                                      in_reply_to, to_email)

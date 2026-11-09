@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, ThumbsDown } from "lucide-react";
+import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/form";
-import { Avatar, Badge, Card, EmptyState, Tabs } from "@/components/ui/misc";
+import { Avatar, Badge, Card, EmptyState, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, LeadDetail, LeadStatus, Paginated, ProjectSummary } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
+import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
@@ -152,9 +153,25 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
 
 function ThreadPane({ leadId }: { leadId: string }) {
   const { mutate: mutateAll } = useSWRConfig();
-  const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: EmailMessage[] }>(`/inbox/threads/${leadId}`, fetcher);
+  const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: EmailMessage[]; draft_run: string | null }>(
+    `/inbox/threads/${leadId}`,
+    fetcher,
+  );
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [draftRun, setDraftRun] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
+
+  // A run started before this thread was opened, by the button or by a reply coming in, is picked up from the thread.
+  const activeRun = draftRun ?? data?.draft_run ?? null;
+  useAgentEvents(activeRun ? `/api/runs/${activeRun}/events` : null, (e) => {
+    if (e.kind === "done" || e.kind === "error") {
+      setDraftRun(null);
+      if (e.kind === "error") toast.error(e.message || "Couldn't draft a reply");
+      refresh();
+    }
+  });
 
   if (error) return <LoadError error={error} retry={() => mutate()} className="flex-1" />;
   if (!data) return <ListSkeleton className="flex-1" />;
@@ -162,8 +179,6 @@ function ThreadPane({ leadId }: { leadId: string }) {
   const { lead, messages } = data;
   const pendingDraft = messages.find((m) => m.kind === "auto_reply" && m.status === "draft");
   const conversation = messages.filter((m) => m !== pendingDraft && m.status !== "cancelled");
-
-  const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
   // The lead wrote last and nobody has dealt with it yet.
   const last = conversation.at(-1);
   const reminderDue = !!lead.remind_at && isPast(lead.remind_at);
@@ -196,6 +211,22 @@ function ThreadPane({ leadId }: { leadId: string }) {
       toastError(e);
     }
   };
+
+  const draftReply = async () => {
+    setRequesting(true);
+    try {
+      const { run_id } = await api<{ run_id: string }>(`/inbox/threads/${leadId}/draft`, { method: "POST" });
+      setDraftRun(run_id);
+      // The cached thread learns about the run, so leaving and coming back keeps following it.
+      await mutate();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setRequesting(false);
+    }
+  };
+  // Bounces aren't replies, so there's nothing to answer.
+  const canDraft = !pendingDraft && !activeRun && messages.some((m) => m.direction === "inbound" && m.classification !== "bounce");
 
   const send = async () => {
     setSending(true);
@@ -288,6 +319,11 @@ function ThreadPane({ leadId }: { leadId: string }) {
           <Bubble key={m.id} message={m} />
         ))}
         {pendingDraft && <PendingReply key={pendingDraft.id} draft={pendingDraft} onDone={refresh} />}
+        {activeRun && (
+          <li className="flex items-center gap-2 self-end rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+            <Spinner /> Writing a reply…
+          </li>
+        )}
       </ol>
 
       <div className="flex items-end gap-2 border-t border-border p-3">
@@ -301,6 +337,11 @@ function ThreadPane({ leadId }: { leadId: string }) {
           placeholder={`Reply to ${lead.first_name || lead.full_name || "lead"}…`}
           className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content"
         />
+        {canDraft && !reply.trim() && (
+          <Button variant="outline" onClick={draftReply} loading={requesting} aria-label="Draft reply" title="Have the agent write a reply for you to check and send">
+            {!requesting && <Sparkles className="size-4" />} <span className="max-sm:hidden">Draft reply</span>
+          </Button>
+        )}
         <Button onClick={send} loading={sending} disabled={!reply.trim()} aria-label="Send reply">
           {!sending && <Send className="size-4" />} <span className="max-sm:hidden">Send</span>
         </Button>
