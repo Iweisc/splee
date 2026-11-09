@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
-import { Address, Avatar, Badge, Favicon, Modal } from "@/components/ui/misc";
+import { Address, Avatar, Badge, Favicon, Message, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime } from "@/lib/utils";
@@ -386,7 +386,9 @@ function ThreadItem({ message: m }: { message: EmailMessage }) {
           {dateTime(m.sent_at ?? m.scheduled_for ?? m.created_at)}
         </span>
       </div>
-      <p className="line-clamp-4 text-sm whitespace-pre-wrap">{m.body}</p>
+      <p className="line-clamp-4 text-sm whitespace-pre-wrap">
+        <Message text={m.body} />
+      </p>
       {/* The sender records why it gave up: an SMTP error, the do-not-contact list, a domain that can't take mail. */}
       {!inbound && m.error && (m.status === "failed" || m.status === "cancelled") && (
         <p className={cn("mt-2 text-xs", m.status === "failed" ? "text-red-700" : "text-muted-foreground")}>Not sent: {m.error}</p>

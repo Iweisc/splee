@@ -6,7 +6,7 @@ import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
-import { Address, Spinner } from "@/components/ui/misc";
+import { Address, Message, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { EmailRow } from "@/lib/types";
 import { dateTime } from "@/lib/utils";
@@ -151,7 +151,9 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
             <span className="text-muted-foreground">Subject </span>
             {email.subject}
           </p>
-          <p className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">{email.body}</p>
+          <p className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
+            <Message text={email.body} />
+          </p>
         </div>
       )}
 

@@ -7,7 +7,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
-import { Avatar, Badge, Card, EmptyState, Modal, Spinner, Tabs } from "@/components/ui/misc";
+import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
@@ -512,7 +512,7 @@ function Bubble({ message: m }: { message: EmailMessage }) {
       {/* max-w-full: aligned to an edge, the bubble sizes to its longest word, so a long link pushed it past the thread's
           other edge. Capped, the link wraps instead. */}
       <div className={cn("max-w-full rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", inbound ? "bg-card shadow-card" : "bg-black/[0.06]")}>
-        {m.body}
+        <Message text={m.body} />
       </div>
       <span className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
         {inbound && m.classification && <ClassificationBadge value={m.classification} />}
@@ -560,7 +560,9 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
         // No max height: like the draft text it replaces, it scrolls with the conversation instead of inside itself.
         <Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-32 field-sizing-content" autoFocus />
       ) : (
-        <p className="text-sm leading-relaxed whitespace-pre-wrap">{draft.body}</p>
+        <p className="text-sm leading-relaxed whitespace-pre-wrap">
+          <Message text={draft.body} />
+        </p>
       )}
       {/* Like the email draft editor: on phones the buttons stretch to fill their row and Approve gets a row of its own. */}
       <div className="flex flex-wrap justify-end gap-2 max-sm:[&>*]:grow">
