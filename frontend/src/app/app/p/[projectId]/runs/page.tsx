@@ -8,7 +8,7 @@ import { ListSkeleton, LoadError, Td, Th, Tr, toastError } from "@/components/ap
 import { Badge, Card, EmptyState, type BadgeTone } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { AgentRun, RunKind, SegmentWithStats } from "@/lib/types";
-import { dateTime, money, timeAgo } from "@/lib/utils";
+import { cn, dateTime, money, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 const TITLES: Record<RunKind, string> = {
@@ -23,6 +23,11 @@ const TITLES: Record<RunKind, string> = {
   explorer: "Segments Explorer",
   segment_from_prompt: "Draft a campaign",
 };
+
+// Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.
+// The campaign and start time move under the run's name, and on phones its status does too.
+const WIDE = "hidden @3xl:table-cell";
+const STATUS = "hidden @md:table-cell";
 
 const STATUSES: Record<AgentRun["status"], { label: string; tone: BadgeTone }> = {
   queued: { label: "Queued", tone: "neutral" },
@@ -72,15 +77,15 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
             </EmptyState>
           </Card>
         ) : (
-          <Card className="overflow-x-auto">
+          <Card className="@container overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr>
                   <Th>Run</Th>
-                  <Th>Campaign</Th>
-                  <Th>Status</Th>
-                  <Th>Started</Th>
-                  <Th className="text-right">Took</Th>
+                  <Th className={WIDE}>Campaign</Th>
+                  <Th className={STATUS}>Status</Th>
+                  <Th className={WIDE}>Started</Th>
+                  <Th className={cn(WIDE, "text-right")}>Took</Th>
                   <Th className="text-right">Cost</Th>
                 </tr>
               </thead>
@@ -88,7 +93,15 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
                 {runs.map((r) => (
                   <Tr key={r.id}>
                     <Td>
-                      <div className="font-medium whitespace-nowrap">{TITLES[r.kind]}</div>
+                      <div className="font-medium @md:whitespace-nowrap">{TITLES[r.kind]}</div>
+                      <Badge tone={STATUSES[r.status].tone} className="mt-1 @md:hidden">
+                        {STATUSES[r.status].label}
+                      </Badge>
+                      {(segmentName(r) || r.started_at) && (
+                        <p className="mt-0.5 text-xs text-muted-foreground @3xl:hidden">
+                          {[segmentName(r), r.started_at && timeAgo(r.started_at)].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
                       {r.status === "failed" && r.error && (
                         <p className="mt-0.5 line-clamp-2 max-w-80 text-xs text-red-700" title={r.error}>
                           {r.error}
@@ -100,14 +113,14 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
                         </button>
                       )}
                     </Td>
-                    <Td className="max-w-64 truncate text-muted-foreground">{segmentName(r) ?? "—"}</Td>
-                    <Td>
+                    <Td className={cn(WIDE, "max-w-64 truncate text-muted-foreground")}>{segmentName(r) ?? "—"}</Td>
+                    <Td className={STATUS}>
                       <Badge tone={STATUSES[r.status].tone}>{STATUSES[r.status].label}</Badge>
                     </Td>
-                    <Td className="whitespace-nowrap text-muted-foreground" title={r.started_at ? dateTime(r.started_at) : undefined}>
+                    <Td className={cn(WIDE, "whitespace-nowrap text-muted-foreground")} title={r.started_at ? dateTime(r.started_at) : undefined}>
                       {r.started_at ? timeAgo(r.started_at) : "—"}
                     </Td>
-                    <Td className="text-right whitespace-nowrap tabular-nums">{duration(r)}</Td>
+                    <Td className={cn(WIDE, "text-right whitespace-nowrap tabular-nums")}>{duration(r)}</Td>
                     <Td className="text-right tabular-nums">{cost(r.cost_usd)}</Td>
                   </Tr>
                 ))}
