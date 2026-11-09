@@ -231,10 +231,31 @@ function NeedsReplyCount({ projectId }: { projectId?: string }) {
 
 function ProjectSwitcher({ projects, current }: { projects?: ProjectSummary[]; current?: ProjectSummary }) {
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // It used to close only when the pointer left the menu, so a tap elsewhere on a phone, or a click away that never
+  // crossed the menu, left it covering the nav.
+  useEffect(() => {
+    if (!open) return;
+    const press = (e: PointerEvent) => ref.current?.contains(e.target as Node) || setOpen(false);
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      ref.current?.querySelector("button")?.focus();
+    };
+    document.addEventListener("pointerdown", press);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("pointerdown", press);
+      document.removeEventListener("keydown", key);
+    };
+  }, [open]);
+
   return (
-    <div className="relative px-2">
+    <div ref={ref} className="relative px-2">
       <button
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
         className="flex w-full items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2 text-left text-sm shadow-card hover:bg-accent"
       >
         {current?.domain ? <Favicon domain={current.domain} /> : <span className="size-4 rounded-sm bg-black/10" />}
@@ -242,7 +263,7 @@ function ProjectSwitcher({ projects, current }: { projects?: ProjectSummary[]; c
         <ChevronsUpDown className="size-3.5 text-muted-foreground" />
       </button>
       {open && (
-        <div className="absolute inset-x-2 top-full z-20 mt-1 rounded-xl bg-card p-1 shadow-pop" onMouseLeave={() => setOpen(false)}>
+        <div className="absolute inset-x-2 top-full z-20 mt-1 rounded-xl bg-card p-1 shadow-pop">
           {projects?.map((p) => (
             <Link
               key={p.id}
