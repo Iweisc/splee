@@ -489,6 +489,9 @@ async fn record_sent(
     .execute(&mut *tx)
     .await?;
     sqlx::query("update mailboxes set first_sent_on = current_date where id = $1 and first_sent_on is null").bind(mb.id).execute(&mut *tx).await?;
+    if email.kind == "initial" {
+        queue_linkedin(&mut *tx, lead.id).await?;
+    }
 
     tx.commit().await?;
     // The body as written, without the unsubscribe footer. Keep in sync with the email_sent note on the integrations page.
@@ -497,6 +500,26 @@ async fn record_sent(
         "from": mb.email, "to": to, "message_id": message_id,
     });
     crate::hooks::send_lead_event(state, lead.project_id, "email_sent", lead, Some(("email", sent))).await;
+    Ok(())
+}
+
+/// With LinkedIn on, a lead's first email also gets their LinkedIn sequence written, so the connect note comes due the same day.
+/// Leads without a profile, or with a sequence written or being written, are left alone.
+async fn queue_linkedin<'e, E: sqlx::PgExecutor<'e>>(db: E, lead: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "insert into agent_runs (kind, project_id, org_id, input)
+         select $2, p.id, p.org_id, jsonb_build_object('lead_id', l.id)
+         from leads l
+         join projects p on p.id = l.project_id
+         join project_settings ps on ps.project_id = l.project_id
+         where l.id = $1 and l.linkedin_url <> '' and p.org_id is not null and coalesce((ps.channels ->> 'linkedin')::boolean, false)
+           and not exists (select 1 from linkedin_messages m where m.lead_id = l.id)
+           and not exists (select 1 from agent_runs r where r.kind = $2 and r.status in ('queued', 'running') and r.input ->> 'lead_id' = l.id::text)",
+    )
+    .bind(lead)
+    .bind(kind::LINKEDIN_SEQUENCE)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -589,7 +612,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, replace_guessed};
+    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed};
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
 
@@ -801,5 +824,39 @@ mod tests {
         let (email, status): (String, String) =
             sqlx::query_as("select email::text, email_status from leads where id = $1").bind(guessed.id).fetch_one(&db).await.unwrap();
         assert_eq!((email.as_str(), status.as_str()), ("samuel@acme.example", "found"));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_first_email_queues_one_linkedin_sequence_when_linkedin_is_on(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1)").bind(project).execute(&db).await.unwrap();
+        let lead = |url: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, linkedin_url) values ($1, $2) returning id")
+                .bind(project)
+                .bind(url)
+                .fetch_one(&db)
+        };
+        let (with_profile, without) = (lead("https://www.linkedin.com/in/sam").await.unwrap(), lead("").await.unwrap());
+        let runs = || async {
+            sqlx::query_scalar::<_, i64>("select count(*) from agent_runs where kind = 'linkedin_sequence'").fetch_one(&db).await.unwrap()
+        };
+
+        // LinkedIn is off by default.
+        queue_linkedin(&db, with_profile).await.unwrap();
+        assert_eq!(runs().await, 0);
+
+        sqlx::query("update project_settings set channels = '{\"email\": true, \"linkedin\": true}' where project_id = $1")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        for lead in [with_profile, with_profile, without] {
+            queue_linkedin(&db, lead).await.unwrap();
+        }
+        let input: serde_json::Value = sqlx::query_scalar("select input from agent_runs").fetch_one(&db).await.unwrap();
+        assert_eq!((runs().await, input), (1, serde_json::json!({ "lead_id": with_profile })));
     }
 }
