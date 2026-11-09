@@ -49,11 +49,12 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
     if status.is_client_error() || status.is_server_error() {
         return Err(Refused::new(status, &first_bytes(res).await).into());
     }
-    // Lark and Feishu answer 200 to every post and put a failure, like a wrong token, in the body's code.
-    if LARK.contains(&host.to_ascii_lowercase().as_str()) {
+    if let Some((code_key, message_key)) = error_in_body(&host.to_ascii_lowercase()) {
         let reply: Value = serde_json::from_slice(&first_bytes(res).await).unwrap_or_default();
-        if let Some(code) = reply["code"].as_i64().filter(|&code| code != 0) {
-            anyhow::bail!("{}", reply["msg"].as_str().filter(|m| !m.is_empty()).map_or_else(|| format!("code {code}"), str::to_string));
+        if let Some(code) = reply[code_key].as_i64().filter(|&code| code != 0) {
+            // WeCom follows its reason with a request id and this server's address, which only add noise.
+            let message = reply[message_key].as_str().map(|m| m.split(", hint:").next().unwrap_or(m).trim()).filter(|m| !m.is_empty());
+            anyhow::bail!("{}", message.map_or_else(|| format!("code {code}"), str::to_string));
         }
     }
     Ok(())
@@ -61,6 +62,18 @@ pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow:
 
 /// Lark and its China edition Feishu: the same bot webhooks on two hosts.
 const LARK: [&str; 2] = ["open.larksuite.com", "open.feishu.cn"];
+const DINGTALK: &str = "oapi.dingtalk.com";
+const WECOM: &str = "qyapi.weixin.qq.com";
+
+/// The chat apps that answer 200 to every post and put a failure, like a wrong token, in the body: the keys of its
+/// code, which is 0 when the post went through, and of its reason.
+fn error_in_body(host: &str) -> Option<(&'static str, &'static str)> {
+    match host {
+        h if LARK.contains(&h) => Some(("code", "msg")),
+        DINGTALK | WECOM => Some(("errcode", "errmsg")),
+        _ => None,
+    }
+}
 
 /// An endpoint that answered with an error status, and the reason it gave, like Discord's "Unknown Webhook".
 #[derive(Debug)]
@@ -345,8 +358,9 @@ fn query(url: &str, key: &str) -> Option<String> {
 }
 
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
-/// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`) and Lark or
-/// Feishu (a custom bot's URL) have their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
+/// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
+/// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL) and WeCom (a group robot's `?key=` URL) have
+/// their own shapes. Anything else gets Slack's `{text}`, which Google Chat also reads, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
     let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
@@ -379,6 +393,17 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
         }
         lines.push(json!([{"tag": "a", "text": a.link_text, "href": a.link}]));
         json!({"msg_type": "post", "content": {"post": {"en_us": {"title": a.label, "content": lines}}}})
+    } else if host == DINGTALK || host == WECOM {
+        let (head, tail) = (format!("**{}:** {}", a.label, a.summary), format!("\n\n[{}]({})", a.link_text, a.link));
+        // A blank line between quoted lines, or they run together into one.
+        let quote = quote.replace("\n>", "\n\n>");
+        if host == DINGTALK {
+            json!({"msgtype": "markdown", "markdown": {"title": a.label, "text": format!("{head}{quote}{tail}")}})
+        } else {
+            // WeCom refuses markdown over 4096 bytes, and a long reply would pass that. The reply is cut, not the link.
+            let quote = cut_bytes(&quote, 4096usize.saturating_sub(head.len() + tail.len()));
+            json!({"msgtype": "markdown", "markdown": {"content": format!("{head}{quote}{tail}")}})
+        }
     } else if on("discord.com") || on("discordapp.com") {
         json!({"content": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
@@ -402,6 +427,18 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     } else {
         json!({"text": format!("*{}:* {}{quote}\n<{}|{}>", a.label, a.summary, a.link, a.link_text)})
     }
+}
+
+/// `text` cut to at most `max` bytes, at a character boundary, ending in an ellipsis when it was cut.
+fn cut_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    if max < '…'.len_utf8() {
+        return String::new();
+    }
+    let end = (0..=max - '…'.len_utf8()).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    format!("{}…", &text[..end])
 }
 
 /// For Telegram's HTML mode, which needs only these escaped.
@@ -634,6 +671,16 @@ mod tests {
         assert_eq!(post["content"][1][0]["text"], "Sounds good\nTuesday?");
         assert_eq!((post["content"][2][0]["tag"].as_str(), post["content"][2][0]["href"].as_str()), (Some("a"), Some("https://app/x")));
         assert_eq!(chat_payload("https://open.feishu.cn/open-apis/bot/v2/hook/abc", &a)["msg_type"], "post");
+        let dingtalk = chat_payload("https://oapi.dingtalk.com/robot/send?access_token=abc", &a);
+        assert_eq!(dingtalk["markdown"]["title"], "Hot lead");
+        let markdown = "**Hot lead:** Sarah replied to Acme\n\n> Sounds good\n\n> Tuesday?\n\n[Open the inbox](https://app/x)";
+        assert_eq!(dingtalk["markdown"]["text"], markdown);
+        let wecom = chat_payload("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc", &a);
+        assert_eq!((wecom["msgtype"].as_str(), wecom["markdown"]["content"].as_str()), (Some("markdown"), Some(markdown)));
+        let long = "é".repeat(3000);
+        let content = chat_payload("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc", &ChatAlert { quote: Some(&long), ..a });
+        let content = content["markdown"]["content"].as_str().unwrap();
+        assert!(content.len() <= 4096 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
     }
 
