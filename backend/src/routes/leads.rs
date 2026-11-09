@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+use super::suppressions;
 use super::util_csv;
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_pagination::{PageQuery, Paginated};
@@ -300,10 +301,33 @@ async fn update_lead(
     Ok(Json(detail(&state.db, lead).await?))
 }
 
-async fn remove_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+#[derive(Deserialize)]
+struct RemoveQuery {
+    #[serde(default)]
+    forget: bool,
+}
+
+async fn remove_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<RemoveQuery>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    sqlx::query("delete from leads where id = $1").bind(lead.id).execute(&state.db).await?;
+    erase(&state.db, auth.org_id, &lead, q.forget).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Deletes a lead with their emails and the webhook log entries that carry their details. With `forget`, their
+/// address goes on the do-not-contact list first, so no later import or search brings them back.
+async fn erase(db: &PgPool, org_id: Uuid, lead: &Lead, forget: bool) -> AppResult<()> {
+    if forget && let Some(email) = &lead.email {
+        suppressions::insert(db, org_id, [email.as_str()]).await?;
+    }
+    let mut tx = db.begin().await?;
+    sqlx::query("delete from webhook_deliveries where project_id = $1 and payload->'lead'->>'id' = $2::text")
+        .bind(lead.project_id)
+        .bind(lead.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("delete from leads where id = $1").bind(lead.id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -387,4 +411,41 @@ async fn update_linkedin(
     .fetch_one(&state.db)
     .await?;
     Ok(Json(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn forgetting_a_lead_suppresses_them_and_clears_the_webhook_log(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let add = |name: &'static str, email: &'static str| {
+            sqlx::query_as::<_, Lead>("insert into leads (project_id, full_name, email) values ($1, $2, $3) returning *")
+                .bind(project)
+                .bind(name)
+                .bind(email)
+                .fetch_one(&db)
+        };
+        let (sarah, marcus) = (add("Sarah Chen", "sarah@northwind.example").await.unwrap(), add("Marcus Webb", "marcus@fernway.example").await.unwrap());
+        for lead in [&sarah, &marcus] {
+            sqlx::query("insert into webhook_deliveries (project_id, event, payload) values ($1, 'hot_lead', $2)")
+                .bind(project)
+                .bind(json!({"lead": {"id": lead.id}}))
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+
+        erase(&db, org, &sarah, true).await.unwrap();
+        erase(&db, org, &marcus, false).await.unwrap();
+
+        let leads: i64 = sqlx::query_scalar("select count(*) from leads").fetch_one(&db).await.unwrap();
+        let deliveries: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries").fetch_one(&db).await.unwrap();
+        let suppressed: Vec<String> = sqlx::query_scalar("select value::text from suppressions where org_id = $1").bind(org).fetch_all(&db).await.unwrap();
+        assert_eq!((leads, deliveries), (0, 0));
+        assert_eq!(suppressed, ["sarah@northwind.example"]);
+    }
 }
