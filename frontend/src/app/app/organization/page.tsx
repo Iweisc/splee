@@ -12,7 +12,7 @@ import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
-import { Avatar, Badge, EmptyState, Modal, Skeleton } from "@/components/ui/misc";
+import { Address, Avatar, Badge, EmptyState, Modal, Skeleton } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Invite, Me, Member, Organization, Role } from "@/lib/types";
@@ -145,7 +145,7 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
             // Admins can't demote or remove owners, only another owner can.
             const editable = isAdmin && !self && (me.role === "owner" || m.role !== "owner");
             return (
-              <li key={m.user_id} className="flex items-center gap-3 px-4 py-3 text-sm">
+              <li key={m.user_id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
                 <Avatar name={m.name || m.email} />
                 <div className="min-w-0 flex-1">
                   {/* A long name is cut short, but "(you)" always shows after it. */}
@@ -153,17 +153,18 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
                     <span className="truncate">{m.name || m.email}</span>
                     {self && <span className="shrink-0 font-normal text-muted-foreground">(you)</span>}
                   </p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {m.email} · joined {timeAgo(m.created_at)}
+                  <p className="text-xs text-muted-foreground">
+                    <Address email={m.email} /> · joined {timeAgo(m.created_at)}
                   </p>
                 </div>
                 {editable ? (
-                  <>
+                  // On phones the role and remove controls get their own line under the email, so the email isn't squeezed.
+                  <div className="flex items-center gap-3 max-sm:w-full max-sm:pl-11">
                     <Select
                       value={m.role}
                       onChange={(e) => setRole(m, e.target.value as Role)}
                       disabled={pending === m.user_id}
-                      className="h-8 w-28"
+                      className="h-8 w-32"
                       aria-label={`Role for ${m.email}`}
                     >
                       {roles.map((r) => (
@@ -175,7 +176,7 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
                     <Button variant="ghost" size="icon" className="size-8" onClick={() => remove(m)} aria-label={`Remove ${m.email}`}>
                       <Trash2 className="size-4" />
                     </Button>
-                  </>
+                  </div>
                 ) : (
                   <span className="text-muted-foreground">{ROLE_LABELS[m.role]}</span>
                 )}
@@ -221,7 +222,7 @@ function Invites() {
           {pendingInvites.map((i) => (
             <li key={i.id} className="flex items-center gap-3 px-4 py-3 text-sm">
               <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">{i.email}</p>
+                <p className="font-medium"><Address email={i.email} /></p>
                 <p className="text-xs text-muted-foreground">
                   {ROLE_LABELS[i.role]} · invited {timeAgo(i.created_at)}
                 </p>
