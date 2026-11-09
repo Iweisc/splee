@@ -16,7 +16,7 @@ import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import type { ProjectSettings, WebhookDelivery, WebhookEvent } from "@/lib/types";
+import { CRM_NAMES, type CrmName, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -214,7 +214,7 @@ const CRMS = {
     field: "API key",
     hint: "In folk: Settings → API → Create a new key.",
   },
-} as const;
+} as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
 function useConnection(projectId: string, path: string) {
@@ -238,7 +238,7 @@ function useConnection(projectId: string, path: string) {
 }
 
 /** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
-function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: keyof typeof CRMS }) {
+function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
   const { name, record, field, hint } = CRMS[crm];
   const [token, setToken] = useState("");
   const { busy, call } = useConnection(projectId, crm);
@@ -448,11 +448,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             </div>
           </Section>
 
-          <CrmSection projectId={projectId} settings={s} crm="hubspot" />
-          <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
-          <CrmSection projectId={projectId} settings={s} crm="attio" />
-          <CrmSection projectId={projectId} settings={s} crm="close" />
-          <CrmSection projectId={projectId} settings={s} crm="folk" />
+          {CRM_NAMES.map((crm) => (
+            <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />
+          ))}
           <VerifierSection projectId={projectId} settings={s} />
 
           <Section
