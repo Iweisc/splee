@@ -66,7 +66,8 @@ pub(super) async fn totals(db: &PgPool, id: Uuid) -> sqlx::Result<Totals> {
            (select count(*) from email_messages
              where project_id = $1 and direction = 'outbound' and status = 'sent') as sent,
            (select count(*) from leads l where l.project_id = $1
-             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound')) as replies,
+             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
+                         and e.classification is distinct from 'bounce')) as replies,
            (select count(*) from leads where project_id = $1 and status in ('hot', 'meeting_booked')) as hot,
            (select count(*) from leads where project_id = $1 and status = 'meeting_booked') as meetings,
            (select (coalesce(sum(cost_usd), 0) * 1000000)::bigint from agent_runs where project_id = $1) as ai_cost_micros,
@@ -103,7 +104,7 @@ async fn daily(db: &PgPool, id: Uuid, days: i32) -> sqlx::Result<Vec<Day>> {
              count(distinct e.lead_id) as replies,
              count(distinct e.lead_id) filter (where e.classification = 'hot') as hot
            from email_messages e
-           where e.project_id = $1 and e.direction = 'inbound'
+           where e.project_id = $1 and e.direction = 'inbound' and e.classification is distinct from 'bounce'
              and e.created_at >= (select min(d) from days) at time zone 'utc'
            group by 1
          )
@@ -172,10 +173,22 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
+        // A bounce notice arrives as an inbound message too, but nobody replied.
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, direction, kind, status, classification)
+             select $1, id, 'inbound', 'inbound', 'received', 'bounce' from leads where project_id = $1 and id <> $2",
+        )
+        .bind(seeded.project)
+        .bind(lead)
+        .execute(&db)
+        .await
+        .unwrap();
+
         let days = super::daily(&db, seeded.project, 3).await.unwrap();
         let counts: Vec<_> = days.iter().map(|d| (d.sent, d.replies, d.hot)).collect();
         // The other emails seed_costs sends have no sent_at, so they never count.
         assert_eq!(counts, vec![(0, 0, 0), (1, 0, 0), (0, 1, 1)]);
+        assert_eq!(totals(&db, seeded.project).await.unwrap().replies, 1);
     }
 
     use super::totals;

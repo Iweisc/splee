@@ -55,7 +55,8 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
            (select count(*) from email_messages e
              where e.segment_id = s.id and e.direction = 'outbound' and e.status = 'sent') as sent,
            (select count(*) from leads l where l.segment_id = s.id
-             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound')) as replies,
+             and exists (select 1 from email_messages e where e.lead_id = l.id and e.direction = 'inbound'
+                         and e.classification is distinct from 'bounce')) as replies,
            (select count(*) from leads l where l.segment_id = s.id and l.status in ('hot', 'meeting_booked')) as hot,
            (select (coalesce(sum(r.cost_usd), 0) * 1000000)::bigint from agent_runs r
              where r.project_id = s.project_id and r.input->>'segment_id' = s.id::text)
