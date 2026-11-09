@@ -132,6 +132,12 @@ const CRMS = {
     field: "API token",
     hint: "In Pipedrive: your profile → Personal preferences → API, then copy your personal API token.",
   },
+  attio: {
+    name: "Attio",
+    record: "people",
+    field: "Access token",
+    hint: "In Attio: Workspace settings → Developers → New access token, with read-write access to records and notes and read access to object configuration.",
+  },
 } as const;
 
 /** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
@@ -256,6 +262,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
 
           <CrmSection projectId={projectId} settings={s} crm="hubspot" />
           <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
+          <CrmSection projectId={projectId} settings={s} crm="attio" />
 
           <Section
             title={

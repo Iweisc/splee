@@ -1,6 +1,7 @@
 //! Copies hot and booked leads into the CRMs a project connected, each with a note saying what happened, so the sales
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
+mod attio;
 mod hubspot;
 mod pipedrive;
 
@@ -17,6 +18,7 @@ use crate::state::AppState;
 pub enum Crm {
     HubSpot,
     Pipedrive,
+    Attio,
 }
 
 impl Crm {
@@ -24,6 +26,7 @@ impl Crm {
         match name {
             "hubspot" => Some(Crm::HubSpot),
             "pipedrive" => Some(Crm::Pipedrive),
+            "attio" => Some(Crm::Attio),
             _ => None,
         }
     }
@@ -33,6 +36,7 @@ impl Crm {
         match self {
             Crm::HubSpot => "hubspot",
             Crm::Pipedrive => "pipedrive",
+            Crm::Attio => "attio",
         }
     }
 
@@ -40,6 +44,7 @@ impl Crm {
         match self {
             Crm::HubSpot => "HubSpot",
             Crm::Pipedrive => "Pipedrive",
+            Crm::Attio => "Attio",
         }
     }
 
@@ -48,6 +53,7 @@ impl Crm {
         match self {
             Crm::HubSpot => hubspot::check(token).await,
             Crm::Pipedrive => pipedrive::check(token).await,
+            Crm::Attio => attio::check(token).await,
         }
     }
 
@@ -55,6 +61,7 @@ impl Crm {
         match self {
             Crm::HubSpot => hubspot::push(token, email, lead, note).await,
             Crm::Pipedrive => pipedrive::push(token, email, lead, note).await,
+            Crm::Attio => attio::push(token, email, lead, note).await,
         }
     }
 }
@@ -63,14 +70,15 @@ impl Crm {
 /// integrations page, they never fail the caller.
 pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     let Some(email) = lead.email.as_deref() else { return };
-    let tokens: Option<(String, String)> = sqlx::query_as("select hubspot_token_enc, pipedrive_token_enc from project_settings where project_id = $1")
+    let tokens: Option<(String, String, String)> =
+        sqlx::query_as("select hubspot_token_enc, pipedrive_token_enc, attio_token_enc from project_settings where project_id = $1")
         .bind(project_id)
         .fetch_optional(&state.db)
         .await
         .ok()
         .flatten();
-    let Some((hubspot, pipedrive)) = tokens else { return };
-    for (crm, enc) in [(Crm::HubSpot, hubspot), (Crm::Pipedrive, pipedrive)] {
+    let Some((hubspot, pipedrive, attio)) = tokens else { return };
+    for (crm, enc) in [(Crm::HubSpot, hubspot), (Crm::Pipedrive, pipedrive), (Crm::Attio, attio)] {
         if enc.is_empty() {
             continue;
         }
@@ -89,14 +97,26 @@ fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().timeout(Duration::from_secs(20)).build()
 }
 
-/// Both CRMs render notes as HTML, so the reply is escaped and its line breaks kept.
+/// "Sarah van Dijk" is ("Sarah", "van Dijk"). A one-word name has no last name.
+fn split_name(full: &str) -> (&str, &str) {
+    let full = full.trim();
+    full.split_once(' ').map(|(f, l)| (f, l.trim())).unwrap_or((full, ""))
+}
+
+/// HubSpot and Pipedrive render notes as HTML, so the reply is escaped and its line breaks kept.
 fn note_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::note_html;
+    use super::{note_html, split_name};
+
+    #[test]
+    fn names_split_at_the_first_space() {
+        assert_eq!(split_name(" Sarah van Dijk "), ("Sarah", "van Dijk"));
+        assert_eq!(split_name("Cher"), ("Cher", ""));
+    }
 
     #[test]
     fn notes_keep_lines_and_escape_html() {

@@ -33,6 +33,9 @@ export function useProjectSettings() {
           pipedrive_connected: data.pipedrive_connected,
           pipedrive_error: data.pipedrive_error,
           pipedrive_failed_at: data.pipedrive_failed_at,
+          attio_connected: data.attio_connected,
+          attio_error: data.attio_error,
+          attio_failed_at: data.attio_failed_at,
         }
       : (draft ?? data);
   const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);

@@ -115,6 +115,9 @@ pub struct ProjectSettings {
     pub pipedrive_connected: bool,
     pub pipedrive_error: Option<String>,
     pub pipedrive_failed_at: Option<Ts>,
+    pub attio_connected: bool,
+    pub attio_error: Option<String>,
+    pub attio_failed_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
