@@ -57,7 +57,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           }}
           placeholder="Search name, email or company"
           label="Search leads"
-          className="min-w-64 flex-[999_1_0%]"
+          className="min-w-64 flex-[999_1_0%] md:min-w-72"
         />
         {!segmentId && (
           <Select value={segment} onChange={filter(setSegment)} className="h-9 w-auto flex-auto" aria-label="Campaign">
