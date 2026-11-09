@@ -128,7 +128,7 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
                 <li key={e.id} data-key={e.id} className="border-t border-border first:border-t-0">
                   <button
                     onClick={() => setSelectedId(e.id)}
-                    className={cn("flex w-full flex-col gap-0.5 px-4 py-3 text-left hover:bg-accent", selected?.id === e.id && "bg-accent")}
+                    className={cn("flex w-full flex-col gap-0.5 px-4 py-3 text-left hover:bg-accent focus-visible:-outline-offset-2", selected?.id === e.id && "bg-accent")}
                   >
                     <span className="flex items-center justify-between gap-2 text-sm">
                       <span className="truncate font-medium">{e.lead_name || e.lead_email}</span>
