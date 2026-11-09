@@ -167,6 +167,7 @@ All paths below are under `/api`.
 | POST | /inbox/messages/:id/approve | `{body?}` | approves a pending `auto_reply` draft |
 | POST | /inbox/threads/:lead_id/status | `{status}` | updates lead status (hot, meeting_booked, not_interested...) |
 | POST | /inbox/threads/:lead_id/done | | `{ok}`. Sets `handled_at` on the lead's replies, for one that needs no answer. The thread leaves `needs_reply` until the lead writes again. |
+| POST | /inbox/threads/:lead_id/remind | `{days?: 1-30, at?: timestamp}` | `{ok}`. Sets `remind_at` to `at` (within the next year) or `days` from now, and marks the replies handled like `done`. The thread comes back to `needs_reply` once `remind_at` passes. Neither clears the reminder. |
 | GET | /projects/:id/linkedin?segment_id | | `[{lead: LeadRow, messages: LinkedinMessage[]}]` |
 | POST | /leads/:id/linkedin | | `{run_id}` (linkedin_sequence) |
 | PATCH | /linkedin/:id | `{status, body?}` | `LinkedinMessage` |
