@@ -117,7 +117,7 @@ export default function EmailTemplatesPage() {
 function RewriteUnsent({ dirty }: { dirty: boolean }) {
   const { projectId } = useParams<{ projectId: string }>();
   const { runs, mutate } = useProjectRuns(projectId);
-  const { data: unsent } = useSWR<Paginated<EmailRow>>(
+  const { data: unsent, error: countError } = useSWR<Paginated<EmailRow>>(
     `/emails${qs({ project_id: projectId, status: "draft,approved,scheduled", kind: "initial,follow_up", per_page: 1 })}`,
     fetcher,
   );
@@ -156,7 +156,13 @@ function RewriteUnsent({ dirty }: { dirty: boolean }) {
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
-            {dirty ? "Save your changes first." : count > 0 ? plural(count, "unsent email") : "No unsent emails."}
+            {dirty
+              ? "Save your changes first."
+              : countError
+                ? "Couldn't count your unsent emails."
+                : count > 0
+                  ? plural(count, "unsent email")
+                  : "No unsent emails."}
           </p>
           <Button variant="outline" onClick={rewrite} loading={starting} disabled={dirty || count === 0}>
             Rewrite {count > 0 ? num(count) : ""} {count === 1 ? "email" : "emails"}
