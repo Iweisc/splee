@@ -6,14 +6,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { AgentRun, ExplorerCompany } from "@/lib/types";
 import { flag } from "./flag";
 
 const POLL_MS = 2000;
+const WIDE = "hidden @2xl:table-cell";
 
 interface ExplorerResult {
   run: AgentRun;
   results: ExplorerCompany[];
+}
+
+function location(c: ExplorerCompany) {
+  return c.city || c.country_code.toUpperCase();
 }
 
 function toCsv(rows: ExplorerCompany[]): string {
@@ -119,45 +125,52 @@ export function Explorer({ defaultCountry = "", placeholder = "e.g. wholesale co
       {runId && (
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
-            <p className="truncate font-mono text-[13px]">
+            {/* Wraps rather than truncates, so a long "Searching…" line still shows how many it found. */}
+            <p className="min-w-0 font-mono text-[13px]">
               <span className={running ? "text-brand-600" : "text-muted-foreground"}>{running ? "›" : "✓"}</span> {statusLine(submitted, data)}
               {running && <span className="ml-0.5 inline-block h-3.5 w-[7px] translate-y-0.5 animate-blink bg-foreground" />}
             </p>
-            <Button variant="outline" size="sm" disabled={results.length === 0} onClick={() => downloadCsv(results, submitted)}>
+            <Button variant="outline" size="sm" disabled={results.length === 0} onClick={() => downloadCsv(results, submitted)} aria-label="Export CSV" className="shrink-0">
               <Download className="size-3.5" />
-              Export CSV
+              <span className="max-sm:hidden">Export CSV</span>
             </Button>
           </div>
           {results.length > 0 ? (
-            <div className="overflow-x-auto">
+            // Below 42rem the table is one column: location, size and the reason move under the company instead of off the
+            // right edge of a phone.
+            <div className="@container overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-accent text-xs tracking-wide text-muted-foreground uppercase">
                   <tr>
                     <th className="px-4 py-2.5 font-medium">Company</th>
-                    <th className="px-4 py-2.5 font-medium">Location</th>
-                    <th className="px-4 py-2.5 font-medium">Employees</th>
-                    <th className="px-4 py-2.5 font-medium">Why it fits</th>
+                    <th className={cn(WIDE, "px-4 py-2.5 font-medium")}>Location</th>
+                    <th className={cn(WIDE, "px-4 py-2.5 font-medium")}>Employees</th>
+                    <th className={cn(WIDE, "px-4 py-2.5 font-medium")}>Why it fits</th>
                   </tr>
                 </thead>
                 <tbody>
                   {results.map((c) => (
                     <tr key={c.domain} className="border-t border-border align-top">
-                      <td className="px-4 py-3">
+                      <td className="max-w-0 px-4 py-3 @2xl:max-w-none">
                         <div className="flex items-center gap-2.5">
                           <Favicon domain={c.domain} size={18} />
                           <div className="min-w-0">
                             <p className="font-medium">{c.name}</p>
-                            <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="text-muted-foreground hover:underline">
+                            <a href={`https://${c.domain}`} target="_blank" rel="noreferrer" className="block truncate text-muted-foreground hover:underline">
                               {c.domain}
                             </a>
                           </div>
                         </div>
+                        <div className="mt-1.5 text-muted-foreground @2xl:hidden">
+                          <p>{[`${flag(c.country_code)} ${location(c)}`, c.employees].filter(Boolean).join(" · ")}</p>
+                          <p className="mt-1">{c.fit_reason}</p>
+                        </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {flag(c.country_code)} {c.city || c.country_code.toUpperCase()}
+                      <td className={cn(WIDE, "px-4 py-3 whitespace-nowrap text-muted-foreground")}>
+                        {flag(c.country_code)} {location(c)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">{c.employees || "–"}</td>
-                      <td className="max-w-md px-4 py-3 text-muted-foreground">{c.fit_reason}</td>
+                      <td className={cn(WIDE, "px-4 py-3 whitespace-nowrap text-muted-foreground")}>{c.employees || "–"}</td>
+                      <td className={cn(WIDE, "max-w-md px-4 py-3 text-muted-foreground")}>{c.fit_reason}</td>
                     </tr>
                   ))}
                 </tbody>
