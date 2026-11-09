@@ -46,8 +46,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // Safe to read during render: we only get here on the client, after /auth/me resolved.
   const lastProject = localStorage.getItem(LAST_PROJECT_KEY);
+  // Until the project list loads, the last project stands in, so the sidebar doesn't draw without its project links
+  // and then push everything down when they arrive.
   const projectId =
-    params.projectId ?? projects?.find((p) => p.id === lastProject)?.id ?? projects?.[0]?.id ?? null;
+    params.projectId ?? (projects ? (projects.find((p) => p.id === lastProject)?.id ?? projects[0]?.id ?? null) : lastProject);
   const project = projects?.find((p) => p.id === projectId);
   const pageTitle = titleFor(pathname, projectId, project);
   const projectInbox = projectId ? `/app/p/${projectId}/inbox` : null;
@@ -82,7 +84,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
-        <ProjectSwitcher projects={projects ?? []} current={project} />
+        <ProjectSwitcher projects={projects} current={project} />
 
         {/* The nav doesn't fit a laptop's height, so its edges fade: a cut-off item shows there's more to scroll to. Scrolled
             to either end, they only cover padding: the first group's mt-4 at the top and pb-8 at the bottom. */}
@@ -212,7 +214,7 @@ function NeedsReplyCount({ projectId }: { projectId?: string }) {
   );
 }
 
-function ProjectSwitcher({ projects, current }: { projects: ProjectSummary[]; current?: ProjectSummary }) {
+function ProjectSwitcher({ projects, current }: { projects?: ProjectSummary[]; current?: ProjectSummary }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative px-2">
@@ -221,12 +223,12 @@ function ProjectSwitcher({ projects, current }: { projects: ProjectSummary[]; cu
         className="flex w-full items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2 text-left text-sm shadow-card hover:bg-accent"
       >
         {current?.domain ? <Favicon domain={current.domain} /> : <span className="size-4 rounded-sm bg-black/10" />}
-        <span className="flex-1 truncate font-medium">{current ? current.name || current.domain : "No project"}</span>
+        <span className="min-h-5 flex-1 truncate font-medium">{current ? current.name || current.domain : projects && "No project"}</span>
         <ChevronsUpDown className="size-3.5 text-muted-foreground" />
       </button>
       {open && (
         <div className="absolute inset-x-2 top-full z-20 mt-1 rounded-xl bg-card p-1 shadow-pop" onMouseLeave={() => setOpen(false)}>
-          {projects.map((p) => (
+          {projects?.map((p) => (
             <Link
               key={p.id}
               href={`/app/p/${p.id}`}
