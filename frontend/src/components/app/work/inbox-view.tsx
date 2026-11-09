@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced } from "./states";
 import { LeadNotes } from "./lead-modal";
+import { ListKeysHint, useListKeys } from "./list-keys";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
 
 type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
@@ -34,23 +35,8 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   // filter hides falls back to the first thread.
   const linked = selectedLead !== null && selectedLead === initialLead;
   const selectedId = data?.items.find((t) => t.lead.id === selectedLead)?.lead.id ?? (linked ? selectedLead : data?.items[0]?.lead.id);
-  const listRef = useRef<HTMLUListElement>(null);
-
-  // j and k move through the threads like Gmail, unless you're typing. Phones show one pane at a time, so they skip it.
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if ((e.key !== "j" && e.key !== "k") || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
-      if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable], dialog, [role=dialog]")) return;
-      const items = data?.items;
-      if (!items?.length || !matchMedia("(min-width: 48rem)").matches) return;
-      const at = items.findIndex((t) => t.lead.id === selectedId);
-      const next = items[Math.min(items.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))];
-      setSelectedLead(next.lead.id);
-      listRef.current?.querySelector(`[data-lead="${next.lead.id}"]`)?.scrollIntoView({ block: "nearest" });
-    };
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [data, selectedId]);
+  // Phones show one pane at a time, so the keys start at md, where the list and the thread sit side by side.
+  const listRef = useListKeys(data?.items.map((t) => t.lead.id), selectedId ?? undefined, setSelectedLead, "48rem");
 
   return (
     <Card className="grid min-h-[520px] flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -122,7 +108,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           ) : (
             <ul ref={listRef}>
               {data.items.map((t) => (
-                <li key={t.lead.id} data-lead={t.lead.id} className="border-b border-border">
+                <li key={t.lead.id} data-key={t.lead.id} className="border-b border-border">
                   <button
                     onClick={() => setSelectedLead(t.lead.id)}
                     className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent", selectedId === t.lead.id && "bg-accent")}
@@ -151,9 +137,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
         </div>
         {data && <Pager page={page} total={data.total} onChange={setPage} />}
         {!!data?.items.length && (
-          <p className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block">
-            Press <Kbd>j</Kbd> and <Kbd>k</Kbd> to move between replies
-          </p>
+          <ListKeysHint what="replies" className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block" />
         )}
       </div>
       <div className={cn("min-h-0 flex-col md:flex", selectedLead ? "flex" : "hidden")}>
@@ -460,8 +444,4 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
       </div>
     </li>
   );
-}
-
-function Kbd({ children }: { children: React.ReactNode }) {
-  return <kbd className="rounded border border-border bg-muted px-1 font-mono text-[11px] text-foreground">{children}</kbd>;
 }
