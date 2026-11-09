@@ -1,15 +1,15 @@
 "use client";
 
 import { use, useState } from "react";
-import { CircleCheck, FileUp, Upload } from "lucide-react";
+import { CircleCheck, FileUp, Search, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ListSkeleton, LoadError, MicroLabel, Td, Th, toastError, Tr } from "@/components/app/work/states";
-import { Button } from "@/components/ui/button";
-import { Field, Select } from "@/components/ui/form";
+import { Button, LinkButton } from "@/components/ui/button";
+import { Field, Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, FileName, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { Import, SegmentWithStats } from "@/lib/types";
+import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { dateTime, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -62,7 +62,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="Upload a CSV with at least an email column. Suppressed, duplicate and invalid emails are skipped."
+        description="Upload a CSV or find people with Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -96,6 +96,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
             </label>
           </Card>
         )}
+        {!preview && <HunterImport projectId={projectId} onImported={setResult} />}
         <PastImports projectId={projectId} />
       </PageBody>
     </>
@@ -116,7 +117,6 @@ function MappingStep({
   onImported: (r: Import) => void;
 }) {
   const { mutate } = useSWRConfig();
-  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
   const [mapping, setMapping] = useState<Record<string, string>>(preview.suggested_mapping);
   const [segmentId, setSegmentId] = useState("");
   const [importing, setImporting] = useState(false);
@@ -191,20 +191,93 @@ function MappingStep({
       </div>
 
       <div className="mt-6 flex flex-wrap items-end justify-between gap-4">
-        <Field label="Add to campaign" className="w-72" hint="Optional. Leads without a campaign stay in the project.">
-          <Select value={segmentId} onChange={(e) => setSegmentId(e.target.value)}>
-            <option value="">No campaign</option>
-            {segments?.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} />
         <Button onClick={submit} loading={importing} disabled={!mapping.email}>
           <Upload className="size-4" /> Import leads
         </Button>
       </div>
+    </Card>
+  );
+}
+
+function CampaignField({
+  projectId,
+  value,
+  onChange,
+  className = "w-72 max-w-full",
+}: {
+  projectId: string;
+  value: string;
+  onChange: (segmentId: string) => void;
+  className?: string;
+}) {
+  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  return (
+    <Field label="Add to campaign" className={className} hint="Optional.">
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">No campaign</option>
+        {segments?.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** Imports the people Hunter knows at a company, with the Hunter key from Email verification. */
+function HunterImport({ projectId, onImported }: { projectId: string; onImported: (r: Import) => void }) {
+  const { mutate } = useSWRConfig();
+  const { data: settings } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
+  const [domain, setDomain] = useState("");
+  const [segmentId, setSegmentId] = useState("");
+  const [finding, setFinding] = useState(false);
+  if (!settings) return null;
+
+  const find = async () => {
+    setFinding(true);
+    try {
+      const result = await api<Import>(`/projects/${projectId}/import/hunter`, { body: { domain, segment_id: segmentId || null } });
+      mutate((k) => typeof k === "string" && (k.includes("/imports") || k.includes("/leads") || k.includes("/segments")));
+      onImported(result);
+      setDomain("");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setFinding(false);
+    }
+  };
+
+  return (
+    <Card className="p-6">
+      <h2 className="font-semibold">Find people with Hunter</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">Imports the people Hunter knows at a company, with their titles and LinkedIn.</p>
+      {settings.verifier === "hunter" ? (
+        <form
+          className="mt-5 flex flex-wrap items-start gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (domain.trim()) find();
+          }}
+        >
+          <Field label="Company website" className="min-w-40 flex-1">
+            <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="acme.com" />
+          </Field>
+          <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} className="min-w-40 flex-1" />
+          {/* Level with the fields beside them. On phones the fields stack and it sits under them. */}
+          <Button type="submit" className="sm:mt-6" loading={finding} disabled={!domain.trim()}>
+            {!finding && <Search className="size-4" />} Find people
+          </Button>
+        </form>
+      ) : (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">Connect Hunter under Email verification to use it here.</p>
+          <LinkButton href={`/app/p/${projectId}/integrations`} variant="outline" size="sm">
+            Open Integrations
+          </LinkButton>
+        </div>
+      )}
     </Card>
   );
 }

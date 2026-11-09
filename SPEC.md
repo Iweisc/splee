@@ -152,6 +152,7 @@ All paths below are under `/api`.
 | POST | /projects/:id/import | multipart: `file` (CSV), `segment_id?`, `mapping` (JSON `{email:"Email", full_name:"Name", ...}`) | `Import` (skips suppressed, duplicate and invalid emails) |
 | GET | /projects/:id/imports | | `Import[]` |
 | POST | /projects/:id/import/preview | multipart `file` | `{headers: string[], rows: string[][] (first 5), suggested_mapping}` |
+| POST | /projects/:id/import/hunter | `{domain, segment_id?}` | `Import` named "Hunter: {domain}". Needs Hunter as the project's email verifier, and uses its key. Imports the personal addresses from Hunter's domain search that it verified or gives a confidence of 80 or more, with name, title, company and LinkedIn, skipping like a CSV import. 400 with Hunter's message when it fails. |
 
 ### Emails and inbox
 
