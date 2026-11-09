@@ -130,8 +130,7 @@ async fn lead_event(
             "linkedin_url": lead.linkedin_url, "x_url": lead.x_url,
         },
         "reply": null,
-        // Opens this lead's conversation, not just the inbox.
-        "url": format!("{public_url}/app/p/{project_id}/inbox?lead={}", lead.id),
+        "url": lead_url(public_url, project_id, lead.id),
     });
     if let Some((key, value)) = detail {
         payload[key] = value;
@@ -158,9 +157,52 @@ pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static
     }
 }
 
-/// Sends meeting_booked when someone moves a lead there from another status. `before` is its status before the update.
+/// Opens this lead's conversation, not just the inbox.
+pub fn lead_url(public_url: &str, project_id: Uuid, lead_id: Uuid) -> String {
+    format!("{public_url}/app/p/{project_id}/inbox?lead={lead_id}")
+}
+
+/// Posts `text` to the project's Slack channel when it has one, and records how it went for the integrations page.
+pub async fn post_slack(db: &sqlx::PgPool, project_id: Uuid, text: &str) {
+    let url: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if url.trim().is_empty() {
+        return;
+    }
+    let result = post_json_retrying(&url, &json!({"text": text}), None).await;
+    if let Err(e) = &result {
+        tracing::warn!(error = %e, "slack notification failed");
+    }
+    record(db, project_id, Alert::Slack, &url, &result).await;
+}
+
+/// Whether an update moved the lead to meeting_booked. `before` is its status before the update.
+pub fn booked(before: &str, lead: &Lead) -> bool {
+    lead.status == "meeting_booked" && before != "meeting_booked"
+}
+
+/// Tells the team in Slack that a lead booked a meeting. It runs in the background, so the request that set the status
+/// doesn't wait on Slack.
+pub fn booked_in_slack(state: &AppState, lead: &Lead) {
+    let (db, project_id) = (state.db.clone(), lead.project_id);
+    let (who, link) = (format!("{} ({})", lead.full_name, lead.company_name), lead_url(&state.cfg.public_url, project_id, lead.id));
+    tokio::spawn(async move {
+        let project: String =
+            sqlx::query_scalar("select name from projects where id = $1").bind(project_id).fetch_one(&db).await.unwrap_or_default();
+        post_slack(&db, project_id, &format!("*Meeting booked:* {who} for {project}\n<{link}|Open the conversation>")).await;
+    });
+}
+
+/// Sends meeting_booked to Slack and the webhook when someone in the app moves a lead there. The API only posts to Slack
+/// (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
-    if lead.status == "meeting_booked" && before != "meeting_booked" {
+    if booked(before, lead) {
+        booked_in_slack(state, lead);
         send_lead_event(state, lead.project_id, "meeting_booked", lead, None).await;
     }
 }

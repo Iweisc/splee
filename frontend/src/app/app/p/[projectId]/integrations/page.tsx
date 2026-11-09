@@ -151,7 +151,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <Hash className="size-4" /> Slack
               </span>
             }
-            description="Posts a message to a Slack channel for every hot lead, with the lead, company and their reply."
+            description="Posts to a Slack channel when a lead turns hot or books a meeting."
             actions={<TestButton projectId={projectId} target="slack" url={s.slack_webhook_url} />}
           >
             <Field

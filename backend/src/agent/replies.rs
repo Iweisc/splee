@@ -188,26 +188,11 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
 
 /// Slack and email alerts for a hot lead. The webhook gets it as a lead event. Failures are logged, they never fail the run.
 async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
-    let slack: String = sqlx::query_scalar("select slack_webhook_url from project_settings where project_id = $1")
-        .bind(t.project.id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    // Opens this lead's conversation, not just the inbox.
-    let link = format!("{}/app/p/{}/inbox?lead={}", state.cfg.public_url, t.project.id, t.lead.id);
+    let link = hooks::lead_url(&state.cfg.public_url, t.project.id, t.lead.id);
     let who = format!("{} ({})", t.lead.full_name, t.lead.company_name);
-
-    if !slack.trim().is_empty() {
-        let snippet: String = t.inbound.body.trim().chars().take(300).collect();
-        let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
-        let result = hooks::post_json_retrying(&slack, &json!({"text": text}), None).await;
-        if let Err(e) = &result {
-            tracing::warn!(error = %e, "slack notification failed");
-        }
-        hooks::record(&state.db, t.project.id, hooks::Alert::Slack, &slack, &result).await;
-    }
+    let snippet: String = t.inbound.body.trim().chars().take(300).collect();
+    let text = format!("*Hot lead:* {who} replied to {}\n> {}\n<{link}|Open the inbox>", t.project.name, snippet.replace('\n', "\n> "));
+    hooks::post_slack(&state.db, t.project.id, &text).await;
 
     let Some(org_id) = t.project.org_id else { return };
     let recipients: Vec<String> = sqlx::query_scalar(
