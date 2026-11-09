@@ -200,6 +200,12 @@ const CRMS = {
     field: "Access token",
     hint: "In Attio: Workspace settings → Developers → New access token, with read-write access to records and notes and read access to object configuration.",
   },
+  close: {
+    name: "Close",
+    record: "contacts",
+    field: "API key",
+    hint: "In Close: Settings → Developer → API Keys → New API Key.",
+  },
 } as const;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
@@ -437,6 +443,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <CrmSection projectId={projectId} settings={s} crm="hubspot" />
           <CrmSection projectId={projectId} settings={s} crm="pipedrive" />
           <CrmSection projectId={projectId} settings={s} crm="attio" />
+          <CrmSection projectId={projectId} settings={s} crm="close" />
           <VerifierSection projectId={projectId} settings={s} />
 
           <Section

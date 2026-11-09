@@ -2,6 +2,7 @@
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
 mod attio;
+mod close;
 mod hubspot;
 mod pipedrive;
 
@@ -19,6 +20,7 @@ pub enum Crm {
     HubSpot,
     Pipedrive,
     Attio,
+    Close,
 }
 
 impl Crm {
@@ -27,6 +29,7 @@ impl Crm {
             "hubspot" => Some(Crm::HubSpot),
             "pipedrive" => Some(Crm::Pipedrive),
             "attio" => Some(Crm::Attio),
+            "close" => Some(Crm::Close),
             _ => None,
         }
     }
@@ -37,6 +40,7 @@ impl Crm {
             Crm::HubSpot => "hubspot",
             Crm::Pipedrive => "pipedrive",
             Crm::Attio => "attio",
+            Crm::Close => "close",
         }
     }
 
@@ -45,6 +49,7 @@ impl Crm {
             Crm::HubSpot => "HubSpot",
             Crm::Pipedrive => "Pipedrive",
             Crm::Attio => "Attio",
+            Crm::Close => "Close",
         }
     }
 
@@ -54,6 +59,7 @@ impl Crm {
             Crm::HubSpot => hubspot::check(token).await,
             Crm::Pipedrive => pipedrive::check(token).await,
             Crm::Attio => attio::check(token).await,
+            Crm::Close => close::check(token).await,
         }
     }
 
@@ -62,6 +68,7 @@ impl Crm {
             Crm::HubSpot => hubspot::push(token, email, lead, note).await,
             Crm::Pipedrive => pipedrive::push(token, email, lead, note).await,
             Crm::Attio => attio::push(token, email, lead, note).await,
+            Crm::Close => close::push(token, email, lead, note).await,
         }
     }
 }
@@ -70,15 +77,16 @@ impl Crm {
 /// integrations page, they never fail the caller.
 pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     let Some(email) = lead.email.as_deref() else { return };
-    let tokens: Option<(String, String, String)> =
-        sqlx::query_as("select hubspot_token_enc, pipedrive_token_enc, attio_token_enc from project_settings where project_id = $1")
-        .bind(project_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-    let Some((hubspot, pipedrive, attio)) = tokens else { return };
-    for (crm, enc) in [(Crm::HubSpot, hubspot), (Crm::Pipedrive, pipedrive), (Crm::Attio, attio)] {
+    let tokens: Option<(String, String, String, String)> = sqlx::query_as(
+        "select hubspot_token_enc, pipedrive_token_enc, attio_token_enc, close_token_enc from project_settings where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    let Some((hubspot, pipedrive, attio, close)) = tokens else { return };
+    for (crm, enc) in [(Crm::HubSpot, hubspot), (Crm::Pipedrive, pipedrive), (Crm::Attio, attio), (Crm::Close, close)] {
         if enc.is_empty() {
             continue;
         }
