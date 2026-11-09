@@ -139,15 +139,15 @@ function MappingStep({
 
   return (
     <Card className="p-6">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <p className="font-medium">{file.name}</p>
-          <p className="text-sm text-muted-foreground">{preview.headers.length} columns. Match them to lead fields.</p>
-        </div>
-        <Button variant="ghost" onClick={onCancel}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="truncate font-medium" title={file.name}>
+          {file.name}
+        </p>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
           Choose another file
         </Button>
       </div>
+      <p className="mb-5 text-sm text-muted-foreground">{preview.headers.length} columns. Match them to lead fields.</p>
 
       <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
         {FIELDS.map((f) => (
