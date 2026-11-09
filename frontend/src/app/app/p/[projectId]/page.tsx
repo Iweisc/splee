@@ -123,7 +123,7 @@ function MailboxNotice() {
       {/* The basis pushes the button onto its own row on phones, so the addresses aren't squeezed into a narrow column. */}
       <div className="min-w-0 flex-1 basis-64 space-y-1">
         {broken.map((m) => (
-          <p key={m.id} className="break-words">
+          <p key={m.id}>
             <span className="font-medium">{m.email}</span> {m.status === "error" ? "can't send" : "can't read replies"}:{" "}
             <span className="text-muted-foreground">{m.last_error}</span>
           </p>

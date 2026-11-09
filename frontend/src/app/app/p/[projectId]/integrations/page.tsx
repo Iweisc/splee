@@ -94,7 +94,7 @@ function LastFailure({ error, at }: { error: string | null; at: string | null })
       <p className="font-medium">
         The last hot-lead alert didn&apos;t go through, <span title={dateTime(at)}>{timeAgo(at)}</span>.
       </p>
-      <p className="mt-1 font-mono break-words">{error}</p>
+      <p className="mt-1 font-mono">{error}</p>
     </div>
   );
 }

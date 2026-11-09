@@ -31,7 +31,7 @@ export function UnsubscribeCard({ token }: { token: string }) {
   // A long address is wider than the card on phones. It breaks after the @ first, and anywhere only if a part is still too long.
   const [user, domain] = data?.email?.split(/@(.*)/) ?? [];
   const address = data?.email ? (
-    <strong className="font-medium break-words text-foreground">
+    <strong className="font-medium text-foreground">
       {user}
       {domain && (
         <>
