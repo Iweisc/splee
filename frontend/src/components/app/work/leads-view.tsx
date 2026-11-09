@@ -42,8 +42,9 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
-        {/* The search takes a row's spare room. The filters only stretch to fill a row they wrapped onto. */}
-        <div className="relative min-w-56 flex-[999_1_0%]">
+        {/* The search takes a row's spare room, and never gets narrower than its placeholder. The filters only stretch
+            to fill a row they wrapped onto. Status and Export wrap together, so Export never sits alone on a row. */}
+        <div className="relative min-w-64 flex-[999_1_0%]">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input value={q} onChange={filter(setQ)} placeholder="Search name, email or company" className="h-9 pl-9" />
         </div>
@@ -57,20 +58,22 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             ))}
           </Select>
         )}
-        <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto">
-          <option value="">Any status</option>
-          {Object.entries(LEAD_STATUS).map(([value, s]) => (
-            <option key={value} value={value}>
-              {s.label}
-            </option>
-          ))}
-        </Select>
-        {!!data?.total && (
-          // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
-          <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
-            <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${data.total} leads`}
-          </a>
-        )}
+        <div className="flex flex-auto flex-wrap gap-2">
+          <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto">
+            <option value="">Any status</option>
+            {Object.entries(LEAD_STATUS).map(([value, s]) => (
+              <option key={value} value={value}>
+                {s.label}
+              </option>
+            ))}
+          </Select>
+          {!!data?.total && (
+            // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
+            <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
+              <Download className="size-3.5" /> Export {data.total === 1 ? "1 lead" : `${data.total} leads`}
+            </a>
+          )}
+        </div>
       </div>
 
       {error ? (
