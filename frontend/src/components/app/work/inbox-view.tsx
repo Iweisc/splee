@@ -367,7 +367,9 @@ function Bubble({ message: m }: { message: EmailMessage }) {
   return (
     // 36rem caps a line at about 85 characters. At 80% alone, a wide screen ran lines to 150 and more.
     <li className={cn("flex max-w-[min(80%,36rem)] flex-col gap-1", inbound ? "self-start" : "self-end items-end")}>
-      <div className={cn("rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", inbound ? "bg-card shadow-card" : "bg-black/[0.06]")}>
+      {/* max-w-full: aligned to an edge, the bubble sizes to its longest word, so a long link pushed it past the thread's
+          other edge. Capped, the link wraps instead. */}
+      <div className={cn("max-w-full rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", inbound ? "bg-card shadow-card" : "bg-black/[0.06]")}>
         {m.body}
       </div>
       <span className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
