@@ -348,14 +348,25 @@ fn host(url: &str) -> String {
 }
 
 /// Where a chat alert is posted. ntfy takes JSON only at its root, with the topic from the user's https://ntfy.sh/{topic}
-/// URL in the body. Pushover reads its token and user key from the body only, so they move there from the query.
-/// Everything else is posted to the URL as given.
+/// URL in the body, and keeps the query, where a self-hosted server's `?auth=` goes. Pushover reads its token and user key
+/// from the body only, so they move there from the query. Everything else is posted to the URL as given.
 pub fn chat_endpoint(url: &str) -> String {
+    if ntfy(url)
+        && let Ok(mut root) = Url::parse(url)
+    {
+        root.set_path("/");
+        return root.to_string();
+    }
     match host(url).as_str() {
-        "ntfy.sh" => "https://ntfy.sh/".to_string(),
         PUSHOVER => format!("https://{PUSHOVER}/1/messages.json"),
         _ => url.to_string(),
     }
+}
+
+/// ntfy.sh, or a self-hosted ntfy server, which can be on any host, so it's told apart by a name starting with ntfy.,
+/// like ntfy.example.com, the way ntfy's docs name one. Keep in sync with chatApp in the integrations page.
+fn ntfy(url: &str) -> bool {
+    host(url).starts_with("ntfy.")
 }
 
 const PUSHOVER: &str = "api.pushover.net";
@@ -379,7 +390,7 @@ fn query(url: &str, key: &str) -> Option<String> {
 }
 
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
-/// URL with `?chat_id=`), ntfy (a topic URL), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
+/// URL with `?chat_id=`), ntfy (a topic URL on ntfy.sh or an ntfy.* server), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
 /// (an incoming webhook's URL) have their own shapes, and Gotify (its /message?token= URL) and Mattermost want markdown. Anything else gets Slack's `{text}`,
 /// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
@@ -392,8 +403,8 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
         Some(q) => format!("{}\n\n{q}", a.summary),
         None => a.summary.to_string(),
     };
-    if host == "ntfy.sh" {
-        let topic = Url::parse(url).ok().and_then(|u| u.path_segments()?.find(|s| !s.is_empty()).map(str::to_string)).unwrap_or_default();
+    if ntfy(url) {
+        let topic = Url::parse(url).ok().and_then(|u| u.path_segments()?.rfind(|s| !s.is_empty()).map(str::to_string)).unwrap_or_default();
         json!({
             "topic": topic, "title": a.label, "message": message, "click": a.link,
             "actions": [{"action": "view", "label": a.link_text, "url": a.link}],
@@ -686,6 +697,8 @@ mod tests {
         assert_eq!(ntfy["message"], "Sarah replied to Acme\n\nSounds good\nTuesday?");
         assert_eq!(ntfy["click"], "https://app/x");
         assert_eq!(chat_endpoint("https://ntfy.sh/acme-hot-leads"), "https://ntfy.sh/");
+        let own = "https://ntfy.acme.example:8443/hot-leads?auth=QmVhcmVy";
+        assert_eq!((chat_payload(own, &a)["topic"].as_str(), chat_endpoint(own)), (Some("hot-leads"), "https://ntfy.acme.example:8443/?auth=QmVhcmVy".to_string()));
         assert_eq!(chat_endpoint("https://hooks.slack.com/services/T/B/x"), "https://hooks.slack.com/services/T/B/x");
         let pushover_url = "https://api.pushover.net/1/messages.json?token=app123&user=user456";
         let pushover = chat_payload(pushover_url, &a);
