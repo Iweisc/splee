@@ -139,7 +139,9 @@ async fn update(
            body = coalesce($3, body),
            status = coalesce($4, status),
            scheduled_for = case when $4 = 'approved' then coalesce(scheduled_for, now()) else scheduled_for end,
-           error = case when $4 = 'approved' then '' else error end
+           error = case when $4 = 'approved' then '' else error end,
+           -- Sending a failed email again gives a server that asked to try later its full set of tries again.
+           deferrals = case when $4 = 'approved' then 0 else deferrals end
          where id = $1",
     )
     .bind(id)
