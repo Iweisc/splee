@@ -365,8 +365,9 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       </ol>
 
       {/* The buttons drop their labels when the row is narrow, not just on phones: on a tablet or small laptop the thread
-          sits beside the list, and the labels squeezed the reply box to a third of the row. */}
-      <div className="@container flex items-end gap-2 border-t border-border p-3">
+          sits beside the list, and the labels squeezed the reply box to a third of the row. On a small phone even the icons
+          left it 100px wide, so there the box takes the whole row and the buttons go under it. */}
+      <div className="@container flex flex-wrap items-end justify-end gap-2 border-t border-border p-3">
         {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
           ref={replyBox}
@@ -376,7 +377,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim()) send();
           }}
           placeholder={`Reply to ${lead.first_name || lead.full_name || "lead"}…`}
-          className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content"
+          className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @xs:flex-1"
         />
         <SavedReplyMenu
           lead={lead}
