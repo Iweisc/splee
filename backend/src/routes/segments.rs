@@ -300,9 +300,11 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     let mut tx = state.db.begin().await?;
     sqlx::query("update segments set status = 'working' where id = $1").bind(segment.id).execute(&mut *tx).await?;
+    // Pausing turned queued follow-ups back into drafts, so starting queues them again for the day they were due.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
-        "update email_messages set status = 'approved', scheduled_for = now()
-         where segment_id = $1 and kind = 'initial' and status = 'draft' returning lead_id",
+        "update email_messages set status = 'approved',
+           scheduled_for = case when kind = 'follow_up' then coalesce(scheduled_for, now()) else now() end
+         where segment_id = $1 and kind in ('initial', 'follow_up') and status = 'draft' returning lead_id",
     )
     .bind(segment.id)
     .fetch_all(&mut *tx)
