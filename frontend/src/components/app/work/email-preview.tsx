@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import type { EmailRow } from "@/lib/types";
 import { dateTime } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
+import { isActive, useProjectRuns } from "./run-progress";
 import { MicroLabel, toastError } from "./states";
 import { EmailStatusBadge } from "./status";
 
@@ -42,11 +43,16 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
   const [body, setBody] = useState(kept?.body ?? email.body);
   const [busy, setBusy] = useState<"save" | "approve" | "cancel" | "regenerate" | "test" | null>(null);
   const [instructions, setInstructions] = useState<string | null>(null);
-  const [rewriteRun, setRewriteRun] = useState<string | null>(null);
+  const [started, setStarted] = useState<string | null>(null);
+  // A rewrite of this lead's emails that is still going, from Regenerate before you left or from "Rewrite unsent emails".
+  // Without it, coming back offered Regenerate again, and each click starts another paid run.
+  const { runs } = useProjectRuns(email.project_id);
+  const running = runs?.find((r) => r.kind === "write_emails" && r.input.rewrite === true && isActive(r) && (r.input.lead_ids as string[]).includes(email.lead_id));
+  const rewriteRun = started ?? running?.id ?? null;
 
   useAgentEvents(rewriteRun ? `/api/runs/${rewriteRun}/events` : null, (e) => {
     if (e.kind === "done" || e.kind === "error") {
-      setRewriteRun(null);
+      setStarted(null);
       if (e.kind === "error") toast.error(e.message || "Rewrite failed");
       mutate(() => true);
     }
@@ -79,7 +85,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
       const { run_id } = await api<{ run_id: string }>(`/emails/${email.id}/regenerate`, {
         body: instructions?.trim() ? { instructions: instructions.trim() } : {},
       });
-      setRewriteRun(run_id);
+      setStarted(run_id);
       setInstructions(null);
     } catch (e) {
       toastError(e);
