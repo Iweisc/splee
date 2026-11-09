@@ -184,6 +184,15 @@ pub struct Lead {
     pub created_at: Ts,
 }
 
+/// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.
+#[derive(Debug, Serialize, FromRow)]
+pub struct MailboxStats {
+    pub mailbox_id: Uuid,
+    pub emailed: i64,
+    pub bounced: i64,
+    pub replied: i64,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Mailbox {
     pub id: Uuid,

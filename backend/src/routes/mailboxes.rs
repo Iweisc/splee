@@ -11,12 +11,13 @@ use crate::auth::Auth;
 use crate::crypto::encrypt;
 use crate::error::{AppError, AppResult};
 use crate::mail;
-use crate::models::Mailbox;
+use crate::models::{Mailbox, MailboxStats};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/mailboxes", get(list).post(create))
+        .route("/mailboxes/stats", get(stats))
         .route("/mailboxes/{id}", patch(update).delete(remove))
         .route("/mailboxes/{id}/test", post(test))
         .route("/mailboxes/{id}/check-dns", post(check_dns))
@@ -37,6 +38,31 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<M
         .fetch_all(&state.db)
         .await?;
     Ok(Json(mailboxes))
+}
+
+/// Bounces come back to the mailbox that sent the email, so counting them where they arrive pins them on the right
+/// mailbox. Rates need sends, so mailboxes that sent nothing in the window are left out.
+async fn stats(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<MailboxStats>>> {
+    Ok(Json(org_stats(&state.db, auth.org_id).await?))
+}
+
+async fn org_stats(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<MailboxStats>> {
+    let stats = sqlx::query_as::<_, MailboxStats>(
+        "select m.id as mailbox_id,
+           (select count(distinct e.lead_id) from email_messages e
+             where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at > now() - interval '30 days') as emailed,
+           (select count(distinct e.lead_id) from email_messages e
+             where e.mailbox_id = m.id and e.direction = 'inbound' and e.classification = 'bounce'
+               and e.created_at > now() - interval '30 days') as bounced,
+           (select count(distinct e.lead_id) from email_messages e
+             where e.mailbox_id = m.id and e.direction = 'inbound' and e.classification is distinct from 'bounce'
+               and e.created_at > now() - interval '30 days') as replied
+         from mailboxes m where m.org_id = $1",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await?;
+    Ok(stats.into_iter().filter(|s| s.emailed > 0).collect())
 }
 
 /// MailboxInput from types.ts. Every field is optional so PATCH can reuse it.
@@ -227,4 +253,70 @@ async fn check_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
         .fetch_one(&state.db)
         .await?;
     Ok(Json(mailbox))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn stats_count_leads_per_mailbox_over_the_last_30_days(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, $2, 'smtp.test', '', '') returning id",
+            )
+            .bind(org)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (busy, idle) = (mailbox("a@acme.test").await.unwrap(), mailbox("b@acme.test").await.unwrap());
+        let leads: Vec<Uuid> = sqlx::query_scalar("insert into leads (project_id, full_name) select $1, 'Lead ' || g from generate_series(1, 4) g returning id")
+            .bind(project)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        let message = |lead: Uuid, direction: &'static str, status: &'static str, classification: Option<&'static str>, days_ago: i32| {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, classification, sent_at, created_at)
+                 values ($1, $2, $3, $4, case when $4 = 'inbound' then 'inbound' else 'initial' end, $5, $6,
+                         case when $5 = 'sent' then now() - make_interval(days => $7) end, now() - make_interval(days => $7))",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(busy)
+            .bind(direction)
+            .bind(status)
+            .bind(classification)
+            .bind(days_ago)
+            .execute(&db)
+        };
+        // Lead 0 got two emails and replied twice, lead 1 bounced, lead 2 was emailed 40 days ago and lead 3 only has a draft.
+        // The idle mailbox only received a reply, to an email older than the window.
+        message(leads[0], "outbound", "sent", None, 3).await.unwrap();
+        message(leads[0], "outbound", "sent", None, 1).await.unwrap();
+        message(leads[0], "inbound", "received", Some("question"), 1).await.unwrap();
+        message(leads[0], "inbound", "received", None, 0).await.unwrap();
+        message(leads[1], "outbound", "sent", None, 2).await.unwrap();
+        message(leads[1], "inbound", "received", Some("bounce"), 2).await.unwrap();
+        message(leads[2], "outbound", "sent", None, 40).await.unwrap();
+        message(leads[3], "outbound", "draft", None, 0).await.unwrap();
+        sqlx::query("insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status) values ($1, $2, $3, 'inbound', 'inbound', 'received')")
+            .bind(project)
+            .bind(leads[2])
+            .bind(idle)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let stats = org_stats(&db, org).await.unwrap();
+        assert_eq!(stats.len(), 1, "the mailbox that sent nothing is left out");
+        let s = &stats[0];
+        assert_eq!((s.mailbox_id, s.emailed, s.bounced, s.replied), (busy, 2, 1, 1));
+        assert_ne!(s.mailbox_id, idle);
+    }
 }
