@@ -251,6 +251,11 @@ function PickedBar({
         <X className="size-4" />
       </Button>
       <p className="mr-auto text-sm font-medium">{count} selected</p>
+      {/* Delete comes before the campaign menu so that on a phone it shares the first row with the count and the menu
+          fills the second. After the menu, it took a third row of its own. */}
+      <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
+        <Trash2 className="size-3.5" /> Delete
+      </Button>
       <Select
         value=""
         onChange={(e) => move(e.target.value)}
@@ -266,9 +271,6 @@ function PickedBar({
         ))}
         <option value="none">No campaign</option>
       </Select>
-      <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
-        <Trash2 className="size-3.5" /> Delete
-      </Button>
       <Modal open={confirming} onClose={() => setConfirming(false)} title={`Delete ${count}?`} className="max-w-md">
         <p className="text-sm text-muted-foreground">Their emails, notes and webhook history go too. You can&apos;t undo this.</p>
         <div className="mt-5 flex justify-end gap-2">
