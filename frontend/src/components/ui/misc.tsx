@@ -170,6 +170,8 @@ export function Tabs<T extends string>({
           key={o.value}
           // Tabs can sit inside a form, like the mailbox form's provider tabs, where a default button would submit it.
           type="button"
+          // The white pill only shows the choice to sighted users, so screen readers hear "pressed" on it.
+          aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
             "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
