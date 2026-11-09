@@ -15,7 +15,7 @@ use super::leads::{LEAD_ROW_SELECT, LeadRow};
 use super::{util_input, util_scope};
 use crate::agent::{self, kind};
 use crate::auth::Auth;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{Lead, LinkedinMessage};
 use crate::state::AppState;
@@ -93,12 +93,15 @@ struct UpdateBody {
 async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<UpdateBody>) -> AppResult<Json<LinkedinMessage>> {
     let message: LinkedinMessage = util_scope::load(&state.db, "linkedin_messages", id, auth.org_id).await?;
     util_input::one_of("status", &body.status, &["todo", "done", "skipped"])?;
+    if message.sent_via == "unipile" {
+        return Err(AppError::BadRequest("Splee already sent this on LinkedIn".into()));
+    }
     Ok(Json(mark(&state.db, &message, &body.status, body.body).await?))
 }
 
 /// Sending a step brings the next one due after wait_after, skipping it brings the next one due now, and undoing it
 /// takes the later ones off the list until it's sent again.
-async fn mark(db: &PgPool, message: &LinkedinMessage, status: &str, body: Option<String>) -> sqlx::Result<LinkedinMessage> {
+pub async fn mark(db: &PgPool, message: &LinkedinMessage, status: &str, body: Option<String>) -> sqlx::Result<LinkedinMessage> {
     let mut tx = db.begin().await?;
     let updated = sqlx::query_as::<_, LinkedinMessage>(
         "update linkedin_messages set status = $2, body = coalesce($3, body),

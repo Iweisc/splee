@@ -140,6 +140,8 @@ pub enum Alert {
     Crm(crate::crm::Crm),
     /// Matched on verifier_key_enc.
     Verifier,
+    /// Matched on unipile_token_enc.
+    Unipile,
 }
 
 /// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
@@ -151,6 +153,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Chat => return record_chat(db, project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
+        Alert::Unipile => ("unipile", "unipile_token_enc".to_string()),
     };
     let sql = format!(
         "update project_settings set {prefix}_error = $3, {prefix}_failed_at = case when $3::text is null then null else now() end

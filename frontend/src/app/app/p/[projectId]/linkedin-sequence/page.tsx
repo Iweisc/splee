@@ -11,7 +11,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Skeleton, Spinner } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { LeadRow, LinkedinMessage, SegmentWithStats } from "@/lib/types";
+import type { LeadRow, LinkedinMessage, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -26,6 +26,7 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
   const { projectId } = use(params);
   const [segment, setSegment] = useState("");
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  const { data: settings } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
   const key = `/projects/${projectId}/linkedin${qs({ segment_id: segment })}`;
   const { data, error, mutate } = useSWR<Sequence[]>(key, fetcher, { keepPreviousData: true });
   // Sequences still being written, by lead. Without them, coming back to the page offered Generate again, and each
@@ -41,7 +42,11 @@ export default function LinkedinPage({ params }: PageProps<"/app/p/[projectId]/l
     <>
       <PageHeader
         title="LinkedIn"
-        description="Splee writes the connect note and follow-ups and brings each one due a few days after the last. You send them from your own profile and tick them off. A reply on LinkedIn or by email stops both."
+        description={
+          settings?.unipile_connected
+            ? "Splee writes the connect note and follow-ups and sends each one from your LinkedIn through Unipile as it comes due, the messages once they accept. Any it can't send wait here for you. A reply on LinkedIn or by email stops both."
+            : "Splee writes the connect note and follow-ups and brings each one due a few days after the last. You send them from your own profile and tick them off. A reply on LinkedIn or by email stops both."
+        }
         actions={
           <>
             <Select value={view} onChange={(e) => setPicked(e.target.value as "due" | "all")} className="w-auto" aria-label="Show">
@@ -212,6 +217,7 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
 const stepName = (m: LinkedinMessage) => (m.kind === "connect" ? "Connect note" : `Message ${m.step}`);
 
 function MessageCard({ message: m, before, onChange }: { message: LinkedinMessage; before?: LinkedinMessage; onChange: () => void }) {
+  const sentBySplee = m.status === "done" && m.sent_via === "unipile";
   const setStatus = async (status: LinkedinMessage["status"]) => {
     try {
       await api(`/linkedin/${m.id}`, { method: "PATCH", body: { status } });
@@ -235,7 +241,7 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
       <div className="flex min-h-6 items-center justify-between">
         <MicroLabel>{stepName(m)}</MicroLabel>
         {m.status !== "todo" ? (
-          <Badge tone={m.status === "done" ? "green" : "neutral"}>{m.status === "done" ? "Done" : "Skipped"}</Badge>
+          <Badge tone={m.status === "done" ? "green" : "neutral"}>{m.status === "skipped" ? "Skipped" : sentBySplee ? "Sent by Splee" : "Done"}</Badge>
         ) : isDue(m) ? (
           <Badge tone="amber">Due now</Badge>
         ) : m.due_at ? (
@@ -249,6 +255,9 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
         )}
       </div>
       <p className={cn("flex-1 text-sm whitespace-pre-wrap", m.status !== "todo" && "text-muted-foreground")}>{m.body}</p>
+      {m.status === "todo" && m.send_error && (
+        <p className="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs text-red-700">Splee couldn&apos;t send this: {m.send_error}. Send it yourself.</p>
+      )}
       <div className="flex gap-1">
         <Button size="sm" variant="ghost" onClick={copy}>
           <Copy className="size-3.5" /> Copy
@@ -264,9 +273,12 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
             </Button>
           </>
         ) : (
-          <Button size="sm" variant="ghost" onClick={() => setStatus("todo")}>
-            Undo
-          </Button>
+          // A step Splee sent is out on LinkedIn, so there's nothing to undo.
+          !sentBySplee && (
+            <Button size="sm" variant="ghost" onClick={() => setStatus("todo")}>
+              Undo
+            </Button>
+          )
         )}
       </div>
     </li>

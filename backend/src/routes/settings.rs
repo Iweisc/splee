@@ -14,6 +14,7 @@ use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{ProjectSettings, WebhookDelivery};
 use crate::state::AppState;
+use crate::unipile;
 use crate::verify::Verifier;
 
 pub fn router() -> Router<AppState> {
@@ -26,6 +27,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/{crm}", put(connect_crm).delete(disconnect_crm))
         // Static, so it wins over {crm} above.
         .route("/projects/{id}/integrations/verifier", put(connect_verifier).delete(disconnect_verifier))
+        .route("/projects/{id}/integrations/unipile", put(connect_unipile).delete(disconnect_unipile))
 }
 
 /// Settings rows are created with the project, but older demo projects may not have one yet.
@@ -331,6 +333,54 @@ async fn disconnect_verifier(State(state): State<AppState>, auth: Auth, Path(id)
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
     set_verifier(&state.db, id, "", "").await
+}
+
+#[derive(Deserialize)]
+struct UnipileBody {
+    dsn: String,
+    token: String,
+}
+
+/// Saves a Unipile token with the LinkedIn account it opens, once Unipile accepts it.
+async fn connect_unipile(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UnipileBody>,
+) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let base = unipile::base_url(&body.dsn)
+        .ok_or_else(|| AppError::BadRequest("Paste the DSN from your Unipile dashboard, like api8.unipile.com:13851".into()))?;
+    let token = body.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("Paste your Unipile access token".into()));
+    }
+    let (account, name) =
+        unipile::find_account(&base, token).await.map_err(|e| AppError::BadRequest(format!("Unipile didn't accept that: {e:#}")))?;
+    set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name).await
+}
+
+async fn disconnect_unipile(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_unipile(&state.db, id, "", "", "", "").await
+}
+
+async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str, name: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set unipile_dsn = $2, unipile_token_enc = $3, unipile_account_id = $4, unipile_account_name = $5,
+           unipile_error = null, unipile_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(base)
+    .bind(enc)
+    .bind(account)
+    .bind(name)
+    .fetch_one(db)
+    .await?;
+    Ok(Json(settings))
 }
 
 async fn set_verifier(db: &PgPool, id: Uuid, provider: &str, enc: &str) -> AppResult<Json<ProjectSettings>> {

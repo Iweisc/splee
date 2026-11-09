@@ -150,6 +150,11 @@ export interface ProjectSettings extends CrmStatus {
   verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable";
   verifier_error: string | null;
   verifier_failed_at: string | null;
+  /** Unipile sends due LinkedIn steps from this account. Its token is write-only. */
+  unipile_connected: boolean;
+  unipile_account_name: string;
+  unipile_error: string | null;
+  unipile_failed_at: string | null;
 }
 
 export type WebhookEvent =
@@ -425,6 +430,10 @@ export interface LinkedinMessage {
   /** When to send it: the connect note once written, each message a few days after the step before was sent. */
   due_at: Ts | null;
   done_at: Ts | null;
+  /** "unipile" when Splee sent it through the user's LinkedIn. */
+  sent_via: "" | "unipile";
+  /** Why Splee couldn't send it, which leaves it for the user. */
+  send_error: string | null;
   created_at: Ts;
 }
 

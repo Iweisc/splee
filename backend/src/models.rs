@@ -133,6 +133,11 @@ pub struct ProjectSettings {
     pub brevo_connected: bool,
     pub brevo_error: Option<String>,
     pub brevo_failed_at: Option<Ts>,
+    /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
+    pub unipile_connected: bool,
+    pub unipile_account_name: String,
+    pub unipile_error: Option<String>,
+    pub unipile_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -347,6 +352,10 @@ pub struct LinkedinMessage {
     /// it was sent. None until then, and for steps that are done or skipped before coming due.
     pub due_at: Option<Ts>,
     pub done_at: Option<Ts>,
+    /// "unipile" when Splee sent it, "" when the user did.
+    pub sent_via: String,
+    /// Why Splee couldn't send it, which leaves it for the user.
+    pub send_error: Option<String>,
     pub created_at: Ts,
 }
 

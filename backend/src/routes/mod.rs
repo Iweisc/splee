@@ -10,7 +10,7 @@ pub mod auth;
 mod bookings;
 mod chat_channels;
 mod forms;
-mod linkedin;
+pub mod linkedin;
 mod calendar;
 mod saved_replies;
 pub mod org;

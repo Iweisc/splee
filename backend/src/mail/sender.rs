@@ -39,10 +39,7 @@ impl SendingProject {
     }
 
     fn in_window(&self, now: Ts) -> bool {
-        let local = now.with_timezone(&self.tz());
-        let day = local.weekday().number_from_monday() as i32;
-        let hour = local.hour() as i32;
-        self.send_days.contains(&day) && hour >= self.send_start_hour && hour < self.send_end_hour
+        in_window(self.tz(), &self.send_days, self.send_start_hour, self.send_end_hour, now)
     }
 
     fn day_start(&self, now: Ts) -> Ts {
@@ -50,6 +47,14 @@ impl SendingProject {
         let midnight = now.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0).expect("midnight exists");
         tz.from_local_datetime(&midnight).earliest().map(|d| d.with_timezone(&Utc)).unwrap_or(now)
     }
+}
+
+/// Whether a project's send days and hours, in its timezone, include now. LinkedIn sends keep to the same window.
+pub fn in_window(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, now: Ts) -> bool {
+    let local = now.with_timezone(&tz);
+    let day = local.weekday().number_from_monday() as i32;
+    let hour = local.hour() as i32;
+    days.contains(&day) && hour >= start_hour && hour < end_hour
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {

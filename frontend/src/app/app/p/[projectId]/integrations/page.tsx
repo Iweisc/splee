@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, UserPlus, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -140,7 +140,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" }) {
+function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -470,6 +470,58 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
   );
 }
 
+/** The token is write-only, like a CRM token. Connecting checks it with Unipile and finds the LinkedIn account on it. */
+function UnipileSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [dsn, setDsn] = useState("");
+  const [token, setToken] = useState("");
+  const { busy, call } = useConnection(projectId, "unipile");
+  const connect = async () => {
+    if (await call({ dsn, token }, "Connected to Unipile")) setToken("");
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Unipile? Due LinkedIn steps will wait for you to send them.")) call(undefined, "Unipile disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <UserPlus className="size-4" /> LinkedIn sending
+        </span>
+      }
+      description="Sends each due LinkedIn step from your own LinkedIn account through Unipile."
+      actions={
+        settings.unipile_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.unipile_connected ? (
+        <p className="text-sm text-pretty">
+          Sending as {settings.unipile_account_name || "your LinkedIn account"}. Each due step goes out in your sending hours, up to 25 a day, and
+          messages wait until they accept the connect note.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-4 sm:flex-row">
+          <Field label="DSN" className="sm:w-56" hint="On your Unipile dashboard.">
+            <Input placeholder="api8.unipile.com:13851" autoComplete="off" value={dsn} onChange={(e) => setDsn(e.target.value.trim())} />
+          </Field>
+          <Field label="Access token" className="flex-1" hint="Connect your LinkedIn account in Unipile, then generate a token under Access Tokens.">
+            <div className="flex gap-2">
+              <Input aria-label="Access token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+              <Button onClick={connect} loading={busy} disabled={!dsn || !token}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </div>
+      )}
+      <LastFailure error={settings.unipile_error} at={settings.unipile_failed_at} what="send" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -540,6 +592,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />
           ))}
           <VerifierSection projectId={projectId} settings={s} />
+          <UnipileSection projectId={projectId} settings={s} />
 
           <Section
             title={
