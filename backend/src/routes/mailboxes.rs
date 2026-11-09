@@ -245,16 +245,15 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let mailbox = load(&state.db, id, auth.org_id).await?;
     let result = mail::test_mailbox(&state, &mailbox).await;
-    // A test never changes a paused mailbox: only Resume does, and its last_error keeps why it's paused, like too many
-    // bounces. Otherwise a passing test clears an error state. Either way a person has now seen the result, so the sender
-    // stops testing it on its own.
+    // A passing test clears an error state. Either way a person has now seen the result, so the sender stops testing it
+    // on its own. A test never changes a paused mailbox, even one a bounce paused while the test ran: only Resume does,
+    // and its last_error keeps why it's paused.
     let error = result.as_ref().err().map(|e| format!("{e:#}"));
     let (status, last_error) = match &error {
-        _ if mailbox.status == "paused" => ("paused", mailbox.last_error.as_str()),
         None => (if mailbox.status == "error" { "active" } else { mailbox.status.as_str() }, ""),
         Some(e) => ("error", e.as_str()),
     };
-    sqlx::query("update mailboxes set status = $2, last_error = $3, recheck_at = null where id = $1")
+    sqlx::query("update mailboxes set status = $2, last_error = $3, recheck_at = null where id = $1 and status <> 'paused'")
         .bind(mailbox.id)
         .bind(status)
         .bind(last_error)
