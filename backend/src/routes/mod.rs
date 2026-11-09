@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::state::AppState;
 
 pub mod auth;
+mod bookings;
 pub mod org;
 pub mod projects;
 pub mod competitors;
@@ -58,6 +59,7 @@ pub fn router() -> Router<AppState> {
         .merge(support::router())
         .merge(explorer::router())
         .merge(unsubscribe::router())
+        .merge(bookings::router())
         .route("/health", get(health))
 }
 

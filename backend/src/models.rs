@@ -106,6 +106,8 @@ pub struct ProjectSettings {
     pub paused: bool,
     /// Which of hooks::EVENTS the webhook gets.
     pub webhook_events: Vec<String>,
+    /// The secret in this project's booking webhook URL, /api/bookings/{booking_token}.
+    pub booking_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
