@@ -108,10 +108,13 @@ pub struct ProjectSettings {
     pub webhook_events: Vec<String>,
     /// The secret in this project's booking webhook URL, /api/bookings/{booking_token}.
     pub booking_token: String,
-    /// The token itself (hubspot_token_enc) stays out of this struct, so it never reaches the browser.
+    /// The CRM tokens themselves ({crm}_token_enc) stay out of this struct, so they never reach the browser.
     pub hubspot_connected: bool,
     pub hubspot_error: Option<String>,
     pub hubspot_failed_at: Option<Ts>,
+    pub pipedrive_connected: bool,
+    pub pipedrive_error: Option<String>,
+    pub pipedrive_failed_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

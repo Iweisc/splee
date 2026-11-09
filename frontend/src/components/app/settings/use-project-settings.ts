@@ -17,7 +17,7 @@ export function useProjectSettings() {
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // The backend sets the alert failure fields and the HubSpot connection itself, so they come from the latest fetch even
+  // The backend sets the alert failure fields and the CRM connections itself, so they come from the latest fetch even
   // under an unsaved draft.
   const settings =
     draft && data
@@ -30,6 +30,9 @@ export function useProjectSettings() {
           hubspot_connected: data.hubspot_connected,
           hubspot_error: data.hubspot_error,
           hubspot_failed_at: data.hubspot_failed_at,
+          pipedrive_connected: data.pipedrive_connected,
+          pipedrive_error: data.pipedrive_error,
+          pipedrive_failed_at: data.pipedrive_failed_at,
         }
       : (draft ?? data);
   const dirty = draft !== null && data !== undefined && JSON.stringify(settings) !== JSON.stringify(data);

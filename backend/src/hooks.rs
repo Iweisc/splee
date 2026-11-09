@@ -72,29 +72,25 @@ fn transient(e: &anyhow::Error) -> bool {
 pub enum Alert {
     Webhook,
     Slack,
-    /// Matched on hubspot_token_enc, the stored ciphertext.
-    HubSpot,
+    /// Matched on {name}_token_enc, the stored ciphertext.
+    Crm(crate::crm::Crm),
 }
 
 /// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
 /// Matching on the URL keeps a slow delivery to an old URL from marking a URL that was saved since.
 pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url: &str, result: &anyhow::Result<()>) {
-    let sql = match alert {
-        Alert::Webhook => {
-            "update project_settings set webhook_error = $3, webhook_failed_at = case when $3::text is null then null else now() end
-             where project_id = $1 and webhook_url = $2"
-        }
-        Alert::Slack => {
-            "update project_settings set slack_error = $3, slack_failed_at = case when $3::text is null then null else now() end
-             where project_id = $1 and slack_webhook_url = $2"
-        }
-        Alert::HubSpot => {
-            "update project_settings set hubspot_error = $3, hubspot_failed_at = case when $3::text is null then null else now() end
-             where project_id = $1 and hubspot_token_enc = $2"
-        }
+    // The names are fixed strings, never user input.
+    let (prefix, column) = match alert {
+        Alert::Webhook => ("webhook", "webhook_url".to_string()),
+        Alert::Slack => ("slack", "slack_webhook_url".to_string()),
+        Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
     };
+    let sql = format!(
+        "update project_settings set {prefix}_error = $3, {prefix}_failed_at = case when $3::text is null then null else now() end
+         where project_id = $1 and {column} = $2"
+    );
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
-    if let Err(e) = sqlx::query(sql).bind(project_id).bind(url).bind(error).execute(db).await {
+    if let Err(e) = sqlx::query(&sql).bind(project_id).bind(url).bind(error).execute(db).await {
         tracing::warn!(error = %e, "couldn't save the alert outcome");
     }
 }
@@ -240,7 +236,7 @@ pub fn announce_booked(state: &AppState, lead: &Lead) {
         let summary = format!("{who} for {project}");
         let alert = ChatAlert { label: "Meeting booked", summary: &summary, quote: None, link: &link, link_text: "Open the conversation" };
         post_chat(&state.db, project_id, &alert).await;
-        crate::hubspot::sync(&state, project_id, &lead, &format!("Booked a meeting through Splee.\n{link}")).await;
+        crate::crm::sync(&state, project_id, &lead, &format!("Booked a meeting through Splee.\n{link}")).await;
     });
 }
 
