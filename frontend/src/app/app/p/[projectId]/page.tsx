@@ -117,6 +117,8 @@ function MailboxNotice() {
   const broken = data?.filter((m) => m.status === "error" || (m.status === "active" && m.imap_host && m.last_error)) ?? [];
   if (!data || broken.length === 0) return null;
   const sendingStopped = !data.some((m) => m.status === "active");
+  // The sender tests a mailbox with recheck_at again itself. The rest wait for someone to fix them.
+  const needsFixing = broken.some((m) => m.status !== "error" || !m.recheck_at);
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <MailWarning className="size-4 text-red-600" />
@@ -124,14 +126,15 @@ function MailboxNotice() {
       <div className="min-w-0 flex-1 basis-64 space-y-1">
         {broken.map((m) => (
           <p key={m.id}>
-            <span className="font-medium">{m.email}</span> {m.status === "error" ? "can't send" : "can't read replies"}:{" "}
+            <span className="font-medium">{m.email}</span>{" "}
+            {m.status !== "error" ? "can't read replies" : m.recheck_at ? "can't send, and Splee tests it again on its own" : "can't send"}:{" "}
             <span className="text-muted-foreground">{m.last_error}</span>
           </p>
         ))}
         {sendingStopped && <p className="font-medium text-red-700">Nothing is going out until a mailbox works again.</p>}
       </div>
       <LinkButton href="/app/domains" variant="outline" size="sm" className="max-sm:grow">
-        Fix mailbox
+        {needsFixing ? "Fix mailbox" : "View mailboxes"}
       </LinkButton>
     </Card>
   );
