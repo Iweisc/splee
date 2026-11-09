@@ -10,6 +10,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CompaniesTable } from "@/components/app/work/companies-table";
 import { EmailsView } from "@/components/app/work/emails-view";
 import { LeadsView } from "@/components/app/work/leads-view";
+import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
 import { SegmentToggle } from "@/components/app/work/segment-toggle";
@@ -20,7 +21,7 @@ import { NumberInput } from "@/components/ui/form";
 import { Card, Skeleton, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { EmailRow, Paginated, SegmentWithStats } from "@/lib/types";
-import { cn, compact, num } from "@/lib/utils";
+import { cn, compact, money, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 type Tab = "details" | "companies" | "leads" | "emails";
@@ -88,6 +89,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
       />
       <PageBody className="flex flex-col gap-4">
         {run && <RunProgress key={run.id} run={run} />}
+        {segment.sent > 0 && <Results segment={segment} />}
         <Pipeline segment={segment} busy={!!run} />
         <Tabs
           value={tab}
@@ -108,6 +110,23 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
       </PageBody>
     </>
   );
+}
+
+function Results({ segment: s }: { segment: SegmentWithStats }) {
+  const kpis: Kpi[] = [
+    { label: "Contacted", value: num(s.contacted), title: "Leads this campaign has emailed at least once." },
+    { label: "Sent", value: num(s.sent) },
+    {
+      label: "Replies",
+      value: num(s.replies),
+      title: "Leads who wrote back, out of the leads this campaign emailed. Bounces don't count.",
+      note: replyRate(s.replies, s.contacted),
+    },
+    { label: "Hot leads", value: num(s.hot) },
+    { label: "Spend", value: money(s.spend_micros), title: "The agent's runs for this campaign plus the cost per email of what it sent." },
+    { label: "Cost/hot lead", title: "Spend divided by hot leads.", value: s.cost_per_hot_micros === null ? "—" : money(s.cost_per_hot_micros) },
+  ];
+  return <KpiCard kpis={kpis} className="grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 xl:divide-x xl:divide-border" />;
 }
 
 function Pipeline({ segment, busy }: { segment: SegmentWithStats; busy: boolean }) {

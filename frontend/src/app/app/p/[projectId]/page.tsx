@@ -9,6 +9,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CampaignsTable } from "@/components/app/work/campaigns-table";
 import { CompanyProfile } from "@/components/app/work/company-profile";
 import { DailyChart } from "@/components/app/work/daily-chart";
+import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SetupChecklist } from "@/components/app/work/setup-checklist";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "@/components/app/work/states";
@@ -17,7 +18,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import type { Mailbox, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
-import { money, num, percent } from "@/lib/utils";
+import { money, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">) {
@@ -186,14 +187,14 @@ function Stats({ projectId }: { projectId: string }) {
   if (error) return <LoadError error={error} retry={() => mutate()} />;
 
   const t = data?.totals;
-  const kpis: { label: string; value?: string; title?: string; note?: string }[] = [
+  const kpis: Kpi[] = [
     { label: "Leads", value: t && num(t.leads) },
     { label: "Sent", value: t && num(t.sent) },
     {
       label: "Replies",
       value: t && num(t.replies),
       title: "Leads who wrote back, out of the leads you've emailed. Bounces don't count.",
-      note: t && t.contacted > 0 ? `${percent(t.replies / t.contacted)} reply rate` : undefined,
+      note: t && replyRate(t.replies, t.contacted),
     },
     { label: "Hot leads", value: t && num(t.hot) },
     { label: "Meetings", value: t && num(t.meetings) },
@@ -210,15 +211,7 @@ function Stats({ projectId }: { projectId: string }) {
 
   return (
     <>
-      <Card className="grid grid-cols-2 gap-y-1 py-1.5 sm:grid-cols-4 xl:grid-cols-7 xl:divide-x xl:divide-border">
-        {kpis.map((k) => (
-          <div key={k.label} className="px-4 py-2" title={k.title}>
-            <MicroLabel>{k.label}</MicroLabel>
-            {k.value === undefined ? <Skeleton className="mt-2 h-6 w-14" /> : <p className="mt-1 text-xl font-semibold tabular-nums">{k.value}</p>}
-            {k.note && <p className="text-xs text-muted-foreground tabular-nums">{k.note}</p>}
-          </div>
-        ))}
-      </Card>
+      <KpiCard kpis={kpis} className="grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 xl:divide-x xl:divide-border" />
       <Card className="p-5">
         <MicroLabel className="mb-3">Last 30 days</MicroLabel>
         {data ? <DailyChart daily={data.daily} /> : <Skeleton className="h-48" />}
