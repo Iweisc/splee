@@ -4,6 +4,7 @@ import { use, useState } from "react";
 import { CircleCheck, FileUp, Search, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { CampaignField } from "@/components/app/settings/campaign-field";
 import { ListSkeleton, LoadError, MicroLabel, Td, Th, toastError, Tr } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
@@ -197,32 +198,6 @@ function MappingStep({
         </Button>
       </div>
     </Card>
-  );
-}
-
-function CampaignField({
-  projectId,
-  value,
-  onChange,
-  className = "w-72 max-w-full",
-}: {
-  projectId: string;
-  value: string;
-  onChange: (segmentId: string) => void;
-  className?: string;
-}) {
-  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
-  return (
-    <Field label="Add to campaign" className={className} hint="Optional.">
-      <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">No campaign</option>
-        {segments?.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.name}
-          </option>
-        ))}
-      </Select>
-    </Field>
   );
 }
 

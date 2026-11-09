@@ -137,6 +137,8 @@ export interface ProjectSettings {
   booking_token: string;
   /** The secret in the reminders calendar feed URL, /api/calendar/{calendar_token}.ics. */
   calendar_token: string;
+  /** The secret in the form webhook URL, /api/forms/{form_token}. */
+  form_token: string;
   /** CRM tokens are write-only, through PUT /integrations/{crm}. */
   hubspot_connected: boolean;
   hubspot_error: string | null;
@@ -316,7 +318,7 @@ export interface Lead {
   company_domain: string | null;
   city: string;
   country_code: string;
-  source: "agent" | "import" | "api";
+  source: "agent" | "import" | "api" | "form";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;

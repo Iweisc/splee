@@ -1,10 +1,11 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
+import { CampaignField } from "@/components/app/settings/campaign-field";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
@@ -352,6 +353,34 @@ function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onR
   );
 }
 
+/** The form webhook URL, with the campaign new leads join in its query. */
+function FormSection({ projectId, token }: { projectId: string; token: string }) {
+  const origin = useOrigin();
+  const [segmentId, setSegmentId] = useState("");
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <ClipboardList className="size-4" /> Website forms
+        </span>
+      }
+      description="Whoever fills in your Tally, Typeform or Webflow form becomes a lead and pings your chat."
+    >
+      <CampaignField projectId={projectId} value={segmentId} onChange={setSegmentId} />
+      {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
+      <div className="mt-4 flex flex-col gap-1.5">
+        <span className="text-sm font-medium">Form webhook URL</span>
+        <CopyField value={`${origin}/api/forms/${token}${segmentId ? `?campaign=${segmentId}` : ""}`} />
+        <p className="text-xs text-pretty text-muted-foreground">
+          Tally: Integrations → Webhooks. Typeform: Connect → Webhooks. Webflow: Site settings → Integrations → Webhooks, Form
+          submission. Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>. Answers that aren&apos;t a name, email,
+          company, title, website or LinkedIn go in the lead&apos;s notes.
+        </p>
+      </div>
+    </Section>
+  );
+}
+
 export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectId]/integrations">) {
   const { projectId } = use(params);
   const origin = useOrigin();
@@ -473,6 +502,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             </details>
             <RecentDeliveries projectId={projectId} />
           </Section>
+          <FormSection projectId={projectId} token={s.form_token} />
           <Section
             title={
               <span className="flex items-center gap-2">
