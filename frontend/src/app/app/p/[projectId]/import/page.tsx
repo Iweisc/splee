@@ -254,7 +254,7 @@ function HunterImport({ projectId, onImported }: { projectId: string; onImported
     <Card className="p-6">
       <h2 className="font-semibold">Find people with Hunter</h2>
       <p className="mt-0.5 text-sm text-muted-foreground">Imports the people Hunter knows at a company, with their titles and LinkedIn.</p>
-      {settings.verifier === "hunter" ? (
+      {settings.verifier === "hunter" || settings.finder === "hunter" ? (
         <form
           className="mt-5 flex flex-wrap items-start gap-4"
           onSubmit={(e) => {
@@ -273,7 +273,7 @@ function HunterImport({ projectId, onImported }: { projectId: string; onImported
         </form>
       ) : (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">Connect Hunter under Email verification to use it here.</p>
+          <p className="text-sm text-muted-foreground">Connect Hunter under Email finder to use it here.</p>
           <LinkButton href={`/app/p/${projectId}/integrations`} variant="outline" size="sm">
             Open Integrations
           </LinkButton>

@@ -1,7 +1,7 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox and
 //! Reoon take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
-//! Clearout take it in a header.
+//! Clearout take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail or Prospeo.
 
 use std::time::Duration;
 
@@ -160,43 +160,110 @@ pub async fn verify(state: &AppState, project_id: Uuid, email: &str, keep_error:
     }
 }
 
-/// The project's Hunter API key, or None when its verifier isn't Hunter.
+/// The project's Hunter API key, from Email finder or Email verification, or None when neither is Hunter.
 pub async fn hunter_key(state: &AppState, project_id: Uuid) -> anyhow::Result<Option<String>> {
-    let row: Option<(String, String)> = sqlx::query_as("select verifier, verifier_key_enc from project_settings where project_id = $1")
-        .bind(project_id)
-        .fetch_optional(&state.db)
-        .await?;
-    match row.filter(|(name, _)| matches!(Verifier::parse(name), Some(Verifier::Hunter))) {
-        Some((_, enc)) => Ok(Some(crypto::decrypt(&state.cfg.app_secret, &enc)?)),
-        None => Ok(None),
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("select finder, finder_key_enc, verifier, verifier_key_enc from project_settings where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some((finder, finder_enc, verifier, verifier_enc)) = row else { return Ok(None) };
+    let enc = if finder == "hunter" { finder_enc } else if verifier == "hunter" { verifier_enc } else { return Ok(None) };
+    Ok(Some(crypto::decrypt(&state.cfg.app_secret, &enc)?))
+}
+
+/// A service that finds a person's work address from their name and company domain.
+#[derive(Clone, Copy, Debug)]
+pub enum Finder {
+    Hunter,
+    Findymail,
+    Prospeo,
+}
+
+impl Finder {
+    pub fn parse(name: &str) -> Option<Finder> {
+        match name {
+            "hunter" => Some(Finder::Hunter),
+            "findymail" => Some(Finder::Findymail),
+            "prospeo" => Some(Finder::Prospeo),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Finder::Hunter => "Hunter",
+            Finder::Findymail => "Findymail",
+            Finder::Prospeo => "Prospeo",
+        }
+    }
+
+    /// Checks the key works, before it's saved. Each of these costs no credit.
+    pub async fn check_key(self, key: &str) -> anyhow::Result<()> {
+        match self {
+            Finder::Hunter => hunter_get(Url::parse("https://api.hunter.io/v2/account")?, key).await.map(|_| ()),
+            Finder::Findymail => findymail_call(client()?.get("https://app.findymail.com/api/credits"), key).await.map(|_| ()),
+            Finder::Prospeo => prospeo_call(client()?.get("https://api.prospeo.io/account-information"), key).await.map(|_| ()),
+        }
+    }
+
+    /// The person's address at `domain`, or None when the service has nothing it's sure of there.
+    async fn find(self, key: &str, (first, last): (&str, &str), domain: &str) -> anyhow::Result<Option<Found>> {
+        match self {
+            Finder::Hunter => {
+                let query = [("domain", domain), ("first_name", first), ("last_name", last)];
+                let url = Url::parse_with_params("https://api.hunter.io/v2/email-finder", query)?;
+                Ok(hunter_found(&hunter_get(url, key).await?, domain))
+            }
+            Finder::Findymail => {
+                let name = format!("{first} {last}");
+                let req = client()?.post("https://app.findymail.com/api/search/name").json(&json!({ "name": name.trim(), "domain": domain }));
+                Ok(findymail_found(&findymail_call(req, key).await?, domain))
+            }
+            Finder::Prospeo => {
+                // Only a verified address costs a credit, and it's the only kind wanted here.
+                let person = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
+                let mut body = json!({ "only_verified_email": true, "data": person });
+                body["data"]["company_website"] = json!(domain);
+                Ok(prospeo_found(&prospeo_call(client()?.post("https://api.prospeo.io/enrich-person").json(&body), key).await?, domain))
+            }
+        }
     }
 }
 
-/// An address Hunter found for a lead, to replace a guessed one.
+/// An address a finder found for a lead, to replace a guessed one.
 #[derive(Debug, PartialEq)]
 pub struct Found {
     pub email: String,
-    /// Hunter also verified it, so it needn't be checked again.
+    /// The finder also verified it, so it needn't be checked again.
     pub verified: bool,
 }
 
 pub enum Lookup {
     Found(Found),
-    /// Not Hunter, or nothing Hunter is confident in.
+    /// No finder, or nothing it's confident in.
     Nothing,
-    /// Recorded like a failed check.
+    /// Hunter connected under Email verification failed, and its failure is shown there, so the verification that follows
+    /// mustn't clear it.
     Failed,
 }
 
-/// With Hunter connected, looks up the lead's real address at the guessed address's domain.
+/// Looks up the lead's real address at the guessed address's domain, with the project's email finder, or with Hunter
+/// connected under Email verification when there's no finder.
 pub async fn find(state: &AppState, project_id: Uuid, lead: &Lead, guessed: &str) -> Lookup {
-    let row: Option<(String, String)> = sqlx::query_as("select verifier, verifier_key_enc from project_settings where project_id = $1")
-        .bind(project_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-    let Some((_, enc)) = row.filter(|(name, _)| matches!(Verifier::parse(name), Some(Verifier::Hunter))) else { return Lookup::Nothing };
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("select finder, finder_key_enc, verifier, verifier_key_enc from project_settings where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let Some((finder, finder_enc, verifier, verifier_enc)) = row else { return Lookup::Nothing };
+    let (service, enc, alert) = match Finder::parse(&finder) {
+        Some(service) => (service, finder_enc, Alert::Finder),
+        None if verifier == "hunter" => (Finder::Hunter, verifier_enc, Alert::Verifier),
+        None => return Lookup::Nothing,
+    };
     let Some((_, domain)) = guessed.rsplit_once('@') else { return Lookup::Nothing };
     let domain = domain.to_lowercase();
     let (first, last) = if lead.first_name.is_empty() {
@@ -205,33 +272,76 @@ pub async fn find(state: &AppState, project_id: Uuid, lead: &Lead, guessed: &str
         (lead.first_name.as_str(), lead.last_name.as_str())
     };
     let result = match crypto::decrypt(&state.cfg.app_secret, &enc) {
-        Ok(key) => match Url::parse_with_params(
-            "https://api.hunter.io/v2/email-finder",
-            [("domain", domain.as_str()), ("first_name", first.trim()), ("last_name", last.trim())],
-        ) {
-            Ok(url) => hunter_get(url, &key).await,
-            Err(e) => Err(e.into()),
-        },
+        Ok(key) => service.find(&key, (first.trim(), last.trim()), &domain).await,
         Err(e) => Err(e),
     };
+    // Under Email verification the failure says it came from the finder, and only a failure is recorded here, since the
+    // verification that follows records its own success.
+    let under_verifier = matches!(alert, Alert::Verifier);
+    let shown = result.as_ref().map(|_| ()).map_err(|e| if under_verifier { anyhow::anyhow!("Email finder: {e:#}") } else { anyhow::anyhow!("{e:#}") });
+    if !under_verifier || shown.is_err() {
+        hooks::record(&state.db, project_id, alert, &enc, &shown).await;
+    }
     match result {
-        Ok(body) => hunter_found(&body, &domain).map_or(Lookup::Nothing, Lookup::Found),
+        Ok(found) => found.map_or(Lookup::Nothing, Lookup::Found),
         Err(e) => {
-            tracing::warn!(error = %e, "hunter email finder failed");
-            hooks::record(&state.db, project_id, Alert::Verifier, &enc, &Err(anyhow::anyhow!("Email finder: {e:#}"))).await;
-            Lookup::Failed
+            tracing::warn!(error = %e, finder = service.label(), "email finder failed");
+            if under_verifier { Lookup::Failed } else { Lookup::Nothing }
         }
     }
 }
 
-/// Hunter's answer, kept only at the same domain and when it's verified or Hunter is fairly sure (score 0 to 100), so a
-/// lead is never pointed at someone at another company.
+/// The address when it's at `domain`, so a lead is never pointed at someone at another company.
+fn at_domain(email: Option<&str>, domain: &str) -> Option<String> {
+    let email = email?.trim().to_lowercase();
+    email.rsplit_once('@').is_some_and(|(_, d)| d == domain).then_some(email)
+}
+
+/// Hunter's answer, kept only when it's verified or Hunter is fairly sure (score 0 to 100).
 fn hunter_found(body: &Value, domain: &str) -> Option<Found> {
     let data = &body["data"];
-    let email = data["email"].as_str()?.trim().to_lowercase();
     let verified = data["verification"]["status"] == "valid";
     let sure = verified || data["score"].as_i64().unwrap_or(0) >= 80;
-    (email.rsplit_once('@').is_some_and(|(_, d)| d == domain) && sure).then_some(Found { email, verified })
+    at_domain(data["email"].as_str(), domain).filter(|_| sure).map(|email| Found { email, verified })
+}
+
+/// Findymail's errors come as `{"error": ...}`, like "Not enough credits", or `{"message": "Unauthenticated."}` for a bad
+/// key. It doesn't document how it answers when it finds nothing, so a 404 counts as nothing found.
+async fn findymail_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.bearer_auth(key).header("accept", "application/json").send().await?;
+    let status = res.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Value::Null);
+    }
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["error"].as_str().or(body["message"].as_str()).unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Findymail says it returns verified addresses, but its answer doesn't say so, so a connected verifier still checks it.
+fn findymail_found(body: &Value, domain: &str) -> Option<Found> {
+    at_domain(body["contact"]["email"].as_str(), domain).map(|email| Found { email, verified: false })
+}
+
+/// Prospeo answers every error with `{"error": true, "error_code": ...}`, like INVALID_API_KEY or INSUFFICIENT_CREDITS.
+/// NO_MATCH means it found nobody, which isn't a failure.
+async fn prospeo_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("X-KEY", key).send().await?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    let code = body["error_code"].as_str().map(str::to_string);
+    match code.as_deref() {
+        Some("NO_MATCH") => Ok(Value::Null),
+        _ if status.is_success() && body["error"] != true => Ok(body),
+        code => anyhow::bail!("{}", code.unwrap_or(status.as_str())),
+    }
+}
+
+/// Prospeo's address, when it's revealed in full and verified.
+fn prospeo_found(body: &Value, domain: &str) -> Option<Found> {
+    let email = &body["person"]["email"];
+    let usable = email["revealed"] != false && email["status"] == "VERIFIED";
+    at_domain(email["email"].as_str().filter(|e| !e.contains('*')), domain).filter(|_| usable).map(|email| Found { email, verified: true })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -453,6 +563,23 @@ mod tests {
         let unsure = json!({"data": {"email": "r@piedpiper.com", "score": 40, "verification": {"status": "accept_all"}}});
         assert_eq!(hunter_found(&unsure, "piedpiper.com"), None);
         assert_eq!(hunter_found(&json!({"data": {"email": null}}), "piedpiper.com"), None);
+        // Findymail's documented answer, and the empty body a 404 becomes.
+        let findymail = json!({"contact": {"name": "John Doe", "domain": "website.com", "email": "John@Website.com"}});
+        assert_eq!(findymail_found(&findymail, "website.com"), Some(Found { email: "john@website.com".into(), verified: false }));
+        assert_eq!(findymail_found(&findymail, "other.com"), None);
+        assert_eq!(findymail_found(&Value::Null, "website.com"), None);
+        // Prospeo's documented answer, a masked one, and one it couldn't verify.
+        let prospeo = |email: &str, status: &str, revealed: bool| {
+            let person = json!({"email": {"status": status, "revealed": revealed, "email": email}});
+            json!({"error": false, "person": person, "company": {"domain": "intercom.com"}})
+        };
+        let eva = Some(Found { email: "eva@intercom.com".into(), verified: true });
+        assert_eq!(prospeo_found(&prospeo("Eva@intercom.com", "VERIFIED", true), "intercom.com"), eva);
+        assert_eq!(prospeo_found(&prospeo("eva.*****@intercom.com", "VERIFIED", true), "intercom.com"), None);
+        assert_eq!(prospeo_found(&prospeo("eva@intercom.com", "VERIFIED", false), "intercom.com"), None);
+        assert_eq!(prospeo_found(&prospeo("eva@intercom.com", "UNVERIFIED", true), "intercom.com"), None);
+        assert_eq!(prospeo_found(&prospeo("eva@intercom.com", "VERIFIED", true), "stripe.com"), None);
+        assert_eq!(prospeo_found(&Value::Null, "intercom.com"), None);
         // Real responses to a bad key, from both services.
         let nb = neverbounce_ok(&json!({"status": "auth_failure", "message": "Invalid API key 'secret123'"})).unwrap_err();
         assert!(!nb.to_string().contains("secret123"));
