@@ -352,57 +352,92 @@ const submit = (run: () => void) => (e: React.FormEvent) => {
   run();
 };
 
-/** Tokens are write-only, so once connected this only offers Disconnect. Connecting checks the token with the CRM first. */
-function CrmSection({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
-  const { name, record, field, hint, account }: Crm = CRMS[crm];
-  const [token, setToken] = useState("");
-  const [accountId, setAccountId] = useState("");
-  const { busy, call } = useConnection(projectId, crm);
-  const connect = async () => {
-    if (await call({ token, account: accountId }, `Connected to ${name}`)) setToken("");
-  };
-  const disconnect = () => {
-    if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call(undefined, `${name} disconnected`);
-  };
-  const connected = settings[`${crm}_connected`];
+/** Every CRM the project syncs to, each disconnected on its own, and a form to connect another. Tokens are write-only, and
+ *  connecting checks the token with the CRM first. */
+function CrmSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const connected = CRM_NAMES.filter((crm) => settings[`${crm}_connected`]);
+  const open = CRM_NAMES.filter((crm) => !settings[`${crm}_connected`]);
+  const [picked, setPicked] = useState<CrmName>(open[0] ?? "hubspot");
+  // Once the picked CRM connects it leaves the list, so the form moves on to the next one.
+  const crm = open.includes(picked) ? picked : open[0];
   return (
     <Section
       title={
         <span className="flex items-center gap-2">
-          <Contact className="size-4" /> {name}
+          <Contact className="size-4" /> CRM
         </span>
       }
-      description={`Adds hot and booked leads as ${record}, with a note holding their reply.`}
-      actions={
-        connected ? (
-          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
-            Disconnect
-          </Button>
-        ) : undefined
-      }
+      description="Adds hot and booked leads to each CRM you connect, with a note holding their reply. Splee matches by email, so people already there get updated, not duplicated."
     >
-      {connected ? (
-        <p className="text-sm">Connected. Splee matches by email, so people already in {name} get updated, not duplicated.</p>
-      ) : (
-        <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
-          {account && (
-            <Field label={account.label} className="sm:w-72">
-              <Input placeholder={account.placeholder} autoComplete="off" value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} />
-            </Field>
-          )}
-          <Field label={field} hint={hint} className="flex-1">
-            <div className="flex gap-2">
-              {/* The label also wraps Connect, so name the input itself. */}
-              <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
-              <Button type="submit" loading={busy} disabled={!token || (!!account && !accountId)}>
-                Connect
-              </Button>
-            </div>
-          </Field>
-        </form>
+      {!!connected.length && (
+        <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          {connected.map((c) => (
+            <ConnectedCrm key={c} projectId={projectId} settings={settings} crm={c} />
+          ))}
+        </ul>
       )}
-      <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} what="sync" />
+      {crm && <CrmForm key={crm} projectId={projectId} crm={crm} label={connected.length ? "Connect another CRM" : "Connect a CRM"} pick={setPicked} open={open} />}
     </Section>
+  );
+}
+
+function ConnectedCrm({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
+  const { name, record } = CRMS[crm];
+  const { busy, call } = useConnection(projectId, crm);
+  const disconnect = () => {
+    if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call(undefined, `${name} disconnected`);
+  };
+  return (
+    <li className="px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">{name}</p>
+          <p className="text-xs text-muted-foreground">Adds leads as {record}.</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+          Disconnect
+        </Button>
+      </div>
+      <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} what="sync" />
+    </li>
+  );
+}
+
+/** Keyed by the CRM, so picking another one starts with empty fields. */
+function CrmForm({ projectId, crm, label, pick, open }: { projectId: string; crm: CrmName; label: string; pick: (crm: CrmName) => void; open: CrmName[] }) {
+  const { name, field, hint, account }: Crm = CRMS[crm];
+  const [token, setToken] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const { busy, call } = useConnection(projectId, crm);
+  const connect = () => call({ token, account: accountId }, `Connected to ${name}`);
+  return (
+    <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+      <Field label={label} className="sm:w-72">
+        <Select value={crm} onChange={(e) => pick(e.target.value as CrmName)}>
+          {open.map((c) => (
+            <option key={c} value={c}>
+              {CRMS[c].name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <div className="flex flex-col gap-4 sm:flex-row">
+        {account && (
+          <Field label={account.label} className="sm:w-72">
+            <Input placeholder={account.placeholder} autoComplete="off" value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} />
+          </Field>
+        )}
+        <Field label={field} hint={hint} className="flex-1">
+          <div className="flex gap-2">
+            {/* The label also wraps Connect, so name the input itself. */}
+            <Input aria-label={field} type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+            <Button type="submit" loading={busy} disabled={!token || (!!account && !accountId)}>
+              Connect
+            </Button>
+          </div>
+        </Field>
+      </div>
+    </form>
   );
 }
 
@@ -800,9 +835,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
         <>
           <ChatSection projectId={projectId} weekly={s.chat_weekly_report} setWeekly={(chat_weekly_report) => update({ chat_weekly_report })} />
 
-          {CRM_NAMES.map((crm) => (
-            <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />
-          ))}
+          <CrmSection projectId={projectId} settings={s} />
           <Section
             title={
               <span className="flex items-center gap-2">
