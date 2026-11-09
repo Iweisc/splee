@@ -196,6 +196,28 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: `/projects/${projectId}/sent-emails?since=2026-11-01T00:00:00Z`,
+      summary:
+        "Emails Splee sent your leads: first emails, follow-ups, auto-replies and replies from the inbox. Oldest first, up to 500 per request. Poll with since set to the last sent_at you saw, or get each one as it goes out with the Email sent webhook.",
+      params: [["since", "optional RFC 3339 timestamp, returns emails sent after it"]],
+      response: `[
+  {
+    "id": "5d03…",
+    "lead_id": "c42e…",
+    "direction": "outbound",
+    "kind": "initial",
+    "step": 0,
+    "subject": "Northwind Studio x Acme",
+    "body": "Hi Sarah, …",
+    "from_email": "alex@acme.com",
+    "to_email": "sarah@northwind.studio",
+    "message_id": "9e1c…@acme.com",
+    "sent_at": "2026-11-03T15:40:00Z"
+  }
+]`,
+    },
+    {
+      method: "GET",
       path: `/projects/${projectId}/stats`,
       summary:
         "Lifetime results and cost of a project and each of its campaigns. Money is in micro-dollars (1,000,000 = $1). AI cost is what Claude Code reports for the agent's runs, and email cost uses each mailbox's cost per email. Runs that research the whole project count only in totals. contacted counts leads sent at least one email and replies counts leads who wrote back, not bounces, so replies over contacted is the reply rate.",
