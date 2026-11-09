@@ -37,7 +37,7 @@ export function NumberInput({
   );
 }
 
-export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
   return <textarea className={cn(field, "min-h-24 py-2 leading-relaxed", className)} {...props} />;
 }
 
