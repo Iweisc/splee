@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { Hash, RefreshCw, Send, Webhook } from "lucide-react";
+import { CalendarCheck, Hash, RefreshCw, Send, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -11,6 +11,7 @@ import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
+import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
 import type { ProjectSettings, WebhookEvent } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
@@ -137,6 +138,7 @@ function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onR
 
 export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectId]/integrations">) {
   const { projectId } = use(params);
+  const origin = useOrigin();
   return (
     <ProjectSettingsPage
       title="Integrations"
@@ -243,6 +245,25 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 </p>
               </div>
             </details>
+          </Section>
+          <Section
+            title={
+              <span className="flex items-center gap-2">
+                <CalendarCheck className="size-4" /> Calendly and Cal.com
+              </span>
+            }
+            description="When a lead books a call, Splee marks them Meeting booked. That stops their follow-ups and tells Slack and your webhook."
+          >
+            {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">Booking webhook URL</span>
+              <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
+              <p className="text-xs text-muted-foreground">
+                In Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created. In Calendly, subscribe it to{" "}
+                <code>invitee.created</code> with Calendly&apos;s webhook API. Anything else, like a Zapier step, can POST{" "}
+                <code>{`{"email": "..."}`}</code>. Leads are matched by email.
+              </p>
+            </div>
           </Section>
         </>
       )}

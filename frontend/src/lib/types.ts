@@ -133,6 +133,8 @@ export interface ProjectSettings {
   slack_failed_at: string | null;
   paused: boolean;
   webhook_events: WebhookEvent[];
+  /** The secret in the booking webhook URL, /api/bookings/{booking_token}. */
+  booking_token: string;
 }
 
 export type WebhookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "lead_unsubscribed" | "lead_bounced" | "email_sent";

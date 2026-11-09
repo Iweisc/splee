@@ -1,7 +1,6 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useSyncExternalStore } from "react";
 import { KeyRound } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -9,6 +8,7 @@ import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { MicroLabel } from "@/components/app/work/states";
 import { LinkButton } from "@/components/ui/button";
 import { Badge, type BadgeTone } from "@/components/ui/misc";
+import { useOrigin } from "@/hooks/use-origin";
 
 interface Endpoint {
   method: "GET" | "POST" | "PATCH";
@@ -287,9 +287,6 @@ function endpoints(projectId: string): Endpoint[] {
   ];
 }
 
-// The API lives on the same host as the app, so the examples use whatever origin this page is served from.
-const subscribe = () => () => {};
-const useOrigin = () => useSyncExternalStore(subscribe, () => window.location.origin, () => "");
 
 export default function DocsPage() {
   const { projectId } = useParams<{ projectId: string }>();
