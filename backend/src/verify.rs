@@ -110,6 +110,18 @@ pub async fn verify(state: &AppState, project_id: Uuid, email: &str, keep_error:
     }
 }
 
+/// The project's Hunter API key, or None when its verifier isn't Hunter.
+pub async fn hunter_key(state: &AppState, project_id: Uuid) -> anyhow::Result<Option<String>> {
+    let row: Option<(String, String)> = sqlx::query_as("select verifier, verifier_key_enc from project_settings where project_id = $1")
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await?;
+    match row.filter(|(name, _)| matches!(Verifier::parse(name), Some(Verifier::Hunter))) {
+        Some((_, enc)) => Ok(Some(crypto::decrypt(&state.cfg.app_secret, &enc)?)),
+        None => Ok(None),
+    }
+}
+
 /// An address Hunter found for a lead, to replace a guessed one.
 #[derive(Debug, PartialEq)]
 pub struct Found {
@@ -204,7 +216,7 @@ fn millionverifier_ok(body: &Value) -> anyhow::Result<()> {
 
 /// Hunter's errors come as `{"errors": [{"details": ...}]}`. A 202 means it's still checking, and the body has no status,
 /// which reads as Unsure.
-async fn hunter_get(url: Url, key: &str) -> anyhow::Result<Value> {
+pub async fn hunter_get(url: Url, key: &str) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
     let res = client.get(url).header("X-API-KEY", key).send().await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
