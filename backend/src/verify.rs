@@ -1,12 +1,12 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
-//! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier and Kickbox
-//! take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer and Emailable take it in a
-//! header.
+//! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox and
+//! Reoon take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
+//! Clearout take it in a header.
 
 use std::time::Duration;
 
 use reqwest::Url;
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::crypto;
@@ -33,6 +33,8 @@ pub enum Verifier {
     Kickbox,
     Bouncer,
     Emailable,
+    Clearout,
+    Reoon,
 }
 
 impl Verifier {
@@ -44,6 +46,8 @@ impl Verifier {
             "kickbox" => Some(Verifier::Kickbox),
             "bouncer" => Some(Verifier::Bouncer),
             "emailable" => Some(Verifier::Emailable),
+            "clearout" => Some(Verifier::Clearout),
+            "reoon" => Some(Verifier::Reoon),
             _ => None,
         }
     }
@@ -56,6 +60,8 @@ impl Verifier {
             Verifier::Kickbox => "Kickbox",
             Verifier::Bouncer => "Bouncer",
             Verifier::Emailable => "Emailable",
+            Verifier::Clearout => "Clearout",
+            Verifier::Reoon => "Reoon",
         }
     }
 
@@ -72,6 +78,10 @@ impl Verifier {
             // Like Kickbox's balance, the credits cost nothing.
             Verifier::Bouncer => bouncer_get(Url::parse("https://api.usebouncer.com/v1.1/credits")?, key).await.map(|_| ()),
             Verifier::Emailable => emailable_get(Url::parse("https://api.emailable.com/v1/account")?, key).await.map(|_| ()),
+            Verifier::Clearout => clearout_call(client()?.get("https://api.clearout.io/v2/email_verify/getcredits"), key).await.map(|_| ()),
+            Verifier::Reoon => {
+                reoon_get(Url::parse_with_params("https://emailverifier.reoon.com/api/v1/check-account-balance/", [("key", key)])?).await.map(|_| ())
+            }
         }
     }
 
@@ -104,6 +114,19 @@ impl Verifier {
             Verifier::Emailable => {
                 let url = Url::parse_with_params("https://api.emailable.com/v1/verify", [("email", email), ("timeout", "10")])?;
                 Ok(emailable_verdict(&emailable_get(url, key).await?))
+            }
+            Verifier::Clearout => {
+                let req = client()?.post("https://api.clearout.io/v2/email_verify/instant").json(&json!({ "email": email, "timeout": 10000 }));
+                Ok(clearout_verdict(&clearout_call(req, key).await?))
+            }
+            Verifier::Reoon => {
+                // Quick mode doesn't ask the inbox and calls an address that doesn't exist valid, so this is power mode,
+                // which can take over a minute. One that runs past the client's wait sends like a catch-all.
+                let url = Url::parse_with_params("https://emailverifier.reoon.com/api/v1/verify", [("email", email), ("key", key), ("mode", "power")])?;
+                match reoon_get(url).await {
+                    Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(Verdict::Unsure),
+                    body => Ok(reoon_verdict(body?["status"].as_str().unwrap_or_default())),
+                }
             }
         }
     }
@@ -323,6 +346,53 @@ fn emailable_verdict(body: &Value) -> Verdict {
     }
 }
 
+fn client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder().timeout(Duration::from_secs(30)).build()
+}
+
+/// Clearout's errors come as `{"status": "failed", "error": {"message": ...}}`, like "Invalid API Token, please generate new
+/// token". A deep check that runs past the timeout answers 524 and goes on in the background, so it reads as unsure.
+async fn clearout_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.bearer_auth(key).send().await?;
+    let status = res.status();
+    if status.as_u16() == 524 {
+        return Ok(Value::Null);
+    }
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success() && body["status"] != "failed", "{}", body["error"]["message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Clearout documents its answers as Valid, Invalid, Catch All and Unknown, without saying how they're cased.
+fn clearout_verdict(body: &Value) -> Verdict {
+    let is = |field: &Value, value: &str| field.as_str().is_some_and(|s| s.eq_ignore_ascii_case(value));
+    match &body["data"] {
+        data if is(&data["disposable"], "yes") => Verdict::Invalid,
+        data if is(&data["status"], "valid") => Verdict::Valid,
+        data if is(&data["status"], "invalid") => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
+/// Reoon's errors come as `{"status": "error", "reason": ...}`, like "Invalid API key.", which doesn't quote the key.
+async fn reoon_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success() && body["status"] != "error", "{}", body["reason"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Power mode's answers. A spam trap or a disabled inbox is as bad to send to as one that doesn't exist. A role account
+/// or a full inbox exists, so it sends like a catch-all.
+fn reoon_verdict(status: &str) -> Verdict {
+    match status {
+        "safe" => Verdict::Valid,
+        "invalid" | "disabled" | "disposable" | "spamtrap" => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -366,6 +436,16 @@ mod tests {
         assert_eq!(emailable_verdict(&json!({"state": "risky", "reason": "low_quality", "disposable": true})), Verdict::Invalid);
         assert_eq!(emailable_verdict(&json!({"state": "risky", "accept_all": true, "disposable": false})), Verdict::Unsure);
         assert_eq!(emailable_verdict(&json!({"message": "Your request is taking longer than normal. Please send your request again."})), Verdict::Unsure);
+        // Clearout's documented answers in either case, and the empty body of a 524.
+        assert_eq!(clearout_verdict(&json!({"status": "success", "data": {"status": "valid", "disposable": "no"}})), Verdict::Valid);
+        assert_eq!(clearout_verdict(&json!({"status": "success", "data": {"status": "Invalid", "disposable": "No"}})), Verdict::Invalid);
+        assert_eq!(clearout_verdict(&json!({"status": "success", "data": {"status": "valid", "disposable": "Yes"}})), Verdict::Invalid);
+        assert_eq!(clearout_verdict(&json!({"status": "success", "data": {"status": "catch_all", "disposable": "no"}})), Verdict::Unsure);
+        assert_eq!(clearout_verdict(&Value::Null), Verdict::Unsure);
+        assert_eq!(reoon_verdict("safe"), Verdict::Valid);
+        assert_eq!(reoon_verdict("spamtrap"), Verdict::Invalid);
+        assert_eq!(reoon_verdict("catch_all"), Verdict::Unsure);
+        assert_eq!(reoon_verdict("role_account"), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));

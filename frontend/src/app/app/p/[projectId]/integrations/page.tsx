@@ -474,6 +474,8 @@ const VERIFIERS = {
   kickbox: "Kickbox",
   bouncer: "Bouncer",
   emailable: "Emailable",
+  clearout: "Clearout",
+  reoon: "Reoon",
 } as const;
 
 /** The key is write-only, like a CRM token. Connecting checks it with the service first. */
@@ -495,7 +497,7 @@ function VerifierSection({ projectId, settings }: { projectId: string; settings:
           <MailCheck className="size-4" /> Email verification
         </span>
       }
-      description="Checks each address before its first email, so ones that don't exist fail here instead of bouncing."
+      description="Checks each address before its first email, so bad ones fail here instead of bouncing."
       actions={
         name ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
