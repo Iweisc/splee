@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
@@ -85,6 +85,8 @@ export function MailboxForm({
   // Settings are filled in from the address's domain until the user picks a provider, and never on edit.
   const [pickedByHand, setPickedByHand] = useState(!!mailbox);
   const [found, setFound] = useState<string | null>(null);
+  // Bumped by each lookup, each change to the address and each tab click, so only the latest lookup's answer applies.
+  const lookup = useRef(0);
   const [m, setM] = useState<MailboxInput>(mailbox ? toInput(mailbox) : EMPTY);
   // Most providers use the same login for SMTP and IMAP, so IMAP mirrors SMTP until the user edits it.
   const [separateImap, setSeparateImap] = useState(
@@ -98,7 +100,9 @@ export function MailboxForm({
   };
   const lookUp = async (email: string) => {
     if (pickedByHand || !/^\S+@\S+\.\S+$/.test(email)) return;
+    const id = ++lookup.current;
     const result = await api<Found | null>(`/mailboxes/settings?email=${encodeURIComponent(email)}`).catch(() => null);
+    if (id !== lookup.current) return;
     if (!result) return setFound(null);
     const { provider, ...hosts } = result;
     const known = (Object.keys(PRESETS) as (keyof typeof PRESETS)[]).find(
@@ -140,6 +144,7 @@ export function MailboxForm({
           className="max-sm:grid max-sm:grid-cols-2"
           value={preset}
           onChange={(p) => {
+            lookup.current++;
             setPickedByHand(true);
             setFound(null);
             pickPreset(p);
@@ -165,6 +170,7 @@ export function MailboxForm({
             value={m.email}
             onChange={(e) => {
               const email = e.target.value.trim();
+              if (email !== m.email) lookup.current++;
               // Keep the username in step with the address while the user hasn't typed a different one.
               set({ email, ...(m.smtp_username === m.email ? { smtp_username: email } : {}) });
             }}
