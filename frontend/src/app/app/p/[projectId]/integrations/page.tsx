@@ -248,6 +248,12 @@ const CRMS = {
     field: "API key",
     hint: "In Brevo: Settings → SMTP & API → API keys → Generate a new API key.",
   },
+  zendesk_sell: {
+    name: "Zendesk Sell",
+    record: "contacts",
+    field: "Access token",
+    hint: "In Zendesk Sell: Settings → Integrations → OAuth → Access Tokens, then add a user token.",
+  },
 } as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
@@ -290,7 +296,7 @@ function CrmSection({ projectId, settings, crm }: { projectId: string; settings:
           <Contact className="size-4" /> {name}
         </span>
       }
-      description={`Adds hot leads and booked meetings to ${name} as ${record}, with a note holding their reply.`}
+      description={`Adds hot and booked leads as ${record}, with a note holding their reply.`}
       actions={
         connected ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
