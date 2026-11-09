@@ -80,7 +80,16 @@ export function Favicon({ domain, size = 16, className }: { domain: string; size
 
 /** An email address that wraps after a dot or before the @, instead of cutting a word, like a lone "e" on its own line. */
 export function Address({ email }: { email: string }) {
-  return email.split(/(?<=\.)|(?=@)/).map((part, i) => (
+  return breakAt(email, /(?<=\.)|(?=@)/);
+}
+
+/** A file name that wraps after a dot, dash or underscore, so "leads.csv" never leaves a lone "v". */
+export function FileName({ name }: { name: string }) {
+  return breakAt(name, /(?<=[._-])/);
+}
+
+function breakAt(text: string, at: RegExp) {
+  return text.split(at).map((part, i) => (
     <Fragment key={i}>
       {i > 0 && <wbr />}
       {part}
