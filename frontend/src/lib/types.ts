@@ -475,7 +475,7 @@ export interface Mailbox {
   last_error: string;
   imap_last_uid: number;
   imap_uid_validity: number | null;
-  dns: { mx?: DnsCheck; spf?: DnsCheck; dmarc?: DnsCheck; checked_at?: Ts };
+  dns: { mx?: DnsCheck; spf?: DnsCheck; dmarc?: DnsCheck; dkim?: DnsCheck; checked_at?: Ts };
   created_at: Ts;
   recheck_at: Ts | null;
   ramp_up: boolean;

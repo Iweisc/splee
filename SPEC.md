@@ -192,7 +192,7 @@ All paths below are under `/api`.
 | GET | /mailboxes/stats | | `MailboxStats[]`: per mailbox that sent in the last 30 days, distinct leads `emailed` from it and, of the mail it received, leads that `bounced` and `replied`. The page warns past 5% bounced with at least 20 leads (`MailboxStats::bouncing`). |
 | PATCH/DELETE | /mailboxes/:id | partial `MailboxInput` (empty password = keep) | `Mailbox` |
 | POST | /mailboxes/:id/test | | `{ok, error?}`; sets status/last_error |
-| POST | /mailboxes/:id/check-dns | | `Mailbox` with `dns` |
+| POST | /mailboxes/:id/check-dns | | `Mailbox` with `dns`: `{mx, spf, dmarc, dkim, checked_at}`, each `{ok, record}` or `{ok: false, detail}`. DKIM has no listing, so `dkim` is the first key (a non-empty `p=`) under `{selector}._domainkey.{domain}` for the selectors Google Workspace, Microsoft 365, Cloudflare, Zoho, Proton, Fastmail, Mailchimp and SendGrid sign with, then `default`, `dkim`, `mail` and `smtp`, shown as `{selector}: {start of the record}`. |
 | GET | /suppressions?q&page | | paginated `Suppression` |
 | GET | /suppressions/export?q | | `text/csv` download of every matching entry, newest first: `value, kind, reason, created_at`. Cells that start with `= + - @` get a leading `'`. |
 | POST | /suppressions | `{values: string}` newline/comma separated emails or domains | `{added}` |
