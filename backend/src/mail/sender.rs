@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::{dns, smtp};
 use crate::agent::{self, kind};
+use crate::hooks::{self, Alert};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 use crate::verify::{self, Lookup, Verdict};
@@ -394,9 +395,14 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
         Ok(t) => t,
         Err(e) => return mailbox_failed(state, &mb, &email, &e.to_string(), None).await,
     };
+    let raw = message.formatted();
 
     match smtp::send(&transport, message).await {
-        Ok(()) => record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await,
+        Ok(()) => {
+            record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await?;
+            copy_to_bcc(state, &transport, &mb, email.project_id, &raw).await;
+            Ok(())
+        }
         Err(e) => {
             // A 4xx asks us to try again later, often a server greylisting a sender it hasn't seen before, so the mailbox is
             // fine. Anything else that isn't about the recipient is a problem with the mailbox or the connection.
@@ -422,6 +428,30 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             }
         }
     }
+}
+
+/// Sends a copy of a sent email to the project's BCC address, like a CRM's logging address. It goes in an SMTP
+/// transaction of its own, so a refused copy can't fail or bounce the email the lead got. How it went shows on the
+/// integrations page.
+async fn copy_to_bcc(state: &AppState, transport: &smtp::Transport, mb: &Mailbox, project_id: Uuid, raw: &[u8]) {
+    let bcc: Option<String> = sqlx::query_scalar("select bcc_email from project_settings where project_id = $1 and bcc_email <> ''")
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let Some(bcc) = bcc else { return };
+    let result = async {
+        let envelope = lettre::address::Envelope::new(Some(mb.email.parse()?), vec![bcc.parse()?])?;
+        // lettre's message already holds the server's reply, which its source would repeat.
+        lettre::AsyncTransport::send_raw(transport, &envelope, raw).await.map_err(|e| anyhow::anyhow!("SMTP: {e}"))?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = &result {
+        tracing::warn!(error = %e, "bcc copy failed");
+    }
+    hooks::record(&state.db, project_id, Alert::Bcc, &bcc, &result).await;
 }
 
 async fn release(state: &AppState, email: &EmailMessage, skip: Skip) -> anyhow::Result<()> {

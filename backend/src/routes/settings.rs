@@ -70,6 +70,8 @@ struct SettingsBody {
     targeting: Option<Value>,
     webhook_events: Option<Vec<String>>,
     chat_weekly_report: Option<bool>,
+    /// Empty turns it off.
+    bcc_email: Option<String>,
 }
 
 async fn update_settings(
@@ -117,6 +119,14 @@ async fn update_settings(
     for event in body.webhook_events.iter().flatten() {
         util_input::one_of("webhook_events", event, &hooks::EVENTS)?;
     }
+    let bcc_email = match body.bcc_email.as_deref().map(str::trim) {
+        Some("") => Some(String::new()),
+        Some(raw) => match util_input::email(raw) {
+            Some(email) => Some(email),
+            None => return bad("The BCC address isn't a valid email address"),
+        },
+        None => None,
+    };
 
     let settings = sqlx::query_as::<_, ProjectSettings>(
         "update project_settings set
@@ -139,7 +149,10 @@ async fn update_settings(
            channels = coalesce($18, channels),
            targeting = coalesce($19, targeting),
            webhook_events = coalesce($20, webhook_events),
-           chat_weekly_report = coalesce($21, chat_weekly_report)
+           chat_weekly_report = coalesce($21, chat_weekly_report),
+           bcc_error = case when $22::text <> bcc_email then null else bcc_error end,
+           bcc_failed_at = case when $22::text <> bcc_email then null else bcc_failed_at end,
+           bcc_email = coalesce($22, bcc_email)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -163,6 +176,7 @@ async fn update_settings(
     .bind(body.targeting)
     .bind(body.webhook_events)
     .bind(body.chat_weekly_report)
+    .bind(bcc_email)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

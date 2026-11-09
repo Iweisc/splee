@@ -136,6 +136,10 @@ export interface ProjectSettings extends CrmStatus {
   webhook_secret: string;
   /** Posts the last 7 days' numbers to the project's chats every Monday. */
   chat_weekly_report: boolean;
+  /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
+  bcc_email: string;
+  bcc_error: string | null;
+  bcc_failed_at: string | null;
   paused: boolean;
   webhook_events: WebhookEvent[];
   /** The secret in the booking webhook URL, /api/bookings/{booking_token}. */

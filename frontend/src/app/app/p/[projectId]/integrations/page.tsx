@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
+import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, MailPlus, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -158,7 +158,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" }) {
+function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" | "copy" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -752,6 +752,19 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           {CRM_NAMES.map((crm) => (
             <CrmSection key={crm} projectId={projectId} settings={s} crm={crm} />
           ))}
+          <Section
+            title={
+              <span className="flex items-center gap-2">
+                <MailPlus className="size-4" /> BCC copies
+              </span>
+            }
+            description="Copies every email Splee sends to one address, so your CRM logs the conversation."
+          >
+            <Field label="BCC address" hint="HubSpot, Pipedrive, Close, Capsule and most other CRMs give you one. Leave it empty for no copies.">
+              <Input type="email" autoComplete="off" value={s.bcc_email} onChange={(e) => update({ bcc_email: e.target.value.trim() })} placeholder="1234567@bcc.hubspot.com" />
+            </Field>
+            <LastFailure error={s.bcc_error} at={s.bcc_failed_at} what="copy" />
+          </Section>
           <VerifierSection projectId={projectId} settings={s} />
           <FinderSection projectId={projectId} settings={s} />
           <UnipileSection projectId={projectId} settings={s} />

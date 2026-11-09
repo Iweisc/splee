@@ -169,6 +169,8 @@ pub enum Alert {
     Finder,
     /// Matched on unipile_token_enc.
     Unipile,
+    /// Matched on bcc_email, the address the copy went to.
+    Bcc,
 }
 
 /// Saves how an alert went, so the integrations page can show a broken endpoint: the error on failure, nothing on success.
@@ -182,6 +184,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
         Alert::Finder => ("finder", "finder_key_enc".to_string()),
         Alert::Unipile => ("unipile", "unipile_token_enc".to_string()),
+        Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(
         "update project_settings set {prefix}_error = $3, {prefix}_failed_at = case when $3::text is null then null else now() end
