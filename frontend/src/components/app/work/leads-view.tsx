@@ -19,6 +19,10 @@ import { LEAD_STATUS, LeadStatusBadge } from "./status";
 const COMPANY = "hidden sm:table-cell";
 const CONTACTED = "hidden md:table-cell";
 const WIDE = "hidden xl:table-cell";
+// The text columns split whatever width the status and date leave, by their percentages, so they only cut text off
+// when the screen is short of room. max-w-0 keeps long text from widening the table. Status and date are 1% wide so
+// they shrink to their content: a column with no width at all would take the spare room instead.
+const FILL = "max-w-0";
 
 export function LeadsView({ projectId, segmentId }: { projectId: string; segmentId?: string }) {
   const [q, setQ] = useState("");
@@ -107,20 +111,20 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   <Th className={COMPANY}>Company</Th>
                   <Th className={WIDE}>Email</Th>
                   {!segmentId && <Th className={WIDE}>Campaign</Th>}
-                  <Th>Status</Th>
-                  <Th className={cn(CONTACTED, "text-right whitespace-nowrap")}>Last contacted</Th>
+                  <Th className="w-[1%]">Status</Th>
+                  <Th className={cn(CONTACTED, "w-[1%] text-right whitespace-nowrap")}>Last contacted</Th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((l) => (
                   <Tr key={l.id} onClick={() => setOpenLead(l.id)}>
-                    <Td>
+                    <Td className={cn(FILL, "w-[30%]")}>
                       <p className="font-medium">{l.full_name || "—"}</p>
-                      <p className="max-w-36 truncate text-xs text-muted-foreground sm:max-w-44">{l.title}</p>
+                      <p className="truncate text-xs text-muted-foreground">{l.title}</p>
                     </Td>
-                    <Td className={cn(COMPANY, "max-w-40 truncate")}>{l.company_name}</Td>
-                    <Td className={cn(WIDE, "max-w-44 truncate text-muted-foreground")}>{l.email ?? "—"}</Td>
-                    {!segmentId && <Td className={cn(WIDE, "max-w-40 truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
+                    <Td className={cn(COMPANY, FILL, "w-[25%] truncate")}>{l.company_name}</Td>
+                    <Td className={cn(WIDE, FILL, "w-[25%] truncate text-muted-foreground")}>{l.email ?? "—"}</Td>
+                    {!segmentId && <Td className={cn(WIDE, FILL, "w-[20%] truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
                     <Td>
                       <LeadStatusBadge status={l.status} />
                     </Td>
