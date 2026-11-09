@@ -78,7 +78,7 @@ async fn list_leads(
         .bind(&status)
         .fetch_one(&state.db)
         .await?;
-    let items = sqlx::query_as::<_, Lead>(&format!("select * {filter} order by created_at desc limit $3 offset $4"))
+    let items = sqlx::query_as::<_, Lead>(&format!("select * {filter} order by created_at desc, id desc limit $3 offset $4"))
         .bind(id)
         .bind(&status)
         .bind(page.limit())
