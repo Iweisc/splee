@@ -168,7 +168,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
     let mut out = csv::Writer::from_writer(Vec::new());
     out.write_record([
         "full_name", "first_name", "last_name", "title", "email", "email_status", "company_name", "company_domain", "linkedin_url",
-        "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at",
+        "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
     ])
     .map_err(invalid)?;
     for r in &rows {
@@ -193,6 +193,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
             r.last_email_status.as_deref().unwrap_or_default(),
             &last_contacted,
             &created,
+            &l.notes,
         ];
         out.write_record(record.map(spreadsheet_safe)).map_err(invalid)?;
     }
