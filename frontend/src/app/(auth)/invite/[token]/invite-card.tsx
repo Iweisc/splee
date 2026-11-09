@@ -3,10 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import useSWR from "swr";
+import { LoadError } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Address, Card, Spinner } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
-import { api, qs } from "@/lib/api";
+import { ApiError, api, qs } from "@/lib/api";
 import type { Me } from "@/lib/types";
 
 interface InvitePreview {
@@ -18,7 +19,7 @@ interface InvitePreview {
 export function InviteCard({ token }: { token: string }) {
   const router = useRouter();
   const { me, mutate, isLoading: meLoading } = useMe();
-  const { data: invite, error } = useSWR<InvitePreview>(`/invites/${encodeURIComponent(token)}`, fetcher);
+  const { data: invite, error, mutate: retry } = useSWR<InvitePreview>(`/invites/${encodeURIComponent(token)}`, fetcher);
   const [accepting, setAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
 
@@ -34,6 +35,15 @@ export function InviteCard({ token }: { token: string }) {
       setAccepting(false);
     }
   };
+
+  // Only a 404 means the link is bad. When Splee can't be reached, asking the teammate for a new link wouldn't help.
+  if (error && !(error instanceof ApiError && error.status === 404)) {
+    return (
+      <Card className="w-full max-w-[400px]">
+        <LoadError error={error} retry={() => retry()} what="the invite" />
+      </Card>
+    );
+  }
 
   if (error) {
     return (
