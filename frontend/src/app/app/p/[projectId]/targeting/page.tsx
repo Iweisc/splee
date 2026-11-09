@@ -61,7 +61,7 @@ export default function TargetingPage() {
             </Section>
 
             <Section title="Excluded keywords" description="Companies whose website or description mentions any of these are skipped, e.g. competitors' niches or industries you don't serve.">
-              <ChipInput value={s.targeting.exclude_keywords ?? []} onChange={(v) => set("exclude_keywords", v)} placeholder="e.g. agency, government, nonprofit" />
+              <ChipInput value={s.targeting.exclude_keywords ?? []} onChange={(v) => set("exclude_keywords", v)} placeholder="e.g. agency, government, nonprofit" label="Excluded keywords" />
             </Section>
 
             <ResearchProfile />
