@@ -29,15 +29,18 @@ export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** "3h ago", or "in 3h" for a time still ahead, like an email's scheduled send. */
 export function timeAgo(ts: string): string {
-  const s = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+  const diff = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+  const s = Math.abs(diff);
+  const say = (span: string) => (diff < 0 ? `in ${span}` : `${span} ago`);
   if (s < 60) return "just now";
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return say(`${m} min`);
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return say(`${h}h`);
   const d = Math.round(h / 24);
-  if (d < 30) return `${d}d ago`;
+  if (d < 30) return say(`${d}d`);
   return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
