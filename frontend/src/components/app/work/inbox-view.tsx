@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, MessageSquareText, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
@@ -171,7 +171,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     `/inbox/threads/${leadId}`,
     fetcher,
   );
-  const [reply, setReply] = useState("");
+  // An unsent reply stays with its lead in this tab, so opening another thread or leaving the inbox doesn't throw it away.
+  const draftKey = `splee:reply:${leadId}`;
+  const [reply, setReply] = useState(() => (typeof window === "undefined" ? "" : (sessionStorage.getItem(draftKey) ?? "")));
+  useEffect(() => {
+    if (reply) sessionStorage.setItem(draftKey, reply);
+    else sessionStorage.removeItem(draftKey);
+  }, [draftKey, reply]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const [draftRun, setDraftRun] = useState<string | null>(null);
@@ -263,6 +269,8 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     setSending(true);
     try {
       await api(`/inbox/threads/${leadId}/reply`, { body: { body: reply.trim() } });
+      // Cleared here too: if you opened another thread while it sent, this pane is gone and its effect won't run.
+      sessionStorage.removeItem(draftKey);
       setReply("");
       await refresh();
       toast.success("Reply queued");
