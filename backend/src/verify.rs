@@ -1,7 +1,8 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon and DeBounce take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable and
-//! Clearout take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail or Prospeo.
+//! Clearout take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
+//! Anymail Finder.
 
 use std::time::Duration;
 
@@ -186,6 +187,7 @@ pub enum Finder {
     Hunter,
     Findymail,
     Prospeo,
+    Anymail,
 }
 
 impl Finder {
@@ -194,6 +196,7 @@ impl Finder {
             "hunter" => Some(Finder::Hunter),
             "findymail" => Some(Finder::Findymail),
             "prospeo" => Some(Finder::Prospeo),
+            "anymailfinder" => Some(Finder::Anymail),
             _ => None,
         }
     }
@@ -203,6 +206,7 @@ impl Finder {
             Finder::Hunter => "Hunter",
             Finder::Findymail => "Findymail",
             Finder::Prospeo => "Prospeo",
+            Finder::Anymail => "Anymail Finder",
         }
     }
 
@@ -212,6 +216,7 @@ impl Finder {
             Finder::Hunter => hunter_get(Url::parse("https://api.hunter.io/v2/account")?, key).await.map(|_| ()),
             Finder::Findymail => findymail_call(client()?.get("https://app.findymail.com/api/credits"), key).await.map(|_| ()),
             Finder::Prospeo => prospeo_call(client()?.get("https://api.prospeo.io/account-information"), key).await.map(|_| ()),
+            Finder::Anymail => anymailfinder_call(client()?.get("https://api.anymailfinder.com/v5.1/account"), key).await.map(|_| ()),
         }
     }
 
@@ -234,6 +239,17 @@ impl Finder {
                 let mut body = json!({ "only_verified_email": true, "data": person });
                 body["data"]["company_website"] = json!(domain);
                 Ok(prospeo_found(&prospeo_call(client()?.post("https://api.prospeo.io/enrich-person").json(&body), key).await?, domain))
+            }
+            Finder::Anymail => {
+                let mut body = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
+                body["domain"] = json!(domain);
+                let req = client()?.post("https://api.anymailfinder.com/v5.1/find-email/person").json(&body);
+                // It searches live and suggests waiting up to 3 minutes. One that runs past the client's wait counts as
+                // nothing found, and asking again within 30 days is free.
+                match anymailfinder_call(req, key).await {
+                    Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(None),
+                    body => Ok(anymailfinder_found(&body?, domain)),
+                }
             }
         }
     }
@@ -350,6 +366,20 @@ fn prospeo_found(body: &Value, domain: &str) -> Option<Found> {
     let email = &body["person"]["email"];
     let usable = email["revealed"] != false && email["status"] == "VERIFIED";
     at_domain(email["email"].as_str().filter(|e| !e.contains('*')), domain).filter(|_| usable).map(|email| Found { email, verified: true })
+}
+
+/// Anymail Finder explains a failure in `message`, like "Invalid API key. Copy it again from ..." for a 401.
+async fn anymailfinder_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("Authorization", key).send().await?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Anymail Finder fills `valid_email` only when it verified the address, and charges a credit only then.
+fn anymailfinder_found(body: &Value, domain: &str) -> Option<Found> {
+    at_domain(body["valid_email"].as_str(), domain).map(|email| Found { email, verified: true })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -614,6 +644,12 @@ mod tests {
         assert_eq!(prospeo_found(&prospeo("eva@intercom.com", "UNVERIFIED", true), "intercom.com"), None);
         assert_eq!(prospeo_found(&prospeo("eva@intercom.com", "VERIFIED", true), "stripe.com"), None);
         assert_eq!(prospeo_found(&Value::Null, "intercom.com"), None);
+        // Anymail Finder's documented answers: found and verified, and not found.
+        let found = json!({"email": "Satyan@microsoft.com", "email_status": "valid", "valid_email": "Satyan@microsoft.com", "credits_charged": 1});
+        assert_eq!(anymailfinder_found(&found, "microsoft.com"), Some(Found { email: "satyan@microsoft.com".into(), verified: true }));
+        assert_eq!(anymailfinder_found(&found, "github.com"), None);
+        let missing = json!({"email": null, "email_status": "not_found", "valid_email": null, "credits_charged": 0});
+        assert_eq!(anymailfinder_found(&missing, "microsoft.com"), None);
         // Real responses to a bad key, from both services.
         let nb = neverbounce_ok(&json!({"status": "auth_failure", "message": "Invalid API key 'secret123'"})).unwrap_err();
         assert!(!nb.to_string().contains("secret123"));
