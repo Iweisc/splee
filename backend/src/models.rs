@@ -174,6 +174,7 @@ pub struct Lead {
     pub source: String,
     pub status: String,
     pub personalization: Value,
+    pub notes: String,
     #[serde(skip)]
     pub unsubscribe_token: String,
     pub last_contacted_at: Option<Ts>,

@@ -254,6 +254,7 @@ export interface Lead {
   source: "agent" | "import" | "api";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
+  notes: string;
   last_contacted_at: Ts | null;
   created_at: Ts;
 }
