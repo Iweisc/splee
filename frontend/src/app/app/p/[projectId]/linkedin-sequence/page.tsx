@@ -166,17 +166,18 @@ function LeadSequence({ sequence: { lead, messages }, writing, onChange }: { seq
   const doneCount = messages.filter((m) => m.status !== "todo").length;
 
   return (
-    <div className="px-5 py-3.5">
+    <div className="px-4 py-3.5 sm:px-5">
       <div className="flex flex-wrap items-center gap-3">
         <Avatar name={lead.full_name || "?"} />
         <div className="min-w-0 flex-1">
           <p className="font-medium">{lead.full_name}</p>
           <p className="text-sm wrap-anywhere text-muted-foreground">{[lead.title, lead.company_name].filter(Boolean).join(" at ")}</p>
         </div>
-        {/* On phones these get their own line under the name, so a long title wraps over the full width and nothing wraps alone. */}
-        <div className="flex items-center gap-3 max-sm:w-full max-sm:pl-11">
+        {/* On phones these get their own full-width line under the name, so a long title wraps over the full width and
+            nothing wraps alone. The done count is left out there, since each step already shows whether it's done. */}
+        <div className="flex items-center gap-3 max-sm:w-full">
           {messages.length > 0 && (
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-xs text-muted-foreground tabular-nums max-sm:hidden">
               {doneCount}/{messages.length} done
             </span>
           )}
@@ -261,13 +262,13 @@ function MessageCard({ message: m, before, onChange }: { message: LinkedinMessag
         <p className="rounded-lg bg-red-50 px-2.5 py-1.5 text-xs text-red-700">Splee couldn&apos;t send this: {m.send_error.replace(/\.+$/, "")}. Send it yourself.</p>
       )}
       <div className="flex gap-1">
-        <Button size="sm" variant="ghost" onClick={copy}>
+        <Button size="sm" variant="ghost" onClick={copy} className="px-2">
           <Copy className="size-3.5" /> Copy
         </Button>
         <span className="flex-1" />
         {m.status === "todo" ? (
           <>
-            <Button size="sm" variant="ghost" onClick={() => setStatus("skipped")}>
+            <Button size="sm" variant="ghost" onClick={() => setStatus("skipped")} className="px-2">
               <SkipForward className="size-3.5" /> Skip
             </Button>
             <Button size="sm" variant="outline" onClick={() => setStatus("done")}>
