@@ -26,6 +26,8 @@ pub fn router() -> Router<AppState> {
         .route("/companies/{id}", patch(update_company))
         .route("/projects/{id}/leads", get(list_leads))
         .route("/projects/{id}/leads/export", get(export_leads))
+        .route("/projects/{id}/leads/move", post(move_leads))
+        .route("/projects/{id}/leads/delete", post(delete_leads))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
         .route("/projects/{id}/linkedin", get(list_linkedin))
         .route("/leads/{id}/linkedin", post(generate_linkedin))
@@ -139,7 +141,7 @@ async fn list_leads(
         .fetch_one(&state.db)
         .await?;
     let items = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc limit $5 offset $6"
+        "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc limit $5 offset $6"
     ))
     .bind(id)
     .bind(q.segment_id)
@@ -157,7 +159,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
     let project = auth.project(&state.db, id).await?;
     let like = util_input::like_pattern(q.q.as_deref());
     let status = q.status.filter(|s| !s.is_empty());
-    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc"))
+    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc"))
         .bind(id)
         .bind(q.segment_id)
         .bind(&status)
@@ -309,23 +311,69 @@ struct RemoveQuery {
 
 async fn remove_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<RemoveQuery>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    erase(&state.db, auth.org_id, &lead, q.forget).await?;
+    erase(&state.db, auth.org_id, std::slice::from_ref(&lead), q.forget).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
-/// Deletes a lead with their emails and the webhook log entries that carry their details. With `forget`, their
-/// address goes on the do-not-contact list first, so no later import or search brings them back.
-async fn erase(db: &PgPool, org_id: Uuid, lead: &Lead, forget: bool) -> AppResult<()> {
-    if forget && let Some(email) = &lead.email {
-        suppressions::insert(db, org_id, [email.as_str()]).await?;
+/// Leads picked on the Leads page. Ids from another project are ignored.
+#[derive(Deserialize)]
+struct PickedLeads {
+    ids: Vec<Uuid>,
+    /// For a move, the campaign they join, or null for none.
+    segment_id: Option<Uuid>,
+}
+
+/// A page of the Leads table holds at most 100, so a bigger pick isn't from the page.
+const MAX_PICKED: usize = 500;
+
+async fn picked(state: &AppState, auth: &Auth, project_id: Uuid, body: &PickedLeads) -> AppResult<()> {
+    auth.project(&state.db, project_id).await?;
+    if body.ids.len() > MAX_PICKED {
+        return Err(AppError::BadRequest(format!("Pick at most {MAX_PICKED} leads at a time")));
     }
+    Ok(())
+}
+
+async fn move_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
+    picked(&state, &auth, id, &body).await?;
+    super::imports::check_segment(&state, id, body.segment_id).await?;
+    let moved = sqlx::query("update leads set segment_id = $3 where project_id = $1 and id = any($2)")
+        .bind(id)
+        .bind(&body.ids)
+        .bind(body.segment_id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    Ok(Json(json!({ "moved": moved })))
+}
+
+async fn delete_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
+    picked(&state, &auth, id, &body).await?;
+    let leads: Vec<Lead> = sqlx::query_as("select * from leads where project_id = $1 and id = any($2)")
+        .bind(id)
+        .bind(&body.ids)
+        .fetch_all(&state.db)
+        .await?;
+    erase(&state.db, auth.org_id, &leads, false).await?;
+    Ok(Json(json!({ "deleted": leads.len() })))
+}
+
+/// Deletes leads with their emails and the webhook log entries that carry their details. With `forget`, their
+/// addresses go on the do-not-contact list first, so no later import or search brings them back.
+async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppResult<()> {
+    if forget {
+        suppressions::insert(db, org_id, leads.iter().filter_map(|l| l.email.as_deref())).await?;
+    }
+    let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
+    let ids_text: Vec<String> = ids.iter().map(Uuid::to_string).collect();
+    let projects: Vec<Uuid> = leads.iter().map(|l| l.project_id).collect();
     let mut tx = db.begin().await?;
-    sqlx::query("delete from webhook_deliveries where project_id = $1 and payload->'lead'->>'id' = $2::text")
-        .bind(lead.project_id)
-        .bind(lead.id)
+    sqlx::query("delete from webhook_deliveries where project_id = any($1) and payload->'lead'->>'id' = any($2)")
+        .bind(&projects)
+        .bind(&ids_text)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("delete from leads where id = $1").bind(lead.id).execute(&mut *tx).await?;
+    sqlx::query("delete from leads where id = any($1)").bind(&ids).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -439,8 +487,8 @@ mod tests {
                 .unwrap();
         }
 
-        erase(&db, org, &sarah, true).await.unwrap();
-        erase(&db, org, &marcus, false).await.unwrap();
+        erase(&db, org, std::slice::from_ref(&sarah), true).await.unwrap();
+        erase(&db, org, std::slice::from_ref(&marcus), false).await.unwrap();
 
         let leads: i64 = sqlx::query_scalar("select count(*) from leads").fetch_one(&db).await.unwrap();
         let deliveries: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries").fetch_one(&db).await.unwrap();

@@ -190,7 +190,7 @@ async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     Ok(Json(record(&state, &auth, id, upload.segment_id, &upload.filename, rows).await?))
 }
 
-async fn check_segment(state: &AppState, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<()> {
+pub(super) async fn check_segment(state: &AppState, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<()> {
     if let Some(segment_id) = segment_id {
         sqlx::query("select 1 from segments where id = $1 and project_id = $2")
             .bind(segment_id)
