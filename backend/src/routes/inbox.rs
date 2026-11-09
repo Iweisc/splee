@@ -12,6 +12,7 @@ use super::leads::{self, LeadDetail, LeadRow};
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_scope;
+use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::{EmailMessage, Lead};
@@ -22,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/inbox", get(list))
         .route("/inbox/threads/{lead_id}", get(thread))
         .route("/inbox/threads/{lead_id}/reply", post(reply))
+        .route("/inbox/threads/{lead_id}/draft", post(draft))
         .route("/inbox/threads/{lead_id}/status", post(set_status))
         .route("/inbox/threads/{lead_id}/done", post(mark_done))
         .route("/inbox/threads/{lead_id}/remind", post(remind))
@@ -169,12 +171,28 @@ async fn list(
 struct Thread {
     messages: Vec<EmailMessage>,
     lead: LeadDetail,
+    /// The agent run writing a reply draft right now, so a thread opened mid-run can follow it.
+    draft_run: Option<Uuid>,
 }
 
 async fn thread(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Thread>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
+    let draft_run = active_draft_run(&state.db, lead.id).await?;
     let lead = leads::detail(&state.db, lead).await?;
-    Ok(Json(Thread { messages: lead.emails.clone(), lead }))
+    Ok(Json(Thread { messages: lead.emails.clone(), lead, draft_run }))
+}
+
+/// A queued or running reply draft for any of the lead's messages, whether someone asked for it or a reply triggered it.
+async fn active_draft_run<'e, E: sqlx::PgExecutor<'e>>(db: E, lead_id: Uuid) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar(
+        "select r.id from agent_runs r join email_messages m on m.id = (r.input ->> 'message_id')::uuid
+         where r.kind = $2 and r.status in ('queued', 'running') and m.lead_id = $1
+         order by r.created_at desc limit 1",
+    )
+    .bind(lead_id)
+    .bind(kind::DRAFT_REPLY)
+    .fetch_optional(db)
+    .await
 }
 
 #[derive(Deserialize)]
@@ -231,6 +249,33 @@ async fn reply(
 #[derive(Deserialize, Default)]
 struct ApproveBody {
     body: Option<String>,
+}
+
+/// Has the agent draft an answer to the lead's last reply, as auto-replies do. The draft waits for approval in the thread.
+async fn draft(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
+    let inbound: Uuid = sqlx::query_scalar(
+        "select id from email_messages where lead_id = $1 and direction = 'inbound' and classification is distinct from 'bounce'
+         order by created_at desc limit 1",
+    )
+    .bind(lead.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
+    // Locking the lead makes two quick requests take turns, so the second sees the first one's run.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;
+    let pending: bool = sqlx::query_scalar("select exists (select 1 from email_messages where lead_id = $1 and kind = 'auto_reply' and status = 'draft')")
+        .bind(lead.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if pending || active_draft_run(&mut *tx, lead.id).await?.is_some() {
+        return Err(AppError::Conflict("A reply draft is already on its way or waiting in this thread".into()));
+    }
+    let run_id =
+        agent::enqueue(&mut *tx, kind::DRAFT_REPLY, Some(lead.project_id), Some(auth.org_id), json!({ "message_id": inbound, "manual": true })).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "run_id": run_id })))
 }
 
 async fn approve(
