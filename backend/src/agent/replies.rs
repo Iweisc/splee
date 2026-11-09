@@ -302,6 +302,18 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
 
     let subject = if t.inbound.subject.to_lowercase().starts_with("re:") { t.inbound.subject.clone() } else { format!("Re: {}", t.inbound.subject) };
     let auto = mode == "auto" && !manual;
+    // Writing takes a few seconds. If someone answered the lead by hand meanwhile, this draft would be a second answer.
+    // The lead lock makes this check and the manual reply's cancelling of drafts take turns.
+    let mut tx = ctx.db().begin().await?;
+    sqlx::query("select 1 from leads where id = $1 for update").bind(t.lead.id).execute(&mut *tx).await?;
+    let answered: bool = sqlx::query_scalar("select exists (select 1 from email_messages where lead_id = $1 and kind = 'manual_reply' and created_at >= $2)")
+        .bind(t.lead.id)
+        .bind(ctx.run.created_at)
+        .fetch_one(&mut *tx)
+        .await?;
+    if answered {
+        return Ok(Outcome::new("Not drafted: the lead was answered by hand meanwhile"));
+    }
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for,
                                      in_reply_to, to_email)
@@ -317,7 +329,8 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .bind(auto.then(Utc::now))
     .bind(&t.inbound.message_id)
     .bind(t.inbound.from_email.as_ref().or(t.lead.email.as_ref()))
-    .execute(ctx.db())
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(Outcome::new(if auto { "Reply sent to the outbox" } else { "Reply drafted for approval" }))
 }

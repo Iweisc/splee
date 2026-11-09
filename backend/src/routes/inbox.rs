@@ -225,6 +225,9 @@ async fn reply(
         format!("Re: {}", inbound.subject)
     };
     let to_email = inbound.from_email.clone().or(lead.email.clone());
+    let mut tx = state.db.begin().await?;
+    // Takes turns with a reply draft being saved, so the draft either lands first and is cancelled below or sees this reply.
+    sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;
     let message = sqlx::query_as::<_, EmailMessage>(
         "insert into email_messages
            (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for, in_reply_to, to_email)
@@ -239,10 +242,16 @@ async fn reply(
     .bind(text)
     .bind(inbound.message_id)
     .bind(to_email)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+    // You answered yourself, so an agent draft still waiting would be a second answer if someone approved it later.
+    sqlx::query("update email_messages set status = 'cancelled' where lead_id = $1 and kind = 'auto_reply' and status = 'draft'")
+        .bind(lead.id)
+        .execute(&mut *tx)
+        .await?;
     // Following up is what a due reminder asked for. One still ahead stays, to check back if they don't answer.
-    sqlx::query("update leads set remind_at = null where id = $1 and remind_at <= now()").bind(lead.id).execute(&state.db).await?;
+    sqlx::query("update leads set remind_at = null where id = $1 and remind_at <= now()").bind(lead.id).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(message))
 }
 

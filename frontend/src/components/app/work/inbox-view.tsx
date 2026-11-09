@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown } from "lucide-react";
+import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
@@ -383,17 +383,29 @@ function Bubble({ message: m }: { message: EmailMessage }) {
 function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Promise<unknown> }) {
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(draft.body);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"approve" | "discard" | null>(null);
 
   const approve = async () => {
-    setBusy(true);
+    setBusy("approve");
     try {
       await api(`/inbox/messages/${draft.id}/approve`, { body: editing ? { body } : {} });
       await onDone();
       toast.success("Reply approved and queued");
     } catch (e) {
       toastError(e);
-      setBusy(false);
+      setBusy(null);
+    }
+  };
+
+  const discard = async () => {
+    setBusy("discard");
+    try {
+      await api(`/emails/${draft.id}`, { method: "PATCH", body: { status: "cancelled" } });
+      await onDone();
+      toast.success("Draft discarded");
+    } catch (e) {
+      toastError(e);
+      setBusy(null);
     }
   };
 
@@ -406,13 +418,17 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
       ) : (
         <p className="text-sm leading-relaxed whitespace-pre-wrap">{draft.body}</p>
       )}
-      <div className="flex justify-end gap-2">
+      {/* Like the email draft editor: on phones the buttons stretch to fill their row and Approve gets a row of its own. */}
+      <div className="flex flex-wrap justify-end gap-2 max-sm:[&>*]:grow">
+        <Button size="sm" variant="ghost" onClick={discard} loading={busy === "discard"} disabled={!!busy}>
+          <X className="size-3.5" /> Discard
+        </Button>
         {!editing && (
           <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
             <Pencil className="size-3.5" /> Edit
           </Button>
         )}
-        <Button size="sm" onClick={approve} loading={busy} disabled={!body.trim()}>
+        <Button size="sm" className="max-sm:basis-full" onClick={approve} loading={busy === "approve"} disabled={!body.trim() || !!busy}>
           <Send className="size-3.5" /> Approve &amp; send
         </Button>
       </div>
