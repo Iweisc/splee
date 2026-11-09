@@ -216,6 +216,12 @@ const CRMS = {
     field: "API key",
     hint: "In folk: Settings → API → Create a new key.",
   },
+  capsule: {
+    name: "Capsule",
+    record: "people",
+    field: "Access token",
+    hint: "In Capsule: My Preferences → API Authentication Tokens, then generate a new token.",
+  },
 } as const satisfies Record<CrmName, { name: string; record: string; field: string; hint: string }>;
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
