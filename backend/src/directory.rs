@@ -20,8 +20,10 @@ use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use parquet::file::statistics::Statistics;
 use reqwest::Url;
+use serde::Serialize;
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool, Row};
+use uuid::Uuid;
 
 const CATALOG: &str = "https://stac.overturemaps.org/catalog.json";
 /// Byte ranges closer than this are fetched in one request, since a row group's columns sit side by side.
@@ -61,6 +63,106 @@ pub async fn import(db: &PgPool, countries: &[String]) -> anyhow::Result<()> {
     };
     println!("Imported {} companies. Removed {} that are no longer listed.", kept.iter().sum::<usize>(), gone.rows_affected());
     Ok(())
+}
+
+/// What to look for in the company database. The Companies page and the agent's `directory` tool both search with it.
+pub struct Search {
+    /// Word prefixes as a tsquery, from `prefixes`.
+    words: Option<String>,
+    country: Option<String>,
+    city: Option<String>,
+    category: Option<String>,
+    has_email: bool,
+    has_phone: bool,
+    /// Leaves out the companies this project already has, so an agent searching again sees new ones.
+    pub skip_project: Option<Uuid>,
+}
+
+impl Search {
+    /// Blank filters are ignored. The error is a message for the person or model that sent `country`.
+    pub fn new(
+        q: Option<&str>,
+        country: Option<&str>,
+        city: Option<&str>,
+        category: Option<&str>,
+        has_email: bool,
+        has_phone: bool,
+    ) -> Result<Self, String> {
+        fn blank(s: Option<&str>) -> Option<&str> {
+            s.map(str::trim).filter(|s| !s.is_empty())
+        }
+        let country = blank(country).map(str::to_uppercase);
+        if country.as_ref().is_some_and(|c| c.len() != 2 || !c.chars().all(|c| c.is_ascii_alphabetic())) {
+            return Err("Pick a country by its two-letter code, like GB".into());
+        }
+        Ok(Self {
+            words: q.and_then(prefixes),
+            country,
+            city: blank(city).map(str::to_string),
+            category: blank(category).map(|c| c.to_lowercase().replace(' ', "_")),
+            has_email,
+            has_phone,
+            skip_project: None,
+        })
+    }
+
+    fn bind<'q>(&'q self, sql: &'q str) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+        sqlx::query(sql)
+            .bind(&self.words)
+            .bind(&self.country)
+            .bind(&self.city)
+            .bind(&self.category)
+            .bind(self.has_email)
+            .bind(self.has_phone)
+            .bind(self.skip_project)
+    }
+}
+
+const FILTER: &str = "from directory_companies d
+    where ($1::text is null or search @@ to_tsquery('simple', $1))
+      and ($2::text is null or country_code = $2)
+      and ($3::text is null or lower(city) = lower($3))
+      and ($4::text is null or categories @> array[$4])
+      and (not $5 or email is not null)
+      and (not $6 or phone is not null)
+      and ($7::uuid is null or not exists (select 1 from companies c where c.project_id = $7 and c.domain = d.domain::citext))";
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Listing {
+    pub domain: String,
+    pub name: String,
+    pub website: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub address: Option<String>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub postcode: Option<String>,
+    pub country_code: String,
+    pub category: Option<String>,
+}
+
+/// The matches, the most reliable listings first.
+pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sqlx::Result<Vec<Listing>> {
+    let sql = format!(
+        "select domain, name, website, phone, email, address, city, region, postcode, country_code, category {FILTER}
+         order by confidence desc, domain limit $8 offset $9"
+    );
+    let rows = search.bind(&sql).bind(limit).bind(offset).fetch_all(db).await?;
+    rows.iter().map(Listing::from_row).collect()
+}
+
+/// How many companies match, counting no further than `cap` + 1, since counting every restaurant in the US is slow.
+pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> {
+    let sql = format!("select count(*) from (select 1 {FILTER} limit {cap} + 1) matches");
+    search.bind(&sql).fetch_one(db).await?.try_get(0)
+}
+
+/// Every word as a prefix, so "dent" finds dental_clinic and general_dentistry, as a tsquery. Only letters and digits get
+/// through, so a query can't hold tsquery syntax.
+fn prefixes(q: &str) -> Option<String> {
+    let words: Vec<String> = q.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| format!("{}:*", w.to_lowercase())).collect();
+    (!words.is_empty()).then(|| words.join(" & "))
 }
 
 /// The newest release's places files, from Overture's STAC catalog.
@@ -355,6 +457,13 @@ impl AsyncFileReader for HttpFile {
 #[cfg(test)]
 mod tests {
     use super::domain;
+
+    #[test]
+    fn a_search_becomes_word_prefixes() {
+        assert_eq!(super::prefixes("Dentist  London"), Some("dentist:* & london:*".into()));
+        assert_eq!(super::prefixes("o'brien & sons | !x"), Some("o:* & brien:* & sons:* & x:*".into()));
+        assert_eq!(super::prefixes(" &|! "), None);
+    }
 
     #[test]
     fn a_website_becomes_its_domain_unless_its_a_page_elsewhere() {

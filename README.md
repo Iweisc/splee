@@ -97,7 +97,7 @@ backend/   Rust: Axum 0.8, sqlx, Postgres. Runs the API and the background worke
 SPEC.md    Endpoints, data contract, agent pipeline and workers.
 ```
 
-The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://github.com/tyrchen/claude-agent-sdk-rs). Each call runs in a temp directory without your Claude settings. Research calls can only use web search and fetch, plus the X tools when `BIRD_BIN` is set. Writing and classification calls get no tools.
+The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://github.com/tyrchen/claude-agent-sdk-rs). Each call runs in a temp directory without your Claude settings. Research calls can only use web search and fetch, plus the X tools when `BIRD_BIN` is set. Finding companies can also search the company database once it holds rows. Writing and classification calls get no tools.
 
 Every backend process runs the workers: the agent queue, the sender every 30 seconds, the IMAP poller every 60 seconds, the hourly campaign optimizer and the notification digests. Run one backend per database. `SENDING_ENABLED=false` only stops the sender, so a second backend would still poll mailboxes and process replies.
 

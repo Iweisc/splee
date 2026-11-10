@@ -39,6 +39,8 @@ Event kinds: `phase` (data `{step, title, status: "started"|"finished"}`), `log`
 
 `companies.employees` is a display string like `11-50`.
 
+Step 4 and `find_companies` runs also get `mcp__directory__search` when `directory_companies` has rows: an in-process MCP server named `directory` that runs the Companies page's search (`q`, `country`, `city`, `category`, `has_email`, `has_phone`, `limit` up to 50, default 25), leaving out companies the project already has, and returns one line per company with its domain, name, category, place and whether it lists an email or phone. The prompt tells Claude to use it first for local and small businesses and search the web for what it lacks. Its answers go through the same filters and dedupe as web results.
+
 ### Run inputs (`agent_runs.input`), enqueued by routes, consumed by the agent worker
 
 | kind | input |
