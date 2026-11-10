@@ -1,8 +1,8 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon, DeBounce, Bouncify and QuickEmailVerification take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
-//! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
-//! Anymail Finder, LeadMagic or Apollo.
+//! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
+//! Anymail Finder, LeadMagic, Apollo or Voila Norbert.
 
 use std::time::Duration;
 
@@ -215,6 +215,7 @@ pub enum Finder {
     Anymail,
     LeadMagic,
     Apollo,
+    Norbert,
 }
 
 impl Finder {
@@ -226,6 +227,7 @@ impl Finder {
             "anymailfinder" => Some(Finder::Anymail),
             "leadmagic" => Some(Finder::LeadMagic),
             "apollo" => Some(Finder::Apollo),
+            "voilanorbert" => Some(Finder::Norbert),
             _ => None,
         }
     }
@@ -238,6 +240,7 @@ impl Finder {
             Finder::Anymail => "Anymail Finder",
             Finder::LeadMagic => "LeadMagic",
             Finder::Apollo => "Apollo",
+            Finder::Norbert => "Voila Norbert",
         }
     }
 
@@ -255,6 +258,7 @@ impl Finder {
                 anyhow::ensure!(health["is_logged_in"] == true, "the API key was rejected");
                 Ok(())
             }
+            Finder::Norbert => norbert_call(client()?.get(format!("{NORBERT}/account/")), key).await.map(|_| ()),
         }
     }
 
@@ -299,6 +303,19 @@ impl Finder {
                 let name = if last.is_empty() { vec![("name", first)] } else { vec![("first_name", first), ("last_name", last)] };
                 let url = Url::parse_with_params(&format!("{APOLLO}/people/match"), name.into_iter().chain([("domain", domain)]))?;
                 Ok(apollo_found(&apollo_call(client()?.post(url).json(&json!({})), key).await?, domain))
+            }
+            Finder::Norbert => {
+                let name = format!("{first} {last}");
+                let req = client()?.post(format!("{NORBERT}/search/name")).form(&[("name", name.trim()), ("domain", domain)]);
+                let mut body = norbert_call(req, key).await?;
+                // A search that isn't done yet is read again from its contact, for up to half a minute. One still going
+                // then counts as nothing found, and its result waits in Norbert.
+                for _ in 0..6 {
+                    let Some(id) = body["id"].as_i64().filter(|_| body["searching"] == true) else { break };
+                    tokio::time::sleep(NORBERT_WAIT).await;
+                    body = norbert_call(client()?.get(format!("{NORBERT}/contacts/{id}")), key).await?;
+                }
+                Ok(norbert_found(&body, domain))
             }
         }
     }
@@ -469,6 +486,35 @@ async fn apollo_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<
 fn apollo_found(body: &Value, domain: &str) -> Option<Found> {
     let person = &body["person"];
     at_domain(person["email"].as_str(), domain).filter(|_| person["email_status"] == "verified").map(|email| Found { email, verified: true })
+}
+
+const NORBERT: &str = "https://api.voilanorbert.com/2018-01-08";
+const NORBERT_WAIT: Duration = Duration::from_secs(5);
+
+/// Norbert takes the key as the password of basic auth, with any user. A failure is `{code, error}`, a 402 is no credits
+/// left, and a 400 is a domain it can't place, which counts as nothing found.
+async fn norbert_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.basic_auth("splee", Some(key)).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    anyhow::ensure!(status != reqwest::StatusCode::PAYMENT_REQUIRED, "the account is out of credits");
+    if status == reqwest::StatusCode::BAD_REQUEST {
+        return Ok(Value::Null);
+    }
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["error"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Norbert's score is 100 for an address its mail server accepted, 80 for one it found but couldn't check, which the
+/// verifier checks before sending, and 5 for one from outside services, which isn't kept. A search still going finds
+/// nothing yet.
+fn norbert_found(body: &Value, domain: &str) -> Option<Found> {
+    if body["searching"] == true {
+        return None;
+    }
+    let score = body["email"]["score"].as_i64().unwrap_or(0);
+    at_domain(body["email"]["email"].as_str(), domain).filter(|_| score >= 80).map(|email| Found { email, verified: score >= 100 })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -809,6 +855,15 @@ mod tests {
         let unsure = json!({"data": {"email": "r@piedpiper.com", "score": 40, "verification": {"status": "accept_all"}}});
         assert_eq!(hunter_found(&unsure, "piedpiper.com"), None);
         assert_eq!(hunter_found(&json!({"data": {"email": null}}), "piedpiper.com"), None);
+        // Voila Norbert's documented answer, by score.
+        let norbert = |score: i64| json!({"id": 12345, "searching": false, "email": {"email": "Fake@Example.com", "score": score, "is_done": true}});
+        assert_eq!(norbert_found(&norbert(100), "example.com"), Some(Found { email: "fake@example.com".into(), verified: true }));
+        assert_eq!(norbert_found(&norbert(80), "example.com"), Some(Found { email: "fake@example.com".into(), verified: false }));
+        assert_eq!(norbert_found(&norbert(5), "example.com"), None);
+        assert_eq!(norbert_found(&norbert(100), "other.com"), None);
+        assert_eq!(norbert_found(&json!({"id": 1, "searching": true, "email": null}), "example.com"), None);
+        let unfinished = json!({"id": 1, "searching": true, "email": {"email": "fake@example.com", "score": 100}});
+        assert_eq!(norbert_found(&unfinished, "example.com"), None);
         // Findymail's documented answer, and the empty body a 404 becomes.
         let findymail = json!({"contact": {"name": "John Doe", "domain": "website.com", "email": "John@Website.com"}});
         assert_eq!(findymail_found(&findymail, "website.com"), Some(Found { email: "john@website.com".into(), verified: false }));

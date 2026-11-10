@@ -654,6 +654,7 @@ const FINDERS = {
   anymailfinder: "Anymail Finder",
   leadmagic: "LeadMagic",
   apollo: "Apollo",
+  voilanorbert: "Voila Norbert",
 } as const;
 
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
