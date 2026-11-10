@@ -11,7 +11,7 @@ import { Card, EmptyState, Favicon, Host } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import { countryName } from "@/lib/countries";
 import { SOURCE_URL } from "@/lib/source";
-import type { DirectoryCompany, DirectoryCountry, DirectoryPage, SegmentWithStats } from "@/lib/types";
+import type { DirectoryCompany, DirectoryCountry, DirectoryPage, FoundPeople, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { cn, compact, num, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { CountryLoader } from "./country-loader";
@@ -27,8 +27,11 @@ const categoryWords = (category: string | null) => (category ? category[0].toUpp
 /** Many listings shout their city, like LEEDS. Those read as Leeds, the rest stay as written, like St Leonards-on-Sea. */
 const cityName = (city: string) => (city === city.toUpperCase() ? city.toLowerCase().replace(/(^|[\s-])\p{L}/gu, (m) => m.toUpperCase()) : city);
 
-/** Search over the shared company database, and adding the ticked companies to one of the project's campaigns. Instance
- * operators also get the control that loads countries into it, above the search. */
+/** LinkedIn search takes a few seconds a company, so the backend takes this many at a time. */
+const MAX_PEOPLE_COMPANIES = 10;
+
+/** Search over the shared company database, and adding the ticked companies, or the people LinkedIn finds at them, to one of the
+ * project's campaigns. Instance operators also get the control that loads countries into it, above the search. */
 export function DirectoryView({ projectId }: { projectId: string }) {
   const { me } = useMe();
   const { data: countries, mutate: retryCountries } = useSWR<DirectoryCountry[]>("/directory/countries", fetcher);
@@ -56,10 +59,12 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
   const [page, setPage] = useState(1);
   // Domains ticked on this page. Changing a filter or the page clears them, so nothing off-screen is ever added.
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [found, setFound] = useState<(FoundPeople & { segmentId: string; segment: string }) | null>(null);
   const filters = { q: useDebounced(q), city: useDebounced(city), category: useDebounced(category) };
 
   const { data: countries, error: countriesError, mutate: retryCountries } = useSWR<DirectoryCountry[]>("/directory/countries", fetcher);
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  const { data: settings } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
   const empty = countries?.length === 0;
   const key = empty
     ? null
@@ -122,7 +127,9 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
           projectId={projectId}
           domains={[...picked]}
           segments={segments ?? []}
+          linkedin={settings?.unipile_connected}
           onDone={() => setPicked(new Set())}
+          onFound={setFound}
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
@@ -151,6 +158,7 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
           />
         </div>
       )}
+      {found && <FoundPanel projectId={projectId} found={found} onClose={() => setFound(null)} />}
       {/* The checkboxes sit beside the count, since next to the four filters they took a row of their own on a laptop. */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-4 py-2.5 text-sm">
         <p className="text-muted-foreground tabular-nums">
@@ -252,15 +260,22 @@ function PickedBar({
   projectId,
   domains,
   segments,
+  linkedin,
   onDone,
+  onFound,
 }: {
   projectId: string;
   domains: string[];
   segments: SegmentWithStats[];
+  /** Undefined while the settings load. */
+  linkedin: boolean | undefined;
   onDone: () => void;
+  onFound: (found: FoundPeople & { segmentId: string; segment: string }) => void;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const tooMany = domains.length > MAX_PEOPLE_COMPANIES;
 
   const add = async (segmentId: string) => {
     const segment = segments.find((s) => s.id === segmentId);
@@ -282,6 +297,21 @@ function PickedBar({
     }
   };
 
+  const findPeople = async (segmentId: string) => {
+    const segment = segments.find((s) => s.id === segmentId);
+    if (!segment) return;
+    setSearching(true);
+    try {
+      const res = await api<FoundPeople>(`/projects/${projectId}/directory/people`, { body: { segment_id: segment.id, domains } });
+      onFound({ ...res, segmentId: segment.id, segment: segment.name });
+      onDone();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setSearching(false);
+    }
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
       <Button variant="ghost" size="icon" onClick={onDone} aria-label="Clear the selection" className="size-9">
@@ -289,19 +319,109 @@ function PickedBar({
       </Button>
       <p className="mr-auto text-sm font-medium">{plural(domains.length, "company", "companies")} selected</p>
       {segments.length > 0 ? (
-        <Select value="" onChange={(e) => add(e.target.value)} disabled={busy} className="h-9 w-auto flex-auto sm:w-56 sm:flex-none" aria-label="Add to campaign">
-          <option value="">Add to campaign…</option>
-          {segments.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </Select>
+        <>
+          <Select value="" onChange={(e) => add(e.target.value)} disabled={busy || searching} className="h-9 w-auto flex-auto sm:w-56 sm:flex-none" aria-label="Add to campaign">
+            <option value="">Add to campaign…</option>
+            {segments.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </Select>
+          {linkedin ? (
+            <Select
+              value=""
+              onChange={(e) => findPeople(e.target.value)}
+              disabled={busy || searching || tooMany}
+              className="h-9 w-auto flex-auto sm:w-56 sm:flex-none"
+              aria-label="Find people on LinkedIn for a campaign"
+            >
+              <option value="">{searching ? "Searching LinkedIn…" : tooMany ? `Find people at ${MAX_PEOPLE_COMPANIES} or fewer` : "Find people for…"}</option>
+              {segments.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          ) : (
+            linkedin === false && (
+              <LinkButton href={`/app/p/${projectId}/integrations`} variant="outline" size="sm" className="h-9 flex-auto sm:flex-none">
+                Connect LinkedIn to find people
+              </LinkButton>
+            )
+          )}
+        </>
       ) : (
         <LinkButton href={`/app/p/${projectId}/new`} variant="outline" size="sm" className="h-9">
           Create a campaign first
         </LinkButton>
       )}
     </div>
+  );
+}
+
+/** What "Find people" added, until it's closed. LinkedIn doesn't share emails, so the leads have none yet. */
+function FoundPanel({
+  projectId,
+  found,
+  onClose,
+}: {
+  projectId: string;
+  found: FoundPeople & { segmentId: string; segment: string };
+  onClose: () => void;
+}) {
+  const companies = found.skipped.filter((s) => !s.name);
+  const people = found.skipped.filter((s) => s.name);
+  return (
+    <section aria-label="People found on LinkedIn" className="border-b border-border bg-muted/40 px-4 py-3 text-sm">
+      <div className="flex items-start gap-3">
+        <div className="mr-auto min-w-0">
+          <p className="font-medium text-pretty">
+            {found.added.length > 0
+              ? `Added ${plural(found.added.length, "person", "people")} from LinkedIn to ${found.segment}`
+              : `Added nobody to ${found.segment}`}
+          </p>
+          {found.added.length > 0 && <p className="text-muted-foreground text-pretty">LinkedIn doesn&apos;t share emails, so they have none yet.</p>}
+        </div>
+        <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close" className="-mt-1 -mr-2 size-8 shrink-0">
+          <X className="size-4" />
+        </Button>
+      </div>
+      {found.added.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {found.added.map((p) => (
+            // On phones the title and company go under the name, since beside it they'd be cut off.
+            <li key={p.linkedin_url} className="min-w-0 sm:flex sm:items-baseline sm:gap-2">
+              <a href={p.linkedin_url} target="_blank" rel="noreferrer" className="font-medium hover:underline sm:shrink-0">
+                {p.name}
+              </a>
+              <span className="block text-muted-foreground sm:truncate">{[p.title, p.company].filter(Boolean).join(" · ")}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {found.skipped.length > 0 && (
+        <>
+          <p className="mt-3 font-medium">Skipped {num(found.skipped.length)}</p>
+          <ul className="mt-1 space-y-1 text-muted-foreground">
+            {companies.map((s) => (
+              <li key={`c-${s.company}`} className="text-pretty">
+                <span className="text-foreground">{s.company}</span>: {s.reason}
+              </li>
+            ))}
+            {people.map((s) => (
+              <li key={`p-${s.name}-${s.company}`} className="text-pretty">
+                <span className="text-foreground">{s.name}</span> at {s.company}: {s.reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {found.added.length > 0 && (
+        <LinkButton href={`/app/p/${projectId}/leads`} variant="outline" size="sm" className="mt-3">
+          Open leads
+        </LinkButton>
+      )}
+    </section>
   );
 }

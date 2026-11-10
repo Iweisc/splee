@@ -116,7 +116,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
               <span className="truncate">{lead.segment_name}</span>
             </Badge>
           )}
-          <Badge className="capitalize">{lead.source}</Badge>
+          <Badge className="capitalize">{lead.source === "linkedin" ? "LinkedIn" : lead.source}</Badge>
         </div>
         {/* Edit and Delete wrap together, so Delete never sits alone on a row. On phones they share a row of their own. */}
         <div className="ml-auto flex gap-1 max-sm:basis-full max-sm:[&>*]:flex-1">

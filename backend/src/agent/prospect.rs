@@ -1,6 +1,7 @@
 //! Steps 4 and 5 (companies and decision makers) plus the public Segments Explorer.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -8,12 +9,14 @@ use uuid::Uuid;
 
 use super::explore::{self, EMPLOYEE_RANGES, Profile, RESEARCHER, is_directory, load_project};
 use super::directory;
+use super::linkedin;
 use super::sdk::Call;
 use super::x;
 use super::{Ctx, Outcome};
 use crate::mail;
 use crate::models::{Company, Project, Segment};
 use crate::routes::util_input;
+use crate::social;
 
 /// Project-wide ICP limits from `project_settings.targeting`.
 #[derive(Debug, Default, Deserialize)]
@@ -254,11 +257,27 @@ struct FoundPerson {
     email: String,
     email_source: String,
     linkedin_url: String,
+    linkedin_provider_id: String,
     x_url: String,
     city: String,
     country_code: String,
     hook: String,
     facts: Vec<String>,
+}
+
+/// The project's LinkedIn account, when it has one connected through Unipile.
+async fn linkedin_account(ctx: &Ctx, project: &Project) -> anyhow::Result<Option<Arc<crate::unipile::Unipile>>> {
+    let Some(accounts) = social::accounts(ctx.db(), project.id).await? else { return Ok(None) };
+    if accounts.unipile_token_enc.is_empty() {
+        return Ok(None);
+    }
+    match accounts.unipile(&ctx.state.cfg.app_secret) {
+        Ok(u) => Ok(Some(Arc::new(u))),
+        Err(e) => {
+            ctx.log(format!("searching without LinkedIn: {}…", e.message())).await?;
+            Ok(None)
+        }
+    }
 }
 
 pub async fn find_people_for_top_segment(ctx: &Ctx, project_id: Uuid, cap: usize) -> anyhow::Result<()> {
@@ -314,6 +333,7 @@ async fn find_people(
                 "email": {"type": "string"},
                 "email_source": {"type": "string", "enum": ["published", "pattern"]},
                 "linkedin_url": {"type": "string"},
+                "linkedin_provider_id": {"type": "string", "description": "the provider id LinkedIn search gave, else \"\""},
                 "x_url": {"type": "string", "description": "their X (Twitter) profile, e.g. https://x.com/handle"},
                 "city": {"type": "string"},
                 "country_code": {"type": "string"},
@@ -324,6 +344,16 @@ async fn find_people(
         }}},
         "required": ["people"]
     });
+
+    let linkedin = linkedin_account(ctx, project).await?;
+    let how = if linkedin.is_some() {
+        "Search LinkedIn first with mcp__linkedin__people: the company's name, and the preferred roles as titles joined with OR. It \
+         finds the people who work there now, so prefer it to searching the web for people. Copy linkedin_url and linkedin_provider_id \
+         from its results. When LinkedIn finds nobody, check the company's team, about and contact pages. Use 2 to 4 tool calls per company."
+    } else {
+        "Check the company's team, about and contact pages, and search for \"<company name> owner\" or \"site:linkedin.com/in <company \
+         name>\". Use 2 to 3 tool calls per company."
+    };
 
     let mut saved = 0;
     for batch in companies.chunks(3) {
@@ -339,8 +369,7 @@ async fn find_people(
         let prompt = format!(
             "We sell:\n{}\n\nFind the people to email at these prospects (segment \"{}\"):\n{list}\n\n\
              For each company find up to {max_per_company} decision makers for buying our offer. Preferred roles: {roles}. At small businesses \
-             the owner or founder is usually right. Check the company's team, about and contact pages, and search for \
-             \"<company name> owner\" or \"site:linkedin.com/in <company name>\". Use 2 to 3 tool calls per company.\n\n\
+             the owner or founder is usually right. {how}\n\n\
              For each person: their name, their job title only (e.g. \"Owner\", no notes or sources), linkedin_url and x_url (their X profile) if you saw them (else \"\"), city and country_code, a hook \
              (one specific fact about their business that makes a good first line, e.g. a recent project, a specialty, an award) and \
              2 to 4 short facts you saw on the web.\n\
@@ -351,7 +380,13 @@ async fn find_people(
             profile.brief(project.domain.as_deref()),
             segment.name,
         );
-        let found: PeopleList = ctx.ask(&Call::research(RESEARCHER, prompt, schema.clone(), 14)).await?;
+        let mut call = Call::research(RESEARCHER, prompt, schema.clone(), 14);
+        // These replace the X tools, which find far fewer of the people who run a company.
+        if let Some(unipile) = &linkedin {
+            call.servers.insert("linkedin".into(), linkedin::people_server(unipile.clone(), ctx.db().clone()));
+            call.server_tools.extend([linkedin::PEOPLE.to_string(), linkedin::PROFILE.to_string()]);
+        }
+        let found: PeopleList = ctx.ask(&call).await?;
 
         let mut per_company: HashMap<Uuid, usize> = HashMap::new();
         for person in found.people {
@@ -383,8 +418,8 @@ async fn find_people(
             }
             let inserted = sqlx::query(
                 "insert into leads (project_id, segment_id, company_id, full_name, first_name, last_name, title, email, email_status,
-                                    linkedin_url, x_url, company_name, company_domain, city, country_code, personalization)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                                    linkedin_url, x_url, company_name, company_domain, city, country_code, personalization, linkedin_provider_id)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                  on conflict (project_id, email) do nothing",
             )
             .bind(project.id)
@@ -403,6 +438,7 @@ async fn find_people(
             .bind(&lead.city)
             .bind(&lead.country_code)
             .bind(&lead.personalization)
+            .bind(&lead.linkedin_provider_id)
             .execute(ctx.db())
             .await?;
             if inserted.rows_affected() > 0 {
@@ -427,6 +463,7 @@ struct NewLead {
     email: String,
     email_status: &'static str,
     linkedin_url: String,
+    linkedin_provider_id: String,
     x_url: String,
     city: String,
     country_code: String,
@@ -464,6 +501,7 @@ fn shape_lead(p: FoundPerson, company: &Company) -> Option<NewLead> {
         email,
         email_status: if published { "found" } else { "guessed" },
         linkedin_url: p.linkedin_url.trim().to_string(),
+        linkedin_provider_id: p.linkedin_provider_id.trim().to_string(),
         x_url: x::profile_url(&p.x_url),
         city: if p.city.trim().is_empty() { company.city.clone() } else { p.city.trim().to_string() },
         country_code: if p.country_code.trim().is_empty() { company.country_code.clone() } else { p.country_code.trim().to_uppercase() },

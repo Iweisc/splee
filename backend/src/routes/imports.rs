@@ -303,6 +303,7 @@ async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
                 city: get("city"),
                 country_code: get("country_code"),
                 segment_id: upload.segment_id,
+                ..NewLead::default()
             };
             (line, lead)
         })

@@ -877,7 +877,7 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
           <UserPlus className="size-4" /> LinkedIn sending
         </span>
       }
-      description="Sends each due LinkedIn step, and the LinkedIn posts and comments you approve on the Social page, from your own account through Unipile."
+      description="Sends each due LinkedIn step, and the LinkedIn posts and comments you approve on the Social page, from your own account through Unipile. It also finds decision makers at your target companies."
       actions={
         settings.unipile_connected ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
@@ -890,7 +890,7 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
         <p className="text-sm text-pretty">
           Sending as {settings.unipile_account_name || "your LinkedIn account"}. Each due step goes out in your sending hours, up to 25 a day, and
           messages wait until they accept the connect note. A reply on LinkedIn stops their sequence and emails. Approved posts and comments go
-          out one at a time every ten minutes, up to 5 a day.
+          out one at a time every ten minutes, up to 5 a day. Finding people searches LinkedIn for decision makers, up to 100 search pages a day.
         </p>
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
