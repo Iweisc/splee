@@ -1,6 +1,7 @@
 mod agent;
 mod airtable;
 mod auth;
+mod baserow;
 mod config;
 mod crm;
 mod crypto;

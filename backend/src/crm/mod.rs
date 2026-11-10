@@ -4,6 +4,7 @@
 mod affinity;
 mod airtable;
 mod attio;
+mod baserow;
 mod brevo;
 mod capsule;
 mod close;
@@ -96,6 +97,7 @@ crms! {
     Odoo: odoo, "odoo", "Odoo";
     Notion: notion, "notion", "Notion";
     Airtable: airtable, "airtable", "Airtable";
+    Baserow: baserow, "baserow", "Baserow";
 }
 
 /// Twenty's cloud and a self-hosted Twenty share one client, which is told which it is.
@@ -137,7 +139,7 @@ impl Crm {
             Crm::Insightly => Some("API URL"),
             Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
             Crm::Notion => Some("database link"),
-            Crm::Airtable => Some("table link"),
+            Crm::Airtable | Crm::Baserow => Some("table link"),
             _ => None,
         }
     }

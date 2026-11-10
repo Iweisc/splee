@@ -1,12 +1,11 @@
-//! Reads a Baserow table with a database token, so leads import straight from it like an Airtable table. Baserow runs at
-//! baserow.io or on the customer's own server, so the API is at the link's origin (api.baserow.io for baserow.io), and
-//! requests only go to a public address (see hooks::public_client). The token is used for this request only and never
-//! saved.
+//! Reads a Baserow table with a database token, so leads import straight from it like an Airtable table. The token is
+//! used for this request only and never saved.
 
 use reqwest::Url;
 use serde_json::Value;
 
 use super::util_airtable::Table;
+use crate::baserow::Ids;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 
@@ -52,31 +51,6 @@ fn columns(fields: &Value) -> Vec<String> {
     fields.into_iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect()
 }
 
-struct Ids {
-    /// The API's root, like https://api.baserow.io/api/.
-    api: Url,
-    table: String,
-    view: Option<String>,
-}
-
-impl Ids {
-    /// https://baserow.io/database/{database}/table/{table}/{view}, as the address bar shows a table or one of its views,
-    /// on baserow.io or a self-hosted server.
-    fn parse(link: &str) -> Option<Ids> {
-        let link = link.trim();
-        let url = Url::parse(if link.contains("://") { link.to_string() } else { format!("https://{link}") }.as_str()).ok()?;
-        let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-        let number = |i: usize| segments.get(i).filter(|s| s.bytes().all(|b| b.is_ascii_digit())).map(|s| s.to_string());
-        let at = segments.iter().position(|s| *s == "table")?;
-        let (table, view) = (number(at + 1)?, number(at + 2));
-        let origin = match url.host_str()? {
-            "baserow.io" | "www.baserow.io" => "https://api.baserow.io".to_string(),
-            _ => url.origin().ascii_serialization(),
-        };
-        Some(Ids { api: Url::parse(&format!("{origin}/api/")).ok()?, table, view })
-    }
-}
-
 /// A failure is `{error, detail}`. A wrong token is a 401, and a table the token can't read a 401 or 404.
 async fn get(client: &reqwest::Client, url: Url, token: &str) -> AppResult<Value> {
     let bad = |m: String| AppError::BadRequest(m);
@@ -112,17 +86,7 @@ fn cell(value: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{Ids, cell, columns};
-
-    #[test]
-    fn a_table_link_on_baserow_or_a_server_is_read() {
-        let ids = Ids::parse("https://baserow.io/database/12/table/345/678").unwrap();
-        assert_eq!((ids.api.as_str(), ids.table.as_str(), ids.view.as_deref()), ("https://api.baserow.io/api/", "345", Some("678")));
-        let own = Ids::parse("rows.acme.com/database/1/table/2?row=5").unwrap();
-        assert_eq!((own.api.as_str(), own.table.as_str(), own.view), ("https://rows.acme.com/api/", "2", None));
-        assert!(Ids::parse("https://baserow.io/database/12").is_none());
-        assert!(Ids::parse("https://baserow.io/database/12/table/abc").is_none());
-    }
+    use super::{cell, columns};
 
     #[test]
     fn the_primary_field_comes_first_then_the_tables_order() {

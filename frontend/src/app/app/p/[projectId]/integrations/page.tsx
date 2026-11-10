@@ -413,6 +413,13 @@ const CRMS = {
     account: { label: "Table link", placeholder: "https://airtable.com/app…/tbl…" },
     hint: "With data.records:read, data.records:write, data.recordComments:write and schema.bases:read. It needs an Email field.",
   },
+  baserow: {
+    name: "Baserow",
+    record: "table rows",
+    field: "Database token",
+    account: { label: "Table link", placeholder: "https://baserow.io/database/…/table/…" },
+    hint: "On baserow.io or your own server, with create, read and update. The table needs an Email field and a long text field called Notes.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
