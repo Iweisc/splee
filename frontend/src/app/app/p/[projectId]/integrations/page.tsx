@@ -381,6 +381,13 @@ const CRMS = {
     account: { label: "Site URL", placeholder: "https://crm.acme.com" },
     hint: "In EspoCRM: Administration → API Users → Create, with API Key auth and a role that can create Contacts.",
   },
+  odoo: {
+    name: "Odoo",
+    record: "contacts",
+    field: "API key",
+    account: { label: "Site URL", placeholder: "https://acme.odoo.com" },
+    hint: "Odoo 19+. In Odoo: your avatar → My Preferences → Security → Add API Key.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
