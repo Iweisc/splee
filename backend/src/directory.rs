@@ -37,7 +37,8 @@ const COLUMNS: [&str; 10] =
 /// the companies of those countries that the latest release no longer has.
 pub async fn import(db: &PgPool, countries: &[String]) -> anyhow::Result<()> {
     // Overture's catalog refuses requests without a user agent.
-    let client = reqwest::Client::builder().user_agent("splee").timeout(Duration::from_secs(120)).build()?;
+    // Sizes come from Content-Length, which a gzipped answer would drop.
+    let client = reqwest::Client::builder().user_agent("splee").no_gzip().timeout(Duration::from_secs(120)).build()?;
     let (release, files) = latest_files(&client).await?;
     println!("Overture release {release}: {} files", files.len());
     let countries: Vec<String> = countries.iter().map(|c| c.trim().to_uppercase()).collect();

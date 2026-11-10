@@ -15,11 +15,12 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, linkedin, mastodon, reddit, threads, x, youtube};
+use super::{Ctx, Outcome, bluesky, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
 use crate::hooks::{self, Alert};
 use crate::reddit::{Reddit, Target, subreddit};
-use crate::social::{self, Failure, PLATFORMS, fits, name, takes_posts};
+use crate::social::{self, Accounts, Failure, PLATFORMS, fits, name, takes_posts, takes_replies};
+use crate::stackexchange::Question;
 use crate::youtube::{Target as Video, YouTube};
 
 /// A post or comment the tools showed Claude.
@@ -66,6 +67,8 @@ struct Post {
     subreddit: String,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    tags: Vec<String>,
     reason: String,
     body: String,
 }
@@ -82,10 +85,11 @@ fn schema() -> Value {
             "posts": {"type": "array", "items": {"type": "object", "properties": {
                 "platform": {"type": "string", "enum": PLATFORMS.iter().filter(|p| takes_posts(p)).collect::<Vec<_>>()},
                 "subreddit": {"type": "string", "description": "Reddit only, without r/. Empty for the others."},
-                "title": {"type": "string", "description": "Reddit only. Empty for the others."},
+                "title": {"type": "string", "description": "Reddit and DEV only. Empty for the others."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV only, up to 4. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
                 "body": {"type": "string"}
-            }, "required": ["platform", "subreddit", "title", "reason", "body"]}}
+            }, "required": ["platform", "subreddit", "title", "tags", "reason", "body"]}}
         },
         "required": ["replies", "posts"]
     })
@@ -101,6 +105,7 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| crate::mastodon::status_url(link))
         .or_else(|| crate::threads::post_url(link))
         .or_else(|| Video::parse(link).map(|v| v.url()))
+        .or_else(|| Question::parse(link).map(|q| q.url()))
 }
 
 /// "X", "X and Reddit", "X, Reddit and Bluesky".
@@ -116,7 +121,7 @@ fn names(platforms: &[&str]) -> String {
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
-    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube or LinkedIn on the integrations page first";
+    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -216,6 +221,26 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             Err(e) => unavailable("youtube", Alert::YouTube, e).await?,
         }
     }
+    if !accounts.stackexchange_token_enc.is_empty() {
+        match accounts.stackexchange(secret) {
+            Ok(se) => {
+                let site = accounts.stackexchange_site.clone();
+                call.servers.insert("stackexchange".into(), stackexchange::server(Arc::new(se), site.clone(), seen.clone()));
+                call.server_tools.extend([stackexchange::SEARCH.to_string(), stackexchange::READ.to_string()]);
+                platforms.push("stackexchange");
+                tools.push(format!(
+                    "On Stack Exchange you answer on {site}. Search its questions with mcp__stackexchange__search and read a question and its \
+                     answers with mcp__stackexchange__read."
+                ));
+            }
+            Err(e) => unavailable("stackexchange", Alert::StackExchange, e).await?,
+        }
+    }
+    // DEV has no tools: its articles come from the brief and what Claude knows, and the API can't search posts anyway.
+    if !accounts.dev_key_enc.is_empty() {
+        platforms.push("dev");
+        tools.push(format!("On DEV you publish articles as @{}.", accounts.dev_username));
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -249,40 +274,67 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let name = &profile.name;
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
-    let where_ = names(&platforms);
+    let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p)).collect();
     let posting: Vec<&str> = platforms.iter().copied().filter(|p| takes_posts(p)).collect();
-    let originals = match posting.as_slice() {
-        [] => format!("4. Don't draft original posts, since {where_} only takes comments."),
-        _ => format!("4. Draft 2 or 3 original posts in all, each on the one of {} where its readers are.", names(&posting)),
+    let (find, post_on) = (names(&replying), names(&posting));
+    let task = match (replying.is_empty(), posting.is_empty()) {
+        (true, _) => format!("Draft a few original posts on {post_on} that people who could buy from {name} would want to read."),
+        (false, true) => format!(
+            "Find recent conversations on {find} where people who could buy from {name} talk about a problem it solves, and draft replies \
+             that join them."
+        ),
+        (false, false) => format!(
+            "Find recent conversations on {find} where people who could buy from {name} talk about a problem it solves, and draft replies \
+             that join them, plus a few original posts."
+        ),
     };
-    let rules = platforms.iter().map(|p| format!("- {}", rules(p, name, accounts.mastodon_chars()))).collect::<Vec<_>>().join("\n");
+    let mut steps = vec![format!("From the brief, list the problems {name} solves in the words its buyers would use, and where they talk about them.")];
+    let mut sections = Vec::new();
+    if !replying.is_empty() {
+        steps.push(
+            "Search for threads from the last 30 days where someone asks for help or a recommendation, or complains about one of those \
+             problems. Run several searches with different wordings. Read a thread before you reply to it."
+                .into(),
+        );
+        steps.push("Draft up to 10 replies, to the threads where a reply helps the most. Fewer good ones beat many weak ones.".into());
+        sections.push(format!(
+            "Rules for replies:\n\
+             - Answer the thread's actual question. Each reply must be useful on its own, to someone who never clicks anything.\n\
+             - Mention {name} only when it directly fits the question, plainly and at most once, never as an ad. When you mention it, say \
+             you work on it. Most replies should not mention it at all.\n\
+             - No links unless they add something the reply can't.\n\
+             - Skip threads older than 30 days, locked threads or ones with replies turned off, and threads where a reply from a company \
+             would be spam.\n\
+             - Write like a person in that community: plain and specific, no marketing words, no hashtags, no emoji. Match the thread's language.\n\
+             - One reply per thread. Don't reply to these, they're already answered or skipped:\n{}",
+            list(answered)
+        ));
+    }
+    steps.push(match posting.as_slice() {
+        [] => format!("Don't draft original posts. Only replies go out on {find}."),
+        [_] => format!("Draft 2 or 3 original posts on {post_on}."),
+        _ => format!("Draft 2 or 3 original posts in all, each on the one of {post_on} where its readers are."),
+    });
+    if !posting.is_empty() {
+        sections.push(format!(
+            "Rules for original posts:\n\
+             - Share something a buyer would want to read, like a lesson, a how-to or a question to the community. Not an announcement or an ad.\n\
+             - Mention {name} at most once, and say you work on it.\n\
+             - Don't repeat these earlier posts:\n{earlier}"
+        ));
+    }
+    let steps = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect::<Vec<_>>().join("\n");
+    let rules = platforms.iter().map(|p| format!("- {}", rules(p, name, &accounts))).collect::<Vec<_>>().join("\n");
     call.prompt = format!(
-        "Find recent conversations on {where_} where people who could buy from {name} talk about a problem it solves, and draft replies \
-         that join them, plus a few original posts.\n\n\
+        "{task}\n\n\
          About {name}:\n{brief}\n\n\
          {tools}\n\n\
-         Steps:\n\
-         1. From the brief, list the problems {name} solves in the words its buyers would use, and where they talk about them.\n\
-         2. Search for threads from the last 30 days where someone asks for help or a recommendation, or complains about one of those \
-         problems. Run several searches with different wordings. Read a thread before you reply to it.\n\
-         3. Draft up to 10 replies, to the threads where a reply helps the most. Fewer good ones beat many weak ones.\n\
-         {originals}\n\n\
-         Rules for replies:\n\
-         - Answer the thread's actual question. Each reply must be useful on its own, to someone who never clicks anything.\n\
-         - Mention {name} only when it directly fits the question, plainly and at most once, never as an ad. When you mention it, say \
-         you work on it. Most replies should not mention it at all.\n\
-         - No links unless they add something the reply can't.\n\
-         - Skip threads older than 30 days, locked threads or ones with replies turned off, and threads where a reply from a company \
-         would be spam.\n\
-         - Write like a person in that community: plain and specific, no marketing words, no hashtags, no emoji. Match the thread's language.\n\
-         - One reply per thread. Don't reply to these, they're already answered or skipped:\n{answered}\n\n\
-         Rules for original posts:\n\
-         - Share something a buyer would want to read, like a lesson, a how-to or a question to the community. Not an announcement or an ad.\n\
-         - Don't repeat these earlier posts:\n{earlier}\n\n\
+         Steps:\n{steps}\n\n\
+         {sections}\n\n\
          Rules for each platform:\n{rules}",
         brief = profile.brief(project.domain.as_deref()),
         tools = tools.join("\n"),
-        answered = list(answered),
+        sections = sections.join("\n\n"),
     );
     call.budget_usd = 2.0;
     call.timeout = Duration::from_secs(12 * 60);
@@ -297,7 +349,8 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
 }
 
 /// Each platform's limits and norms, for the prompt. The limits match social::max_length.
-fn rules(platform: &str, company: &str, mastodon_chars: usize) -> String {
+fn rules(platform: &str, company: &str, a: &Accounts) -> String {
+    let mastodon_chars = a.mastodon_chars();
     match platform {
         "x" => "X: replies and posts are at most 280 characters.".into(),
         "reddit" => format!(
@@ -312,6 +365,16 @@ fn rules(platform: &str, company: &str, mastodon_chars: usize) -> String {
         "threads" => "Threads: replies and posts are at most 500 characters.".into(),
         "youtube" => "YouTube: comment on a video, or reply to one of its top comments by that comment's link. No original posts. Keep \
                       comments under 500 characters, and leave links out, since YouTube hides comments with links as spam."
+            .into(),
+        "stackexchange" => format!(
+            "Stack Exchange: answer questions on {}, in Markdown, between 30 and 30,000 characters. No original posts. Only answer a \
+             question you can solve completely, with the steps or code that fix the asker's problem, since an answer that only points \
+             elsewhere gets deleted. If you mention {company}, say in the same sentence that you work on it, as the site's rules require.",
+            a.stackexchange_site
+        ),
+        "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
+                  lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
+                  something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
             .into(),
         _ => "LinkedIn: comments are at most 1250 characters and posts at most 3000. Comment on posts, not on other comments. Keep it \
               professional and first-person, in short paragraphs, with no hashtag lists. Leave links out of posts, since LinkedIn shows \
@@ -366,19 +429,23 @@ async fn save(
         if !platforms.contains(&p.platform.as_str()) || !takes_posts(&p.platform) || !fits(&p.platform, false, body, mastodon_chars) {
             continue;
         }
-        let (sr, title) = match p.platform.as_str() {
-            "reddit" => match (subreddit(&p.subreddit), p.title.trim()) {
-                (Some(sr), title) if !title.is_empty() && title.chars().count() <= 300 => (sr, title),
+        let title = p.title.trim();
+        let (sr, title, tags) = match p.platform.as_str() {
+            "reddit" => match subreddit(&p.subreddit) {
+                Some(sr) if !title.is_empty() && title.chars().count() <= 300 => (sr, title, Vec::new()),
                 _ => continue,
             },
-            _ => (String::new(), ""),
+            "dev" if !title.is_empty() && title.chars().count() <= crate::dev::TITLE_CHARS => (String::new(), title, crate::dev::tags(&p.tags)),
+            "dev" => continue,
+            _ => (String::new(), "", Vec::new()),
         };
-        sqlx::query("insert into social_posts (project_id, run_id, platform, subreddit, title, body, reason) values ($1, $2, $3, $4, $5, $6, $7)")
+        sqlx::query("insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason) values ($1, $2, $3, $4, $5, $6, $7, $8)")
             .bind(project_id)
             .bind(run_id)
             .bind(&p.platform)
             .bind(sr)
             .bind(title)
+            .bind(tags)
             .bind(body)
             .bind(p.reason.trim())
             .execute(db)
@@ -402,6 +469,7 @@ mod tests {
             ("https://www.linkedin.com/posts/sam-lee_cold-email-activity-7236734771807019010-AbCd", "https://www.linkedin.com/feed/update/urn:li:activity:7236734771807019010/"),
             ("https://www.threads.net/@Ana/post/DCx9q?id=18012345", "https://www.threads.com/@ana/post/DCx9q?id=18012345"),
             ("https://youtu.be/dQw4w9WgXcQ?t=3", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            ("https://stackoverflow.com/questions/79724206/firebase-auth", "https://stackoverflow.com/questions/79724206"),
         ] {
             assert_eq!(canonical(link).as_deref(), Some(canonical_link), "{link}");
         }
@@ -429,12 +497,15 @@ mod tests {
             ("https://x.com/i/status/42".to_string(), thread("x", false, 1)),
             ("https://bsky.app/profile/did:plc:ana/post/3kq2xyz".to_string(), thread("bluesky", false, 1)),
             ("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(), thread("youtube", false, 3)),
+            ("https://stackoverflow.com/questions/7".to_string(), thread("stackexchange", false, 3)),
+            ("https://stackoverflow.com/questions/8".to_string(), thread("stackexchange", false, 3)),
         ]);
         let reply = |url: &str, body: &str| Reply { thread_url: url.into(), reason: "Asks for it".into(), body: body.into() };
         let post = |platform: &str, subreddit: &str, title: &str| Post {
             platform: platform.into(),
             subreddit: subreddit.into(),
             title: title.into(),
+            tags: vec!["Cold Email".into(), "sales".into()],
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
@@ -449,24 +520,41 @@ mod tests {
                 // 301 graphemes is over Bluesky's limit.
                 reply("at://did:plc:ana/app.bsky.feed.post/3kq2xyz", &"é".repeat(301)),
                 reply("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s", "Same here"),
+                reply("https://stackoverflow.com/questions/7/how-to-warm-up", "Warm it up over four weeks, starting at 20 a day."),
+                // Under Stack Exchange's 30 characters.
+                reply("https://stackoverflow.com/q/8", "Use a pool."),
             ],
-            // YouTube only takes comments.
-            posts: vec![post("reddit", "r/sales", "What works for you?"), post("reddit", "sales", ""), post("x", "", ""), post("linkedin", "", ""), post("youtube", "", "")],
+            // YouTube and Stack Exchange only take replies, and a DEV article needs a title.
+            posts: vec![
+                post("reddit", "r/sales", "What works for you?"),
+                post("reddit", "sales", ""),
+                post("x", "", ""),
+                post("linkedin", "", ""),
+                post("youtube", "", ""),
+                post("stackexchange", "", ""),
+                post("dev", "", "Warming up a domain"),
+                post("dev", "", ""),
+            ],
         };
 
-        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky", "youtube"], 500, drafts(), &seen).await.unwrap(), (2, 2));
+        let platforms = ["x", "reddit", "bluesky", "youtube", "stackexchange", "dev"];
+        assert_eq!(save(&db, project, run, &platforms, 500, drafts(), &seen).await.unwrap(), (3, 3));
         let rows: Vec<(String, Option<String>, String, String, String)> =
             sqlx::query_as("select platform, in_reply_to, context, subreddit, title from social_posts order by in_reply_to nulls last, platform")
                 .fetch_all(&db)
                 .await
                 .unwrap();
         assert_eq!(rows, [
+            ("stackexchange".into(), Some("https://stackoverflow.com/questions/7".into()), "How do you find leads?".into(), String::new(), String::new()),
             ("reddit".into(), Some("https://www.reddit.com/comments/open1/".into()), "How do you find leads?".into(), "sales".into(), String::new()),
             ("youtube".into(), Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()), "How do you find leads?".into(), String::new(), String::new()),
+            ("dev".into(), None, String::new(), String::new(), "Warming up a domain".into()),
             ("reddit".into(), None, String::new(), "sales".into(), "What works for you?".into()),
             ("x".into(), None, String::new(), String::new(), String::new()),
         ]);
+        let tags: Vec<String> = sqlx::query_scalar("select tags from social_posts where platform = 'dev'").fetch_one(&db).await.unwrap();
+        assert_eq!(tags, ["coldemail", "sales"]);
         // A second run doesn't draft for the same thread again.
-        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky", "youtube"], 500, drafts(), &seen).await.unwrap().0, 0);
+        assert_eq!(save(&db, project, run, &platforms, 500, drafts(), &seen).await.unwrap().0, 0);
     }
 }

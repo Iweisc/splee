@@ -27,6 +27,8 @@ const PLATFORMS: Record<Platform, string> = {
   threads: "Threads",
   linkedin: "LinkedIn",
   youtube: "YouTube",
+  stackexchange: "Stack Exchange",
+  dev: "DEV",
 };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
@@ -36,19 +38,29 @@ const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = 
 ];
 const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
-  approved: { title: "Nothing waiting to post", text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, or 5 on LinkedIn." },
+  approved: {
+    title: "Nothing waiting to post",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, 5 on LinkedIn and Stack Exchange, and 2 on DEV.",
+  },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
 /** LinkedIn goes out through the Unipile connection for LinkedIn sending. */
 const isConnected = (s: ProjectSettings, p: Platform) => (p === "linkedin" ? s.unipile_connected : s[`${p}_connected`]);
-const dailyCap = (p: Platform) => (p === "linkedin" ? 5 : 15);
-/** YouTube only takes comments, like social::takes_posts on the backend. */
-const takesPosts = (p: Platform) => p !== "youtube";
+/** Like social::daily_cap on the backend. */
+const dailyCap = (p: Platform) => (p === "linkedin" || p === "stackexchange" ? 5 : p === "dev" ? 2 : 15);
+/** YouTube only takes comments and Stack Exchange answers, like social::takes_posts on the backend. */
+const takesPosts = (p: Platform) => p !== "youtube" && p !== "stackexchange";
+/** Stack Exchange turns down answers under 30 characters, like social::min_length on the backend. */
+const minLength = (p: Platform) => (p === "stackexchange" ? 30 : 1);
+/** Like dev::TITLE_CHARS on the backend. */
+const DEV_TITLE_CHARS = 128;
+/** Tags as typed, like "webdev, productivity". The backend keeps letters and digits and the first 4. */
+const tagList = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
 
-/** The most a reply or post can hold, like social::max_length on the backend. Reddit's and YouTube's limits are far above any
- *  reply, so they get no counter. */
+/** The most a reply or post can hold, like social::max_length on the backend. Reddit's, YouTube's, Stack Exchange's and DEV's
+ *  limits are far above any reply, so they get no counter. */
 function maxLength(p: Platform, reply: boolean, mastodonChars: number): number | null {
   if (p === "x") return 280;
   if (p === "bluesky") return 300;
@@ -102,7 +114,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, and videos on YouTube, where your buyers talk about the problem you solve, and drafts helpful replies and a few posts. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and DEV articles. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -133,8 +145,8 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                 </LinkButton>
               }
             >
-              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads or YouTube, or LinkedIn sending, on the
-              integrations page.
+              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange or DEV, or
+              LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
@@ -190,20 +202,24 @@ function Composer({
   const [body, setBody] = useState("");
   const [title, setTitle] = useState("");
   const [subreddit, setSubreddit] = useState("");
+  const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
+  const dev = on === "dev";
   const max = maxLength(on, false, mastodonChars);
-  const ready = !!body.trim() && (reddit ? !!title.trim() && !!subreddit.trim() : max === null || length(on, body) <= max);
+  const ready =
+    !!body.trim() && (reddit ? !!title.trim() && !!subreddit.trim() : dev ? !!title.trim() : max === null || length(on, body) <= max);
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
-      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, subreddit, status: "approved" } });
+      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, subreddit, tags: tagList(tags), status: "approved" } });
       await onAdded();
       setBody("");
       setTitle("");
+      setTags("");
       toast.success(`Queued for ${PLATFORMS[on]}`);
     } catch (e) {
       toastError(e);
@@ -216,7 +232,7 @@ function Composer({
     <Card className="p-4 sm:p-5">
       <form onSubmit={add} className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="font-medium">Write a post</p>
+          <p className="font-medium">{dev ? "Write an article" : "Write a post"}</p>
           {/* Several platforms don't fit next to the heading on a phone, so phones get a select instead. */}
           {platforms.length > 1 && (
             <>
@@ -241,10 +257,13 @@ function Composer({
             </Field>
           </div>
         )}
+        {dev && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
         <Textarea
-          aria-label="Post"
-          rows={3}
-          placeholder={reddit ? "What you want to share or ask" : on === "linkedin" ? "What you want to share" : "What's happening"}
+          aria-label={dev ? "Article" : "Post"}
+          rows={dev ? 6 : 3}
+          placeholder={
+            reddit ? "What you want to share or ask" : dev ? "Your article, in Markdown" : on === "linkedin" ? "What you want to share" : "What's happening"
+          }
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
@@ -258,11 +277,25 @@ function Composer({
             Goes out within ten minutes, up to {dailyCap(on)} a day.
           </p>
           <Button type="submit" size="sm" loading={busy} disabled={!ready} className="max-sm:ml-auto">
-            <Send className="size-3.5" /> Queue post
+            <Send className="size-3.5" /> {dev ? "Queue article" : "Queue post"}
           </Button>
         </div>
       </form>
     </Card>
+  );
+}
+
+/** A DEV article's title and tags. */
+function ArticleFields({ title, tags, setTitle, setTags }: { title: string; tags: string; setTitle: (s: string) => void; setTags: (s: string) => void }) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row">
+      <Field label="Title" className="flex-1">
+        <Input autoComplete="off" maxLength={DEV_TITLE_CHARS} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </Field>
+      <Field label="Up to 4 tags" className="sm:w-64">
+        <Input autoComplete="off" placeholder="webdev, productivity" value={tags} onChange={(e) => setTags(e.target.value)} />
+      </Field>
+    </div>
   );
 }
 
@@ -286,6 +319,7 @@ const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> =
 /** YouTube links to a comment with `lc`, and a reply to one goes in its thread. */
 function replyingTo(p: SocialPost): string {
   if (p.platform === "linkedin") return "Commenting on this post";
+  if (p.platform === "stackexchange") return "Answering this question";
   if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
   return "Replying to this thread";
 }
@@ -295,24 +329,39 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
   const [body, setBody] = useState(p.body);
   const [title, setTitle] = useState(p.title);
   const [subreddit, setSubreddit] = useState(p.subreddit);
+  const [tags, setTags] = useState(p.tags.join(", "));
   const [saving, setSaving] = useState<string | null>(null);
   const reply = !!p.in_reply_to;
   const redditPost = p.platform === "reddit" && !reply;
+  const article = p.platform === "dev";
   const posted = p.status === "posted";
-  const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit;
+  const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit || tagList(tags).join(",") !== p.tags.join(",");
   const max = maxLength(p.platform, reply, mastodonChars);
-  const tooLong = max !== null && length(p.platform, body) > max;
-  // LinkedIn and YouTube call a reply a comment.
-  const kind = reply ? (p.platform === "linkedin" || p.platform === "youtube" ? "comment" : "reply") : "post";
+  const n = length(p.platform, body.trim());
+  // What the backend turns down for an approved post, so those buttons stay off until it fits.
+  const tooShort = n < minLength(p.platform);
+  const unfit = (max !== null && n > max) || tooShort || (article && !title.trim());
+  // LinkedIn and YouTube call a reply a comment, Stack Exchange an answer, and DEV a post an article.
+  const kind = reply
+    ? p.platform === "linkedin" || p.platform === "youtube"
+      ? "comment"
+      : p.platform === "stackexchange"
+        ? "answer"
+        : "reply"
+    : article
+      ? "article"
+      : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
     try {
-      const fresh = await api<SocialPost>(`/social/${p.id}`, { method: "PATCH", body: { body, title, subreddit, status } });
-      // The backend trims the text and writes "r/sales" as "sales", which would otherwise leave the card looking unsaved.
+      const fresh = await api<SocialPost>(`/social/${p.id}`, { method: "PATCH", body: { body, title, subreddit, tags: tagList(tags), status } });
+      // The backend trims the text, writes "r/sales" as "sales" and "Web Dev" as "webdev", which would otherwise leave the card
+      // looking unsaved.
       setBody(fresh.body);
       setTitle(fresh.title);
       setSubreddit(fresh.subreddit);
+      setTags(fresh.tags.join(", "));
       await onChange();
     } catch (e) {
       toastError(e);
@@ -363,6 +412,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
         {posted ? (
           <>
             {p.title && <p className="font-medium">{p.title}</p>}
+            {p.tags.length > 0 && <p className="text-xs text-muted-foreground">{p.tags.map((t) => `#${t}`).join(" ")}</p>}
             <p className="text-sm whitespace-pre-wrap">{p.body}</p>
             {p.url && (
               <a href={p.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 self-start text-sm hover:underline">
@@ -382,6 +432,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
                 </Field>
               </div>
             )}
+            {article && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
             <div className="flex flex-col gap-1">
               <MicroLabel>Your {kind}</MicroLabel>
               {/* Grows with the text, so a long reply can be read without scrolling inside the box. */}
@@ -397,6 +448,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
                   <CharCount n={length(p.platform, body)} max={max} />
                 </p>
               )}
+              {tooShort && n > 0 && <p className="text-right text-xs text-muted-foreground">Needs at least {minLength(p.platform)} characters</p>}
             </div>
           </>
         )}
@@ -422,7 +474,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
             <span className="flex-1" />
             {/* Failed and skipped posts keep their edits through Approve again. */}
             {dirty && (p.status === "draft" || p.status === "approved") && (
-              <Button size="sm" variant="ghost" onClick={() => save()} loading={saving === "save"} disabled={!!saving || (p.status === "approved" && tooLong)}>
+              <Button size="sm" variant="ghost" onClick={() => save()} loading={saving === "save"} disabled={!!saving || (p.status === "approved" && unfit)}>
                 Save
               </Button>
             )}
@@ -432,7 +484,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
               </Button>
             )}
             {p.status !== "approved" && (
-              <Button size="sm" variant="outline" onClick={() => save("approved")} loading={saving === "approved"} disabled={!!saving || tooLong}>
+              <Button size="sm" variant="outline" onClick={() => save("approved")} loading={saving === "approved"} disabled={!!saving || unfit}>
                 <Check className="size-3.5" /> {p.status === "draft" ? "Approve" : "Approve again"}
               </Button>
             )}

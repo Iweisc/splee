@@ -1,6 +1,7 @@
-//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, and comments for YouTube, that a
-//! social run drafted or the user wrote, which crate::social posts once approved, and connecting the accounts they go out from.
-//! LinkedIn goes out through the project's Unipile connection, see routes::linkedin.
+//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, comments for YouTube, answers
+//! for Stack Exchange and articles for DEV, that a social run drafted or the user wrote, which crate::social posts once
+//! approved, and connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see
+//! routes::linkedin.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post, put};
@@ -16,11 +17,13 @@ use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::bluesky::{self, Bluesky};
 use crate::crypto;
+use crate::dev::{self, Dev};
 use crate::error::{AppError, AppResult};
 use crate::models::{ProjectSettings, SocialPost};
 use crate::mastodon::{self, Mastodon};
 use crate::reddit::{self, Login, Reddit};
-use crate::social::{self, Failure, PLATFORMS, length, max_length, takes_posts};
+use crate::social::{self, Failure, PLATFORMS, length, max_length, min_length, takes_posts};
+use crate::stackexchange::{self, StackExchange};
 use crate::state::AppState;
 use crate::threads::Threads;
 use crate::youtube::{self, YouTube};
@@ -38,6 +41,8 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/mastodon", put(connect_mastodon).delete(disconnect_mastodon))
         .route("/projects/{id}/integrations/threads", put(connect_threads).delete(disconnect_threads))
         .route("/projects/{id}/integrations/youtube", put(connect_youtube).delete(disconnect_youtube))
+        .route("/projects/{id}/integrations/stackexchange", put(connect_stackexchange).delete(disconnect_stackexchange))
+        .route("/projects/{id}/integrations/dev", put(connect_dev).delete(disconnect_dev))
 }
 
 #[derive(Deserialize)]
@@ -63,27 +68,50 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Q
     Ok(Json(posts))
 }
 
-/// What a post needs before it can go out: text within the platform's limit, a subreddit and title for a new Reddit post, and
-/// a video to comment on for YouTube.
+/// What a post needs before it can go out: text within the platform's limits, a subreddit and title for a new Reddit post, a
+/// title for a DEV article, and something to answer for YouTube and Stack Exchange.
 fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, mastodon_chars: usize) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::BadRequest("Write something first".into()));
     }
     if !reply && !takes_posts(platform) {
-        return Err(AppError::BadRequest(format!("{} only takes comments", social::name(platform))));
+        let what = if platform == "stackexchange" { "answers" } else { "comments" };
+        return Err(AppError::BadRequest(format!("{} only takes {what}", social::name(platform))));
     }
-    let max = max_length(platform, reply, mastodon_chars);
-    if length(platform, body.trim()) > max {
-        let what = if matches!(platform, "linkedin" | "youtube") && reply { "Comments" } else if reply { "Replies" } else { "Posts" };
+    let what = match (platform, reply) {
+        ("stackexchange", _) => "Answers",
+        ("dev", _) => "Articles",
+        ("linkedin" | "youtube", true) => "Comments",
+        (_, true) => "Replies",
+        _ => "Posts",
+    };
+    let (min, max, n) = (min_length(platform), max_length(platform, reply, mastodon_chars), length(platform, body.trim()));
+    if n > max {
         return Err(AppError::BadRequest(format!("{what} on {} are at most {max} characters", social::name(platform))));
+    }
+    if n < min {
+        return Err(AppError::BadRequest(format!("{what} on {} are at least {min} characters", social::name(platform))));
     }
     if platform == "reddit" && !reply && (subreddit.is_empty() || title.trim().is_empty()) {
         return Err(AppError::BadRequest("A Reddit post needs a subreddit and a title".into()));
+    }
+    if platform == "dev" {
+        if title.trim().is_empty() {
+            return Err(AppError::BadRequest("A DEV article needs a title".into()));
+        }
+        if title.chars().count() > dev::TITLE_CHARS {
+            return Err(AppError::BadRequest(format!("DEV titles are at most {} characters", dev::TITLE_CHARS)));
+        }
     }
     if title.chars().count() > 300 {
         return Err(AppError::BadRequest("Reddit titles are at most 300 characters".into()));
     }
     Ok(())
+}
+
+/// Reddit original posts and DEV articles have a title.
+fn titled(platform: &str, reply: bool) -> bool {
+    matches!(platform, "reddit" | "dev") && !reply
 }
 
 /// The project's Mastodon instance's post limit, for `check`.
@@ -118,6 +146,8 @@ struct CreateBody {
     title: String,
     #[serde(default)]
     subreddit: String,
+    #[serde(default)]
+    tags: Vec<String>,
     /// "draft" (the default) or "approved".
     status: Option<String>,
 }
@@ -128,18 +158,21 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     util_input::one_of("platform", &b.platform, &PLATFORMS)?;
     let status = b.status.as_deref().unwrap_or("draft");
     util_input::one_of("status", status, &["draft", "approved"])?;
-    let (subreddit, title) = if b.platform == "reddit" { (subreddit_input(&b.subreddit)?, b.title.trim()) } else { (String::new(), "") };
+    let subreddit = if b.platform == "reddit" { subreddit_input(&b.subreddit)? } else { String::new() };
+    let title = if titled(&b.platform, false) { b.title.trim() } else { "" };
+    let tags = if b.platform == "dev" { dev::tags(&b.tags) } else { Vec::new() };
     check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
     if status == "approved" {
         require_account(&state, id, &b.platform).await?;
     }
     let post = sqlx::query_as::<_, SocialPost>(
-        "insert into social_posts (project_id, platform, subreddit, title, body, status) values ($1, $2, $3, $4, $5, $6) returning *",
+        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status) values ($1, $2, $3, $4, $5, $6, $7) returning *",
     )
     .bind(id)
     .bind(&b.platform)
     .bind(subreddit)
     .bind(title)
+    .bind(tags)
     .bind(b.body.trim())
     .bind(status)
     .fetch_one(&state.db)
@@ -152,6 +185,7 @@ struct UpdateBody {
     body: Option<String>,
     title: Option<String>,
     subreddit: Option<String>,
+    tags: Option<Vec<String>>,
     status: Option<String>,
 }
 
@@ -166,23 +200,26 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     }
     let reply = post.in_reply_to.is_some();
     let body = b.body.map(|s| s.trim().to_string()).unwrap_or(post.body);
-    let (subreddit, title) = match (post.platform.as_str(), reply) {
-        ("reddit", false) => (b.subreddit.map(|s| subreddit_input(&s)).transpose()?.unwrap_or(post.subreddit), b.title.map(|t| t.trim().to_string()).unwrap_or(post.title)),
-        _ => (post.subreddit, post.title),
+    let subreddit = match (post.platform.as_str(), reply) {
+        ("reddit", false) => b.subreddit.map(|s| subreddit_input(&s)).transpose()?.unwrap_or(post.subreddit),
+        _ => post.subreddit,
     };
+    let title = if titled(&post.platform, reply) { b.title.map(|t| t.trim().to_string()).unwrap_or(post.title) } else { post.title };
+    let tags = if post.platform == "dev" { b.tags.map(|t| dev::tags(&t)).unwrap_or(post.tags) } else { post.tags };
     if status == "approved" {
         check(&post.platform, reply, &subreddit, &title, &body, mastodon_chars(&state, post.project_id).await?)?;
         require_account(&state, post.project_id, &post.platform).await?;
     }
     let updated = sqlx::query_as::<_, SocialPost>(
-        "update social_posts set body = $2, title = $3, subreddit = $4, status = $5,
-           error = case when $5 = status then error end, updated_at = now()
+        "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6,
+           error = case when $6 = status then error end, updated_at = now()
          where id = $1 and status not in ('posting', 'posted') returning *",
     )
     .bind(id)
     .bind(body)
     .bind(title)
     .bind(subreddit)
+    .bind(tags)
     .bind(&status)
     .fetch_optional(&state.db)
     .await?
@@ -203,7 +240,7 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.project(&state.db, id).await?;
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
-        return Err(AppError::BadRequest("Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube or LinkedIn sending on the integrations page first".into()));
+        return Err(AppError::BadRequest("Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV or LinkedIn sending on the integrations page first".into()));
     }
     let busy: bool = sqlx::query_scalar("select exists (select 1 from agent_runs where project_id = $1 and kind = $2 and status in ('queued', 'running'))")
         .bind(id)
@@ -472,6 +509,90 @@ async fn set_youtube(state: &AppState, id: Uuid, client_id: &str, secret: &str, 
     Ok(Json(settings))
 }
 
+#[derive(Deserialize)]
+struct StackExchangeBody {
+    key: String,
+    token: String,
+    site: String,
+}
+
+/// Saves the key and token once Stack Exchange says the token can write and has a user on the site, with that user.
+async fn connect_stackexchange(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<StackExchangeBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let (key, token) = (b.key.trim(), b.token.trim());
+    if key.is_empty() || token.is_empty() || b.site.trim().is_empty() {
+        return Err(AppError::BadRequest("Fill in the key, access token and site".into()));
+    }
+    let site = stackexchange::site_input(&b.site).ok_or_else(|| AppError::BadRequest(format!("{} isn't a Stack Exchange site", b.site.trim())))?;
+    let refused = |e: Failure| AppError::BadRequest(e.message());
+    let se = StackExchange::new(key, token, &site).map_err(refused)?;
+    if !se.can_write().await.map_err(refused)? {
+        return Err(AppError::BadRequest("The access token can't post answers. Make one with the write_access scope".into()));
+    }
+    let user = se.me().await.map_err(refused)?;
+    let enc = crypto::encrypt(&state.cfg.app_secret, token);
+    set_stackexchange(&state, id, key, &enc, &user.site, &user.account, &user.name).await
+}
+
+async fn disconnect_stackexchange(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_stackexchange(&state, id, "", "", "", "", "").await
+}
+
+async fn set_stackexchange(state: &AppState, id: Uuid, key: &str, token: &str, site: &str, account: &str, user: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set stackexchange_key = $2, stackexchange_token_enc = $3, stackexchange_site = $4, stackexchange_account = $5,
+           stackexchange_user = $6, stackexchange_error = null, stackexchange_failed_at = null, stackexchange_backoff_until = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(key)
+    .bind(token)
+    .bind(site)
+    .bind(account)
+    .bind(user)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct DevBody {
+    key: String,
+}
+
+/// Saves the API key once DEV accepts it, with the account's username.
+async fn connect_dev(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<DevBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let key = b.key.trim();
+    if key.is_empty() {
+        return Err(AppError::BadRequest("Paste the API key".into()));
+    }
+    let username = Dev::new(key).map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
+    set_dev(&state, id, &crypto::encrypt(&state.cfg.app_secret, key), &username).await
+}
+
+async fn disconnect_dev(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_dev(&state, id, "", "").await
+}
+
+async fn set_dev(state: &AppState, id: Uuid, key: &str, username: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set dev_key_enc = $2, dev_username = $3, dev_error = null, dev_failed_at = null where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(key)
+    .bind(username)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +603,17 @@ mod tests {
         assert!(matches!(check("youtube", false, "", "", "A lesson", 500), Err(AppError::BadRequest(m)) if m == "YouTube only takes comments"));
         assert!(check("threads", false, "", "", &"a".repeat(500), 500).is_ok());
         assert!(matches!(check("threads", true, "", "", &"a".repeat(501), 500), Err(AppError::BadRequest(m)) if m == "Replies on Threads are at most 500 characters"));
+    }
+
+    #[test]
+    fn stack_exchange_takes_answers_only_and_dev_articles_need_a_title() {
+        let answer = "Set the pool size to the number of cores.";
+        assert!(check("stackexchange", true, "", "", answer, 500).is_ok());
+        assert!(matches!(check("stackexchange", false, "", "", answer, 500), Err(AppError::BadRequest(m)) if m == "Stack Exchange only takes answers"));
+        let short = check("stackexchange", true, "", "", "Use a pool.", 500);
+        assert!(matches!(short, Err(AppError::BadRequest(m)) if m == "Answers on Stack Exchange are at least 30 characters"));
+        assert!(check("dev", false, "", "Warming up a domain", "# Day one", 500).is_ok());
+        assert!(matches!(check("dev", false, "", " ", "# Day one", 500), Err(AppError::BadRequest(m)) if m == "A DEV article needs a title"));
+        assert!(matches!(check("dev", false, "", &"a".repeat(129), "Hi", 500), Err(AppError::BadRequest(m)) if m == "DEV titles are at most 128 characters"));
     }
 }
