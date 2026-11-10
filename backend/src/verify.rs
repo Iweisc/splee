@@ -1,6 +1,6 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
-//! Reoon, DeBounce, Bouncify, QuickEmailVerification and MailboxValidator take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
+//! Reoon, DeBounce, Bouncify, QuickEmailVerification, MailboxValidator and MyEmailVerifier take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
 //! Anymail Finder, LeadMagic, Apollo, Voila Norbert or Skrapp.
 
@@ -42,6 +42,7 @@ pub enum Verifier {
     QuickEmailVerification,
     Abstract,
     MailboxValidator,
+    MyEmailVerifier,
 }
 
 impl Verifier {
@@ -61,6 +62,7 @@ impl Verifier {
             "quickemailverification" => Some(Verifier::QuickEmailVerification),
             "abstract" => Some(Verifier::Abstract),
             "mailboxvalidator" => Some(Verifier::MailboxValidator),
+            "myemailverifier" => Some(Verifier::MyEmailVerifier),
             _ => None,
         }
     }
@@ -81,6 +83,7 @@ impl Verifier {
             Verifier::QuickEmailVerification => "QuickEmailVerification",
             Verifier::Abstract => "Abstract API",
             Verifier::MailboxValidator => "MailboxValidator",
+            Verifier::MyEmailVerifier => "MyEmailVerifier",
         }
     }
 
@@ -112,6 +115,12 @@ impl Verifier {
             Verifier::Abstract => abstract_get(Url::parse_with_params(ABSTRACT, [("email", "check@example.com")])?, key).await.map(|_| ()),
             // MailboxValidator has no free call either, and asks for an address before it looks at the key.
             Verifier::MailboxValidator => mbv_get(Url::parse_with_params(MBV, [("email", "check@example.com"), ("key", key)])?).await.map(|_| ()),
+            // The balance costs nothing. The key goes in the path, as a segment of its own.
+            Verifier::MyEmailVerifier => {
+                let mut url = Url::parse("https://client.myemailverifier.com/verifier/getcredits")?;
+                url.path_segments_mut().map_err(|_| anyhow::anyhow!("bad URL"))?.push(key);
+                mev_get(url).await.map(|_| ())
+            }
         }
     }
 
@@ -174,6 +183,10 @@ impl Verifier {
             Verifier::QuickEmailVerification => Ok(qev_verdict(&qev_get(Url::parse_with_params(QEV, [("email", email), ("apikey", key)])?).await?)),
             Verifier::Abstract => Ok(abstract_verdict(&abstract_get(Url::parse_with_params(ABSTRACT, [("email", email)])?, key).await?)),
             Verifier::MailboxValidator => Ok(mbv_verdict(&mbv_get(Url::parse_with_params(MBV, [("email", email), ("key", key)])?).await?)),
+            Verifier::MyEmailVerifier => {
+                let url = Url::parse_with_params("https://api.myemailverifier.com/api/validate_single.php", [("apikey", key), ("email", email)])?;
+                Ok(mev_verdict(&mev_get(url).await?))
+            }
         }
     }
 }
@@ -878,6 +891,35 @@ fn mbv_verdict(body: &Value) -> Verdict {
     if body["status"] == true { Verdict::Valid } else { Verdict::Unsure }
 }
 
+/// MyEmailVerifier answers a wrong key with a 401 on the balance and a 200 on a verification, and either way puts the
+/// failure in `{status: "error" or false, error, message}`. A result has `Status` instead.
+async fn mev_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    let said = |key: &str| body[key].as_str().unwrap_or_default().to_ascii_lowercase();
+    let failed = !status.is_success() || body["status"] == "error" || body["status"] == false;
+    if failed {
+        anyhow::ensure!(!said("error").contains("credit") && !said("message").contains("credit"), "the account is out of credits");
+        let rejected = status == reqwest::StatusCode::UNAUTHORIZED || ["unauthorized", "invalid_api_key"].contains(&said("error").as_str());
+        anyhow::ensure!(!rejected, "the API key was rejected");
+        anyhow::bail!("{}", body["message"].as_str().unwrap_or(status.as_str()));
+    }
+    Ok(body)
+}
+
+/// MyEmailVerifier's flags are the strings "true" and "false". A catch-all or greylisting server, or an Unknown, sends as
+/// it would without a verifier.
+fn mev_verdict(body: &Value) -> Verdict {
+    let flag = |key: &str| body[key] == "true" || body[key] == true;
+    match body["Status"].as_str().unwrap_or_default() {
+        _ if flag("Disposable_Domain") => Verdict::Invalid,
+        "Invalid" => Verdict::Invalid,
+        "Valid" if !flag("catch_all") && !flag("Greylisted") => Verdict::Valid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -982,6 +1024,18 @@ mod tests {
         assert_eq!(mbv(json!({"is_verified": null, "is_server_down": true, "status": false})), Verdict::Unsure);
         // A role address that exists, which MailboxValidator's status turns down.
         assert_eq!(mbv(json!({"status": false})), Verdict::Unsure);
+        // MyEmailVerifier's documented answers, with its flags as strings.
+        let mev = |status: &str, flags: Value| {
+            let mut body = json!({"Status": status, "catch_all": "false", "Disposable_Domain": "false", "Greylisted": "false"});
+            body.as_object_mut().unwrap().extend(flags.as_object().unwrap().clone());
+            mev_verdict(&body)
+        };
+        assert_eq!(mev("Valid", json!({})), Verdict::Valid);
+        assert_eq!(mev("Invalid", json!({})), Verdict::Invalid);
+        assert_eq!(mev("Valid", json!({"Disposable_Domain": "true"})), Verdict::Invalid);
+        assert_eq!(mev("Catch-all", json!({"catch_all": "true"})), Verdict::Unsure);
+        assert_eq!(mev("Valid", json!({"catch_all": "true"})), Verdict::Unsure);
+        assert_eq!(mev("Unknown", json!({"Greylisted": "true"})), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
