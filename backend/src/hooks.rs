@@ -183,6 +183,10 @@ pub enum Alert {
     Bluesky,
     /// Matched on mastodon_token_enc.
     Mastodon,
+    /// Matched on threads_token_enc.
+    Threads,
+    /// Matched on youtube_token_enc, the refresh token.
+    YouTube,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -202,6 +206,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Reddit => ("reddit", "reddit_password_enc".to_string()),
         Alert::Bluesky => ("bluesky", "bluesky_password_enc".to_string()),
         Alert::Mastodon => ("mastodon", "mastodon_token_enc".to_string()),
+        Alert::Threads => ("threads", "threads_token_enc".to_string()),
+        Alert::YouTube => ("youtube", "youtube_token_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

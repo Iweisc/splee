@@ -19,7 +19,15 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 type Platform = SocialPost["platform"];
 type Tab = "draft" | "approved" | "posted" | "closed";
 
-const PLATFORMS: Record<Platform, string> = { x: "X", reddit: "Reddit", bluesky: "Bluesky", mastodon: "Mastodon", linkedin: "LinkedIn" };
+const PLATFORMS: Record<Platform, string> = {
+  x: "X",
+  reddit: "Reddit",
+  bluesky: "Bluesky",
+  mastodon: "Mastodon",
+  threads: "Threads",
+  linkedin: "LinkedIn",
+  youtube: "YouTube",
+};
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
   { value: "approved", label: "Approved", statuses: ["approved", "posting"] },
@@ -36,13 +44,16 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
 /** LinkedIn goes out through the Unipile connection for LinkedIn sending. */
 const isConnected = (s: ProjectSettings, p: Platform) => (p === "linkedin" ? s.unipile_connected : s[`${p}_connected`]);
 const dailyCap = (p: Platform) => (p === "linkedin" ? 5 : 15);
+/** YouTube only takes comments, like social::takes_posts on the backend. */
+const takesPosts = (p: Platform) => p !== "youtube";
 
-/** The most a reply or post can hold, like social::max_length on the backend. Reddit's limits are far above any reply, so it
- *  gets no counter. */
+/** The most a reply or post can hold, like social::max_length on the backend. Reddit's and YouTube's limits are far above any
+ *  reply, so they get no counter. */
 function maxLength(p: Platform, reply: boolean, mastodonChars: number): number | null {
   if (p === "x") return 280;
   if (p === "bluesky") return 300;
   if (p === "mastodon") return mastodonChars;
+  if (p === "threads") return 500;
   if (p === "linkedin") return reply ? 1250 : 3000;
   return null;
 }
@@ -91,7 +102,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon and LinkedIn where your buyers talk about the problem you solve, and drafts helpful replies and a few posts. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, and videos on YouTube, where your buyers talk about the problem you solve, and drafts helpful replies and a few posts. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -122,13 +133,16 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                 </LinkButton>
               }
             >
-              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky or Mastodon, or LinkedIn sending, on the integrations page.
+              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads or YouTube, or LinkedIn sending, on the
+              integrations page.
             </EmptyState>
           </Card>
         ) : (
           <>
             {run && <RunProgress key={run.id} run={run} />}
-            {connected.length > 0 && <Composer projectId={projectId} platforms={connected} mastodonChars={settings.mastodon_max_chars} onAdded={() => mutate()} />}
+            {connected.some(takesPosts) && (
+              <Composer projectId={projectId} platforms={connected.filter(takesPosts)} mastodonChars={settings.mastodon_max_chars} onAdded={() => mutate()} />
+            )}
             {/* Four tabs with counts don't fit a phone's width, so phones get a select instead. */}
             <div>
               <Tabs value={tab} onChange={setTab} options={TABS.map((t) => ({ value: t.value, label: `${t.label} (${count(t)})` }))} className="max-sm:hidden" />
@@ -203,7 +217,7 @@ function Composer({
       <form onSubmit={add} className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="font-medium">Write a post</p>
-          {/* Five platforms don't fit next to the heading on a phone, so phones get a select instead. */}
+          {/* Several platforms don't fit next to the heading on a phone, so phones get a select instead. */}
           {platforms.length > 1 && (
             <>
               <Tabs value={on} onChange={setPlatform} options={platforms.map((p) => ({ value: p, label: PLATFORMS[p] }))} className="max-sm:hidden" />
@@ -269,6 +283,13 @@ const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> =
   skipped: { label: "Skipped", tone: "neutral" },
 };
 
+/** YouTube links to a comment with `lc`, and a reply to one goes in its thread. */
+function replyingTo(p: SocialPost): string {
+  if (p.platform === "linkedin") return "Commenting on this post";
+  if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
+  return "Replying to this thread";
+}
+
 /** A draft stays editable until it's posted. Every button saves the edits along with the new status. */
 function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mastodonChars: number; onChange: () => Promise<unknown> }) {
   const [body, setBody] = useState(p.body);
@@ -281,8 +302,8 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
   const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit;
   const max = maxLength(p.platform, reply, mastodonChars);
   const tooLong = max !== null && length(p.platform, body) > max;
-  // LinkedIn calls a reply a comment.
-  const kind = reply ? (p.platform === "linkedin" ? "comment" : "reply") : "post";
+  // LinkedIn and YouTube call a reply a comment.
+  const kind = reply ? (p.platform === "linkedin" || p.platform === "youtube" ? "comment" : "reply") : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
@@ -327,7 +348,7 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
         {reply && (
           <div className="rounded-lg bg-muted/60 px-3 py-2.5">
             <a href={p.in_reply_to!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium hover:underline">
-              {p.platform === "linkedin" ? "Commenting on this post" : "Replying to this thread"} on {PLATFORMS[p.platform]} <ExternalLink className="size-3" />
+              {replyingTo(p)} on {PLATFORMS[p.platform]} <ExternalLink className="size-3" />
             </a>
             {p.context && <p className="mt-1 line-clamp-4 text-sm whitespace-pre-wrap text-muted-foreground">{p.context}</p>}
           </div>

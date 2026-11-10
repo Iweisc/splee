@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, bluesky, directory, linkedin, mastodon, reddit, x};
+use super::{Ctx, bluesky, directory, linkedin, mastodon, reddit, threads, x, youtube};
 use crate::events;
 use crate::state::AppState;
 
@@ -208,7 +208,10 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         bluesky::SEARCH => format!("searching Bluesky \"{}\"…", input["query"].as_str().unwrap_or_default()),
         mastodon::SEARCH => format!("searching Mastodon \"{}\"…", input["query"].as_str().unwrap_or_default()),
         linkedin::SEARCH => format!("searching LinkedIn \"{}\"…", input["query"].as_str().unwrap_or_default()),
-        bluesky::READ | mastodon::READ | linkedin::READ => format!("reading {}…", short_url(input["post"].as_str().unwrap_or_default())),
+        threads::SEARCH => format!("searching Threads \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        youtube::SEARCH => format!("searching YouTube \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        bluesky::READ | mastodon::READ | linkedin::READ | threads::READ => format!("reading {}…", short_url(input["post"].as_str().unwrap_or_default())),
+        youtube::READ => format!("reading {}…", short_url(input["video"].as_str().unwrap_or_default())),
         other => format!("{other}…"),
     };
     let step = ctx.step();

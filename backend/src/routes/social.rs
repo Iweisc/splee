@@ -1,6 +1,6 @@
-//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon and LinkedIn that a social run drafted or the user
-//! wrote, which crate::social posts once approved, and connecting the accounts they go out from. LinkedIn goes out through the
-//! project's Unipile connection, see routes::linkedin.
+//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, and comments for YouTube, that a
+//! social run drafted or the user wrote, which crate::social posts once approved, and connecting the accounts they go out from.
+//! LinkedIn goes out through the project's Unipile connection, see routes::linkedin.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post, put};
@@ -20,8 +20,10 @@ use crate::error::{AppError, AppResult};
 use crate::models::{ProjectSettings, SocialPost};
 use crate::mastodon::{self, Mastodon};
 use crate::reddit::{self, Login, Reddit};
-use crate::social::{self, Failure, PLATFORMS, length, max_length};
+use crate::social::{self, Failure, PLATFORMS, length, max_length, takes_posts};
 use crate::state::AppState;
+use crate::threads::Threads;
+use crate::youtube::{self, YouTube};
 
 const STATUSES: [&str; 6] = ["draft", "approved", "posting", "posted", "failed", "skipped"];
 
@@ -34,6 +36,8 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/reddit", put(connect_reddit).delete(disconnect_reddit))
         .route("/projects/{id}/integrations/bluesky", put(connect_bluesky).delete(disconnect_bluesky))
         .route("/projects/{id}/integrations/mastodon", put(connect_mastodon).delete(disconnect_mastodon))
+        .route("/projects/{id}/integrations/threads", put(connect_threads).delete(disconnect_threads))
+        .route("/projects/{id}/integrations/youtube", put(connect_youtube).delete(disconnect_youtube))
 }
 
 #[derive(Deserialize)]
@@ -59,14 +63,18 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Q
     Ok(Json(posts))
 }
 
-/// What a post needs before it can go out: text within the platform's limit, and a subreddit and title for a new Reddit post.
+/// What a post needs before it can go out: text within the platform's limit, a subreddit and title for a new Reddit post, and
+/// a video to comment on for YouTube.
 fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, mastodon_chars: usize) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::BadRequest("Write something first".into()));
     }
+    if !reply && !takes_posts(platform) {
+        return Err(AppError::BadRequest(format!("{} only takes comments", social::name(platform))));
+    }
     let max = max_length(platform, reply, mastodon_chars);
     if length(platform, body.trim()) > max {
-        let what = if platform == "linkedin" && reply { "Comments" } else if reply { "Replies" } else { "Posts" };
+        let what = if matches!(platform, "linkedin" | "youtube") && reply { "Comments" } else if reply { "Replies" } else { "Posts" };
         return Err(AppError::BadRequest(format!("{what} on {} are at most {max} characters", social::name(platform))));
     }
     if platform == "reddit" && !reply && (subreddit.is_empty() || title.trim().is_empty()) {
@@ -195,7 +203,7 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.project(&state.db, id).await?;
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
-        return Err(AppError::BadRequest("Connect X, Reddit, Bluesky, Mastodon or LinkedIn sending on the integrations page first".into()));
+        return Err(AppError::BadRequest("Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube or LinkedIn sending on the integrations page first".into()));
     }
     let busy: bool = sqlx::query_scalar("select exists (select 1 from agent_runs where project_id = $1 and kind = $2 and status in ('queued', 'running'))")
         .bind(id)
@@ -380,4 +388,99 @@ async fn set_mastodon(state: &AppState, id: Uuid, url: &str, token: &str, handle
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct ThreadsBody {
+    token: String,
+}
+
+/// Saves the token once Threads accepts it, with the account's user id and username.
+async fn connect_threads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<ThreadsBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let token = b.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("Paste the access token".into()));
+    }
+    let account = Threads::new(token, "").map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
+    set_threads(&state, id, &crypto::encrypt(&state.cfg.app_secret, token), &account.id, &account.username).await
+}
+
+async fn disconnect_threads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_threads(&state, id, "", "", "").await
+}
+
+async fn set_threads(state: &AppState, id: Uuid, token: &str, user_id: &str, username: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set threads_token_enc = $2, threads_user_id = $3, threads_username = $4, threads_error = null, threads_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(token)
+    .bind(user_id)
+    .bind(username)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct YouTubeBody {
+    client_id: String,
+    secret: String,
+    refresh_token: String,
+}
+
+/// Saves the OAuth client and refresh token once Google trades it for an access token, with the channel it belongs to.
+async fn connect_youtube(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<YouTubeBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let login = youtube::Login { client_id: b.client_id.trim().into(), secret: b.secret.trim().into(), refresh_token: b.refresh_token.trim().into() };
+    if login.client_id.is_empty() || login.secret.is_empty() || login.refresh_token.is_empty() {
+        return Err(AppError::BadRequest("Fill in the client id, client secret and refresh token".into()));
+    }
+    let refused = |e: Failure| AppError::BadRequest(e.message());
+    let channel = YouTube::sign_in(&login).await.map_err(refused)?.me().await.map_err(refused)?;
+    let secret = &state.cfg.app_secret;
+    let enc = (crypto::encrypt(secret, &login.secret), crypto::encrypt(secret, &login.refresh_token));
+    set_youtube(&state, id, &login.client_id, &enc.0, &enc.1, &channel.id, &channel.name).await
+}
+
+async fn disconnect_youtube(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_youtube(&state, id, "", "", "", "", "").await
+}
+
+async fn set_youtube(state: &AppState, id: Uuid, client_id: &str, secret: &str, token: &str, channel_id: &str, channel: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set youtube_client_id = $2, youtube_secret_enc = $3, youtube_token_enc = $4, youtube_channel_id = $5,
+           youtube_channel = $6, youtube_error = null, youtube_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(client_id)
+    .bind(secret)
+    .bind(token)
+    .bind(channel_id)
+    .bind(channel)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn youtube_takes_comments_only_and_threads_stops_at_500_characters() {
+        assert!(check("youtube", true, "", "", "Same here", 500).is_ok());
+        assert!(matches!(check("youtube", false, "", "", "A lesson", 500), Err(AppError::BadRequest(m)) if m == "YouTube only takes comments"));
+        assert!(check("threads", false, "", "", &"a".repeat(500), 500).is_ok());
+        assert!(matches!(check("threads", true, "", "", &"a".repeat(501), 500), Err(AppError::BadRequest(m)) if m == "Replies on Threads are at most 500 characters"));
+    }
 }

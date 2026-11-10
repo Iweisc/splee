@@ -15,11 +15,12 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, linkedin, mastodon, reddit, x};
+use super::{Ctx, Outcome, bluesky, linkedin, mastodon, reddit, threads, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
 use crate::hooks::{self, Alert};
 use crate::reddit::{Reddit, Target, subreddit};
-use crate::social::{self, Failure, PLATFORMS, fits, name};
+use crate::social::{self, Failure, PLATFORMS, fits, name, takes_posts};
+use crate::youtube::{Target as Video, YouTube};
 
 /// A post or comment the tools showed Claude.
 pub struct Thread {
@@ -79,7 +80,7 @@ fn schema() -> Value {
                 "body": {"type": "string"}
             }, "required": ["thread_url", "reason", "body"]}},
             "posts": {"type": "array", "items": {"type": "object", "properties": {
-                "platform": {"type": "string", "enum": PLATFORMS},
+                "platform": {"type": "string", "enum": PLATFORMS.iter().filter(|p| takes_posts(p)).collect::<Vec<_>>()},
                 "subreddit": {"type": "string", "description": "Reddit only, without r/. Empty for the others."},
                 "title": {"type": "string", "description": "Reddit only. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
@@ -98,6 +99,8 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| PostRef::parse(link).map(|p| p.url()))
         .or_else(|| crate::unipile::post_urn(link).map(|urn| crate::unipile::post_link(&urn)))
         .or_else(|| crate::mastodon::status_url(link))
+        .or_else(|| crate::threads::post_url(link))
+        .or_else(|| Video::parse(link).map(|v| v.url()))
 }
 
 /// "X", "X and Reddit", "X, Reddit and Bluesky".
@@ -113,7 +116,7 @@ fn names(platforms: &[&str]) -> String {
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
-    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon or LinkedIn on the integrations page first";
+    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -184,6 +187,35 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             Err(e) => unavailable("mastodon", Alert::Mastodon, e).await?,
         }
     }
+    if !accounts.threads_token_enc.is_empty() {
+        match accounts.threads(secret) {
+            Ok(t) => {
+                call.servers.insert("threads".into(), threads::server(Arc::new(t), seen.clone()));
+                call.server_tools.extend([threads::SEARCH.to_string(), threads::READ.to_string()]);
+                platforms.push("threads");
+                tools.push(format!(
+                    "On Threads you post as @{}. Search with mcp__threads__search and read a post and its replies with mcp__threads__read.",
+                    accounts.threads_username
+                ));
+            }
+            Err(e) => unavailable("threads", Alert::Threads, e).await?,
+        }
+    }
+    if let Some(login) = accounts.youtube(secret)? {
+        match YouTube::sign_in(&login).await {
+            Ok(y) => {
+                call.servers.insert("youtube".into(), youtube::server(Arc::new(y), seen.clone()));
+                call.server_tools.extend([youtube::SEARCH.to_string(), youtube::READ.to_string()]);
+                platforms.push("youtube");
+                tools.push(
+                    "On YouTube you comment as the connected channel. Search videos with mcp__youtube__search and read a video and its top \
+                     comments with mcp__youtube__read."
+                        .to_string(),
+                );
+            }
+            Err(e) => unavailable("youtube", Alert::YouTube, e).await?,
+        }
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -218,6 +250,11 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
     let where_ = names(&platforms);
+    let posting: Vec<&str> = platforms.iter().copied().filter(|p| takes_posts(p)).collect();
+    let originals = match posting.as_slice() {
+        [] => format!("4. Don't draft original posts, since {where_} only takes comments."),
+        _ => format!("4. Draft 2 or 3 original posts in all, each on the one of {} where its readers are.", names(&posting)),
+    };
     let rules = platforms.iter().map(|p| format!("- {}", rules(p, name, accounts.mastodon_chars()))).collect::<Vec<_>>().join("\n");
     call.prompt = format!(
         "Find recent conversations on {where_} where people who could buy from {name} talk about a problem it solves, and draft replies \
@@ -229,7 +266,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          2. Search for threads from the last 30 days where someone asks for help or a recommendation, or complains about one of those \
          problems. Run several searches with different wordings. Read a thread before you reply to it.\n\
          3. Draft up to 10 replies, to the threads where a reply helps the most. Fewer good ones beat many weak ones.\n\
-         4. Draft 2 or 3 original posts in all, each on the one of {where_} where its readers are.\n\n\
+         {originals}\n\n\
          Rules for replies:\n\
          - Answer the thread's actual question. Each reply must be useful on its own, to someone who never clicks anything.\n\
          - Mention {name} only when it directly fits the question, plainly and at most once, never as an ad. When you mention it, say \
@@ -272,6 +309,10 @@ fn rules(platform: &str, company: &str, mastodon_chars: usize) -> String {
             "Mastodon: replies and posts are at most {mastodon_chars} characters. Start a reply with the @handle of the person you answer, \
              as the tool showed it, so they see it. An original post may end with one or two hashtags, since that's how people find posts there."
         ),
+        "threads" => "Threads: replies and posts are at most 500 characters.".into(),
+        "youtube" => "YouTube: comment on a video, or reply to one of its top comments by that comment's link. No original posts. Keep \
+                      comments under 500 characters, and leave links out, since YouTube hides comments with links as spam."
+            .into(),
         _ => "LinkedIn: comments are at most 1250 characters and posts at most 3000. Comment on posts, not on other comments. Keep it \
               professional and first-person, in short paragraphs, with no hashtag lists. Leave links out of posts, since LinkedIn shows \
               posts with links to fewer people."
@@ -322,7 +363,7 @@ async fn save(
     let mut posts = 0;
     for p in drafts.posts {
         let body = p.body.trim();
-        if !platforms.contains(&p.platform.as_str()) || !fits(&p.platform, false, body, mastodon_chars) {
+        if !platforms.contains(&p.platform.as_str()) || !takes_posts(&p.platform) || !fits(&p.platform, false, body, mastodon_chars) {
             continue;
         }
         let (sr, title) = match p.platform.as_str() {
@@ -359,6 +400,8 @@ mod tests {
             ("at://did:plc:abc123/app.bsky.feed.post/3kq2xyz", "https://bsky.app/profile/did:plc:abc123/post/3kq2xyz"),
             ("https://fosstodon.org/users/ana/statuses/112233445566", "https://fosstodon.org/@ana/112233445566"),
             ("https://www.linkedin.com/posts/sam-lee_cold-email-activity-7236734771807019010-AbCd", "https://www.linkedin.com/feed/update/urn:li:activity:7236734771807019010/"),
+            ("https://www.threads.net/@Ana/post/DCx9q?id=18012345", "https://www.threads.com/@ana/post/DCx9q?id=18012345"),
+            ("https://youtu.be/dQw4w9WgXcQ?t=3", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
         ] {
             assert_eq!(canonical(link).as_deref(), Some(canonical_link), "{link}");
         }
@@ -385,6 +428,7 @@ mod tests {
             ("https://www.reddit.com/comments/old1/".to_string(), thread("reddit", false, 40)),
             ("https://x.com/i/status/42".to_string(), thread("x", false, 1)),
             ("https://bsky.app/profile/did:plc:ana/post/3kq2xyz".to_string(), thread("bluesky", false, 1)),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(), thread("youtube", false, 3)),
         ]);
         let reply = |url: &str, body: &str| Reply { thread_url: url.into(), reason: "Asks for it".into(), body: body.into() };
         let post = |platform: &str, subreddit: &str, title: &str| Post {
@@ -404,11 +448,13 @@ mod tests {
                 reply("https://twitter.com/someone/status/42", &"a".repeat(281)),
                 // 301 graphemes is over Bluesky's limit.
                 reply("at://did:plc:ana/app.bsky.feed.post/3kq2xyz", &"é".repeat(301)),
+                reply("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s", "Same here"),
             ],
-            posts: vec![post("reddit", "r/sales", "What works for you?"), post("reddit", "sales", ""), post("x", "", ""), post("linkedin", "", "")],
+            // YouTube only takes comments.
+            posts: vec![post("reddit", "r/sales", "What works for you?"), post("reddit", "sales", ""), post("x", "", ""), post("linkedin", "", ""), post("youtube", "", "")],
         };
 
-        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky"], 500, drafts(), &seen).await.unwrap(), (1, 2));
+        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky", "youtube"], 500, drafts(), &seen).await.unwrap(), (2, 2));
         let rows: Vec<(String, Option<String>, String, String, String)> =
             sqlx::query_as("select platform, in_reply_to, context, subreddit, title from social_posts order by in_reply_to nulls last, platform")
                 .fetch_all(&db)
@@ -416,10 +462,11 @@ mod tests {
                 .unwrap();
         assert_eq!(rows, [
             ("reddit".into(), Some("https://www.reddit.com/comments/open1/".into()), "How do you find leads?".into(), "sales".into(), String::new()),
+            ("youtube".into(), Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()), "How do you find leads?".into(), String::new(), String::new()),
             ("reddit".into(), None, String::new(), "sales".into(), "What works for you?".into()),
             ("x".into(), None, String::new(), String::new(), String::new()),
         ]);
         // A second run doesn't draft for the same thread again.
-        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky"], 500, drafts(), &seen).await.unwrap().0, 0);
+        assert_eq!(save(&db, project, run, &["x", "reddit", "bluesky", "youtube"], 500, drafts(), &seen).await.unwrap().0, 0);
     }
 }

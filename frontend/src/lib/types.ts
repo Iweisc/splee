@@ -196,6 +196,16 @@ export interface ProjectSettings extends CrmStatus {
   mastodon_max_chars: number;
   mastodon_error: string | null;
   mastodon_failed_at: string | null;
+  /** The Threads account social posts go out from. Its token is write-only, through PUT /integrations/threads. */
+  threads_connected: boolean;
+  threads_username: string;
+  threads_error: string | null;
+  threads_failed_at: string | null;
+  /** The YouTube channel comments go out as, by its @handle or title. The OAuth secret and refresh token are write-only, through PUT /integrations/youtube. */
+  youtube_connected: boolean;
+  youtube_channel: string;
+  youtube_error: string | null;
+  youtube_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -742,7 +752,7 @@ export interface SocialPost {
   project_id: UUID;
   run_id: UUID | null;
   /** LinkedIn posts go out through the project's Unipile connection. */
-  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin";
+  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube";
   /** The link of the post or comment it answers, null for an original post. */
   in_reply_to: string | null;
   /** The text it answers. */
