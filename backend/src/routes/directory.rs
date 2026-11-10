@@ -1,8 +1,7 @@
-//! Search over the company database that `splee import-companies` loads.
+//! Search over the company database, and the queue instance operators load countries into it with.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -15,7 +14,8 @@ use super::imports::check_segment;
 use super::util_input;
 use super::util_pagination::PageQuery;
 use crate::auth::Auth;
-use crate::directory::{self, Listing, Search};
+use crate::directory::{self, Country, Listing, Search};
+use crate::directory_queue::{self, DirectoryImport};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/directory/companies", get(search))
         .route("/directory/countries", get(countries))
+        .route("/directory/imports", get(imports).post(queue))
         .route("/projects/{id}/directory/add", post(add))
 }
 
@@ -62,33 +63,34 @@ pub(super) async fn page_of(db: &PgPool, q: &SearchQuery, page: &PageQuery) -> A
     Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })
 }
 
-#[derive(Serialize, sqlx::FromRow)]
-struct Country {
-    country_code: String,
-    companies: i64,
-}
-
-/// Grouping millions of rows takes seconds, and the list only changes when someone runs an import, so it's kept for a while.
-const COUNTRIES_TTL: Duration = Duration::from_secs(10 * 60);
-static COUNTRIES: Mutex<Option<(Instant, Arc<Vec<Country>>)>> = Mutex::new(None);
-
 /// The countries that have companies, most companies first.
 async fn countries(State(state): State<AppState>, _auth: Auth) -> AppResult<Json<Arc<Vec<Country>>>> {
-    if let Some((at, list)) = COUNTRIES.lock().expect("not poisoned").as_ref()
-        && at.elapsed() < COUNTRIES_TTL
-    {
-        return Ok(Json(list.clone()));
+    Ok(Json(directory::countries(&state.db).await?))
+}
+
+/// The company database is shared by every organization, so only the people who run the instance (OPERATOR_EMAILS) load it.
+async fn operator(state: &AppState, auth: &Auth) -> AppResult<()> {
+    let email: String = sqlx::query_scalar("select email::text from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
+    if state.cfg.is_operator(&email) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden("Only the people who run this Splee can load countries".into()))
     }
-    let list = Arc::new(
-        sqlx::query_as::<_, Country>("select country_code, count(*) as companies from directory_companies group by 1 order by 2 desc, 1")
-            .fetch_all(&state.db)
-            .await?,
-    );
-    // An empty table isn't kept, so the page sees a first import right away instead of after the wait.
-    if !list.is_empty() {
-        *COUNTRIES.lock().expect("not poisoned") = Some((Instant::now(), list.clone()));
-    }
-    Ok(Json(list))
+}
+
+async fn imports(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<DirectoryImport>>> {
+    operator(&state, &auth).await?;
+    Ok(Json(directory_queue::list(&state.db).await?))
+}
+
+#[derive(Deserialize)]
+struct QueueBody {
+    country: String,
+}
+
+async fn queue(State(state): State<AppState>, auth: Auth, Json(body): Json<QueueBody>) -> AppResult<Json<DirectoryImport>> {
+    operator(&state, &auth).await?;
+    Ok(Json(directory_queue::queue(&state.db, &body.country, auth.user_id).await?))
 }
 
 const MAX_ADD: usize = 500;

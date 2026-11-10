@@ -53,7 +53,7 @@ docker compose up -d                                  # Postgres on 127.0.0.1:55
 (cd frontend && pnpm install && pnpm dev)             # app on http://localhost:3333
 ```
 
-Open http://localhost:3333, sign up and paste a website. The first account in an organization is its owner.
+Open http://localhost:3333, sign up and paste a website. The first account in an organization is its owner. To fill the company database, add `OPERATOR_EMAILS=<the email you signed up with>` to `backend/.env`, restart the API and load a small country like LU from a project's Companies page.
 
 ## Configuration
 
@@ -72,6 +72,7 @@ The backend reads `backend/.env`, and the frontend reads its own environment.
 | `OPEN_SIGNUP` | `true` | `false` makes sign-up invite-only once the first account exists. Every account can run agents on your Claude subscription, so turn this off on a public server. |
 | `PUBLIC_AGENT` | `true` | `false` turns off the home page demo, the company explorer and the support chat for signed-out visitors, which otherwise run the agent on your Claude subscription within hourly limits per visitor. |
 | `BIRD_BIN` | unset | Path to the [bird](https://www.npmjs.com/package/@steipete/bird) CLI (`npm i -g @steipete/bird`). When set, research runs can search and read X, and projects can connect an X account to post from. |
+| `OPERATOR_EMAILS` | unset | Comma-separated emails of the people who run this Splee. They can load countries into the company database from the Companies page. Every organization shares that database, so nobody else can. |
 | `PORKBUN_API_URL` | `https://api.porkbun.com/api/json/v3` | Where Splee reaches Porkbun. Only set it to point a test server at a fake. |
 | `RUST_LOG` | unset | Log filter, e.g. `splee=debug,tower_http=info`. |
 | `API_URL` (frontend, build time) | `http://127.0.0.1:8787` | Where the Next.js server proxies `/api/*`. `next build` bakes it in, so set it when you build, not when you start. |
@@ -90,7 +91,7 @@ The quick start is for your own machine. To run Splee for a team:
 5. **Monitoring.** Point an uptime monitor at `https://<your host>/api/health`. It returns 200 when the frontend, the backend and Postgres all answer.
 6. **Backups.** Back up the database and keep `APP_SECRET` with it. Mailbox passwords in a backup can't be decrypted without the secret they were saved with.
 7. **Forgotten passwords.** There's no reset email. Run `(cd backend && ./target/release/splee reset-password person@example.com)`, which prints a new random password, signs that person out everywhere and clears their failed sign-ins. It's safe to run while the server is up. They can change the password under Account.
-8. **Company database.** Run `(cd backend && ./target/release/splee import-companies GB US)` to load every business with a website in those countries from [Overture Maps](https://docs.overturemaps.org/guides/places/), an open dataset of about 88 million places. Leave out the countries to load the whole world. It reads the files over HTTPS without saving them, so it needs no disk space beyond the database. It's safe to run while the server is up, and running it again picks up Overture's newest monthly release. Search it on a project's Companies page and add what you pick to a campaign.
+8. **Company database.** Put your email in `OPERATOR_EMAILS`, then pick countries under "Load a country" on any project's Companies page. Splee loads every business with a website in them from [Overture Maps](https://docs.overturemaps.org/guides/places/), an open dataset of about 88 million places, one country at a time, and shows each one's progress. You can also run `(cd backend && ./target/release/splee import-companies GB US)`, and leave out the countries to load the whole world. Both read the files over HTTPS without saving them, so they need no disk space beyond the database. They're safe to run while the server is up, and loading a country again picks up Overture's newest monthly release. Every organization on the server searches the same database and adds what it picks to its campaigns.
 
 To start both on boot and restart them after a crash, adapt the example systemd units in [`deploy/systemd/`](deploy/systemd). Stopping the backend's unit also stops any `claude` processes it started. Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
 

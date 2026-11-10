@@ -1,12 +1,13 @@
 //! The company database: businesses from Overture Maps' places (https://docs.overturemaps.org/guides/places/), an open
 //! dataset of about 88 million places under CDLA Permissive 2.0, kept one row per website so each company appears once.
-//! `splee import-companies [COUNTRY…]` loads it. Overture publishes its places as GeoParquet files every month, and they're
-//! read straight over HTTPS, a few byte ranges at a time, so nothing large is ever written to disk.
+//! `splee import-companies [COUNTRY…]` and the Companies page's "Load a country" (directory_queue.rs) load it. Overture
+//! publishes its places as GeoParquet files every month, and they're read straight over HTTPS, a few byte ranges at a
+//! time, so nothing large is ever written to disk.
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use arrow_array::cast::AsArray;
@@ -25,7 +26,7 @@ use serde_json::Value;
 use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
-const CATALOG: &str = "https://stac.overturemaps.org/catalog.json";
+pub const CATALOG: &str = "https://stac.overturemaps.org/catalog.json";
 /// Byte ranges closer than this are fetched in one request, since a row group's columns sit side by side.
 const MERGE_GAP: u64 = 1 << 20;
 /// Files read at once.
@@ -33,37 +34,88 @@ const PARALLEL_FILES: usize = 4;
 const COLUMNS: [&str; 10] =
     ["id", "names.primary", "websites", "phones", "emails", "addresses", "taxonomy.primary", "taxonomy.hierarchy", "confidence", "operating_status"];
 
+/// How far an import is. Every file's row groups that can hold the countries are counted before any rows are read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Progress {
+    pub groups_done: usize,
+    pub groups_total: usize,
+    pub rows_seen: usize,
+    /// Companies saved so far, counting a domain again when another batch has it too. The result has the real count.
+    pub rows_kept: usize,
+}
+
+/// Called after every row group, from whichever file finished it.
+pub type Report<'a> = &'a (dyn Fn(Progress) + Sync);
+
 /// Imports every place with a website in `countries` (ISO codes like GB), or everywhere when it's empty, and then removes
-/// the companies of those countries that the latest release no longer has.
-pub async fn import(db: &PgPool, countries: &[String]) -> anyhow::Result<()> {
+/// the companies of those countries that the latest release no longer has. `catalog` is Overture's STAC catalog, CATALOG
+/// outside tests.
+pub async fn import(db: &PgPool, catalog: &str, countries: &[String], report: Option<Report<'_>>) -> anyhow::Result<Progress> {
     // Overture's catalog refuses requests without a user agent.
     // Sizes come from Content-Length, which a gzipped answer would drop.
     let client = reqwest::Client::builder().user_agent("splee").no_gzip().timeout(Duration::from_secs(120)).build()?;
-    let (release, files) = latest_files(&client).await?;
+    let (release, files) = latest_files(&client, catalog).await?;
     println!("Overture release {release}: {} files", files.len());
     let countries: Vec<String> = countries.iter().map(|c| c.trim().to_uppercase()).collect();
     let release = release.as_str();
-    let kept: Vec<usize> = futures::stream::iter(files.into_iter().enumerate())
+    let files: Vec<(Reader, Vec<usize>)> = futures::stream::iter(files.into_iter().enumerate())
         .map(|(i, url)| {
             let (client, countries) = (client.clone(), &countries);
+            async move { open(client, url, countries).await.with_context(|| format!("file {i}")) }
+        })
+        .buffered(PARALLEL_FILES)
+        .try_collect()
+        .await?;
+    let tally = Tally {
+        progress: Mutex::new(Progress { groups_total: files.iter().map(|(_, groups)| groups.len()).sum(), ..Progress::default() }),
+        report,
+    };
+    tally.add(0, 0, 0);
+    futures::stream::iter(files.into_iter().enumerate())
+        .map(|(i, file)| {
+            let (countries, tally) = (&countries, &tally);
             async move {
-                let kept = import_file(db, client, url, release, countries).await.with_context(|| format!("file {i}"))?;
+                let kept = import_file(db, file, release, countries, tally).await.with_context(|| format!("file {i}"))?;
                 if kept > 0 {
                     println!("file {i}: {kept} companies");
                 }
-                anyhow::Ok(kept)
+                anyhow::Ok(())
             }
         })
         .buffer_unordered(PARALLEL_FILES)
-        .try_collect()
+        .try_collect::<()>()
         .await?;
     let gone = if countries.is_empty() {
         sqlx::query("delete from directory_companies where release <> $1").bind(release).execute(db).await?
     } else {
         sqlx::query("delete from directory_companies where release <> $1 and country_code = any($2)").bind(release).bind(&countries).execute(db).await?
     };
-    println!("Imported {} companies. Removed {} that are no longer listed.", kept.iter().sum::<usize>(), gone.rows_affected());
-    Ok(())
+    // A domain kept in several batches was counted each time, so the final count is what the countries now hold.
+    let held: i64 = sqlx::query_scalar("select count(*) from directory_companies where cardinality($1::text[]) = 0 or country_code = any($1)")
+        .bind(&countries)
+        .fetch_one(db)
+        .await?;
+    let progress = Progress { rows_kept: held as usize, ..*tally.progress.lock().expect("not poisoned") };
+    println!("The import kept {} companies. Removed {} that are no longer listed.", progress.rows_kept, gone.rows_affected());
+    Ok(progress)
+}
+
+struct Tally<'a> {
+    progress: Mutex<Progress>,
+    report: Option<Report<'a>>,
+}
+
+impl Tally<'_> {
+    fn add(&self, groups: usize, seen: usize, kept: usize) {
+        let mut p = self.progress.lock().expect("not poisoned");
+        p.groups_done += groups;
+        p.rows_seen += seen;
+        p.rows_kept += kept;
+        // Reported under the lock, so two files finishing at once can't report out of order.
+        if let Some(report) = self.report {
+            report(*p);
+        }
+    }
 }
 
 /// What to look for in the company database. The Companies page and the agent's `directory` tool both search with it.
@@ -159,6 +211,40 @@ pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> 
     search.bind(&sql).fetch_one(db).await?.try_get(0)
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Country {
+    pub country_code: String,
+    pub companies: i64,
+}
+
+/// Grouping millions of rows takes seconds, and the list only changes with an import, so it's kept for a while.
+const COUNTRIES_TTL: Duration = Duration::from_secs(10 * 60);
+static COUNTRIES: Mutex<Option<(Instant, Arc<Vec<Country>>)>> = Mutex::new(None);
+
+/// The countries that have companies, most companies first.
+pub async fn countries(db: &PgPool) -> sqlx::Result<Arc<Vec<Country>>> {
+    if let Some((at, list)) = COUNTRIES.lock().expect("not poisoned").as_ref()
+        && at.elapsed() < COUNTRIES_TTL
+    {
+        return Ok(list.clone());
+    }
+    let list = Arc::new(
+        sqlx::query_as::<_, Country>("select country_code, count(*) as companies from directory_companies group by 1 order by 2 desc, 1")
+            .fetch_all(db)
+            .await?,
+    );
+    // An empty table isn't kept, so the page sees a first import right away instead of after the wait.
+    if !list.is_empty() {
+        *COUNTRIES.lock().expect("not poisoned") = Some((Instant::now(), list.clone()));
+    }
+    Ok(list)
+}
+
+/// Called when an import from the Companies page finishes, so its country shows up there right away.
+pub fn forget_countries() {
+    *COUNTRIES.lock().expect("not poisoned") = None;
+}
+
 /// Every word as a prefix, so "dent" finds dental_clinic and general_dentistry, as a tsquery. Only letters and digits get
 /// through, so a query can't hold tsquery syntax.
 fn prefixes(q: &str) -> Option<String> {
@@ -167,12 +253,12 @@ fn prefixes(q: &str) -> Option<String> {
 }
 
 /// The newest release's places files, from Overture's STAC catalog.
-async fn latest_files(client: &reqwest::Client) -> anyhow::Result<(String, Vec<Url>)> {
+async fn latest_files(client: &reqwest::Client, catalog: &str) -> anyhow::Result<(String, Vec<Url>)> {
     let get = |url: String| async move { anyhow::Ok(client.get(url).send().await?.error_for_status()?.json::<Value>().await?) };
     let links = |v: &Value, rel: &str| -> Vec<String> {
         v["links"].as_array().into_iter().flatten().filter(|l| l["rel"] == rel).filter_map(|l| l["href"].as_str().map(str::to_string)).collect()
     };
-    let catalog = get(CATALOG.into()).await?;
+    let catalog = get(catalog.into()).await?;
     let release = links(&catalog, "child").into_iter().max().context("Overture's catalog lists no release")?;
     let base = release.trim_end_matches("/catalog.json").to_string();
     let collection = get(format!("{base}/places/place/collection.json")).await?;
@@ -185,19 +271,40 @@ async fn latest_files(client: &reqwest::Client) -> anyhow::Result<(String, Vec<U
     Ok((name, files))
 }
 
-async fn import_file(db: &PgPool, client: reqwest::Client, url: Url, release: &str, countries: &[String]) -> anyhow::Result<usize> {
+type Reader = ParquetRecordBatchStreamBuilder<HttpFile>;
+
+/// The file's metadata and the row groups to read from it.
+async fn open(client: reqwest::Client, url: Url, countries: &[String]) -> anyhow::Result<(Reader, Vec<usize>)> {
     let head = client.head(url.clone()).send().await?.error_for_status()?;
     // reqwest's content_length() is the HEAD response's own empty body, so the header has to be read directly.
     let size: u64 = head.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse().ok()).context("no file size")?;
-    let file = HttpFile { client, url, size };
-    let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
+    let builder = ParquetRecordBatchStreamBuilder::new(HttpFile { client, url, size }).await?;
     let groups = row_groups(builder.metadata(), countries);
+    Ok((builder, groups))
+}
+
+/// Returns the companies kept. Row groups are read whole, one at a time, so progress moves a group at a time.
+async fn import_file(
+    db: &PgPool,
+    (builder, groups): (Reader, Vec<usize>),
+    release: &str,
+    countries: &[String],
+    tally: &Tally<'_>,
+) -> anyhow::Result<usize> {
     let mask = ProjectionMask::columns(builder.parquet_schema(), COLUMNS);
     let mut stream = builder.with_projection(mask).with_row_groups(groups).with_batch_size(8192).build()?;
     let mut kept = 0;
-    while let Some(batch) = stream.next().await {
-        let companies = companies(&batch?, countries);
-        kept += save(db, &companies, release).await?;
+    while let Some(group) = stream.next_row_group().await? {
+        let (mut seen, mut group_kept) = (0, 0);
+        for batch in group {
+            let batch = batch?;
+            seen += batch.num_rows();
+            let companies = companies(&batch, countries);
+            save(db, &companies, release).await?;
+            group_kept += companies.len();
+        }
+        tally.add(1, seen, group_kept);
+        kept += group_kept;
     }
     Ok(kept)
 }
@@ -353,9 +460,9 @@ fn domain(website: &str) -> Option<String> {
 }
 
 /// Upserts a batch. A row from an older release is replaced, and within one release the most confident place wins.
-async fn save(db: &PgPool, companies: &[Company], release: &str) -> anyhow::Result<usize> {
+async fn save(db: &PgPool, companies: &[Company], release: &str) -> anyhow::Result<()> {
     if companies.is_empty() {
-        return Ok(0);
+        return Ok(());
     }
     macro_rules! column {
         ($field:ident) => {
@@ -364,7 +471,7 @@ async fn save(db: &PgPool, companies: &[Company], release: &str) -> anyhow::Resu
     }
     // Postgres can't unnest a text[][], so the categories go in as one JSON array per row.
     let categories: Vec<String> = companies.iter().map(|c| serde_json::to_string(&c.categories).unwrap_or_default()).collect();
-    let result = sqlx::query(
+    sqlx::query(
         "insert into directory_companies (domain, name, website, phone, email, address, city, region, postcode, country_code, category,
             categories, confidence, source_id, release)
          select d, n, w, p, e, a, ci, r, pc, cc, cat, array(select jsonb_array_elements_text(cats::jsonb)), conf, s, $15
@@ -395,7 +502,7 @@ async fn save(db: &PgPool, companies: &[Company], release: &str) -> anyhow::Resu
     .bind(release)
     .execute(db)
     .await?;
-    Ok(result.rows_affected() as usize)
+    Ok(())
 }
 
 /// A Parquet file read over HTTPS with range requests.
@@ -457,7 +564,11 @@ impl AsyncFileReader for HttpFile {
 
 #[cfg(test)]
 mod tests {
-    use super::domain;
+    use std::sync::Mutex;
+
+    use sqlx::PgPool;
+
+    use super::{Progress, domain, import};
 
     #[test]
     fn a_search_becomes_word_prefixes() {
@@ -476,5 +587,160 @@ mod tests {
         assert_eq!(domain("https://acme.wixsite.com/home"), None);
         assert_eq!(domain(""), None);
         assert_eq!(domain("http://10.0.0.1/"), None);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn an_import_reports_each_row_group_it_reads(db: PgPool) {
+        let base = super::fake::start().await;
+        let seen = Mutex::new(Vec::new());
+        let report = |p: Progress| seen.lock().unwrap().push(p);
+        let countries = ["mt".to_string()];
+        let done = import(&db, &format!("{base}/catalog.json"), &countries, Some(&report)).await.unwrap();
+
+        let start = Progress { groups_done: 0, groups_total: 1, rows_seen: 0, rows_kept: 0 };
+        let end = Progress { groups_done: 1, groups_total: 1, rows_seen: 2, rows_kept: 1 };
+        assert_eq!(*seen.lock().unwrap(), [start, end]);
+        assert_eq!(done, end);
+        let (domain, city, release): (String, String, String) =
+            sqlx::query_as("select domain, city, release from directory_companies").fetch_one(&db).await.unwrap();
+        assert_eq!((domain.as_str(), city.as_str(), release.as_str()), ("valletta-dental.mt", "Valletta", "2026-10-15.0"));
+    }
+}
+
+/// A local stand-in for Overture: a STAC catalog with two releases, the newest holding one GeoParquet file with a row group
+/// of places in LU and one in MT, served with range requests.
+#[cfg(test)]
+pub mod fake {
+    use std::sync::Arc;
+
+    use arrow_array::builder::{ListBuilder, StringBuilder, StructBuilder};
+    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray, StructArray};
+    use arrow_schema::{DataType, Field, Fields};
+    use axum::http::{HeaderMap, StatusCode, header};
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use bytes::Bytes;
+    use parquet::arrow::ArrowWriter;
+    use serde_json::json;
+
+    struct Place {
+        id: &'static str,
+        name: &'static str,
+        website: &'static str,
+        email: Option<&'static str>,
+        city: &'static str,
+        country: &'static str,
+        category: &'static str,
+        status: &'static str,
+        confidence: f64,
+    }
+
+    const LU: [Place; 4] = [
+        Place { id: "lu1", name: "Boulangerie Kayl", website: "https://www.kayl.lu/", email: Some("Hi@Kayl.lu"), city: "Luxembourg", country: "LU",
+                category: "bakery", status: "open", confidence: 0.9 },
+        Place { id: "lu2", name: "Kayl Fans", website: "https://facebook.com/kayl", email: None, city: "Luxembourg", country: "LU",
+                category: "bakery", status: "open", confidence: 0.9 },
+        Place { id: "lu3", name: "Old Mill", website: "https://oldmill.lu", email: None, city: "Esch", country: "LU",
+                category: "restaurant", status: "permanently_closed", confidence: 0.9 },
+        Place { id: "lu4", name: "Garage Weber", website: "weber.lu", email: None, city: "Esch", country: "LU",
+                category: "car_repair", status: "open", confidence: 0.5 },
+    ];
+    const MT: [Place; 2] = [
+        Place { id: "mt1", name: "Valletta Dental", website: "https://valletta-dental.mt", email: None, city: "Valletta", country: "MT",
+                category: "dental_clinic", status: "open", confidence: 0.8 },
+        Place { id: "mt2", name: "No Site", website: "", email: None, city: "Valletta", country: "MT", category: "cafe", status: "open", confidence: 0.8 },
+    ];
+
+    /// Overture names list items "element", and directory.rs looks for the address country's statistics by that name.
+    fn strings() -> ListBuilder<StringBuilder> {
+        ListBuilder::new(StringBuilder::new()).with_field(Arc::new(Field::new("element", DataType::Utf8, true)))
+    }
+
+    fn batch(places: &[Place]) -> RecordBatch {
+        let text = |f: fn(&Place) -> Option<&'static str>| Arc::new(places.iter().map(f).collect::<StringArray>()) as ArrayRef;
+        let list = |f: fn(&Place) -> Vec<&'static str>| {
+            let mut b = strings();
+            for p in places {
+                f(p).into_iter().for_each(|v| b.values().append_value(v));
+                b.append(true);
+            }
+            Arc::new(b.finish()) as ArrayRef
+        };
+        let struct_of = |fields: Vec<(&str, ArrayRef)>| {
+            let (fields, arrays): (Vec<Field>, Vec<ArrayRef>) =
+                fields.into_iter().map(|(name, a)| (Field::new(name, a.data_type().clone(), true), a)).unzip();
+            Arc::new(StructArray::new(Fields::from(fields), arrays, None)) as ArrayRef
+        };
+        let address_fields: Vec<Field> =
+            ["freeform", "locality", "postcode", "region", "country"].iter().map(|n| Field::new(*n, DataType::Utf8, true)).collect();
+        let mut addresses = ListBuilder::new(StructBuilder::from_fields(address_fields.clone(), places.len()))
+            .with_field(Arc::new(Field::new("element", DataType::Struct(address_fields.into()), true)));
+        for p in places {
+            let address = addresses.values();
+            for (i, value) in [Some("1 Main Street"), Some(p.city), None, None, Some(p.country)].into_iter().enumerate() {
+                address.field_builder::<StringBuilder>(i).unwrap().append_option(value);
+            }
+            address.append(true);
+            addresses.append(true);
+        }
+        RecordBatch::try_from_iter([
+            ("id", text(|p| Some(p.id))),
+            ("names", struct_of(vec![("primary", text(|p| Some(p.name)))])),
+            ("websites", list(|p| [p.website].into_iter().filter(|w| !w.is_empty()).collect())),
+            ("phones", list(|_| vec!["+352 123"])),
+            ("emails", list(|p| p.email.into_iter().collect())),
+            ("addresses", Arc::new(addresses.finish()) as ArrayRef),
+            ("taxonomy", struct_of(vec![("primary", text(|p| Some(p.category))), ("hierarchy", list(|p| vec!["services", p.category]))])),
+            ("confidence", Arc::new(places.iter().map(|p| Some(p.confidence)).collect::<Float64Array>()) as ArrayRef),
+            ("operating_status", text(|p| Some(p.status))),
+        ])
+        .unwrap()
+    }
+
+    fn parquet() -> Bytes {
+        let (lu, mt) = (batch(&LU), batch(&MT));
+        let mut file = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut file, lu.schema(), None).unwrap();
+        writer.write(&lu).unwrap();
+        writer.flush().unwrap();
+        writer.write(&mt).unwrap();
+        writer.close().unwrap();
+        file.into()
+    }
+
+    /// Serves `bytes=a-b` like Azure's blob storage does, and the whole file otherwise.
+    fn ranged(file: &Bytes, headers: &HeaderMap) -> Response {
+        let range = headers.get(header::RANGE).and_then(|v| {
+            let (a, b) = v.to_str().ok()?.strip_prefix("bytes=")?.split_once('-')?;
+            Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+        });
+        let (status, body) = match range {
+            Some((a, b)) => (StatusCode::PARTIAL_CONTENT, file.slice(a..=b.min(file.len() - 1))),
+            None => (StatusCode::OK, file.clone()),
+        };
+        (status, [(header::CONTENT_LENGTH, body.len().to_string())], body).into_response()
+    }
+
+    /// Returns the server's base URL. Its /catalog.json is the catalog.
+    pub async fn start() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let file = parquet();
+        let release = |name: &str| json!({ "rel": "child", "href": format!("{base}/{name}/catalog.json") });
+        let catalog = json!({ "links": [release("2026-09-17.0"), release("2026-10-15.0"), { "rel": "root", "href": "./catalog.json" }] });
+        let item = json!({ "assets": { "azure": { "href": format!("{base}/places.parquet") } } });
+        let app = Router::new()
+            .route("/catalog.json", get(move || async move { Json(catalog) }))
+            .route(
+                "/2026-10-15.0/places/place/collection.json",
+                get(|| async { Json(json!({ "links": [{ "rel": "item", "href": "./00000/00000.json" }, { "rel": "parent", "href": "x" }] })) }),
+            )
+            .route("/2026-10-15.0/places/place/00000/00000.json", get(move || async move { Json(item) }))
+            .route("/places.parquet", get(move |headers: HeaderMap| async move { ranged(&file, &headers) }));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        base
     }
 }

@@ -51,5 +51,9 @@ parquet = { version = "60.1.0", default-features = false, features = ["async", "
 arrow-array = "60.1.0"
 bytes = "1.12.1"
 
+[dev-dependencies]
+# Builds the small GeoParquet file the company import tests read.
+arrow-schema = "60.1.0"
+
 [patch.crates-io]
 claude-agent-sdk-rs = { path = "vendor/claude-agent-sdk-rs" }

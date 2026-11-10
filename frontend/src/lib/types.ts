@@ -24,6 +24,8 @@ export interface Me {
   role: Role;
   orgs: { id: UUID; name: string; role: Role }[];
   public_url: string;
+  /** In the backend's OPERATOR_EMAILS, so the Companies page offers to load countries. */
+  operator: boolean;
 }
 
 export interface Member {
@@ -432,6 +434,22 @@ export interface DirectoryPage extends Paginated<DirectoryCompany> {
 export interface DirectoryCountry {
   country_code: string;
   companies: number;
+}
+
+export interface DirectoryImport {
+  id: UUID;
+  country: string;
+  status: "queued" | "running" | "done" | "failed";
+  /** Overture's row groups that can hold the country. `groups_total` is 0 until every file's index is read. */
+  groups_done: number;
+  groups_total: number;
+  rows_seen: number;
+  rows_kept: number;
+  error: string;
+  requested_by: string | null;
+  created_at: Ts;
+  started_at: Ts | null;
+  finished_at: Ts | null;
 }
 
 export type LeadStatus =

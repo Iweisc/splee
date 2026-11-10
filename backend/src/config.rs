@@ -24,6 +24,9 @@ pub struct Config {
     pub public_agent: bool,
     /// Porkbun's API. Only tests and sandboxes point it elsewhere, at a fake.
     pub porkbun_api_url: String,
+    /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
+    /// which every organization shares.
+    pub operator_emails: Vec<String>,
 }
 
 impl Config {
@@ -42,6 +45,7 @@ impl Config {
             open_signup: env::var("OPEN_SIGNUP").map(|v| v != "false").unwrap_or(true),
             public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
             porkbun_api_url: env::var("PORKBUN_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| crate::porkbun::API_URL.into()),
+            operator_emails: env::var("OPERATOR_EMAILS").map(|v| emails(&v)).unwrap_or_default(),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -58,10 +62,18 @@ impl Config {
         Ok(())
     }
 
+    pub fn is_operator(&self, email: &str) -> bool {
+        self.operator_emails.iter().any(|e| e.eq_ignore_ascii_case(email.trim()))
+    }
+
     /// The browser only gets the session cookie through PUBLIC_URL, so that decides whether it can be HTTPS-only.
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
     }
+}
+
+fn emails(list: &str) -> Vec<String> {
+    list.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -82,7 +94,17 @@ mod tests {
             open_signup: true,
             public_agent: true,
             porkbun_api_url: String::new(),
+            operator_emails: emails(" Ops@Example.com,, admin@example.org "),
         }
+    }
+
+    #[test]
+    fn operators_are_matched_by_email_in_any_case() {
+        let cfg = cfg("http://localhost:3333", EXAMPLE_APP_SECRET);
+        assert!(cfg.is_operator("ops@example.com"));
+        assert!(cfg.is_operator("ADMIN@example.org"));
+        assert!(!cfg.is_operator("someone@example.com"));
+        assert!(!Config { operator_emails: Vec::new(), ..cfg }.is_operator(""));
     }
 
     #[test]
