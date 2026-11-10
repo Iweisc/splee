@@ -206,6 +206,17 @@ export interface ProjectSettings extends CrmStatus {
   youtube_channel: string;
   youtube_error: string | null;
   youtube_failed_at: string | null;
+  /** The Stack Exchange user answers go out as, and the site's host. The access token is write-only, through PUT /integrations/stackexchange. */
+  stackexchange_connected: boolean;
+  stackexchange_user: string;
+  stackexchange_site: string;
+  stackexchange_error: string | null;
+  stackexchange_failed_at: string | null;
+  /** The DEV account articles go out from. Its API key is write-only, through PUT /integrations/dev. */
+  dev_connected: boolean;
+  dev_username: string;
+  dev_error: string | null;
+  dev_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -752,15 +763,17 @@ export interface SocialPost {
   project_id: UUID;
   run_id: UUID | null;
   /** LinkedIn posts go out through the project's Unipile connection. */
-  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube";
+  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube" | "stackexchange" | "dev";
   /** The link of the post or comment it answers, null for an original post. */
   in_reply_to: string | null;
   /** The text it answers. */
   context: string;
   /** Where a Reddit post goes, or the subreddit of the thread it answers. */
   subreddit: string;
-  /** Reddit posts only. */
+  /** Reddit posts and DEV articles only. */
   title: string;
+  /** DEV articles only, at most 4. */
+  tags: string[];
   body: string;
   /** Why the agent picked the thread. */
   reason: string;

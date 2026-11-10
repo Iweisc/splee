@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, bluesky, directory, linkedin, mastodon, reddit, threads, x, youtube};
+use super::{Ctx, bluesky, directory, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
 use crate::events;
 use crate::state::AppState;
 
@@ -212,6 +212,8 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         youtube::SEARCH => format!("searching YouTube \"{}\"…", input["query"].as_str().unwrap_or_default()),
         bluesky::READ | mastodon::READ | linkedin::READ | threads::READ => format!("reading {}…", short_url(input["post"].as_str().unwrap_or_default())),
         youtube::READ => format!("reading {}…", short_url(input["video"].as_str().unwrap_or_default())),
+        stackexchange::SEARCH => format!("searching Stack Exchange \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        stackexchange::READ => format!("reading {}…", short_url(input["question"].as_str().unwrap_or_default())),
         other => format!("{other}…"),
     };
     let step = ctx.step();

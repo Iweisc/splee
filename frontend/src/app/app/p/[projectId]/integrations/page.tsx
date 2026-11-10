@@ -12,7 +12,9 @@ import {
   Hash,
   MailCheck,
   MailPlus,
+  MessageCircleQuestionMark,
   MessagesSquare,
+  Newspaper,
   RefreshCw,
   Send,
   Spool,
@@ -1260,6 +1262,144 @@ function YouTubeSection({ projectId, settings }: { projectId: string; settings: 
   );
 }
 
+/** Stack Exchange's OAuth dialog for an app with client side OAuth. It ends on a page with the token in its address. */
+const stackExchangeDialog = (clientId: string) =>
+  `https://stackoverflow.com/oauth/dialog?${new URLSearchParams({
+    client_id: clientId,
+    scope: "write_access,no_expiry",
+    redirect_uri: "https://stackexchange.com/oauth/login_success",
+  })}`;
+
+/** The access token is write-only. Connecting checks that it can write and that its user has an account on the site. The client
+ *  id only opens the dialog that makes the token, so it isn't sent. */
+function StackExchangeSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [form, setForm] = useState({ key: "", token: "", site: "" });
+  const [clientId, setClientId] = useState("");
+  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: e.target.value.trim() });
+  const { busy, call } = useConnection(projectId, "stackexchange");
+  const connect = async () => {
+    if (await call(form, "Connected to Stack Exchange")) setForm({ key: "", token: "", site: "" });
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Stack Exchange? Approved answers will wait until you connect it again.")) call(undefined, "Stack Exchange disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <MessageCircleQuestionMark className="size-4" /> Stack Exchange
+        </span>
+      }
+      description="Searches one Stack Exchange site, like Stack Overflow, for open questions and posts the answers you approve on the Social page."
+      actions={
+        settings.stackexchange_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.stackexchange_connected ? (
+        <p className="text-sm text-pretty">
+          Answering as {settings.stackexchange_user} on {settings.stackexchange_site}, up to 5 answers a day. Approved answers go out one at a time every ten
+          minutes.
+        </p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            On{" "}
+            <a href="https://stackapps.com/apps/oauth/register" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              Stack Apps
+            </a>
+            , register an app with client side OAuth turned on and give it a Stack Apps post, which apps need before they can write. Copy its key, then
+            get an access token with its client id.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Key">
+              <Input autoComplete="off" value={form.key} onChange={set("key")} />
+            </Field>
+            <Field label="Site" hint="One site per project.">
+              <Input autoComplete="off" placeholder="stackoverflow.com" value={form.site} onChange={set("site")} />
+            </Field>
+            <Field label="Client id" hint="Copy access_token from the address it ends on.">
+              <div className="flex gap-2">
+                <Input aria-label="Client id" autoComplete="off" inputMode="numeric" value={clientId} onChange={(e) => setClientId(e.target.value.trim())} />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!clientId}
+                  onClick={() => window.open(stackExchangeDialog(clientId), "_blank", "noreferrer")}
+                >
+                  Get token
+                </Button>
+              </div>
+            </Field>
+            <Field label="Access token">
+              <Input type="password" autoComplete="off" value={form.token} onChange={set("token")} />
+            </Field>
+          </div>
+          <Button type="submit" loading={busy} disabled={!form.key || !form.token || !form.site} className="sm:self-start">
+            Connect
+          </Button>
+        </form>
+      )}
+      <LastFailure error={settings.stackexchange_error} at={settings.stackexchange_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** The API key is write-only. Connecting checks it with DEV and reads the username back. */
+function DevSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [key, setKey] = useState("");
+  const { busy, call } = useConnection(projectId, "dev");
+  const connect = async () => {
+    if (await call({ key }, "Connected to DEV")) setKey("");
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect DEV? Approved articles will wait until you connect it again.")) call(undefined, "DEV disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Newspaper className="size-4" /> DEV
+        </span>
+      }
+      description="Publishes the articles you approve on the Social page from your dev.to account. DEV can't take comments from apps, so it gets articles only."
+      actions={
+        settings.dev_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.dev_connected ? (
+        <p className="text-sm text-pretty">Publishing as @{settings.dev_username}, up to 2 articles a day. Approved articles go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            In{" "}
+            <a href="https://dev.to/settings/extensions" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              DEV&apos;s extension settings
+            </a>
+            , generate an API key.
+          </p>
+          <Field label="API key">
+            <div className="flex gap-2">
+              <Input aria-label="API key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value.trim())} />
+              <Button type="submit" loading={busy} disabled={!key}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </form>
+      )}
+      <LastFailure error={settings.dev_error} at={settings.dev_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -1348,6 +1488,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <MastodonSection projectId={projectId} settings={s} />
           <ThreadsSection projectId={projectId} settings={s} />
           <YouTubeSection projectId={projectId} settings={s} />
+          <StackExchangeSection projectId={projectId} settings={s} />
+          <DevSection projectId={projectId} settings={s} />
 
           <Section
             title={

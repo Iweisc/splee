@@ -187,6 +187,10 @@ pub enum Alert {
     Threads,
     /// Matched on youtube_token_enc, the refresh token.
     YouTube,
+    /// Matched on stackexchange_token_enc.
+    StackExchange,
+    /// Matched on dev_key_enc.
+    Dev,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -208,6 +212,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Mastodon => ("mastodon", "mastodon_token_enc".to_string()),
         Alert::Threads => ("threads", "threads_token_enc".to_string()),
         Alert::YouTube => ("youtube", "youtube_token_enc".to_string()),
+        Alert::StackExchange => ("stackexchange", "stackexchange_token_enc".to_string()),
+        Alert::Dev => ("dev", "dev_key_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

@@ -10,22 +10,29 @@ use uuid::Uuid;
 use crate::agent::x::{self, Cookies};
 use crate::bluesky::{self, Bluesky};
 use crate::crypto::decrypt;
+use crate::dev::Dev;
 use crate::hooks::{self, Alert};
 use crate::mastodon::Mastodon;
 use crate::models::SocialPost;
 use crate::reddit::{Login, Reddit, Target};
+use crate::stackexchange::{self, Question, StackExchange};
 use crate::state::AppState;
 use crate::threads::{self, Threads};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 7] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube"];
+pub const PLATFORMS: [&str; 9] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev"];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
 
-/// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most.
+/// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most. A
+/// Stack Exchange answer and a DEV article take far longer to read and judge than a reply, so they get fewer.
 pub fn daily_cap(platform: &str) -> i64 {
-    if platform == "linkedin" { 5 } else { 15 }
+    match platform {
+        "linkedin" | "stackexchange" => 5,
+        "dev" => 2,
+        _ => 15,
+    }
 }
 
 pub fn name(platform: &str) -> &'static str {
@@ -36,13 +43,20 @@ pub fn name(platform: &str) -> &'static str {
         "mastodon" => "Mastodon",
         "threads" => "Threads",
         "youtube" => "YouTube",
+        "stackexchange" => "Stack Exchange",
+        "dev" => "DEV",
         _ => "LinkedIn",
     }
 }
 
-/// YouTube only takes comments, so it gets no original posts.
+/// YouTube only takes comments and Stack Exchange answers, so they get no original posts.
 pub fn takes_posts(platform: &str) -> bool {
-    platform != "youtube"
+    !matches!(platform, "youtube" | "stackexchange")
+}
+
+/// Forem's API can't write comments, so DEV only gets articles.
+pub fn takes_replies(platform: &str) -> bool {
+    platform != "dev"
 }
 
 /// The most a reply or post can hold, as `length` counts it. Mastodon's limit is the instance's, read on connect.
@@ -53,6 +67,7 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("mastodon", _) => mastodon_chars,
         ("threads", _) => threads::CHARS,
         ("youtube", _) => youtube::CHARS,
+        ("stackexchange", _) => stackexchange::CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -65,8 +80,13 @@ pub fn length(platform: &str, text: &str) -> usize {
     if platform == "bluesky" { text.graphemes(true).count() } else { text.chars().count() }
 }
 
+/// The least a reply or post needs. Stack Exchange turns down short answers.
+pub fn min_length(platform: &str) -> usize {
+    if platform == "stackexchange" { stackexchange::MIN_CHARS } else { 1 }
+}
+
 pub fn fits(platform: &str, reply: bool, text: &str, mastodon_chars: usize) -> bool {
-    !text.is_empty() && length(platform, text) <= max_length(platform, reply, mastodon_chars)
+    (min_length(platform)..=max_length(platform, reply, mastodon_chars)).contains(&length(platform, text))
 }
 
 #[derive(Debug)]
@@ -109,6 +129,12 @@ pub struct Accounts {
     pub youtube_secret_enc: String,
     pub youtube_token_enc: String,
     pub youtube_channel_id: String,
+    pub stackexchange_key: String,
+    pub stackexchange_token_enc: String,
+    pub stackexchange_site: String,
+    pub stackexchange_account: String,
+    pub dev_key_enc: String,
+    pub dev_username: String,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
@@ -117,8 +143,9 @@ pub struct Accounts {
 const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
                                s.reddit_password_enc, s.bluesky_handle, s.bluesky_password_enc, s.mastodon_url, s.mastodon_token_enc,
                                s.mastodon_handle, s.mastodon_max_chars, s.threads_token_enc, s.threads_user_id, s.threads_username,
-                               s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.unipile_dsn,
-                               s.unipile_token_enc, s.unipile_account_id
+                               s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.stackexchange_key,
+                               s.stackexchange_token_enc, s.stackexchange_site, s.stackexchange_account, s.dev_key_enc, s.dev_username,
+                               s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
@@ -135,6 +162,8 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "mastodon" => ("mastodon_handle", "mastodon_failed_at"),
         "threads" => ("threads_username", "threads_failed_at"),
         "youtube" => ("youtube_channel_id", "youtube_failed_at"),
+        "stackexchange" => ("stackexchange_account", "stackexchange_failed_at"),
+        "dev" => ("dev_username", "dev_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -147,6 +176,8 @@ fn alert(platform: &str) -> Alert {
         "mastodon" => Alert::Mastodon,
         "threads" => Alert::Threads,
         "youtube" => Alert::YouTube,
+        "stackexchange" => Alert::StackExchange,
+        "dev" => Alert::Dev,
         _ => Alert::Unipile,
     }
 }
@@ -161,6 +192,8 @@ impl Accounts {
             "mastodon" => (&self.mastodon_handle, &self.mastodon_token_enc),
             "threads" => (&self.threads_username, &self.threads_token_enc),
             "youtube" => (&self.youtube_channel_id, &self.youtube_token_enc),
+            "stackexchange" => (&self.stackexchange_account, &self.stackexchange_token_enc),
+            "dev" => (&self.dev_username, &self.dev_key_enc),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
     }
@@ -214,6 +247,17 @@ impl Accounts {
             secret: decrypt(secret, &self.youtube_secret_enc)?,
             refresh_token: decrypt(secret, &self.youtube_token_enc)?,
         }))
+    }
+
+    pub fn stackexchange(&self, secret: &str) -> Result<StackExchange, Failure> {
+        let token = decrypt(secret, &self.stackexchange_token_enc)
+            .map_err(|_| Failure::Account("Couldn't read the saved Stack Exchange token. Connect Stack Exchange again".into()))?;
+        StackExchange::new(&self.stackexchange_key, &token, &self.stackexchange_site)
+    }
+
+    pub fn dev(&self, secret: &str) -> Result<Dev, Failure> {
+        let key = decrypt(secret, &self.dev_key_enc).map_err(|_| Failure::Account("Couldn't read the saved DEV API key. Connect DEV again".into()))?;
+        Dev::new(&key)
     }
 
     pub fn unipile(&self, secret: &str) -> Result<Unipile, Failure> {
@@ -274,6 +318,8 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
         "mastodon" => post_mastodon(state, a, &post).await,
         "threads" => post_threads(state, a, &post).await,
         "youtube" => post_youtube(state, a, &post).await,
+        "stackexchange" => post_stackexchange(state, a, &post).await,
+        "dev" => post_dev(state, a, &post).await,
         _ => post_linkedin(state, a, &post).await,
     };
     let result = finish(&state.db, &post, account, published).await?;
@@ -281,16 +327,21 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
     Ok(())
 }
 
-/// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap
-/// or had a failure in the last hour.
+/// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap,
+/// had a failure in the last hour or, on Stack Exchange, is waiting out the API's backoff.
 async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) -> sqlx::Result<Option<SocialPost>> {
     let (name, failed_at) = columns(platform);
+    let backoff = match platform {
+        "stackexchange" => "and not exists (select 1 from project_settings s where s.stackexchange_account = $3 and s.stackexchange_backoff_until > now())",
+        _ => "",
+    };
     sqlx::query_as(&format!(
         "select sp.* from social_posts sp
          where sp.project_id = $1 and sp.platform = $2 and sp.status = 'approved'
            and (select count(*) from social_posts o where o.platform = $2 and o.account = $3
                 and (o.status = 'posting' or o.status = 'posted' and o.posted_at > now() - interval '1 day')) < $4
            and not exists (select 1 from project_settings s where s.{name} = $3 and s.{failed_at} > now() - interval '1 hour')
+           {backoff}
          order by sp.updated_at limit 1"
     ))
     .bind(project_id)
@@ -371,6 +422,30 @@ async fn post_youtube(state: &AppState, a: &Accounts, post: &SocialPost) -> Resu
     let link = post.in_reply_to.as_deref().ok_or_else(|| Failure::Post("YouTube only takes comments".into()))?;
     let target = youtube::Target::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a YouTube video".into()))?;
     YouTube::sign_in(&login).await?.comment(&target, &post.body).await
+}
+
+async fn post_stackexchange(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let link = post.in_reply_to.as_deref().ok_or_else(|| Failure::Post("Stack Exchange only takes answers".into()))?;
+    let question = Question::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a Stack Exchange question".into()))?;
+    let se = a.stackexchange(&state.cfg.app_secret)?;
+    let answered = se.answer(&question, &post.body).await;
+    // The client forgets the backoff once this returns, and it can outlast the ten minutes until the account's next answer.
+    let wait = se.backoff("answer");
+    if wait > 0 {
+        let held = sqlx::query("update project_settings set stackexchange_backoff_until = now() + make_interval(secs => $2) where stackexchange_account = $1")
+            .bind(&a.stackexchange_account)
+            .bind(wait as f64)
+            .execute(&state.db)
+            .await;
+        if let Err(e) = held {
+            tracing::warn!(error = %e, "couldn't save the Stack Exchange backoff");
+        }
+    }
+    answered
+}
+
+async fn post_dev(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    a.dev(&state.cfg.app_secret)?.publish(&post.title, &post.body, &post.tags).await
 }
 
 async fn post_linkedin(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
@@ -484,6 +559,27 @@ mod tests {
         assert!(next_due(&db, project, "threads", "acme").await.unwrap().is_none());
         sqlx::query("update project_settings set youtube_failed_at = now() where project_id = $1").bind(project).execute(&db).await.unwrap();
         assert!(next_due(&db, project, "youtube", "UCacme").await.unwrap().is_none());
+        // Stack Exchange stops at 5 and DEV at 2, and the API's backoff holds Stack Exchange too.
+        sqlx::query(
+            "update project_settings set stackexchange_token_enc = 'x', stackexchange_account = 'stackoverflow.com/users/31', dev_key_enc = 'x',
+               dev_username = 'acme' where project_id = $1",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (platform, account, posted) in [("stackexchange", "stackoverflow.com/users/31", 4), ("dev", "acme", 1)] {
+            approved(&db, project, platform).await;
+            let post = "insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, $2, 'Hi', 'posted', $3, now() from generate_series(1, $4)";
+            sqlx::query(post).bind(project).bind(platform).bind(account).bind(posted).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, account).await.unwrap().is_some(), "{platform}");
+            sqlx::query(post).bind(project).bind(platform).bind(account).bind(1).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, account).await.unwrap().is_none(), "{platform}");
+        }
+        sqlx::query("delete from social_posts where platform = 'stackexchange' and status = 'posted'").execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "stackexchange", "stackoverflow.com/users/31").await.unwrap().is_some());
+        sqlx::query("update project_settings set stackexchange_backoff_until = now() + interval '5 minutes' where project_id = $1").bind(project).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "stackexchange", "stackoverflow.com/users/31").await.unwrap().is_none());
         // A Unipile failure, from sending LinkedIn messages or posting, holds LinkedIn posting too.
         sqlx::query("delete from social_posts where platform = 'linkedin' and status = 'posted'").execute(&db).await.unwrap();
         assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_some());
@@ -500,6 +596,8 @@ mod tests {
         assert!(fits("linkedin", false, &"a".repeat(3000), 500) && !fits("linkedin", true, &"a".repeat(1251), 500));
         assert!(fits("threads", true, &"é".repeat(500), 500) && !fits("threads", false, &"a".repeat(501), 500));
         assert!(fits("youtube", true, &"a".repeat(10_000), 500) && !fits("youtube", true, &"a".repeat(10_001), 500));
+        assert!(fits("stackexchange", true, &"a".repeat(30), 500) && !fits("stackexchange", true, &"a".repeat(29), 500));
+        assert!(!fits("stackexchange", true, &"a".repeat(30_001), 500));
         assert!(!fits("reddit", true, "", 500));
     }
 }

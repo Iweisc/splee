@@ -225,6 +225,17 @@ pub struct ProjectSettings {
     pub youtube_channel: String,
     pub youtube_error: Option<String>,
     pub youtube_failed_at: Option<Ts>,
+    /// The Stack Exchange user answers go out as, by display name, and the site's host. The token stays out of this struct.
+    pub stackexchange_connected: bool,
+    pub stackexchange_user: String,
+    pub stackexchange_site: String,
+    pub stackexchange_error: Option<String>,
+    pub stackexchange_failed_at: Option<Ts>,
+    /// The DEV account articles go out from. Its API key stays out of this struct.
+    pub dev_connected: bool,
+    pub dev_username: String,
+    pub dev_error: Option<String>,
+    pub dev_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -580,7 +591,7 @@ pub struct SocialPost {
     pub id: Uuid,
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
-    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads" or "youtube".
+    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange" or "dev".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -588,8 +599,10 @@ pub struct SocialPost {
     pub context: String,
     /// Reddit only: where an original post goes, or the thread's subreddit.
     pub subreddit: String,
-    /// Reddit original posts only.
+    /// Reddit original posts and DEV articles only.
     pub title: String,
+    /// DEV articles only, at most 4.
+    pub tags: Vec<String>,
     pub body: String,
     /// Why the agent picked the thread.
     pub reason: String,
