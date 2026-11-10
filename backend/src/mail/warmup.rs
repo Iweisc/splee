@@ -61,10 +61,11 @@ fn has_room(campaign_today: i64, warmup_today: i64, target: i32, total_limit: i3
     warmup_today < i64::from(target) && campaign_today + warmup_today < i64::from(total_limit)
 }
 
-/// Seconds until the next warmup email: the rest of the window split over the emails left, times 0.5 to 1.5 (`jitter` is
-/// 0 to 100), so they don't go out like clockwork.
+/// Seconds until the next warmup email: the rest of the window split over one more than the emails left, times 0.5 to 1.5
+/// (`jitter` is 0 to 100), so they don't go out like clockwork. The extra slot keeps even the longest gap under three
+/// quarters of what's left, so every email of the day still fits in the window.
 fn gap_secs(window_left_secs: i64, emails_left: i64, jitter: usize) -> i64 {
-    (window_left_secs / emails_left.max(1) * (50 + jitter as i64) / 100).max(60)
+    (window_left_secs / (emails_left.max(1) + 1) * (50 + jitter as i64) / 100).max(60)
 }
 
 /// A random number below `n`. Warmup only needs variety, and a v4 UUID's random bits give it without another crate.
@@ -237,18 +238,13 @@ struct Warming {
     timezone: String,
     start_hour: i32,
     end_hour: i32,
-    campaign_today: i64,
-    warmup_today: i64,
 }
 
 /// Every minute, at most one warmup email per mailbox: an answer that's due, else a new email when its time has come.
 /// They go out within the send hours of the org's first project, every day.
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     let warming = sqlx::query_as::<_, Warming>(&format!(
-        "select m.*, coalesce(w.timezone, 'UTC') as timezone, coalesce(w.send_start_hour, 9) as start_hour, coalesce(w.send_end_hour, 17) as end_hour,
-                (select count(*) from email_messages e where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at >= date_trunc('day', now()))
-                  as campaign_today,
-                ({WARMUP_SENT_TODAY}) as warmup_today
+        "select m.*, coalesce(w.timezone, 'UTC') as timezone, coalesce(w.send_start_hour, 9) as start_hour, coalesce(w.send_end_hour, 17) as end_hour
          from mailboxes m
          left join lateral (select s.timezone, s.send_start_hour, s.send_end_hour from projects p join project_settings s on s.project_id = p.id
                             where p.org_id = m.org_id order by p.created_at limit 1) w on true
@@ -281,14 +277,23 @@ async fn warm(state: &AppState, w: &Warming) -> anyhow::Result<()> {
     let Some((open, close)) = window(w.timezone.parse().unwrap_or(Tz::UTC), w.start_hour, w.end_hour, now) else { return Ok(()) };
     let days = w.mb.warmup_started_on.map_or(0, |d| (now.date_naive() - d).num_days());
     let target = daily_target(days, w.mb.warmup_daily_cap);
-    if !has_room(w.campaign_today, w.warmup_today, target, w.mb.total_daily_limit) {
+    // Counted now, not when the tick started, since the campaign sender and earlier mailboxes' sends move them.
+    let (campaign_today, warmup_today): (i64, i64) = sqlx::query_as(&format!(
+        "select (select count(*) from email_messages e where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at >= date_trunc('day', now())),
+                ({WARMUP_SENT_TODAY})
+         from mailboxes m where m.id = $1"
+    ))
+    .bind(w.mb.id)
+    .fetch_one(&state.db)
+    .await?;
+    if !has_room(campaign_today, warmup_today, target, w.mb.total_daily_limit) {
         return Ok(());
     }
     // Someone is waiting on an answer in the thread, so it goes before a new email.
     if send_reply(state, &w.mb).await? {
         return Ok(());
     }
-    let left = i64::from(target) - w.warmup_today;
+    let left = i64::from(target) - warmup_today;
     let next = |sent: i64| now + chrono::Duration::seconds(gap_secs((close - now).num_seconds(), left - sent, roll(101)));
     match w.mb.warmup_next_at {
         Some(at) if at >= open && at > now => return Ok(()),
@@ -663,9 +668,13 @@ mod tests {
     #[test]
     fn spreads_the_day_with_jitter() {
         // 8 hours left for 4 emails is 2 hours apart, give or take half.
-        assert_eq!(gap_secs(8 * 3600, 4, 50), 2 * 3600);
-        assert_eq!(gap_secs(8 * 3600, 4, 0), 3600);
-        assert_eq!(gap_secs(8 * 3600, 4, 100), 3 * 3600);
+        assert_eq!(gap_secs(10 * 3600, 4, 50), 2 * 3600);
+        assert_eq!(gap_secs(10 * 3600, 4, 0), 3600);
+        assert_eq!(gap_secs(10 * 3600, 4, 100), 3 * 3600);
+        // Day 1's two emails both fit even when every gap comes out as long as it can.
+        let window = 8 * 3600;
+        let first = gap_secs(window, 2, 100);
+        assert!(first + gap_secs(window - first, 1, 100) < window);
         assert_eq!(gap_secs(30, 0, 50), 60, "never faster than a minute");
     }
 
