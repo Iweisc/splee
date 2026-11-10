@@ -102,7 +102,48 @@ const CHAT_APPS = [
   ["Rocket.Chat", "Integrations → New → Incoming"],
   ["Zulip", "an incoming webhook bot's Slack compatible URL"],
   ["Zoho Cliq", "Bots & Tools → Webhook Tokens → Get Webhook URL, for a channel"],
-];
+] as const;
+
+/**
+ * Where the URL goes in each app, folded under a line naming the first few, so the list doesn't push the rest of the page
+ * down for someone who uses one of them.
+ */
+function AppSteps({ steps }: { steps: readonly (readonly [app: string, step: React.ReactNode])[] }) {
+  return (
+    <details className="group mt-1.5 text-xs text-muted-foreground">
+      <summary className="w-fit cursor-pointer select-none hover:text-foreground">
+        Where it goes in {steps.slice(0, 3).map(([app]) => app).join(", ")} and {steps.length - 3} more
+      </summary>
+      <ul className="mt-1.5 flex flex-col gap-1 text-pretty">
+        {steps.map(([app, step]) => (
+          <li key={app}>
+            {app}: {step}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+const FORM_APPS = [
+  ["Tally", "Integrations → Webhooks."],
+  ["Typeform", "Connect → Webhooks."],
+  ["Fillout", "Integrate → Webhook, in Simple mode."],
+  ["Jotform", "Settings → Integrations → WebHooks."],
+  ["Paperform", "After Submission → Integrations & Webhooks → Add Webhook, on New Submission."],
+  ["Formbricks", "Configuration → Integrations → Manage Webhooks, on Response Finished."],
+  ["Webflow", "Site settings → Integrations → Webhooks, with Form submission."],
+] as const;
+
+const BOOKING_APPS = [
+  ["Cal.com", "Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled."],
+  ["Calendly", <>subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API.</>],
+  ["SavvyCal", "Settings → Integrations, then + next to Webhooks."],
+  ["Zcal", "Integrations, then Connect next to Webhooks, and paste this URL as the Subscriber URL."],
+  ["TidyCal", "Integrations → Automations → Add webhook, with booking created, approved, rescheduled and cancelled."],
+  ["OnceHub", "Account Integrations → APIs & Webhooks → Create webhook, with booking scheduled, rescheduled and canceled."],
+  ["Appointlet", "Settings → Webhooks → Add Webhook."],
+] as const;
 
 /** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */
 function chatApp(url: string): string {
@@ -476,7 +517,7 @@ function EndpointList({
   added: (url: string) => string;
   confirmRemove: (url: string) => string;
   labels: { first: string; next: string; input: string };
-  hint: React.ReactNode;
+  hint?: React.ReactNode;
   placeholder: string;
 }) {
   const key = `/projects/${projectId}/${kind}`;
@@ -559,13 +600,9 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
         added={(url) => `Alerts will post to ${chatApp(url)} too`}
         confirmRemove={(url) => `Stop posting alerts to this ${chatApp(url)} chat?`}
         labels={{ first: "Incoming webhook URL", next: "Add another chat", input: "Chat webhook URL" }}
-        hint={CHAT_APPS.map(([app, where]) => (
-          <span key={app} className="block">
-            {app}: {where}
-          </span>
-        ))}
         placeholder="https://hooks.slack.com/…"
       />
+      <AppSteps steps={CHAT_APPS} />
       <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
         <span>
           <span className="block text-sm font-medium">Weekly report</span>
@@ -816,21 +853,11 @@ function FormSection({ projectId, token }: { projectId: string; token: string })
       <div className="mt-4 flex flex-col gap-1.5">
         <span className="text-sm font-medium">Form webhook URL</span>
         <CopyField value={`${origin}/api/forms/${token}${segmentId ? `?campaign=${segmentId}` : ""}`} />
-        <ul className="flex flex-col gap-1 text-xs text-pretty text-muted-foreground">
-          <li>Tally: Integrations → Webhooks.</li>
-          <li>Typeform: Connect → Webhooks.</li>
-          <li>Fillout: Integrate → Webhook, in Simple mode.</li>
-          <li>Jotform: Settings → Integrations → WebHooks.</li>
-          <li>Paperform: After Submission → Integrations &amp; Webhooks → Add Webhook, on New Submission.</li>
-          <li>Formbricks: Configuration → Integrations → Manage Webhooks, on Response Finished.</li>
-          <li>Webflow: Site settings → Integrations → Webhooks, with Form submission.</li>
-          <li>
-            Anything else can POST <code>{`{"email": "...", "name": "..."}`}</code>.
-          </li>
-        </ul>
         <p className="text-xs text-pretty text-muted-foreground">
-          Answers that aren&apos;t a name, email, company, title, website or LinkedIn go in the lead&apos;s notes.
+          Anything that can POST <code>{`{"email": "...", "name": "..."}`}</code> works too. Answers that aren&apos;t a name, email,
+          company, title, website or LinkedIn go in the lead&apos;s notes.
         </p>
+        <AppSteps steps={FORM_APPS} />
       </div>
     </Section>
   );
@@ -961,21 +988,11 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
             <div className="flex flex-col gap-1.5">
               <span className="text-sm font-medium">Booking webhook URL</span>
               <CopyField value={`${origin}/api/bookings/${s.booking_token}`} />
-              <ul className="flex flex-col gap-1 text-xs text-pretty text-muted-foreground">
-                <li>Cal.com: Settings → Developer → Webhooks → New, paste this URL and pick Booking created, rescheduled and cancelled.</li>
-                <li>SavvyCal: Settings → Integrations, then + next to Webhooks.</li>
-                <li>Zcal: Integrations, then Connect next to Webhooks, and paste this URL as the Subscriber URL.</li>
-                <li>TidyCal: Integrations → Automations → Add webhook, with booking created, approved, rescheduled and cancelled.</li>
-                <li>OnceHub: Account Integrations → APIs &amp; Webhooks → Create webhook, with booking scheduled, rescheduled and canceled.</li>
-                <li>Appointlet: Settings → Webhooks → Add Webhook.</li>
-                <li>
-                  Calendly: subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API.
-                </li>
-                <li>
-                  Anything else, like a Zapier step, can POST <code>{`{"email": "...", "start_time": "..."}`}</code>.
-                </li>
-              </ul>
-              <p className="text-xs text-pretty text-muted-foreground">Splee finds the lead by email and shows the call&apos;s time on it.</p>
+              <p className="text-xs text-pretty text-muted-foreground">
+                Splee finds the lead by email and shows the call&apos;s time on it. Anything else, like a Zapier step, can POST{" "}
+                <code>{`{"email": "...", "start_time": "..."}`}</code>.
+              </p>
+              <AppSteps steps={BOOKING_APPS} />
             </div>
           </Section>
           <Section
