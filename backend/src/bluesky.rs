@@ -130,6 +130,8 @@ impl Bluesky {
         let said = body["message"].as_str().filter(|m| !m.is_empty()).or(Some(error).filter(|e| !e.is_empty())).map(|m| format!(" ({m})")).unwrap_or_default();
         Err(match status {
             s if s.is_success() => return Ok(body),
+            // A server error may come after the post was saved, whatever the error says, so it never goes back in the queue.
+            s if s.is_server_error() => Failure::Post(format!("Bluesky answered {s}{said}")),
             StatusCode::UNAUTHORIZED => Failure::Account(format!("Bluesky signed the account out{said}. Connect Bluesky again")),
             _ if matches!(error, "ExpiredToken" | "InvalidToken" | "AccountTakedown") => {
                 Failure::Account(format!("Bluesky signed the account out{said}. Connect Bluesky again"))
@@ -304,6 +306,7 @@ mod tests {
             match body["record"]["text"].as_str().unwrap() {
                 "expired" => (StatusCode::BAD_REQUEST, Json(json!({ "error": "ExpiredToken", "message": "Token has expired" }))),
                 "fast" => (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "RateLimitExceeded" }))),
+                "down" => (StatusCode::BAD_GATEWAY, Json(json!({ "error": "ExpiredToken", "message": "upstream failed" }))),
                 _ => {
                     posts.lock().unwrap().push(body);
                     (StatusCode::OK, Json(json!({ "uri": "at://did:plc:me/app.bsky.feed.post/new1", "cid": "cid-new" })))
@@ -362,6 +365,8 @@ mod tests {
 
         assert!(matches!(bsky.post(Some("at://did:plc:ana/app.bsky.feed.post/gone1"), "Hi").await, Err(Failure::Post(m)) if m.contains("couldn't find")));
         assert!(matches!(bsky.post(None, "expired").await, Err(Failure::Account(m)) if m.contains("Connect Bluesky again")));
+        // It may have been saved before the error, so it fails even when the error names the session.
+        assert!(matches!(bsky.post(None, "down").await, Err(Failure::Post(_))));
         assert!(matches!(bsky.post(None, "fast").await, Err(Failure::Account(m)) if m.contains("rate limiting")));
         assert!(matches!(bsky.post(Some("https://example.com/post/1"), "Hi").await, Err(Failure::Post(_))));
     }

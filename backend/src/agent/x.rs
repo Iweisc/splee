@@ -207,7 +207,10 @@ pub async fn post(bin: &str, cookies: &Cookies, reply_to: Option<&str>, text: &s
 /// deleted post or one X takes for a duplicate, is about the post.
 fn failure(reason: &str) -> Failure {
     let r = reason.to_lowercase();
-    if ["missing required credentials", "could not authenticate", "(32)", "http 401", "bad authentication"].iter().any(|s| r.contains(s)) {
+    // X may have saved the post before a server error, so it fails whatever the message says.
+    if r.contains("http 5") {
+        Failure::Post(reason.to_string())
+    } else if ["missing required credentials", "could not authenticate", "(32)", "http 401", "bad authentication"].iter().any(|s| r.contains(s)) {
         Failure::Account(format!("X didn't accept the account's cookies ({reason}). Connect X again with fresh ones"))
     } else if ["http 429", "(88)", "rate limit"].iter().any(|s| r.contains(s)) {
         Failure::Account(format!("X is rate limiting the account ({reason})"))
@@ -324,6 +327,7 @@ mod tests {
         assert_eq!(reason("❌ Failed to post tweet: HTTP 429: slow down".as_bytes()), "Failed to post tweet: HTTP 429: slow down");
         assert!(matches!(failure(&reason(stderr)), Failure::Account(m) if m.contains("Connect X again")));
         assert!(matches!(failure("Failed to post tweet: HTTP 429: slow down"), Failure::Account(_)));
+        assert!(matches!(failure("Failed to post tweet: HTTP 503: rate limit backend unavailable"), Failure::Post(_)));
         assert!(matches!(failure("Failed to post tweet: Status is a duplicate. (187)"), Failure::Post(m) if m.ends_with("(187)")));
     }
 
