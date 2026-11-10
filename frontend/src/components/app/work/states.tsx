@@ -55,7 +55,8 @@ export function ListSkeleton({ rows = 6, className }: { rows?: number; className
   );
 }
 
-export function Pager({ page, total, onChange }: { page: number; total: number; onChange: (page: number) => void }) {
+/** `capped` says `total` stopped counting and there are more, like the company database's 10,000+. */
+export function Pager({ page, total, capped, onChange }: { page: number; total: number; capped?: boolean; onChange: (page: number) => void }) {
   const pages = Math.max(1, Math.ceil(total / PER_PAGE));
   const ref = useRef<HTMLDivElement>(null);
   if (total <= PER_PAGE) return null;
@@ -72,6 +73,7 @@ export function Pager({ page, total, onChange }: { page: number; total: number; 
     <div ref={ref} className="flex items-center justify-between border-t border-border px-4 py-2.5 text-sm text-muted-foreground">
       <span className="tabular-nums">
         {num((page - 1) * PER_PAGE + 1)}–{num(Math.min(page * PER_PAGE, total))} of {num(total)}
+        {capped && "+"}
       </span>
       <div className="flex gap-1">
         <Button variant="ghost" size="icon" disabled={page <= 1} onClick={() => go(page - 1)} aria-label="Previous page">

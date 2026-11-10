@@ -209,6 +209,8 @@ All paths below are under `/api`.
 | method | path | body | response |
 |---|---|---|---|
 | GET | /directory/companies?q&country&city&category&has_email&has_phone&page&per_page | | `{items: DirectoryCompany[], total, capped}`, most confident first. every word in `q` must start a word in the name or category, so `dent` finds `general_dentistry`, `country` is a two-letter code (400 otherwise), `city` is matched case-insensitively and `category` is an Overture category or any of its parents, like `restaurant`. `total` stops at 10,000 and `capped` says there are more. |
+| GET | /directory/countries | | `{country_code, companies}[]`, most companies first. The server keeps the list for 10 minutes, since counting is slow over millions of rows, but not while the table is empty. |
+| POST | /projects/:id/directory/add | `{segment_id, domains: string[]}` (up to 500) | `{added, skipped}`. Adds the companies to the campaign as `new` companies, with the category in words as their description, so "Find people" picks them up like the ones the agent found. Domains already in the project, missing from the database, or whose domain, listed email or that email's domain is suppressed are skipped. 400 for a campaign of another project. |
 
 ### Runs
 
