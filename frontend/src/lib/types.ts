@@ -55,6 +55,18 @@ export interface ApiKey {
   created_at: Ts;
 }
 
+/** An app someone allowed on the OAuth consent page, like ChatGPT or Claude.ai. */
+export interface ConnectedApp {
+  id: UUID;
+  name: string;
+  client_id: string;
+  user_name: string;
+  user_email: string;
+  mine: boolean;
+  created_at: Ts;
+  last_used_at: Ts | null;
+}
+
 export interface NotificationPrefs {
   user_id: UUID;
   hot_lead_email: boolean;
