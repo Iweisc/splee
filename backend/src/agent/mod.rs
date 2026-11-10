@@ -3,8 +3,10 @@
 
 mod bluesky;
 mod directory;
+mod discourse;
 mod explore;
 mod hiring;
+mod lemmy;
 mod linkedin;
 mod mastodon;
 mod prospect;

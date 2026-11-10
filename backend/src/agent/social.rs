@@ -15,8 +15,9 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
+use super::{Ctx, Outcome, bluesky, discourse, lemmy, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
+use crate::discourse::{Topic, forum_url};
 use crate::hooks::{self, Alert};
 use crate::reddit::{Reddit, Target, subreddit};
 use crate::social::{self, Accounts, Failure, PLATFORMS, fits, name, takes_posts, takes_replies};
@@ -69,6 +70,10 @@ struct Post {
     title: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    forum: String,
+    #[serde(default)]
+    community: String,
     reason: String,
     body: String,
 }
@@ -85,11 +90,13 @@ fn schema() -> Value {
             "posts": {"type": "array", "items": {"type": "object", "properties": {
                 "platform": {"type": "string", "enum": PLATFORMS.iter().filter(|p| takes_posts(p)).collect::<Vec<_>>()},
                 "subreddit": {"type": "string", "description": "Reddit only, without r/. Empty for the others."},
-                "title": {"type": "string", "description": "Reddit and DEV only. Empty for the others."},
+                "title": {"type": "string", "description": "Reddit, DEV, Discourse and Lemmy only. Empty for the others."},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV only, up to 4. Empty for the others."},
+                "forum": {"type": "string", "description": "Discourse only, the forum's address as listed. Empty for the others."},
+                "community": {"type": "string", "description": "Lemmy only, as name@instance. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
                 "body": {"type": "string"}
-            }, "required": ["platform", "subreddit", "title", "tags", "reason", "body"]}}
+            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "reason", "body"]}}
         },
         "required": ["replies", "posts"]
     })
@@ -106,6 +113,8 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| crate::threads::post_url(link))
         .or_else(|| Video::parse(link).map(|v| v.url()))
         .or_else(|| Question::parse(link).map(|q| q.url()))
+        .or_else(|| Topic::parse(link).map(|t| t.url()))
+        .or_else(|| crate::lemmy::Link::parse(link).map(|l| l.url()))
 }
 
 /// "X", "X and Reddit", "X, Reddit and Bluesky".
@@ -121,7 +130,8 @@ fn names(platforms: &[&str]) -> String {
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
-    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV or LinkedIn on the integrations page first";
+    const CONNECT: &str =
+        "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -241,6 +251,21 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         platforms.push("dev");
         tools.push(format!("On DEV you publish articles as @{}.", accounts.dev_username));
     }
+    if !accounts.lemmy_password_enc.is_empty() {
+        match accounts.lemmy(secret).await {
+            Ok(l) => {
+                call.servers.insert("lemmy".into(), lemmy::server(Arc::new(l), accounts.lemmy_url.clone(), seen.clone()));
+                call.server_tools.extend([lemmy::SEARCH.to_string(), lemmy::READ.to_string()]);
+                platforms.push("lemmy");
+                tools.push(format!(
+                    "On Lemmy you post as @{}. Search posts and comments with mcp__lemmy__search, across all communities and inside the ones \
+                     where the buyers gather, and read a post and its comments with mcp__lemmy__read.",
+                    accounts.lemmy_handle
+                ));
+            }
+            Err(e) => unavailable("lemmy", Alert::Lemmy, e).await?,
+        }
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -255,6 +280,37 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             }
             Err(e) => unavailable("linkedin", Alert::Unipile, e).await?,
         }
+    }
+    // Each forum signs in on its own, and one that can't is left out while the others still run.
+    let mut forums = Vec::new();
+    for f in &accounts.forums {
+        match f.client(secret).await {
+            Ok(d) => forums.push((f.url.clone(), d, f)),
+            Err(e) => {
+                let e = e.message();
+                ctx.log(format!("couldn't reach {}: {e}", f.url)).await?;
+                hooks::record(ctx.db(), project_id, Alert::Discourse, &f.key_enc, &Err(anyhow::anyhow!(e.clone()))).await;
+                problem = Some(e);
+            }
+        }
+    }
+    if !forums.is_empty() {
+        let list: Vec<String> = forums
+            .iter()
+            .map(|(url, _, f)| match f.category_id {
+                Some(_) => format!("- {url}, as {}. New topics go in its {} category.", f.username, f.category_name),
+                None => format!("- {url}, as {}. Replies only.", f.username),
+            })
+            .collect();
+        let clients = forums.into_iter().map(|(url, d, _)| (url, d)).collect();
+        call.servers.insert("discourse".into(), discourse::server(Arc::new(clients), seen.clone()));
+        call.server_tools.extend([discourse::SEARCH.to_string(), discourse::READ.to_string()]);
+        platforms.push("discourse");
+        tools.push(format!(
+            "On Discourse you post on these forums:\n{}\nSearch their open topics with mcp__discourse__search and read a topic and its replies \
+             with mcp__discourse__read.",
+            list.join("\n")
+        ));
     }
     if platforms.is_empty() {
         anyhow::bail!(problem.unwrap_or_else(|| CONNECT.into()));
@@ -275,7 +331,9 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
     let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p)).collect();
-    let posting: Vec<&str> = platforms.iter().copied().filter(|p| takes_posts(p)).collect();
+    // Discourse only takes new topics on forums with a category picked for them.
+    let topics = accounts.forums.iter().any(|f| f.category_id.is_some());
+    let posting: Vec<&str> = platforms.iter().copied().filter(|p| takes_posts(p) && (*p != "discourse" || topics)).collect();
     let (find, post_on) = (names(&replying), names(&posting));
     let task = match (replying.is_empty(), posting.is_empty()) {
         (true, _) => format!("Draft a few original posts on {post_on} that people who could buy from {name} would want to read."),
@@ -342,7 +400,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     ctx.begin_step(1, "Find threads to join").await?;
     let drafts: Drafts = ctx.ask(&call).await?;
     let seen = std::mem::take(&mut *seen.lock().unwrap());
-    let (replies, posts) = save(ctx.db(), project_id, ctx.run.id, &platforms, accounts.mastodon_chars(), drafts, &seen).await?;
+    let (replies, posts) = save(ctx.db(), project_id, ctx.run.id, &platforms, &accounts, drafts, &seen).await?;
     let message = format!("Drafted {} and {}", count(replies, "reply", "replies"), count(posts, "post", "posts"));
     ctx.finish_step(1, &message).await?;
     Ok(Outcome { message, output: json!({ "replies": replies, "posts": posts }) })
@@ -372,6 +430,24 @@ fn rules(platform: &str, company: &str, a: &Accounts) -> String {
              elsewhere gets deleted. If you mention {company}, say in the same sentence that you work on it, as the site's rules require.",
             a.stackexchange_site
         ),
+        "discourse" => {
+            let topics: Vec<&str> = a.forums.iter().filter(|f| f.category_id.is_some()).map(|f| f.url.as_str()).collect();
+            let posts = if topics.is_empty() {
+                "No new topics.".to_string()
+            } else {
+                format!("A new topic needs `forum`, one of {}, and a title of 15 to 255 characters.", topics.join(", "))
+            };
+            format!(
+                "Discourse: replies and topics are 20 to 32,000 characters of Markdown. Reply to a topic as a whole. Each forum is a \
+                 community with its own norms: write the way its regulars do, and don't mention {company} where the forum bans \
+                 self-promotion. {posts}"
+            )
+        }
+        "lemmy" => format!(
+            "Lemmy: comments and posts are at most 10,000 characters of Markdown. Respect each community's rules, and don't mention \
+             {company} where a community bans self-promotion. A post needs `community`, as name@instance, where such posts are \
+             welcome, and a title of at most 200 characters."
+        ),
         "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
                   lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
                   something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
@@ -395,10 +471,12 @@ async fn save(
     project_id: Uuid,
     run_id: Uuid,
     platforms: &[&str],
-    mastodon_chars: usize,
+    a: &Accounts,
     drafts: Drafts,
     seen: &HashMap<String, Thread>,
 ) -> sqlx::Result<(usize, usize)> {
+    let mastodon_chars = a.mastodon_chars();
+    let forum = |url: &str| a.forums.iter().find(|f| f.url == url);
     let oldest = Utc::now() - chrono::Duration::days(MAX_AGE_DAYS);
     let mut replies = 0;
     for r in drafts.replies {
@@ -407,9 +485,10 @@ async fn save(
         if thread.closed || thread.created.is_some_and(|c| c < oldest) || !fits(thread.platform, true, body, mastodon_chars) {
             continue;
         }
+        let forum_id = Topic::parse(&link).filter(|_| thread.platform == "discourse").and_then(|t| forum(&t.forum)).map(|f| f.id);
         let added = sqlx::query(
-            "insert into social_posts (project_id, run_id, platform, in_reply_to, context, subreddit, body, reason)
-             values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict (project_id, in_reply_to) do nothing",
+            "insert into social_posts (project_id, run_id, platform, in_reply_to, context, subreddit, body, reason, forum_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (project_id, in_reply_to) do nothing",
         )
         .bind(project_id)
         .bind(run_id)
@@ -419,6 +498,7 @@ async fn save(
         .bind(&thread.subreddit)
         .bind(body)
         .bind(r.reason.trim())
+        .bind(forum_id)
         .execute(db)
         .await?;
         replies += added.rows_affected() as usize;
@@ -430,26 +510,39 @@ async fn save(
             continue;
         }
         let title = p.title.trim();
-        let (sr, title, tags) = match p.platform.as_str() {
+        let titles = |min: usize, max: usize| (min..=max).contains(&title.chars().count());
+        let (sr, title, tags, forum_id) = match p.platform.as_str() {
             "reddit" => match subreddit(&p.subreddit) {
-                Some(sr) if !title.is_empty() && title.chars().count() <= 300 => (sr, title, Vec::new()),
+                Some(sr) if titles(1, 300) => (sr, title, Vec::new(), None),
                 _ => continue,
             },
-            "dev" if !title.is_empty() && title.chars().count() <= crate::dev::TITLE_CHARS => (String::new(), title, crate::dev::tags(&p.tags)),
+            "dev" if titles(1, crate::dev::TITLE_CHARS) => (String::new(), title, crate::dev::tags(&p.tags), None),
+            "lemmy" => match crate::lemmy::community(&p.community, a.lemmy_host()) {
+                Some(community) if titles(1, crate::lemmy::TITLE_CHARS) => (community, title, Vec::new(), None),
+                _ => continue,
+            },
+            "discourse" => match forum_url(&p.forum).and_then(|url| forum(&url)).filter(|f| f.category_id.is_some()) {
+                Some(f) if titles(crate::discourse::MIN_TITLE_CHARS, crate::discourse::TITLE_CHARS) => (String::new(), title, Vec::new(), Some(f.id)),
+                _ => continue,
+            },
             "dev" => continue,
-            _ => (String::new(), "", Vec::new()),
+            _ => (String::new(), "", Vec::new(), None),
         };
-        sqlx::query("insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason) values ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(project_id)
-            .bind(run_id)
-            .bind(&p.platform)
-            .bind(sr)
-            .bind(title)
-            .bind(tags)
-            .bind(body)
-            .bind(p.reason.trim())
-            .execute(db)
-            .await?;
+        sqlx::query(
+            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(project_id)
+        .bind(run_id)
+        .bind(&p.platform)
+        .bind(sr)
+        .bind(title)
+        .bind(tags)
+        .bind(body)
+        .bind(p.reason.trim())
+        .bind(forum_id)
+        .execute(db)
+        .await?;
         posts += 1;
     }
     Ok((replies, posts))
@@ -470,10 +563,12 @@ mod tests {
             ("https://www.threads.net/@Ana/post/DCx9q?id=18012345", "https://www.threads.com/@ana/post/DCx9q?id=18012345"),
             ("https://youtu.be/dQw4w9WgXcQ?t=3", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
             ("https://stackoverflow.com/questions/79724206/firebase-auth", "https://stackoverflow.com/questions/79724206"),
+            ("https://forum.acme.com/t/warming-up/42/3", "https://forum.acme.com/t/42"),
+            ("https://lemmy.world/comment/7", "https://lemmy.world/comment/7"),
         ] {
             assert_eq!(canonical(link).as_deref(), Some(canonical_link), "{link}");
         }
-        assert_eq!(canonical("https://example.com/post/1"), None);
+        assert_eq!(canonical("https://example.com/blog/1"), None);
         assert_eq!(names(&["x"]), "X");
         assert_eq!(names(&["x", "bluesky", "linkedin"]), "X, Bluesky and LinkedIn");
     }
@@ -499,6 +594,8 @@ mod tests {
             ("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(), thread("youtube", false, 3)),
             ("https://stackoverflow.com/questions/7".to_string(), thread("stackexchange", false, 3)),
             ("https://stackoverflow.com/questions/8".to_string(), thread("stackexchange", false, 3)),
+            ("https://forum.acme.com/t/42".to_string(), thread("discourse", false, 3)),
+            ("https://lemmy.world/post/5".to_string(), Thread { subreddit: "sales@lemmy.world".into(), ..thread("lemmy", false, 1) }),
         ]);
         let reply = |url: &str, body: &str| Reply { thread_url: url.into(), reason: "Asks for it".into(), body: body.into() };
         let post = |platform: &str, subreddit: &str, title: &str| Post {
@@ -506,9 +603,12 @@ mod tests {
             subreddit: subreddit.into(),
             title: title.into(),
             tags: vec!["Cold Email".into(), "sales".into()],
+            forum: String::new(),
+            community: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
+        let long = "A lesson about warming up a domain";
         let drafts = || Drafts {
             replies: vec![
                 reply("https://www.reddit.com/r/sales/comments/open1/how_do_you_find_leads/", "Try this"),
@@ -523,6 +623,8 @@ mod tests {
                 reply("https://stackoverflow.com/questions/7/how-to-warm-up", "Warm it up over four weeks, starting at 20 a day."),
                 // Under Stack Exchange's 30 characters.
                 reply("https://stackoverflow.com/q/8", "Use a pool."),
+                reply("https://forum.acme.com/t/warming-up/42", "Warm it up over four weeks, 20 a day."),
+                reply("https://lemmy.world/post/5", "Same here"),
             ],
             // YouTube and Stack Exchange only take replies, and a DEV article needs a title.
             posts: vec![
@@ -534,27 +636,54 @@ mod tests {
                 post("stackexchange", "", ""),
                 post("dev", "", "Warming up a domain"),
                 post("dev", "", ""),
+                // A topic needs a forum with a category and a 15-character title, and a Lemmy post a community.
+                Post { forum: "forum.acme.com".into(), body: long.into(), ..post("discourse", "", "How we warm up domains") },
+                Post { forum: "forum.acme.com".into(), body: long.into(), ..post("discourse", "", "Warm up") },
+                Post { forum: "other.example".into(), body: long.into(), ..post("discourse", "", "How we warm up domains") },
+                Post { community: "!Sales@lemmy.world".into(), ..post("lemmy", "", "What works for you?") },
+                post("lemmy", "", "What works for you?"),
             ],
         };
 
-        let platforms = ["x", "reddit", "bluesky", "youtube", "stackexchange", "dev"];
-        assert_eq!(save(&db, project, run, &platforms, 500, drafts(), &seen).await.unwrap(), (3, 3));
+        sqlx::query("insert into project_settings (project_id, mastodon_max_chars, lemmy_url) values ($1, 500, 'https://lemmy.world')")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into discourse_forums (project_id, url, username, key_kind, key_enc, account, category_id, category_name)
+             values ($1, 'https://forum.acme.com', 'ana', 'user', 'x', 'forum.acme.com/u/ana', 7, 'Sales')",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let accounts = social::accounts(&db, project).await.unwrap().unwrap();
+        let platforms = ["x", "reddit", "bluesky", "youtube", "stackexchange", "dev", "discourse", "lemmy"];
+        assert_eq!(save(&db, project, run, &platforms, &accounts, drafts(), &seen).await.unwrap(), (5, 5));
         let rows: Vec<(String, Option<String>, String, String, String)> =
             sqlx::query_as("select platform, in_reply_to, context, subreddit, title from social_posts order by in_reply_to nulls last, platform")
                 .fetch_all(&db)
                 .await
                 .unwrap();
         assert_eq!(rows, [
+            ("discourse".into(), Some("https://forum.acme.com/t/42".into()), "How do you find leads?".into(), String::new(), String::new()),
+            ("lemmy".into(), Some("https://lemmy.world/post/5".into()), "How do you find leads?".into(), "sales@lemmy.world".into(), String::new()),
             ("stackexchange".into(), Some("https://stackoverflow.com/questions/7".into()), "How do you find leads?".into(), String::new(), String::new()),
             ("reddit".into(), Some("https://www.reddit.com/comments/open1/".into()), "How do you find leads?".into(), "sales".into(), String::new()),
             ("youtube".into(), Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()), "How do you find leads?".into(), String::new(), String::new()),
             ("dev".into(), None, String::new(), String::new(), "Warming up a domain".into()),
+            ("discourse".into(), None, String::new(), String::new(), "How we warm up domains".into()),
+            ("lemmy".into(), None, String::new(), "sales@lemmy.world".into(), "What works for you?".into()),
             ("reddit".into(), None, String::new(), "sales".into(), "What works for you?".into()),
             ("x".into(), None, String::new(), String::new(), String::new()),
         ]);
         let tags: Vec<String> = sqlx::query_scalar("select tags from social_posts where platform = 'dev'").fetch_one(&db).await.unwrap();
         assert_eq!(tags, ["coldemail", "sales"]);
+        // Both Discourse rows point at the forum, which the poster needs.
+        let forums: i64 = sqlx::query_scalar("select count(*) from social_posts where platform = 'discourse' and forum_id is not null").fetch_one(&db).await.unwrap();
+        assert_eq!(forums, 2);
         // A second run doesn't draft for the same thread again.
-        assert_eq!(save(&db, project, run, &platforms, 500, drafts(), &seen).await.unwrap().0, 0);
+        assert_eq!(save(&db, project, run, &platforms, &accounts, drafts(), &seen).await.unwrap().0, 0);
     }
 }

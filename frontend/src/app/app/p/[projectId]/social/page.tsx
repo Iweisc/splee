@@ -9,9 +9,9 @@ import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
-import { Badge, Card, EmptyState, Message, Skeleton, Tabs, type BadgeTone } from "@/components/ui/misc";
+import { Badge, Card, EmptyState, Host, Message, Skeleton, Tabs, type BadgeTone } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { ProjectSettings, SocialPost } from "@/lib/types";
+import type { DiscourseForum, ProjectSettings, SocialPost } from "@/lib/types";
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -29,6 +29,8 @@ const PLATFORMS: Record<Platform, string> = {
   youtube: "YouTube",
   stackexchange: "Stack Exchange",
   dev: "DEV",
+  discourse: "Discourse",
+  lemmy: "Lemmy",
 };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
@@ -40,22 +42,39 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
   approved: {
     title: "Nothing waiting to post",
-    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, 5 on LinkedIn and Stack Exchange, and 2 on DEV.",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, 10 on Lemmy, 5 on LinkedIn, Stack Exchange and each Discourse forum, and 2 on DEV.",
   },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
-/** LinkedIn goes out through the Unipile connection for LinkedIn sending. */
-const isConnected = (s: ProjectSettings, p: Platform) => (p === "linkedin" ? s.unipile_connected : s[`${p}_connected`]);
-/** Like social::daily_cap on the backend. */
-const dailyCap = (p: Platform) => (p === "linkedin" || p === "stackexchange" ? 5 : p === "dev" ? 2 : 15);
+/** LinkedIn goes out through the Unipile connection for LinkedIn sending, and Discourse through each forum the project joined. */
+function isConnected(s: ProjectSettings, forums: DiscourseForum[], p: Platform) {
+  if (p === "linkedin") return s.unipile_connected;
+  if (p === "discourse") return forums.length > 0;
+  return s[`${p}_connected`];
+}
+/** Like social::daily_cap on the backend. Discourse's is per forum. */
+const dailyCap = (p: Platform) => (p === "linkedin" || p === "stackexchange" || p === "discourse" ? 5 : p === "lemmy" ? 10 : p === "dev" ? 2 : 15);
 /** YouTube only takes comments and Stack Exchange answers, like social::takes_posts on the backend. */
 const takesPosts = (p: Platform) => p !== "youtube" && p !== "stackexchange";
-/** Stack Exchange turns down answers under 30 characters, like social::min_length on the backend. */
-const minLength = (p: Platform) => (p === "stackexchange" ? 30 : 1);
-/** Like dev::TITLE_CHARS on the backend. */
+/** Stack Exchange and Discourse turn down short ones, like social::min_length on the backend. */
+const minLength = (p: Platform) => (p === "stackexchange" ? 30 : p === "discourse" ? 20 : 1);
+/** Like dev::TITLE_CHARS, lemmy::TITLE_CHARS and discourse's title limits on the backend. */
 const DEV_TITLE_CHARS = 128;
+const LEMMY_TITLE_CHARS = 200;
+const TOPIC_TITLE_CHARS = [15, 255] as const;
+/** Discourse forums only take new topics once a category is picked for them. */
+const topicForums = (forums: DiscourseForum[]) => forums.filter((f) => f.category_id !== null);
+const forumHost = (f: DiscourseForum) => f.url.replace(/^https:\/\//, "");
+/** What a new post needs besides its text, like the backend's check. `community` is the subreddit or Lemmy community. */
+function titleReady(p: Platform, title: string, community: string, forum: DiscourseForum | undefined) {
+  const n = [...title.trim()].length;
+  if (p === "reddit" || p === "lemmy") return n > 0 && n <= (p === "lemmy" ? LEMMY_TITLE_CHARS : 300) && !!community.trim();
+  if (p === "dev") return n > 0;
+  if (p === "discourse") return !!forum?.category_id && n >= TOPIC_TITLE_CHARS[0] && n <= TOPIC_TITLE_CHARS[1];
+  return true;
+}
 /** Tags as typed, like "webdev, productivity". The backend keeps letters and digits and the first 4. */
 const tagList = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
 
@@ -78,6 +97,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
   const { projectId } = use(params);
   const { data: settings, error: settingsError } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
   const { data, error, mutate } = useSWR<SocialPost[]>(`/projects/${projectId}/social`, fetcher);
+  const { data: forums, error: forumsError } = useSWR<DiscourseForum[]>(`/projects/${projectId}/discourse-forums`, fetcher);
   const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
   const run = runs?.find((r) => r.kind === "social" && isActive(r)) ?? null;
   const [tab, setTab] = useState<Tab>("draft");
@@ -93,7 +113,8 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     }
   });
 
-  const connected = settings ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, p)) : [];
+  const connected = settings && forums ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, p)) : [];
+  const posting = connected.filter((p) => takesPosts(p) && (p !== "discourse" || topicForums(forums ?? []).length > 0));
   const start = async () => {
     setStarting(true);
     try {
@@ -114,7 +135,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads and LinkedIn, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and DEV articles. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Discourse forums and LinkedIn, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and DEV articles. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -124,11 +145,11 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
         }
       />
       <PageBody className="flex flex-col gap-5">
-        {settingsError || error ? (
+        {settingsError || error || forumsError ? (
           <Card>
-            <LoadError error={settingsError ?? error} retry={() => mutate()} />
+            <LoadError error={settingsError ?? error ?? forumsError} retry={() => mutate()} />
           </Card>
-        ) : !settings || !data ? (
+        ) : !settings || !data || !forums ? (
           <div className="flex flex-col gap-3">
             {Array.from({ length: 3 }, (_, i) => (
               <Skeleton key={i} className="h-40 rounded-2xl" />
@@ -145,15 +166,21 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                 </LinkButton>
               }
             >
-              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange or DEV, or
-              LinkedIn sending, on the integrations page.
+              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV,
+              Lemmy or a Discourse forum, or LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
           <>
             {run && <RunProgress key={run.id} run={run} />}
-            {connected.some(takesPosts) && (
-              <Composer projectId={projectId} platforms={connected.filter(takesPosts)} mastodonChars={settings.mastodon_max_chars} onAdded={() => mutate()} />
+            {posting.length > 0 && (
+              <Composer
+                projectId={projectId}
+                platforms={posting}
+                forums={topicForums(forums)}
+                mastodonChars={settings.mastodon_max_chars}
+                onAdded={() => mutate()}
+              />
             )}
             {/* Four tabs with counts don't fit a phone's width, so phones get a select instead. */}
             <div>
@@ -175,7 +202,13 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
             ) : (
               <ul className="flex flex-col gap-3">
                 {posts.map((p) => (
-                  <PostCard key={p.id} post={p} mastodonChars={settings.mastodon_max_chars} onChange={() => mutate()} />
+                  <PostCard
+                    key={p.id}
+                    post={p}
+                    forum={forums.find((f) => f.id === p.forum_id)}
+                    mastodonChars={settings.mastodon_max_chars}
+                    onChange={() => mutate()}
+                  />
                 ))}
               </ul>
             )}
@@ -190,11 +223,14 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
 function Composer({
   projectId,
   platforms,
+  forums,
   mastodonChars,
   onAdded,
 }: {
   projectId: string;
   platforms: Platform[];
+  /** The Discourse forums with a category for new topics. */
+  forums: DiscourseForum[];
   mastodonChars: number;
   onAdded: () => Promise<unknown>;
 }) {
@@ -202,20 +238,29 @@ function Composer({
   const [body, setBody] = useState("");
   const [title, setTitle] = useState("");
   const [subreddit, setSubreddit] = useState("");
+  const [community, setCommunity] = useState("");
+  const [forumId, setForumId] = useState("");
   const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
   const dev = on === "dev";
+  const lemmy = on === "lemmy";
+  const discourse = on === "discourse";
+  const forum = forums.find((f) => f.id === forumId) ?? forums[0];
   const max = maxLength(on, false, mastodonChars);
   const ready =
-    !!body.trim() && (reddit ? !!title.trim() && !!subreddit.trim() : dev ? !!title.trim() : max === null || length(on, body) <= max);
+    !!body.trim() &&
+    [...body.trim()].length >= minLength(on) &&
+    (max === null || length(on, body) <= max) &&
+    titleReady(on, title, lemmy ? community : subreddit, forum);
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
-      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, subreddit, tags: tagList(tags), status: "approved" } });
+      const where = { subreddit: lemmy ? community : subreddit, forum_id: discourse ? forum?.id : undefined };
+      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, ...where, tags: tagList(tags), status: "approved" } });
       await onAdded();
       setBody("");
       setTitle("");
@@ -232,7 +277,7 @@ function Composer({
     <Card className="p-4 sm:p-5">
       <form onSubmit={add} className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="font-medium">{dev ? "Write an article" : "Write a post"}</p>
+          <p className="font-medium">{dev ? "Write an article" : discourse ? "Start a topic" : "Write a post"}</p>
           {/* Several platforms don't fit next to the heading on a phone, so phones get a select instead. */}
           {platforms.length > 1 && (
             <>
@@ -257,12 +302,35 @@ function Composer({
             </Field>
           </div>
         )}
+        {lemmy && <CommunityFields community={community} title={title} setCommunity={setCommunity} setTitle={setTitle} />}
+        {discourse && (
+          <div className="flex flex-col gap-3 sm:flex-row">
+            {forums.length > 1 && (
+              <Field label="Forum" className="sm:w-56">
+                <Select value={forum?.id} onChange={(e) => setForumId(e.target.value)}>
+                  {forums.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {forumHost(f)}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
+            <TopicTitle title={title} setTitle={setTitle} />
+          </div>
+        )}
         {dev && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
         <Textarea
-          aria-label={dev ? "Article" : "Post"}
+          aria-label={dev ? "Article" : discourse ? "Topic" : "Post"}
           rows={dev ? 6 : 3}
           placeholder={
-            reddit ? "What you want to share or ask" : dev ? "Your article, in Markdown" : on === "linkedin" ? "What you want to share" : "What's happening"
+            reddit || lemmy || discourse
+              ? "What you want to share or ask"
+              : dev
+                ? "Your article, in Markdown"
+                : on === "linkedin"
+                  ? "What you want to share"
+                  : "What's happening"
           }
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -274,10 +342,12 @@ function Composer({
                 <CharCount n={length(on, body)} max={max} /> ·{" "}
               </>
             )}
-            Goes out within ten minutes, up to {dailyCap(on)} a day.
+            {discourse && forum
+              ? `Goes in ${forum.category_name}, up to ${dailyCap(on)} a day.`
+              : `Goes out within ten minutes, up to ${dailyCap(on)} a day.`}
           </p>
           <Button type="submit" size="sm" loading={busy} disabled={!ready} className="max-sm:ml-auto">
-            <Send className="size-3.5" /> {dev ? "Queue article" : "Queue post"}
+            <Send className="size-3.5" /> {dev ? "Queue article" : discourse ? "Queue topic" : "Queue post"}
           </Button>
         </div>
       </form>
@@ -296,6 +366,39 @@ function ArticleFields({ title, tags, setTitle, setTags }: { title: string; tags
         <Input autoComplete="off" placeholder="webdev, productivity" value={tags} onChange={(e) => setTags(e.target.value)} />
       </Field>
     </div>
+  );
+}
+
+/** A Lemmy post's community and title. */
+function CommunityFields({
+  community,
+  title,
+  setCommunity,
+  setTitle,
+}: {
+  community: string;
+  title: string;
+  setCommunity: (s: string) => void;
+  setTitle: (s: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row">
+      <Field label="Community" className="sm:w-56">
+        <Input placeholder="sales@lemmy.world" autoComplete="off" value={community} onChange={(e) => setCommunity(e.target.value)} />
+      </Field>
+      <Field label="Title" className="flex-1">
+        <Input autoComplete="off" maxLength={LEMMY_TITLE_CHARS} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </Field>
+    </div>
+  );
+}
+
+/** A Discourse topic's title, which the forum turns down under 15 characters. */
+function TopicTitle({ title, setTitle }: { title: string; setTitle: (s: string) => void }) {
+  return (
+    <Field label="Title" className="flex-1">
+      <Input autoComplete="off" minLength={TOPIC_TITLE_CHARS[0]} maxLength={TOPIC_TITLE_CHARS[1]} value={title} onChange={(e) => setTitle(e.target.value)} />
+    </Field>
   );
 }
 
@@ -320,12 +423,25 @@ const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> =
 function replyingTo(p: SocialPost): string {
   if (p.platform === "linkedin") return "Commenting on this post";
   if (p.platform === "stackexchange") return "Answering this question";
+  if (p.platform === "discourse") return "Replying to this topic";
+  if (p.platform === "lemmy") return p.in_reply_to?.includes("/comment/") ? "Replying to this comment" : "Commenting on this post";
   if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
   return "Replying to this thread";
 }
 
 /** A draft stays editable until it's posted. Every button saves the edits along with the new status. */
-function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mastodonChars: number; onChange: () => Promise<unknown> }) {
+function PostCard({
+  post: p,
+  forum,
+  mastodonChars,
+  onChange,
+}: {
+  post: SocialPost;
+  /** The Discourse forum it goes to, while the project still joins it. */
+  forum: DiscourseForum | undefined;
+  mastodonChars: number;
+  onChange: () => Promise<unknown>;
+}) {
   const [body, setBody] = useState(p.body);
   const [title, setTitle] = useState(p.title);
   const [subreddit, setSubreddit] = useState(p.subreddit);
@@ -333,6 +449,8 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
   const [saving, setSaving] = useState<string | null>(null);
   const reply = !!p.in_reply_to;
   const redditPost = p.platform === "reddit" && !reply;
+  const lemmyPost = p.platform === "lemmy" && !reply;
+  const topic = p.platform === "discourse" && !reply;
   const article = p.platform === "dev";
   const posted = p.status === "posted";
   const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit || tagList(tags).join(",") !== p.tags.join(",");
@@ -340,17 +458,20 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
   const n = length(p.platform, body.trim());
   // What the backend turns down for an approved post, so those buttons stay off until it fits.
   const tooShort = n < minLength(p.platform);
-  const unfit = (max !== null && n > max) || tooShort || (article && !title.trim());
-  // LinkedIn and YouTube call a reply a comment, Stack Exchange an answer, and DEV a post an article.
+  const unfit =
+    (max !== null && n > max) || tooShort || (!reply && !titleReady(p.platform, title, subreddit, forum)) || (p.platform === "discourse" && !forum);
+  // LinkedIn, YouTube and Lemmy call a reply a comment, Stack Exchange an answer, DEV a post an article, and Discourse a topic.
   const kind = reply
-    ? p.platform === "linkedin" || p.platform === "youtube"
+    ? p.platform === "linkedin" || p.platform === "youtube" || p.platform === "lemmy"
       ? "comment"
       : p.platform === "stackexchange"
         ? "answer"
         : "reply"
     : article
       ? "article"
-      : "post";
+      : topic
+        ? "topic"
+        : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
@@ -387,7 +508,12 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="dark">{PLATFORMS[p.platform]}</Badge>
           <span className="text-sm font-medium capitalize">{kind}</span>
-          {p.subreddit && <span className="text-sm text-muted-foreground">r/{p.subreddit}</span>}
+          {p.subreddit && <span className="text-sm text-muted-foreground">{p.platform === "lemmy" ? `!${p.subreddit}` : `r/${p.subreddit}`}</span>}
+          {p.platform === "discourse" && (
+            <span className="text-sm text-muted-foreground">
+              {forum ? <Host host={topic ? `${forumHost(forum)} · ${forum.category_name}` : forumHost(forum)} /> : "Forum removed"}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground" title={dateTime(p.posted_at ?? p.created_at)}>
             {posted ? `Posted ${timeAgo(p.posted_at ?? p.created_at)}` : timeAgo(p.created_at)}
           </span>
@@ -432,6 +558,8 @@ function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mast
                 </Field>
               </div>
             )}
+            {lemmyPost && <CommunityFields community={subreddit} title={title} setCommunity={setSubreddit} setTitle={setTitle} />}
+            {topic && <TopicTitle title={title} setTitle={setTitle} />}
             {article && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
             <div className="flex flex-col gap-1">
               <MicroLabel>Your {kind}</MicroLabel>

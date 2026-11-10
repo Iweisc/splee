@@ -236,6 +236,12 @@ pub struct ProjectSettings {
     pub dev_username: String,
     pub dev_error: Option<String>,
     pub dev_failed_at: Option<Ts>,
+    /// The Lemmy account posts go out from, as name@instance, and its instance. Its password and JWT stay out of this struct.
+    pub lemmy_connected: bool,
+    pub lemmy_url: String,
+    pub lemmy_handle: String,
+    pub lemmy_error: Option<String>,
+    pub lemmy_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -614,15 +620,15 @@ pub struct SocialPost {
     pub id: Uuid,
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
-    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange" or "dev".
+    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse" or "lemmy".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
     /// The text it answers, for the reviewer.
     pub context: String,
-    /// Reddit only: where an original post goes, or the thread's subreddit.
+    /// Reddit: where an original post goes, or the thread's subreddit. Lemmy: the same for its community, as name@instance.
     pub subreddit: String,
-    /// Reddit original posts and DEV articles only.
+    /// Reddit, Lemmy and Discourse original posts and DEV articles only.
     pub title: String,
     /// DEV articles only, at most 4.
     pub tags: Vec<String>,
@@ -638,6 +644,32 @@ pub struct SocialPost {
     pub posted_at: Option<Ts>,
     pub created_at: Ts,
     pub updated_at: Ts,
+    /// Discourse only: the forum it goes to. None once that forum is removed.
+    pub forum_id: Option<Uuid>,
+}
+
+/// A Discourse forum the project joins. Its key stays out of the JSON.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct DiscourseForum {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    /// Like https://forum.example.com, or https://example.com/forum for a forum under a path.
+    pub url: String,
+    pub username: String,
+    /// "user" for a User API Key, "admin" for an API key an admin made, which acts as `username`.
+    pub key_kind: String,
+    #[serde(skip)]
+    pub key_enc: String,
+    /// {host and path}/u/{username}, lowercase, which the daily cap counts by.
+    pub account: String,
+    /// Where new topics go. None for replies only.
+    pub category_id: Option<i64>,
+    pub category_name: String,
+    pub error: Option<String>,
+    pub failed_at: Option<Ts>,
+    /// Posting waits until then, after the forum answered 429 with a Retry-After.
+    pub held_until: Option<Ts>,
+    pub created_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

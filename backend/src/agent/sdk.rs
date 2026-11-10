@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, bluesky, directory, hiring, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
+use super::{Ctx, bluesky, directory, discourse, hiring, lemmy, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
 use crate::events;
 use crate::state::AppState;
 
@@ -229,6 +229,13 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         youtube::READ => format!("reading {}…", short_url(input["video"].as_str().unwrap_or_default())),
         stackexchange::SEARCH => format!("searching Stack Exchange \"{}\"…", input["query"].as_str().unwrap_or_default()),
         stackexchange::READ => format!("reading {}…", short_url(input["question"].as_str().unwrap_or_default())),
+        discourse::SEARCH => match input["forum"].as_str().filter(|f| !f.trim().is_empty()) {
+            Some(forum) => format!("searching {} \"{}\"…", short_url(forum), input["query"].as_str().unwrap_or_default()),
+            None => format!("searching Discourse \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        },
+        discourse::READ => format!("reading {}…", short_url(input["topic"].as_str().unwrap_or_default())),
+        lemmy::SEARCH => format!("searching Lemmy \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        lemmy::READ => format!("reading {}…", short_url(input["link"].as_str().unwrap_or_default())),
         other => format!("{other}…"),
     };
     let step = ctx.step();
