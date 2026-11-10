@@ -374,6 +374,13 @@ const CRMS = {
     field: "API key",
     hint: "In Twenty: Settings → APIs & Webhooks → Create API key.",
   },
+  twenty_self: {
+    name: "Twenty (self-hosted)",
+    record: "people",
+    field: "API key",
+    account: { label: "Site URL", placeholder: "https://crm.acme.com" },
+    hint: "In Twenty: Settings → APIs & Webhooks → Create API key.",
+  },
   espocrm: {
     name: "EspoCRM",
     record: "contacts",

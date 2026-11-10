@@ -3,10 +3,9 @@
 //! and the key, a line apart (see Crm::account), and requests only go to a public address (see hooks::public_client).
 
 use anyhow::Context;
-use reqwest::Url;
 use serde_json::{Value, json};
 
-use super::note_html;
+use super::{note_html, site_root};
 use crate::hooks;
 use crate::models::Lead;
 
@@ -15,18 +14,10 @@ pub async fn check(token: &str) -> anyhow::Result<()> {
     call(token, "res.users/context_get", json!({})).await.map(|_| ())
 }
 
-/// The site's root, whatever page of it was pasted, like https://acme.odoo.com/odoo/contacts.
-fn site_root(site: &str) -> anyhow::Result<Url> {
-    let site = site.trim();
-    let site = if site.contains("://") { site.to_string() } else { format!("https://{site}") };
-    let url = Url::parse(&site).ok().filter(|u| u.host_str().is_some()).context("the site URL should look like https://acme.odoo.com")?;
-    Ok(Url::parse(&url.origin().ascii_serialization())?)
-}
-
 /// A failure is `{name, message}`, like an AccessError saying which model the key's user can't touch.
 async fn call(token: &str, path: &str, body: Value) -> anyhow::Result<Value> {
     let (site, key) = token.split_once('\n').context("reconnect Odoo with its site URL")?;
-    let root = site_root(site)?;
+    let root = site_root(site).context("the site URL should look like https://acme.odoo.com")?;
     let url = root.join(&format!("json/2/{path}"))?;
     let request = hooks::public_client(&url).await?.post(url).bearer_auth(key).json(&body);
     let res = match request.send().await {
@@ -81,16 +72,7 @@ fn matching_partner(found: &Value, email: &str) -> Option<i64> {
 mod tests {
     use serde_json::json;
 
-    use super::{linked_note, matching_partner, site_root};
-
-    #[test]
-    fn any_page_of_the_site_gives_its_root() {
-        let root = |site: &str| site_root(site).map(|u| u.to_string()).unwrap_or_default();
-        assert_eq!(root("https://acme.odoo.com/odoo/contacts"), "https://acme.odoo.com/");
-        assert_eq!(root(" erp.acme.com "), "https://erp.acme.com/");
-        assert_eq!(root("http://10.0.0.5:8069/web#action=1"), "http://10.0.0.5:8069/");
-        assert_eq!(root("not a url"), "");
-    }
+    use super::{linked_note, matching_partner};
 
     #[test]
     fn notes_escape_the_reply_and_link_urls() {

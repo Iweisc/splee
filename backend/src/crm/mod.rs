@@ -21,6 +21,8 @@ mod zendesk_sell;
 
 use std::time::Duration;
 
+use reqwest::Url;
+
 use uuid::Uuid;
 
 use crate::crypto;
@@ -45,13 +47,14 @@ pub enum Crm {
     Copper,
     Insightly,
     Twenty,
+    TwentySelf,
     Espo,
     Odoo,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 17] = [
+    pub const ALL: [Crm; 18] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -67,6 +70,7 @@ impl Crm {
         Crm::Copper,
         Crm::Insightly,
         Crm::Twenty,
+        Crm::TwentySelf,
         Crm::Espo,
         Crm::Odoo,
     ];
@@ -93,6 +97,7 @@ impl Crm {
             Crm::Copper => "copper",
             Crm::Insightly => "insightly",
             Crm::Twenty => "twenty",
+            Crm::TwentySelf => "twenty_self",
             Crm::Espo => "espocrm",
             Crm::Odoo => "odoo",
         }
@@ -115,6 +120,7 @@ impl Crm {
             Crm::Copper => "Copper",
             Crm::Insightly => "Insightly",
             Crm::Twenty => "Twenty",
+            Crm::TwentySelf => "Twenty (self-hosted)",
             Crm::Espo => "EspoCRM",
             Crm::Odoo => "Odoo",
         }
@@ -127,7 +133,7 @@ impl Crm {
             Crm::Freshsales => Some("bundle alias"),
             Crm::Copper => Some("email"),
             Crm::Insightly => Some("API URL"),
-            Crm::Espo | Crm::Odoo => Some("site URL"),
+            Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
             _ => None,
         }
     }
@@ -149,7 +155,8 @@ impl Crm {
             Crm::Freshsales => freshsales::check(token).await,
             Crm::Copper => copper::check(token).await,
             Crm::Insightly => insightly::check(token).await,
-            Crm::Twenty => twenty::check(token).await,
+            Crm::Twenty => twenty::check(token, false).await,
+            Crm::TwentySelf => twenty::check(token, true).await,
             Crm::Espo => espocrm::check(token).await,
             Crm::Odoo => odoo::check(token).await,
         }
@@ -171,7 +178,8 @@ impl Crm {
             Crm::Freshsales => freshsales::push(token, email, lead, note).await,
             Crm::Copper => copper::push(token, email, lead, note).await,
             Crm::Insightly => insightly::push(token, email, lead, note).await,
-            Crm::Twenty => twenty::push(token, email, lead, note).await,
+            Crm::Twenty => twenty::push(token, false, email, lead, note).await,
+            Crm::TwentySelf => twenty::push(token, true, email, lead, note).await,
             Crm::Espo => espocrm::push(token, email, lead, note).await,
             Crm::Odoo => odoo::push(token, email, lead, note).await,
         }
@@ -232,6 +240,15 @@ fn note_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
+/// A self-hosted CRM's root, whatever page of it was pasted, like https://acme.odoo.com/odoo/contacts. `https://` is
+/// assumed.
+fn site_root(site: &str) -> Option<Url> {
+    let site = site.trim();
+    let site = if site.contains("://") { site.to_string() } else { format!("https://{site}") };
+    let url = Url::parse(&site).ok().filter(|u| u.host_str().is_some())?;
+    Url::parse(&url.origin().ascii_serialization()).ok()
+}
+
 /// Twenty and EspoCRM read a note as markdown, so a reply's `#`, `*` or `1.` would become a heading, bold or a list. Every
 /// punctuation mark is escaped, which markdown shows as written, except in a link, which they make clickable only as
 /// written. Line breaks stay line breaks.
@@ -253,7 +270,7 @@ fn plain_markdown(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{note_html, plain_markdown, split_name};
+    use super::{note_html, plain_markdown, site_root, split_name};
 
     #[test]
     fn names_split_at_the_first_space() {
@@ -270,5 +287,14 @@ mod tests {
     fn replies_stay_plain_text() {
         assert_eq!(plain_markdown("# Hi *you*\n1. ok"), "\\# Hi \\*you\\*\n1\\. ok");
         assert_eq!(plain_markdown("Booked.\nhttps://app/p/1/inbox?lead=a_b"), "Booked\\.\nhttps://app/p/1/inbox?lead=a_b");
+    }
+
+    #[test]
+    fn any_page_of_the_site_gives_its_root() {
+        let root = |site: &str| site_root(site).map(|u| u.to_string()).unwrap_or_default();
+        assert_eq!(root("https://acme.odoo.com/odoo/contacts"), "https://acme.odoo.com/");
+        assert_eq!(root(" erp.acme.com "), "https://erp.acme.com/");
+        assert_eq!(root("http://10.0.0.5:8069/web#action=1"), "http://10.0.0.5:8069/");
+        assert_eq!(root("not a url"), "");
     }
 }
