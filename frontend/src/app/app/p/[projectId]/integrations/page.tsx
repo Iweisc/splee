@@ -634,6 +634,7 @@ const FINDERS = {
   prospeo: "Prospeo",
   anymailfinder: "Anymail Finder",
   leadmagic: "LeadMagic",
+  apollo: "Apollo",
 } as const;
 
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
