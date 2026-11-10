@@ -133,7 +133,8 @@ impl Lemmy {
 
     async fn login(&self) -> Result<String, Failure> {
         let form = json!({ "username_or_email": self.username, "password": self.password });
-        let (status, body) = self.send(self.client.post(format!("{}/api/v3/user/login", self.base)).json(&form)).await?;
+        let sent = self.send(self.client.post(format!("{}/api/v3/user/login", self.base)).json(&form)).await;
+        let (status, body) = sent.map_err(|f| Failure::Account(f.message()))?;
         let jwt = body["jwt"].as_str().filter(|j| status.is_success() && !j.is_empty());
         let Some(jwt) = jwt else {
             // A failed login posted nothing, so even a timeout or a server error is about the account here.
@@ -156,6 +157,15 @@ impl Lemmy {
             (status, body) = self.send(build().bearer_auth(&jwt)).await?;
         }
         if status.is_success() { Ok(body) } else { Err(Self::failure(status, &body)) }
+    }
+
+    /// A read before anything is posted. A timeout or server error there leaves the post to try again later, while a target
+    /// that's gone still fails it.
+    async fn lookup(&self, build: impl Fn() -> RequestBuilder) -> Result<Value, Failure> {
+        self.call(build).await.map_err(|f| match f {
+            Failure::Post(m) if m.starts_with("Lemmy answered 5") || m.starts_with("Lemmy didn't answer") => Failure::Account(m),
+            f => f,
+        })
     }
 
     fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<impl Fn() -> RequestBuilder, Failure> {
@@ -219,7 +229,8 @@ impl Lemmy {
         let mut body = json!({ "content": content, "post_id": link.id });
         if link.comment {
             body["parent_id"] = json!(link.id);
-            body["post_id"] = self.comment_view(link.id).await?["comment"]["post_id"].clone();
+            let parent = self.lookup(self.get("/comment", &[("id", &link.id.to_string())])?).await?;
+            body["post_id"] = parent["comment_view"]["comment"]["post_id"].clone();
         }
         let made = self.call(self.post("/comment", body)).await?;
         Ok(made["comment_view"]["comment"]["id"].as_u64().map(|id| Link { instance: self.base.clone(), comment: true, id }.url()).unwrap_or_default())
@@ -227,7 +238,7 @@ impl Lemmy {
 
     /// Posts to the community, as name@instance, and returns the post's link.
     pub async fn create_post(&self, community: &str, title: &str, body: &str) -> Result<String, Failure> {
-        let found = self.call(self.get("/community", &[("name", community)])?).await?;
+        let found = self.lookup(self.get("/community", &[("name", community)])?).await?;
         let id = found["community_view"]["community"]["id"].as_u64().ok_or_else(|| Failure::Post(format!("Lemmy couldn't find {community}")))?;
         let made = self.call(self.post("/post", json!({ "name": title, "body": body, "community_id": id }))).await?;
         Ok(made["post_view"]["post"]["id"].as_u64().map(|id| Link { instance: self.base.clone(), comment: false, id }.url()).unwrap_or_default())
@@ -296,6 +307,7 @@ mod tests {
         async fn community(Query(q): Query<HashMap<String, String>>) -> (StatusCode, Json<Value>) {
             match q["name"].as_str() {
                 "sales@lemmy.world" => (StatusCode::OK, Json(json!({ "community_view": { "community": { "id": 5, "name": "sales" } } }))),
+                "flaky@lemmy.world" => (StatusCode::BAD_GATEWAY, Json(json!({}))),
                 _ => error("couldnt_find_community"),
             }
         }
@@ -362,6 +374,9 @@ mod tests {
         ]);
 
         assert!(matches!(l.create_post("nope@lemmy.world", "Hi", "Hi").await, Err(Failure::Post(e)) if e.contains("couldn't find")));
+        // Nothing was posted when a lookup or the sign-in itself fails, so the post waits instead of failing.
+        assert!(matches!(l.create_post("flaky@lemmy.world", "Hi", "Hi").await, Err(Failure::Account(_))));
+        assert!(matches!(lemmy("http://127.0.0.1:1", "right", "").me().await, Err(Failure::Account(_))));
         assert!(matches!(l.comment(&on(false, 42), "banned").await, Err(Failure::Account(e)) if e.contains("banned")));
         assert!(matches!(l.comment(&on(false, 42), "fast").await, Err(Failure::Account(e)) if e.contains("rate limiting")));
         assert!(matches!(l.comment(&on(false, 42), "locked").await, Err(Failure::Post(e)) if e == "Lemmy turned it down (locked)"));
