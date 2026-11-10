@@ -88,11 +88,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     let mut used = HashSet::new();
     for a in waiting {
         for platform in ["x", "reddit"] {
-            let account = if platform == "x" { &a.x_handle } else { &a.reddit_username };
-            if !used.insert((platform, account.to_lowercase())) {
-                continue;
-            }
-            if let Err(e) = publish_next(state, &a, platform).await {
+            if let Err(e) = publish_next(state, &a, platform, &mut used).await {
                 tracing::error!(project_id = %a.project_id, platform, error = ?e, "social posting failed");
             }
         }
@@ -100,18 +96,22 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn publish_next(state: &AppState, a: &Accounts, platform: &str) -> anyhow::Result<()> {
+/// `used` holds the accounts that already posted this tick. An account only counts once it claims a post, so a project with
+/// nothing due doesn't hold up another project on the same account.
+async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, used: &mut HashSet<(&'static str, String)>) -> anyhow::Result<()> {
     let (account, enc, alert) = match platform {
         "x" => (&a.x_handle, &a.x_auth_token_enc, Alert::X),
         _ => (&a.reddit_username, &a.reddit_password_enc, Alert::Reddit),
     };
-    if enc.is_empty() {
+    let key = (platform, account.to_lowercase());
+    if enc.is_empty() || used.contains(&key) {
         return Ok(());
     }
     let Some(post) = next_due(&state.db, a.project_id, platform, account).await? else { return Ok(()) };
     if !claim(&state.db, &post, account).await? {
         return Ok(());
     }
+    used.insert(key);
     let published = match platform {
         "x" => post_x(state, a, &post).await,
         _ => post_reddit(state, a, &post).await,
