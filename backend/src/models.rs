@@ -424,6 +424,41 @@ pub struct Mailbox {
     pub warmup_junk_uid: i64,
 }
 
+/// A domain bought through the org's registrar to send from. `mailboxes` and `warming` count the org's mailboxes on it
+/// and those with warmup on. See crate::domains.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SendingDomain {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub domain: String,
+    pub status: String,
+    pub price_micros: i64,
+    pub order_id: String,
+    pub error: String,
+    pub expires_on: Option<chrono::NaiveDate>,
+    pub registered_at: Option<Ts>,
+    pub provider: String,
+    pub forward_to: String,
+    pub dmarc_email: String,
+    pub dns_status: String,
+    pub records: Value,
+    pub dns: Value,
+    pub created_at: Ts,
+    pub mailboxes: i64,
+    pub warming: i64,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct RegistrarAccount {
+    pub provider: String,
+    pub account: String,
+    #[serde(skip)]
+    pub api_key_enc: String,
+    #[serde(skip)]
+    pub secret_enc: String,
+    pub created_at: Ts,
+}
+
 /// GET /mailboxes/warmup: one of the org's mailboxes with warmup on, over the last 14 days. `inbox` and `spam` are
 /// where its warmup emails landed, as the receiving mailboxes saw them.
 #[derive(Debug, Serialize, FromRow)]

@@ -20,6 +20,8 @@ pub struct Config {
     pub open_signup: bool,
     /// False turns off agent runs for signed-out visitors: the demo, the company explorer and the support chat.
     pub public_agent: bool,
+    /// Porkbun's API. Only tests and sandboxes point it elsewhere, at a fake.
+    pub porkbun_api_url: String,
 }
 
 impl Config {
@@ -35,6 +37,7 @@ impl Config {
             bird_bin: env::var("BIRD_BIN").ok().filter(|v| !v.is_empty()),
             open_signup: env::var("OPEN_SIGNUP").map(|v| v != "false").unwrap_or(true),
             public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
+            porkbun_api_url: env::var("PORKBUN_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| crate::porkbun::API_URL.into()),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -73,6 +76,7 @@ mod tests {
             bird_bin: None,
             open_signup: true,
             public_agent: true,
+            porkbun_api_url: String::new(),
         }
     }
 
