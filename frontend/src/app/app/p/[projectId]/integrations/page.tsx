@@ -427,6 +427,13 @@ const CRMS = {
     account: { label: "Table link", placeholder: "https://app.nocodb.com/#/…" },
     hint: "On app.nocodb.com or your own server, from Account settings → Tokens. The table needs an Email column and a long text column called Notes.",
   },
+  grist: {
+    name: "Grist",
+    record: "table rows",
+    field: "API key",
+    account: { label: "Page link", placeholder: "https://docs.getgrist.com/…/p/…" },
+    hint: "On getgrist.com or your own server, from Profile settings → API. The page's table needs text columns called Email and Notes.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
