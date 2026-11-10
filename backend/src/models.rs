@@ -223,6 +223,14 @@ pub struct ProjectSettings {
     pub finder: String,
     pub finder_error: Option<String>,
     pub finder_failed_at: Option<Ts>,
+    /// Keeps working campaigns stocked with written emails within the monthly budget and lead cap (see autopilot.rs).
+    pub autopilot: bool,
+    /// Claude spend a calendar month (UTC) may reach, counting runs started by hand.
+    pub autopilot_budget_micros: i64,
+    /// New leads emailed a month. Past it, first emails wait for the next month while autopilot is on.
+    pub autopilot_lead_cap: i32,
+    /// Autopilot's emails go out without approval.
+    pub autopilot_auto_send: bool,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

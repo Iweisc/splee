@@ -6,6 +6,7 @@ import { CalendarCheck, Clock, Layers, MailWarning, Pause, Play, Plus, TriangleA
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { AutopilotCard } from "@/components/app/work/autopilot-card";
 import { CampaignsTable } from "@/components/app/work/campaigns-table";
 import { CompanyProfile } from "@/components/app/work/company-profile";
 import { LeadModal } from "@/components/app/work/lead-modal";
@@ -72,6 +73,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
           <Campaigns projectId={projectId} />
           <div className="flex flex-col gap-4">
             {!sending && <SetupChecklist projectId={projectId} settings={settings} />}
+            <AutopilotCard projectId={projectId} />
             <UpcomingCalls projectId={projectId} />
             <CompanyProfile project={project} />
           </div>

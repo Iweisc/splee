@@ -129,6 +129,25 @@ async fn post_weekly_reports(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// News that can't wait for the digest: posts the alert to the project's chats and emails it to the org members who get the
+/// daily digest.
+pub async fn notify_team(state: &AppState, project_id: Uuid, org_id: Uuid, alert: &ChatAlert<'_>) {
+    hooks::post_chat(&state.db, project_id, alert).await;
+    let recipients = match recipients(state, org_id, "daily_digest").await {
+        Ok(r) => r,
+        Err(e) => return tracing::warn!(error = %e, "couldn't load who to email"),
+    };
+    let body = format!("{}\n\n{}: {}", alert.summary, alert.link_text, alert.link);
+    for (_, to) in recipients {
+        match super::send_system_email(state, org_id, &to, alert.label, &body).await {
+            Ok(true) => {}
+            // No active mailbox to send from.
+            Ok(false) => break,
+            Err(e) => tracing::warn!(error = ?e, "team email failed"),
+        }
+    }
+}
+
 /// `stopped` is each stopped mailbox's address, error, and whether the sender tests it again by itself.
 /// `bouncing` is the mailboxes whose last 30 days bounced too often.
 fn digest_body(

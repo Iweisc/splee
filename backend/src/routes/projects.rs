@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}", get(detail).patch(update).delete(remove))
         .route("/projects/{id}/research", post(research))
         .route("/projects/{id}/runs", get(runs))
+        .route("/projects/{id}/autopilot", get(autopilot))
         .route("/projects/{id}/rewrite-emails", post(rewrite_emails))
         .route("/projects/{id}/start", post(start))
         .route("/projects/{id}/pause", post(pause))
@@ -245,6 +246,12 @@ async fn runs(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     .fetch_all(&state.db)
     .await?;
     Ok(Json(runs))
+}
+
+async fn autopilot(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<crate::autopilot::Status>> {
+    auth.project(&state.db, id).await?;
+    settings::load_or_create(&state.db, id).await?;
+    Ok(Json(crate::autopilot::status(&state.db, id).await?))
 }
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
