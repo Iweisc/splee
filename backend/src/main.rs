@@ -8,6 +8,7 @@ mod events;
 mod hooks;
 mod mail;
 mod models;
+mod notion;
 mod routes;
 mod state;
 mod unipile;

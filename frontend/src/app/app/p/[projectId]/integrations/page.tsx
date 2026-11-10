@@ -395,6 +395,13 @@ const CRMS = {
     account: { label: "Site URL", placeholder: "https://acme.odoo.com" },
     hint: "Odoo 19+. In Odoo: your avatar → My Preferences → Security → Add API Key.",
   },
+  notion: {
+    name: "Notion",
+    record: "database rows",
+    field: "Integration secret",
+    account: { label: "Database link", placeholder: "https://www.notion.so/…" },
+    hint: "From an internal integration, added to the database under ••• → Connections. It needs an Email column.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
