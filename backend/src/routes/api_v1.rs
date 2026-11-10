@@ -18,6 +18,7 @@ use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_scope;
+use crate::ab_test::{self, AbTest};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
@@ -84,6 +85,8 @@ pub(super) struct Campaign {
     hot: i64,
     spend_micros: i64,
     created_at: Ts,
+    /// The campaign's A/B test of email angles, with results per variant. Null when it has no variants.
+    ab_test: Option<AbTest>,
 }
 
 impl From<SegmentWithStats> for Campaign {
@@ -103,13 +106,20 @@ impl From<SegmentWithStats> for Campaign {
             hot,
             spend_micros,
             created_at: segment.created_at,
+            ab_test: None,
         }
     }
 }
 
 pub(super) async fn list_campaigns(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Campaign>>> {
     check_project(&state.db, id, auth.org_id).await?;
-    Ok(Json(segments::with_stats(&state.db, id, None).await?.into_iter().map(Campaign::from).collect()))
+    let rows = segments::with_stats(&state.db, id, None).await?;
+    let mut tests = ab_test::load(&state.db, &rows.iter().map(|r| &r.segment).collect::<Vec<_>>()).await?;
+    let campaigns = rows.into_iter().map(|r| {
+        let ab_test = tests.remove(&r.segment.id);
+        Campaign { ab_test, ..Campaign::from(r) }
+    });
+    Ok(Json(campaigns.collect()))
 }
 
 #[derive(Deserialize)]
@@ -396,6 +406,9 @@ pub(super) struct Email {
     project_id: Uuid,
     segment_id: Option<Uuid>,
     campaign: Option<String>,
+    /// The A/B test variant it was written for. Follow-ups keep the first email's.
+    variant_id: Option<Uuid>,
+    variant: Option<String>,
     lead_id: Uuid,
     lead_name: String,
     lead_email: Option<String>,
@@ -417,6 +430,8 @@ impl From<EmailRow> for Email {
             project_id: e.project_id,
             segment_id: e.segment_id,
             campaign: r.segment_name,
+            variant_id: e.variant_id,
+            variant: r.variant_name,
             lead_id: e.lead_id,
             lead_name: r.lead_name,
             lead_email: r.lead_email,

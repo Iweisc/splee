@@ -11,7 +11,7 @@ use super::explore::{self, Profile, load_project};
 use super::sdk::Call;
 use super::{Ctx, Outcome};
 use crate::hiring;
-use crate::models::{EmailMessage, Lead, Project, Segment};
+use crate::models::{EmailMessage, Lead, Project, Segment, Variant};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
 that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
@@ -231,23 +231,36 @@ async fn write_initial(ctx: &Ctx, project_id: Uuid, leads: &[Lead], instructions
     let settings = WriterSettings::load(ctx, project_id).await?;
     let materials = materials(ctx, project_id).await?;
     let segments = segments_by_id(ctx, project_id).await?;
+    let mut leads = leads.to_vec();
+    crate::ab_test::assign(ctx.db(), &mut leads).await?;
+    let variants = variants_by_id(ctx, project_id).await?;
 
-    let mut by_segment: HashMap<Option<Uuid>, Vec<Lead>> = HashMap::new();
+    // Each variant of a campaign gets its own prompt. A campaign without variants is one group, as before.
+    let mut groups: HashMap<(Option<Uuid>, Option<Uuid>), Vec<Lead>> = HashMap::new();
     for lead in leads {
-        by_segment.entry(lead.segment_id).or_default().push(lead.clone());
+        groups.entry((lead.segment_id, lead.variant_id)).or_default().push(lead);
     }
-    let campaigns = by_segment.into_iter().map(|(segment_id, group)| {
+    let campaigns = groups.into_iter().map(|((segment_id, variant_id), group)| {
         let segment = segment_id.and_then(|id| segments.get(&id));
-        let prompt = initial_prompt(&project, &profile, segment, &settings, &materials, instructions);
-        write_campaign(ctx, segment, prompt, group, &settings)
+        let variant = variant_id.and_then(|id| variants.get(&id));
+        let prompt = initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions);
+        write_campaign(ctx, segment, variant, prompt, group, &settings)
     });
     let saved: usize = stream::iter(campaigns).buffer_unordered(CAMPAIGN_AGENTS).try_collect::<Vec<_>>().await?.into_iter().sum();
     ctx.log(format!("wrote {saved} personal emails…")).await?;
     Ok(saved)
 }
 
-async fn write_campaign(ctx: &Ctx, segment: Option<&Segment>, prompt: String, leads: Vec<Lead>, settings: &WriterSettings) -> anyhow::Result<usize> {
-    let label = segment.map_or("No campaign", |s| s.name.as_str());
+async fn write_campaign(
+    ctx: &Ctx,
+    segment: Option<&Segment>,
+    variant: Option<&Variant>,
+    prompt: String,
+    leads: Vec<Lead>,
+    settings: &WriterSettings,
+) -> anyhow::Result<usize> {
+    let campaign = segment.map_or("No campaign", |s| s.name.as_str());
+    let label = variant.map_or_else(|| campaign.to_string(), |v| format!("{campaign} ({})", v.name));
     let mut saved = 0;
     for batch in company_batches(leads) {
         ctx.log(format!("{label}: writing to {}…", batch.iter().map(|l| l.first_name.as_str()).collect::<Vec<_>>().join(", "))).await?;
@@ -291,7 +304,25 @@ async fn segments_by_id(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<U
     Ok(rows.into_iter().map(|s| (s.id, s)).collect())
 }
 
-fn initial_prompt(project: &Project, profile: &Profile, segment: Option<&Segment>, s: &WriterSettings, materials: &str, instructions: &str) -> String {
+async fn variants_by_id(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<Uuid, Variant>> {
+    let rows = sqlx::query_as::<_, Variant>(
+        "select v.* from segment_variants v join segments s on s.id = v.segment_id where s.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(ctx.db())
+    .await?;
+    Ok(rows.into_iter().map(|v| (v.id, v)).collect())
+}
+
+fn initial_prompt(
+    project: &Project,
+    profile: &Profile,
+    segment: Option<&Segment>,
+    variant: Option<&Variant>,
+    s: &WriterSettings,
+    materials: &str,
+    instructions: &str,
+) -> String {
     let campaign = segment
         .map(|seg| format!("Campaign: {}. Their pain: {} Outreach angle: {}", seg.name, seg.pain_points, seg.angle))
         .unwrap_or_default();
@@ -321,7 +352,7 @@ fn initial_prompt(project: &Project, profile: &Profile, segment: Option<&Segment
          - Short paragraphs separated by a blank line. No sign-off or signature, it is added automatically.\n\
          - Leads at the same company may compare notes. Give each of them a different opening observation and an angle that fits their \
          own role, and never reuse a sentence between two emails in this list.\n\
-         {extra_block}",
+         {extra_block}{variant_block}",
         sender = s.sender(profile),
         brief = profile.brief(project.domain.as_deref()),
         materials_block = if materials.is_empty() { String::new() } else { format!("Materials (use a fact only when it helps this lead):\n{materials}\n") },
@@ -330,12 +361,25 @@ fn initial_prompt(project: &Project, profile: &Profile, segment: Option<&Segment
         tone = s.tone,
         language = s.language_rule(),
         extra_block = if extra.is_empty() { String::new() } else { format!("- Also: {extra}\n") },
+        variant_block = variant.map(variant_rule).unwrap_or_default(),
+    )
+}
+
+/// The A/B test angle goes last so it wins over the default subject, opening and call to action above it.
+fn variant_rule(v: &Variant) -> String {
+    let instructions = v.instructions.trim();
+    if instructions.is_empty() {
+        return String::new();
+    }
+    format!(
+        "- These emails test the angle \"{}\": {instructions} Where this differs from the rules above, including the subject, follow this.\n",
+        v.name.trim()
     )
 }
 
 async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject: &str, body: &str) -> anyhow::Result<()> {
     let updated = sqlx::query(
-        "update email_messages set subject = $2, body = $3
+        "update email_messages set subject = $2, body = $3, variant_id = $5
          where id = (select id from email_messages where lead_id = $1 and kind = 'initial' and status = any($4)
                      order by created_at desc limit 1)",
     )
@@ -343,6 +387,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(subject)
     .bind(body)
     .bind(&UNSENT[..])
+    .bind(lead.variant_id)
     .execute(ctx.db())
     .await?;
     if updated.rows_affected() > 0 {
@@ -358,8 +403,9 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
             .unwrap_or(false);
     let sending = !drafts && segment.is_some_and(|s| s.status == "working" || s.status == "scaling");
     sqlx::query(
-        "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for, to_email)
-         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8)",
+        "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for, to_email,
+                                     variant_id)
+         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8, $9)",
     )
     .bind(lead.project_id)
     .bind(lead.id)
@@ -369,6 +415,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(if sending { "approved" } else { "draft" })
     .bind(sending.then(chrono::Utc::now))
     .bind(&lead.email)
+    .bind(lead.variant_id)
     .execute(ctx.db())
     .await?;
     if sending {
@@ -463,6 +510,7 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
     let settings = WriterSettings::load(ctx, project_id).await?;
     let rules: Vec<FollowUpRule> = serde_json::from_value(settings.follow_ups.clone()).unwrap_or_default();
     let segments = segments_by_id(ctx, project_id).await?;
+    let variants = variants_by_id(ctx, project_id).await?;
     let leads = sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and id = any($2) and status = 'contacted'")
         .bind(project_id)
         .bind(lead_ids)
@@ -493,6 +541,12 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
             _ => continue,
         };
 
+        // Follow-ups keep the first email's variant, so a reply to one counts toward the angle that started the thread.
+        let variant = first.variant_id.and_then(|id| variants.get(&id));
+        let angle = variant
+            .map(|v| v.instructions.trim())
+            .filter(|i| !i.is_empty())
+            .map(|i| format!("The first email followed this angle, so keep to it: {i}"));
         let earlier = thread.iter().map(|e| format!("--- email {} ---\n{}", e.step + 1, e.body)).collect::<Vec<_>>().join("\n");
         let max_words = (settings.max_words * 2 / 3).clamp(30, 150);
         let prompt = format!(
@@ -506,7 +560,12 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
             tone = settings.tone,
             language = settings.language_rule(),
             extra = {
-                let extra = [settings.email_instructions.trim(), rule.instructions.trim(), instructions.trim()].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+                let extra = [settings.email_instructions.trim(), rule.instructions.trim(), instructions.trim(), angle.as_deref().unwrap_or_default()]
+                    .iter()
+                    .filter(|t| !t.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if extra.is_empty() { String::new() } else { format!(" Also: {extra}") }
             },
         );
@@ -526,29 +585,44 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
             continue;
         }
 
-        let subject = if first.subject.to_lowercase().starts_with("re:") { first.subject.clone() } else { format!("Re: {}", first.subject) };
         let sending = lead.segment_id.and_then(|id| segments.get(&id)).is_some_and(|s| s.status == "working" || s.status == "scaling");
         let due = last.sent_at.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(rule.delay_days.max(1));
-        sqlx::query(
-            "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for,
-                                         in_reply_to, to_email)
-             values ($1, $2, $3, 'outbound', 'follow_up', $4, $5, $6, $7, $8, $9, $10)",
-        )
-        .bind(project_id)
-        .bind(lead.id)
-        .bind(lead.segment_id)
-        .bind(step)
-        .bind(subject)
-        .bind(settings.sign(&d.body))
-        .bind(if sending { "approved" } else { "draft" })
-        .bind(due)
-        .bind(&last.message_id)
-        .bind(&lead.email)
-        .execute(ctx.db())
-        .await?;
+        insert_follow_up(ctx.db(), lead, &thread, &settings.sign(&d.body), sending, due).await?;
         saved += 1;
     }
     Ok(saved)
+}
+
+/// Threads the follow-up under the last email sent, on the first email's variant even if the lead's has changed since.
+async fn insert_follow_up(
+    db: &sqlx::PgPool,
+    lead: &Lead,
+    thread: &[EmailMessage],
+    body: &str,
+    sending: bool,
+    due: chrono::DateTime<chrono::Utc>,
+) -> sqlx::Result<()> {
+    let (Some(first), Some(last)) = (thread.first(), thread.last()) else { return Ok(()) };
+    let subject = if first.subject.to_lowercase().starts_with("re:") { first.subject.clone() } else { format!("Re: {}", first.subject) };
+    sqlx::query(
+        "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for,
+                                     in_reply_to, to_email, variant_id)
+         values ($1, $2, $3, 'outbound', 'follow_up', $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(lead.project_id)
+    .bind(lead.id)
+    .bind(lead.segment_id)
+    .bind(last.step + 1)
+    .bind(subject)
+    .bind(body)
+    .bind(if sending { "approved" } else { "draft" })
+    .bind(due)
+    .bind(&last.message_id)
+    .bind(&lead.email)
+    .bind(first.variant_id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -619,4 +693,92 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     }
     tx.commit().await?;
     Ok(Outcome::new("LinkedIn sequence ready"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicI32;
+
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{Ctx, insert_follow_up, save_initial, variant_rule};
+    use crate::ab_test::{self, tests::{add_leads, seed}};
+    use crate::models::{AgentRun, EmailMessage, Variant};
+
+    async fn ctx(db: &PgPool, project: Uuid) -> Ctx {
+        let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (project_id, kind) values ($1, 'write_emails') returning *")
+            .bind(project)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        Ctx { state: crate::autopilot::tests::state(db.clone()), run, step: AtomicI32::new(0) }
+    }
+
+    #[test]
+    fn the_variant_rule_comes_with_its_instructions_only() {
+        let mut v = Variant {
+            id: Uuid::nil(),
+            segment_id: Uuid::nil(),
+            name: "Cost".into(),
+            instructions: "Lead with what they spend on agencies.".into(),
+            position: 0,
+            paused_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let rule = variant_rule(&v);
+        assert!(rule.contains("\"Cost\": Lead with what they spend on agencies.") && rule.contains("including the subject"), "{rule}");
+        v.instructions = "  ".into();
+        assert_eq!(variant_rule(&v), "");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn follow_ups_keep_the_first_emails_variant(db: PgPool) {
+        let c = seed(&db, 2).await;
+        let ctx = ctx(&db, c.project).await;
+        let mut leads = add_leads(&db, &c, 2).await;
+        ab_test::assign(&db, &mut leads).await.unwrap();
+        let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
+        for lead in &leads {
+            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello").await.unwrap();
+        }
+        let first: Vec<(Uuid, Option<Uuid>)> =
+            sqlx::query_as("select lead_id, variant_id from email_messages where kind = 'initial' order by created_at").fetch_all(&db).await.unwrap();
+        assert_eq!(first, vec![(leads[0].id, Some(c.variants[0])), (leads[1].id, Some(c.variants[1]))]);
+
+        // Even after auto-pick pauses the first lead's variant and the lead somehow gets another, its follow-up stays on A.
+        sqlx::query("update email_messages set status = 'sent', sent_at = now(), message_id = 'm1' where lead_id = $1")
+            .bind(leads[0].id)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("update segment_variants set paused_at = now() where id = $1").bind(c.variants[0]).execute(&db).await.unwrap();
+        let mut lead = leads[0].clone();
+        lead.variant_id = Some(c.variants[1]);
+        let thread = sqlx::query_as::<_, EmailMessage>("select * from email_messages where lead_id = $1").bind(lead.id).fetch_all(&db).await.unwrap();
+        insert_follow_up(&db, &lead, &thread, "Following on", true, chrono::Utc::now()).await.unwrap();
+        let (step, subject, variant): (i32, String, Option<Uuid>) =
+            sqlx::query_as("select step, subject, variant_id from email_messages where lead_id = $1 and kind = 'follow_up'")
+                .bind(lead.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!((step, subject.as_str(), variant), (1, "Re: Hi", Some(c.variants[0])));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn campaigns_without_variants_write_untagged_emails(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let ctx = ctx(&db, c.project).await;
+        let mut leads = add_leads(&db, &c, 1).await;
+        ab_test::assign(&db, &mut leads).await.unwrap();
+        let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
+        save_initial(&ctx, &leads[0], Some(&segment), "Hi", "Hello").await.unwrap();
+        let (status, variant): (String, Option<Uuid>) =
+            sqlx::query_as("select status, variant_id from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
+        assert_eq!((status.as_str(), variant), ("approved", None));
+    }
 }
