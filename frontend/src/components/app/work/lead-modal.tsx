@@ -13,6 +13,7 @@ import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
+import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
 
 export function LeadModal({ leadId, onClose }: { leadId: string | null; onClose: () => void }) {
@@ -136,7 +137,10 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
               <Address email={lead.email} /> <span className="text-xs text-muted-foreground">({lead.email_status})</span>
             </>
           ) : (
-            <span className="text-muted-foreground">No email found</span>
+            <span className="text-muted-foreground">{lead.email_search === "queued" ? "Finding an email…" : "No email found"}</span>
+          )}
+          {lead.email_search && lead.email_search !== "queued" && (
+            <p className="text-xs text-muted-foreground">{[lead.email_search_note, searchCost(lead)].filter(Boolean).join(" ")}</p>
           )}
         </Detail>
         {lead.linkedin_url && (

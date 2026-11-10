@@ -566,6 +566,24 @@ export interface Lead {
   created_at: Ts;
   /** The campaign's A/B test variant, picked when its first email is written. */
   variant_id: UUID | null;
+  /** How finding an address for a lead without one went. "" is never searched. */
+  email_search: EmailSearch;
+  /** The finder that found it, like "Hunter", or the pattern a guess followed, like "first.last". */
+  email_source: string;
+  email_search_note: string;
+  /** Calls to paid finders and verifiers, and the credits they said they charged, null when none said. */
+  email_search_lookups: number;
+  email_search_credits: number | null;
+  email_searched_at: Ts | null;
+}
+
+export type EmailSearch = "" | "queued" | "found" | "guessed" | "catch_all" | "not_found" | "suppressed" | "duplicate" | "failed";
+
+/** Leads waiting for an email search, and how many more the organization can search this hour. */
+export interface EmailSearchProgress {
+  queued: number;
+  room: number;
+  hourly: number;
 }
 
 export interface LeadRow extends Lead {

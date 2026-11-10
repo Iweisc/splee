@@ -18,6 +18,7 @@ use crate::error::{AppError, AppResult};
 use crate::hiring;
 use crate::models::{Company, EmailMessage, Lead};
 use crate::state::AppState;
+use crate::waterfall;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/leads/move", post(move_leads))
         .route("/projects/{id}/leads/delete", post(delete_leads))
         .route("/projects/{id}/leads/status", post(set_status))
+        .route("/projects/{id}/leads/find-emails", get(email_progress).post(find_emails))
         .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
 }
@@ -37,6 +39,8 @@ pub struct ListQuery {
     pub segment_id: Option<Uuid>,
     pub status: Option<String>,
     pub q: Option<String>,
+    /// "missing" keeps only leads without an email.
+    pub email: Option<String>,
 }
 
 const COMPANY_FILTER: &str = "from companies c where project_id = $1
@@ -134,7 +138,8 @@ const LEAD_FILTER: &str = "where l.project_id = $1
        and ($2::uuid is null or l.segment_id = $2)
        and ($3::text is null or l.status = $3)
        and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4
-            or l.company_name ilike $4 or l.title ilike $4)";
+            or l.company_name ilike $4 or l.title ilike $4)
+       and (not $5 or l.email is null)";
 
 async fn list_leads(
     State(state): State<AppState>,
@@ -151,20 +156,23 @@ async fn list_leads(
 pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<LeadRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
     let status = q.status.filter(|s| !s.is_empty());
+    let missing = q.email.as_deref() == Some("missing");
     let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {LEAD_FILTER}"))
         .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
+        .bind(missing)
         .fetch_one(db)
         .await?;
     let items = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc limit $5 offset $6"
+        "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc limit $6 offset $7"
     ))
     .bind(project_id)
     .bind(q.segment_id)
     .bind(&status)
     .bind(&like)
+    .bind(missing)
     .bind(page.limit())
     .bind(page.offset())
     .fetch_all(db)
@@ -182,6 +190,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
+        .bind(q.email.as_deref() == Some("missing"))
         .fetch_all(&state.db)
         .await?;
 
@@ -424,6 +433,64 @@ async fn delete_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
         .await?;
     erase(&state.db, auth.org_id, &leads, false).await?;
     Ok(Json(json!({ "deleted": leads.len() })))
+}
+
+#[derive(Deserialize)]
+struct FindEmails {
+    #[serde(default)]
+    ids: Vec<Uuid>,
+    /// Instead of ids, every lead without an email that the Leads page's filters match.
+    #[serde(default)]
+    all: bool,
+    #[serde(flatten)]
+    filter: ListQuery,
+}
+
+/// Queues leads without an email for the email waterfall, ahead of the leads it finds on its own. A lead already searched
+/// is searched again, which is how a search is retried.
+async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<FindEmails>) -> AppResult<Json<Value>> {
+    auth.project(&state.db, id).await?;
+    if body.ids.len() > MAX_PICKED {
+        return Err(AppError::BadRequest(format!("Pick at most {MAX_PICKED} leads at a time")));
+    }
+    let connected: bool = sqlx::query_scalar("select exists (select 1 from project_settings where project_id = $1 and (finder <> '' or verifier <> ''))")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if !connected {
+        return Err(AppError::BadRequest("Connect an email finder or verifier under Integrations first".into()));
+    }
+    let ids: Vec<Uuid> = if body.all {
+        sqlx::query_scalar(&format!("select l.id from leads l {LEAD_FILTER}"))
+            .bind(id)
+            .bind(body.filter.segment_id)
+            .bind(body.filter.status.filter(|s| !s.is_empty()))
+            .bind(util_input::like_pattern(body.filter.q.as_deref()))
+            .bind(true)
+            .fetch_all(&state.db)
+            .await?
+    } else {
+        body.ids
+    };
+    let queued = sqlx::query("update leads set email_search = 'queued', email_search_note = '' where project_id = $1 and email is null and id = any($2)")
+        .bind(id)
+        .bind(&ids)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    waterfall::wake();
+    Ok(Json(json!({ "queued": queued })))
+}
+
+/// How many of the project's leads wait for an email search, and how many more its organization can search this hour.
+async fn email_progress(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    auth.project(&state.db, id).await?;
+    let queued: i64 = sqlx::query_scalar("select count(*) from leads where project_id = $1 and email is null and email_search = 'queued'")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    let room = (waterfall::HOURLY - waterfall::searched_last_hour(&state.db, auth.org_id).await?).max(0);
+    Ok(Json(json!({ "queued": queued, "room": room, "hourly": waterfall::HOURLY })))
 }
 
 /// Deletes leads with their emails and the webhook log entries that carry their details. With `forget`, their

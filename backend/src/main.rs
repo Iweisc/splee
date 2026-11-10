@@ -35,6 +35,7 @@ mod teable;
 mod threads;
 mod unipile;
 mod verify;
+mod waterfall;
 mod youtube;
 
 use std::sync::Arc;
@@ -98,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
     mail::spawn_workers(state.clone());
     directory_queue::spawn_worker(state.db.clone());
     hiring::spawn_worker(state.db.clone());
+    waterfall::spawn_worker(state.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

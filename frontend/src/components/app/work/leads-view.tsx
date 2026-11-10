@@ -1,16 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { Download, Search, Trash2, Upload, Users, X } from "lucide-react";
+import { useRef, useState } from "react";
+import { Download, MailSearch, Search, Trash2, Upload, Users, X } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Modal } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
+import type { EmailSearchProgress, LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
+import { EmailSearchBadge, EmailSearchStrip } from "./email-search";
 import { HiringBadge } from "./hiring";
 import { LeadModal } from "./lead-modal";
 import { SearchField } from "./search-field";
@@ -31,6 +32,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const [q, setQ] = useState("");
   const [segment, setSegment] = useState("");
   const [status, setStatus] = useState("");
+  const [email, setEmail] = useState("");
   const [page, setPage] = useState(1);
   const [openLead, setOpenLead] = useState<string | null>(null);
   // The leads ticked on this page. Changing a filter or the page clears it, so nothing off-screen is ever acted on.
@@ -38,15 +40,51 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const query = useDebounced(q);
 
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
-  const filters = { segment_id: segmentId ?? segment, status, q: query };
+  const filters = { segment_id: segmentId ?? segment, status, q: query, email };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
+
+  // How many leads this page queued, for "12 of 40 done". It starts over once the queue is empty.
+  const [batch, setBatch] = useState(0);
+  // Polled while leads wait for an email search, and the table reloads as each one finishes to show its result.
+  const lastWaiting = useRef(0);
+  const { data: progress, mutate: refreshProgress } = useSWR<EmailSearchProgress>(`/projects/${projectId}/leads/find-emails`, fetcher, {
+    refreshInterval: (p) => (p?.queued ? 3_000 : 0),
+    onSuccess: (p) => {
+      if (p.queued === lastWaiting.current) return;
+      lastWaiting.current = p.queued;
+      if (p.queued === 0) setBatch(0);
+      mutate();
+    },
+  });
+  const queued = (n: number) => {
+    if (n === 0) {
+      toast.info("Every one of these leads already has an email");
+      return;
+    }
+    toast.success(`Finding emails for ${plural(n, "lead")}`);
+    setBatch((b) => (progress?.queued ? b : 0) + n);
+    refreshProgress();
+    mutate();
+  };
+  const [finding, setFinding] = useState(false);
+  const findAll = async () => {
+    setFinding(true);
+    try {
+      const body = { all: true, segment_id: filters.segment_id || null, status, q: query };
+      queued((await api<{ queued: number }>(`/projects/${projectId}/leads/find-emails`, { method: "POST", body })).queued);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setFinding(false);
+    }
+  };
   const turnPage = (p: number) => {
     setPage(p);
     setPicked(new Set());
   };
   useLastPageGuard(data?.total, page, turnPage);
-  const filtered = !!(query || segment || status);
+  const filtered = !!(query || segment || status || email);
 
   const filter = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     set(e.target.value);
@@ -74,6 +112,10 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             return mutate();
           }}
           onClear={() => setPicked(new Set())}
+          onQueued={(n) => {
+            setPicked(new Set());
+            queued(n);
+          }}
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
@@ -109,6 +151,15 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                 </option>
               ))}
             </Select>
+            <Select value={email} onChange={filter(setEmail)} className="h-9 w-auto flex-auto" aria-label="Email">
+              <option value="">Any email</option>
+              <option value="missing">No email</option>
+            </Select>
+            {email === "missing" && !!data?.total && (
+              <Button variant="outline" size="sm" onClick={findAll} loading={finding} className="h-9 flex-auto">
+                <MailSearch className="size-3.5" /> Find {plural(data.total, "email")}
+              </Button>
+            )}
             {!!data?.total && (
               // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
               <a href={`/api/projects/${projectId}/leads/export${qs(filters)}`} download className={buttonClass("outline", "sm", "h-9 flex-auto")}>
@@ -118,6 +169,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
           </div>
         </div>
       )}
+
+      {!!progress?.queued && <EmailSearchStrip progress={progress} total={batch} />}
 
       {error ? (
         <LoadError error={error} retry={() => mutate()} />
@@ -184,6 +237,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                       {/* Its click bubbles to the row, which opens the lead. */}
                       <button className="block text-left font-medium">{l.full_name || "—"}</button>
                       <p className="truncate text-xs text-muted-foreground">{l.title}</p>
+                      {/* The email column, where the result sits on wide screens, is hidden below xl. */}
+                      <EmailSearchBadge lead={l} className="mt-1 xl:hidden" />
                       {/* The company column, where the badge sits from sm up, is hidden on phones. */}
                       <HiringBadge roles={l.hiring} className="mt-1 sm:hidden" />
                     </Td>
@@ -191,7 +246,10 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                       <p className="truncate">{l.company_name}</p>
                       <HiringBadge roles={l.hiring} className="mt-1" />
                     </Td>
-                    <Td className={cn(WIDE, FILL, "w-[25%] truncate text-muted-foreground")}>{l.email ?? "—"}</Td>
+                    <Td className={cn(WIDE, FILL, "w-[25%] text-muted-foreground")}>
+                      {(l.email || !l.email_search) && <p className="truncate">{l.email ?? "—"}</p>}
+                      <EmailSearchBadge lead={l} className={l.email ? "mt-1" : undefined} />
+                    </Td>
                     {!segmentId && <Td className={cn(WIDE, FILL, "w-[20%] truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
                     <Td>
                       <LeadStatusBadge status={l.status} />
@@ -217,12 +275,14 @@ function PickedBar({
   segments,
   onDone,
   onClear,
+  onQueued,
 }: {
   projectId: string;
   ids: string[];
   segments: SegmentWithStats[];
   onDone: () => void;
   onClear: () => void;
+  onQueued: (n: number) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -238,6 +298,17 @@ function PickedBar({
       toast.success(done);
       setConfirming(false);
       onDone();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const findEmails = async () => {
+    setBusy(true);
+    try {
+      onQueued((await api<{ queued: number }>(`/projects/${projectId}/leads/find-emails`, { method: "POST", body: { ids } })).queued);
     } catch (e) {
       toastError(e);
     } finally {
@@ -261,8 +332,11 @@ function PickedBar({
         <X className="size-4" />
       </Button>
       <p className="mr-auto text-sm font-medium">{count} selected</p>
-      {/* Delete comes before the menus so that on a phone it shares the first row with the count and each menu takes a
-          full row below. After them, it took a row of its own. */}
+      {/* On a phone Find emails shares the first row with the count, Delete the second with the campaign menu, and the
+          status menu takes the third. Delete after the menus took a row of its own. */}
+      <Button variant="outline" size="sm" onClick={findEmails} disabled={busy} className="h-9">
+        <MailSearch className="size-3.5" /> Find emails
+      </Button>
       <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
         <Trash2 className="size-3.5" /> Delete
       </Button>

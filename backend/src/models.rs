@@ -392,6 +392,13 @@ pub struct Lead {
     pub created_at: Ts,
     /// The campaign's A/B test variant, picked when its first email is written and kept from then on.
     pub variant_id: Option<Uuid>,
+    /// How finding an address for a lead without one went. See waterfall.rs and migration 0103.
+    pub email_search: String,
+    pub email_source: String,
+    pub email_search_note: String,
+    pub email_search_lookups: i32,
+    pub email_search_credits: Option<i32>,
+    pub email_searched_at: Option<Ts>,
 }
 
 /// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.
