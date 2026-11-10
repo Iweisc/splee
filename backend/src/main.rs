@@ -7,6 +7,7 @@ mod crm;
 mod crypto;
 mod error;
 mod events;
+mod grist;
 mod hooks;
 mod mail;
 mod models;

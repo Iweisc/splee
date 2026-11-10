@@ -12,6 +12,7 @@ mod copper;
 mod espocrm;
 mod folk;
 mod freshsales;
+mod grist;
 mod hubspot;
 mod insightly;
 mod lacrm;
@@ -100,6 +101,7 @@ crms! {
     Airtable: airtable, "airtable", "Airtable";
     Baserow: baserow, "baserow", "Baserow";
     NocoDb: nocodb, "nocodb", "NocoDB";
+    Grist: grist, "grist", "Grist";
 }
 
 /// Twenty's cloud and a self-hosted Twenty share one client, which is told which it is.
@@ -142,6 +144,7 @@ impl Crm {
             Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
             Crm::Notion => Some("database link"),
             Crm::Airtable | Crm::Baserow | Crm::NocoDb => Some("table link"),
+            Crm::Grist => Some("page link"),
             _ => None,
         }
     }
