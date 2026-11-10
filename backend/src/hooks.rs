@@ -398,7 +398,8 @@ fn query(url: &str, key: &str) -> Option<String> {
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL on ntfy.sh or an ntfy.* server), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
-/// (an incoming webhook's URL) have their own shapes, as does Zoho Cliq (a channel's `?zapikey=` URL), and Gotify (its /message?token= URL) and Mattermost want markdown. Anything else gets Slack's `{text}`,
+/// (an incoming webhook's URL) have their own shapes, as does Zoho Cliq (a channel's `?zapikey=` URL), and Gotify (its /message?token= URL),
+/// Mattermost and Pumble want markdown. Anything else gets Slack's `{text}`,
 /// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
@@ -456,8 +457,8 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
             "title": a.label, "message": format!("{}{quote}\n\n[{}]({})", a.summary, a.link_text, a.link), "priority": 5,
             "extras": {"client::display": {"contentType": "text/markdown"}, "client::notification": {"click": {"url": a.link}}},
         })
-    } else if mattermost(url) {
-        // Mattermost reads Slack's links but shows Slack's *bold* as italics.
+    } else if mattermost(url) || host == "api.pumble.com" {
+        // Mattermost and Pumble read Slack's links but show Slack's *bold* as italics.
         json!({"text": format!("**{}:** {}{quote}\n[{}]({})", a.label, a.summary, a.link_text, a.link)})
     } else if host == "api.telegram.org" {
         // chat_id goes in the body too, so it doesn't matter whether Telegram reads the query of a JSON request.
@@ -761,6 +762,7 @@ mod tests {
         let mattermost = "**Hot lead:** Sarah replied to Acme\n> Sounds good\n> Tuesday?\n[Open the inbox](https://app/x)";
         assert_eq!(chat_payload("https://chat.acme.dev/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a), json!({"text": mattermost}));
         assert_eq!(chat_payload("https://acme.dev/mattermost/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a)["text"], mattermost);
+        assert_eq!(chat_payload("https://api.pumble.com/workspaces/6650f0c4/incomingWebhooks/postMessage/abc", &a), json!({"text": mattermost}));
         let gotify = chat_payload("https://push.acme.dev/gotify/message?token=AbCdEf", &a);
         assert_eq!(gotify["title"], "Hot lead");
         assert_eq!(gotify["message"], "Sarah replied to Acme  \n> Sounds good  \n> Tuesday?\n\n[Open the inbox](https://app/x)");
