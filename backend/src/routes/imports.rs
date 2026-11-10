@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use super::util_airtable as airtable;
 use super::util_baserow as baserow;
+use super::util_nocodb as nocodb;
 use super::util_input;
 use super::util_sheet as sheet;
 use super::util_lead_import::{self, NewLead};
@@ -68,6 +69,9 @@ struct Upload {
     /// A Baserow table to read instead, with a database token that's used for this request only.
     baserow_url: Option<String>,
     baserow_token: Option<String>,
+    /// A NocoDB table to read instead, with an API token that's used for this request only.
+    nocodb_url: Option<String>,
+    nocodb_token: Option<String>,
     segment_id: Option<Uuid>,
     mapping: Option<HashMap<String, String>>,
 }
@@ -85,14 +89,19 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
                 let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
                 upload.sheet_url = Some(text.trim().to_string()).filter(|t| !t.is_empty());
             }
-            Some(name @ ("airtable_url" | "airtable_token" | "notion_url" | "notion_token" | "baserow_url" | "baserow_token")) => {
+            Some(
+                name @ ("airtable_url" | "airtable_token" | "notion_url" | "notion_token" | "baserow_url" | "baserow_token"
+                | "nocodb_url" | "nocodb_token"),
+            ) => {
                 let slot = match name {
                     "airtable_url" => &mut upload.airtable_url,
                     "airtable_token" => &mut upload.airtable_token,
                     "notion_url" => &mut upload.notion_url,
                     "notion_token" => &mut upload.notion_token,
                     "baserow_url" => &mut upload.baserow_url,
-                    _ => &mut upload.baserow_token,
+                    "baserow_token" => &mut upload.baserow_token,
+                    "nocodb_url" => &mut upload.nocodb_url,
+                    _ => &mut upload.nocodb_token,
                 };
                 *slot = Some(field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?);
             }
@@ -113,9 +122,13 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
 }
 
 impl Upload {
-    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable or Baserow table or the Notion database, and its
-    /// name.
+    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable, Baserow or NocoDB table or the Notion database,
+    /// and its name.
     async fn csv(&mut self) -> AppResult<(String, Csv)> {
+        if let Some(link) = &self.nocodb_url {
+            let table = nocodb::fetch(link, self.nocodb_token.as_deref().unwrap_or_default()).await?;
+            return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
+        }
         if let Some(link) = &self.baserow_url {
             let table = baserow::fetch(link, self.baserow_token.as_deref().unwrap_or_default()).await?;
             return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
