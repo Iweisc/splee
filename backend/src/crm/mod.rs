@@ -13,6 +13,7 @@ mod freshsales;
 mod hubspot;
 mod insightly;
 mod lacrm;
+mod notion;
 mod odoo;
 mod pipedrive;
 mod salesflare;
@@ -50,11 +51,12 @@ pub enum Crm {
     TwentySelf,
     Espo,
     Odoo,
+    Notion,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 18] = [
+    pub const ALL: [Crm; 19] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -73,6 +75,7 @@ impl Crm {
         Crm::TwentySelf,
         Crm::Espo,
         Crm::Odoo,
+        Crm::Notion,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -100,6 +103,7 @@ impl Crm {
             Crm::TwentySelf => "twenty_self",
             Crm::Espo => "espocrm",
             Crm::Odoo => "odoo",
+            Crm::Notion => "notion",
         }
     }
 
@@ -123,6 +127,7 @@ impl Crm {
             Crm::TwentySelf => "Twenty (self-hosted)",
             Crm::Espo => "EspoCRM",
             Crm::Odoo => "Odoo",
+            Crm::Notion => "Notion",
         }
     }
 
@@ -134,6 +139,7 @@ impl Crm {
             Crm::Copper => Some("email"),
             Crm::Insightly => Some("API URL"),
             Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
+            Crm::Notion => Some("database link"),
             _ => None,
         }
     }
@@ -159,6 +165,7 @@ impl Crm {
             Crm::TwentySelf => twenty::check(token, true).await,
             Crm::Espo => espocrm::check(token).await,
             Crm::Odoo => odoo::check(token).await,
+            Crm::Notion => notion::check(token).await,
         }
     }
 
@@ -182,6 +189,7 @@ impl Crm {
             Crm::TwentySelf => twenty::push(token, true, email, lead, note).await,
             Crm::Espo => espocrm::push(token, email, lead, note).await,
             Crm::Odoo => odoo::push(token, email, lead, note).await,
+            Crm::Notion => notion::push(token, email, lead, note).await,
         }
     }
 }

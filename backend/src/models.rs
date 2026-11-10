@@ -168,6 +168,9 @@ pub struct ProjectSettings {
     pub odoo_connected: bool,
     pub odoo_error: Option<String>,
     pub odoo_failed_at: Option<Ts>,
+    pub notion_connected: bool,
+    pub notion_error: Option<String>,
+    pub notion_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,

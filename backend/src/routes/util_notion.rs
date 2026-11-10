@@ -4,14 +4,12 @@
 
 use std::time::Duration;
 
-use reqwest::{Method, Url};
+use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::util_airtable::Table;
+use crate::notion::{API, VERSION, database_id};
 use crate::error::{AppError, AppResult};
-
-const API: &str = "https://api.notion.com/v1";
-const VERSION: &str = "2026-03-11";
 
 /// Notion sends 100 pages at a time and stops a query at 10,000, more than an import should take in one go anyway.
 const MAX_PAGES: usize = 100;
@@ -49,20 +47,6 @@ pub async fn fetch(link: &str, token: &str) -> AppResult<Table> {
     let headers = columns(pages.first());
     let rows = pages.iter().enumerate().map(|(i, props)| (i + 2, headers.iter().map(|h| cell(&props[h])).collect())).collect();
     Ok(Table { name, headers, rows })
-}
-
-/// The id at the end of a database's link, with or without dashes: https://www.notion.so/acme/Leads-{32 hex}?v=…, as the
-/// address bar shows it, or the same on notion.com or a notion.site page.
-fn database_id(link: &str) -> Option<String> {
-    let url = Url::parse(link.trim()).ok()?;
-    let host = url.host_str()?;
-    let notion = ["notion.so", "notion.com", "notion.site"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")));
-    if !notion || url.scheme() != "https" {
-        return None;
-    }
-    let last: String = url.path_segments()?.next_back()?.chars().filter(|c| *c != '-').collect();
-    let id = last.get(last.len().checked_sub(32)?..)?;
-    id.bytes().all(|b| b.is_ascii_hexdigit()).then(|| id.to_lowercase())
 }
 
 /// Every page has every property, so the first page names the columns: its title first, then the rest by name.
@@ -141,19 +125,7 @@ fn cell(prop: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{cell, columns, database_id};
-
-    #[test]
-    fn only_a_notion_database_link_is_read() {
-        let id = "1a2b3c4d5e6f40718293a4b5c6d7e8f9";
-        assert_eq!(database_id(&format!("https://www.notion.so/acme/Leads-{id}?v=0123456789abcdef0123456789abcdef")).as_deref(), Some(id));
-        assert_eq!(database_id(&format!("https://www.notion.so/{}", id.to_uppercase())).as_deref(), Some(id));
-        assert_eq!(database_id("https://acme.notion.site/1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9").as_deref(), Some(id));
-        assert_eq!(database_id(&format!("https://www.notion.com/acme/{id}")).as_deref(), Some(id));
-        assert!(database_id(&format!("https://evil.example/{id}")).is_none());
-        assert!(database_id(&format!("https://notion.so.evil.example/{id}")).is_none());
-        assert!(database_id("https://www.notion.so/acme/Leads-1a2b3c").is_none());
-    }
+    use super::{cell, columns};
 
     #[test]
     fn the_title_column_comes_first() {
