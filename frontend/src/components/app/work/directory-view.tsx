@@ -53,7 +53,9 @@ export function DirectoryView({ projectId }: { projectId: string }) {
   const key = empty
     ? null
     : `/directory/companies${qs({ ...filters, country, has_email: hasEmail || null, has_phone: hasPhone || null, page, per_page: PER_PAGE })}`;
-  const { data, error, mutate } = useSWR<DirectoryPage>(key, fetcher, { keepPreviousData: true });
+  const { data, error, mutate, isLoading } = useSWR<DirectoryPage>(key, fetcher, { keepPreviousData: true });
+  // keepPreviousData shows the last results while typing or loading. They no longer match the filters, so they can't be ticked.
+  const stale = isLoading || q !== filters.q || city !== filters.city || category !== filters.category;
   const turnPage = (p: number) => {
     setPage(p);
     setPicked(new Set());
@@ -67,6 +69,7 @@ export function DirectoryView({ projectId }: { projectId: string }) {
       turnPage(1);
     };
   const toggle = (domain: string) =>
+    !stale &&
     setPicked((p) => {
       const next = new Set(p);
       if (!next.delete(domain)) next.add(domain);
@@ -158,7 +161,7 @@ export function DirectoryView({ projectId }: { projectId: string }) {
       ) : (
         <>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className={cn("w-full text-sm transition-opacity", stale && "opacity-60")}>
               <thead>
                 <tr>
                   <Th className="w-[1%] pr-0">
@@ -169,6 +172,7 @@ export function DirectoryView({ projectId }: { projectId: string }) {
                         if (box) box.indeterminate = picked.size > 0 && !allPicked;
                       }}
                       onChange={() => setPicked(allPicked ? new Set() : new Set(pageDomains))}
+                      disabled={stale}
                       aria-label="Select every company on this page"
                       className="block accent-black"
                     />
@@ -181,7 +185,7 @@ export function DirectoryView({ projectId }: { projectId: string }) {
               </thead>
               <tbody>
                 {data.items.map((c) => (
-                  <Row key={c.domain} company={c} picked={picked.has(c.domain)} onToggle={() => toggle(c.domain)} />
+                  <Row key={c.domain} company={c} picked={picked.has(c.domain)} disabled={stale} onToggle={() => toggle(c.domain)} />
                 ))}
               </tbody>
             </table>
@@ -193,12 +197,12 @@ export function DirectoryView({ projectId }: { projectId: string }) {
   );
 }
 
-function Row({ company: c, picked, onToggle }: { company: DirectoryCompany; picked: boolean; onToggle: () => void }) {
+function Row({ company: c, picked, disabled, onToggle }: { company: DirectoryCompany; picked: boolean; disabled: boolean; onToggle: () => void }) {
   const category = categoryWords(c.category);
   return (
     <Tr onClick={onToggle}>
       <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
-        <input type="checkbox" checked={picked} onChange={onToggle} aria-label={`Select ${c.name}`} className="block accent-black" />
+        <input type="checkbox" checked={picked} onChange={onToggle} disabled={disabled} aria-label={`Select ${c.name}`} className="block accent-black" />
       </Td>
       <Td className="max-w-0 w-[45%]">
         <span className="flex items-center gap-2">
