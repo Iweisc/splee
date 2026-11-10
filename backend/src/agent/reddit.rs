@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use chrono::DateTime;
-use claude_agent_sdk_rs::{McpServerConfig, McpToolResultContent, ToolResult, create_sdk_mcp_server, tool};
+use claude_agent_sdk_rs::{McpServerConfig, create_sdk_mcp_server, tool};
 use serde_json::{Value, json};
 
-use super::social::{Seen, Thread};
+use super::social::{Seen, Thread, text};
 use super::x::{MAX_TEXT, clip};
 use crate::reddit::{Reddit, Target, subreddit};
-use crate::social::Failure;
 
 pub const SEARCH: &str = "mcp__reddit__search";
 pub const READ: &str = "mcp__reddit__read";
@@ -56,7 +55,7 @@ pub fn server(reddit: Arc<Reddit>, seen: Seen) -> McpServerConfig {
             Ok(match reddit.search(&query, sr.as_deref(), count).await {
                 Ok(posts) if posts.is_empty() => text("No posts matched.".into(), false),
                 Ok(posts) => text(posts.iter().map(|p| show_post(p, &seen)).collect::<Vec<_>>().join("\n\n"), false),
-                Err(e) => text(message(e), true),
+                Err(e) => text(e.message(), true),
             })
         }
     });
@@ -73,21 +72,11 @@ pub fn server(reddit: Arc<Reddit>, seen: Seen) -> McpServerConfig {
                     }
                     text(out, false)
                 }
-                Err(e) => text(message(e), true),
+                Err(e) => text(e.message(), true),
             })
         }
     });
     McpServerConfig::Sdk(create_sdk_mcp_server("reddit", "1.0.0", vec![search, read]))
-}
-
-fn text(text: String, is_error: bool) -> ToolResult {
-    ToolResult { content: vec![McpToolResultContent::Text { text }], is_error }
-}
-
-fn message(e: Failure) -> String {
-    match e {
-        Failure::Post(m) | Failure::Account(m) => m,
-    }
 }
 
 fn created(item: &Value) -> Option<chrono::DateTime<chrono::Utc>> {

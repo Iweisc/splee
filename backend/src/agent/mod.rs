@@ -1,8 +1,11 @@
 //! Agent runs: every Claude-powered task is a row in agent_runs, picked up by the worker.
 //! Routes call `enqueue` (and `leads_without_initial` to refuse empty write runs). The worker, SDK wrapper and task implementations live in this module.
 
+mod bluesky;
 mod directory;
 mod explore;
+mod linkedin;
+mod mastodon;
 mod prospect;
 mod reddit;
 mod replies;

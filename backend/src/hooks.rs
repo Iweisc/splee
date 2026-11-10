@@ -179,6 +179,10 @@ pub enum Alert {
     X,
     /// Matched on reddit_password_enc.
     Reddit,
+    /// Matched on bluesky_password_enc.
+    Bluesky,
+    /// Matched on mastodon_token_enc.
+    Mastodon,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -196,6 +200,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Unipile => ("unipile", "unipile_token_enc".to_string()),
         Alert::X => ("x", "x_auth_token_enc".to_string()),
         Alert::Reddit => ("reddit", "reddit_password_enc".to_string()),
+        Alert::Bluesky => ("bluesky", "bluesky_password_enc".to_string()),
+        Alert::Mastodon => ("mastodon", "mastodon_token_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

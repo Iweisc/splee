@@ -1,5 +1,6 @@
-//! The Social page: replies and posts for X and Reddit that a social run drafted or the user wrote, which crate::social
-//! posts once approved, and connecting the accounts they go out from.
+//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon and LinkedIn that a social run drafted or the user
+//! wrote, which crate::social posts once approved, and connecting the accounts they go out from. LinkedIn goes out through the
+//! project's Unipile connection, see routes::linkedin.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post, put};
@@ -10,15 +11,16 @@ use uuid::Uuid;
 
 use super::settings::load_or_create;
 use super::{util_input, util_scope};
-use crate::agent::social::X_CHARS;
 use crate::agent::x::{self, Cookies};
 use crate::agent::{self, kind};
 use crate::auth::Auth;
+use crate::bluesky::{self, Bluesky};
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::models::{ProjectSettings, SocialPost};
+use crate::mastodon::{self, Mastodon};
 use crate::reddit::{self, Login, Reddit};
-use crate::social::{self, Failure};
+use crate::social::{self, Failure, PLATFORMS, length, max_length};
 use crate::state::AppState;
 
 const STATUSES: [&str; 6] = ["draft", "approved", "posting", "posted", "failed", "skipped"];
@@ -30,6 +32,8 @@ pub fn router() -> Router<AppState> {
         .route("/social/{id}", patch(update).delete(remove))
         .route("/projects/{id}/integrations/x", put(connect_x).delete(disconnect_x))
         .route("/projects/{id}/integrations/reddit", put(connect_reddit).delete(disconnect_reddit))
+        .route("/projects/{id}/integrations/bluesky", put(connect_bluesky).delete(disconnect_bluesky))
+        .route("/projects/{id}/integrations/mastodon", put(connect_mastodon).delete(disconnect_mastodon))
 }
 
 #[derive(Deserialize)]
@@ -55,13 +59,15 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Q
     Ok(Json(posts))
 }
 
-/// What a post needs before it can go out: text, X's length limit, and a subreddit and title for a new Reddit post.
-fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str) -> AppResult<()> {
+/// What a post needs before it can go out: text within the platform's limit, and a subreddit and title for a new Reddit post.
+fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, mastodon_chars: usize) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::BadRequest("Write something first".into()));
     }
-    if platform == "x" && body.chars().count() > X_CHARS {
-        return Err(AppError::BadRequest(format!("Posts on X are at most {X_CHARS} characters")));
+    let max = max_length(platform, reply, mastodon_chars);
+    if length(platform, body.trim()) > max {
+        let what = if platform == "linkedin" && reply { "Comments" } else if reply { "Replies" } else { "Posts" };
+        return Err(AppError::BadRequest(format!("{what} on {} are at most {max} characters", social::name(platform))));
     }
     if platform == "reddit" && !reply && (subreddit.is_empty() || title.trim().is_empty()) {
         return Err(AppError::BadRequest("A Reddit post needs a subreddit and a title".into()));
@@ -70,6 +76,12 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str) 
         return Err(AppError::BadRequest("Reddit titles are at most 300 characters".into()));
     }
     Ok(())
+}
+
+/// The project's Mastodon instance's post limit, for `check`.
+async fn mastodon_chars(state: &AppState, project_id: Uuid) -> AppResult<usize> {
+    let max: Option<i32> = sqlx::query_scalar("select mastodon_max_chars from project_settings where project_id = $1").bind(project_id).fetch_optional(&state.db).await?;
+    Ok(max.unwrap_or(500).max(1) as usize)
 }
 
 /// A subreddit as typed, like "r/sales", or empty.
@@ -82,15 +94,12 @@ fn subreddit_input(raw: &str) -> AppResult<String> {
 
 /// Approving a post for an account that isn't connected would leave it waiting with no word on why.
 async fn require_account(state: &AppState, project_id: Uuid, platform: &str) -> AppResult<()> {
-    let connected: bool = sqlx::query_scalar(&format!("select coalesce((select {platform}_connected from project_settings where project_id = $1), false)"))
-        .bind(project_id)
-        .fetch_one(&state.db)
-        .await?;
-    if connected {
-        return Ok(());
+    let connected = social::accounts(&state.db, project_id).await?.is_some_and(|a| a.connected().contains(&platform));
+    match (connected, platform) {
+        (true, _) => Ok(()),
+        (false, "linkedin") => Err(AppError::BadRequest("Connect LinkedIn sending on the integrations page first".into())),
+        (false, p) => Err(AppError::BadRequest(format!("Connect {} on the integrations page first", social::name(p)))),
     }
-    let name = if platform == "x" { "X" } else { "Reddit" };
-    Err(AppError::BadRequest(format!("Connect {name} on the integrations page first")))
 }
 
 #[derive(Deserialize)]
@@ -108,11 +117,11 @@ struct CreateBody {
 /// A post the user wrote by hand.
 async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<CreateBody>) -> AppResult<Json<SocialPost>> {
     auth.project(&state.db, id).await?;
-    util_input::one_of("platform", &b.platform, &["x", "reddit"])?;
+    util_input::one_of("platform", &b.platform, &PLATFORMS)?;
     let status = b.status.as_deref().unwrap_or("draft");
     util_input::one_of("status", status, &["draft", "approved"])?;
     let (subreddit, title) = if b.platform == "reddit" { (subreddit_input(&b.subreddit)?, b.title.trim()) } else { (String::new(), "") };
-    check(&b.platform, false, &subreddit, title, &b.body)?;
+    check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
     if status == "approved" {
         require_account(&state, id, &b.platform).await?;
     }
@@ -154,7 +163,7 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
         _ => (post.subreddit, post.title),
     };
     if status == "approved" {
-        check(&post.platform, reply, &subreddit, &title, &body)?;
+        check(&post.platform, reply, &subreddit, &title, &body, mastodon_chars(&state, post.project_id).await?)?;
         require_account(&state, post.project_id, &post.platform).await?;
     }
     let updated = sqlx::query_as::<_, SocialPost>(
@@ -185,9 +194,8 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 
 async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.project(&state.db, id).await?;
-    let connected = social::accounts(&state.db, id).await?.is_some_and(|a| !a.x_auth_token_enc.is_empty() || !a.reddit_password_enc.is_empty());
-    if !connected {
-        return Err(AppError::BadRequest("Connect X or Reddit on the integrations page first".into()));
+    if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
+        return Err(AppError::BadRequest("Connect X, Reddit, Bluesky, Mastodon or LinkedIn sending on the integrations page first".into()));
     }
     let busy: bool = sqlx::query_scalar("select exists (select 1 from agent_runs where project_id = $1 and kind = $2 and status in ('queued', 'running'))")
         .bind(id)
@@ -266,9 +274,7 @@ async fn connect_reddit(State(state): State<AppState>, auth: Auth, Path(id): Pat
     if login.client_id.is_empty() || login.secret.is_empty() || login.username.is_empty() || login.password.is_empty() {
         return Err(AppError::BadRequest("Fill in the client id, secret, username and password".into()));
     }
-    let refused = |e: Failure| match e {
-        Failure::Post(m) | Failure::Account(m) => AppError::BadRequest(m),
-    };
+    let refused = |e: Failure| AppError::BadRequest(e.message());
     let name = Reddit::sign_in(&login).await.map_err(refused)?.me().await.map_err(refused)?;
     let secret = &state.cfg.app_secret;
     let enc = (crypto::encrypt(secret, &login.secret), crypto::encrypt(secret, &login.password));
@@ -292,6 +298,85 @@ async fn set_reddit(state: &AppState, id: Uuid, client_id: &str, secret: &str, u
     .bind(secret)
     .bind(username)
     .bind(password)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct BlueskyBody {
+    handle: String,
+    password: String,
+}
+
+/// Saves the app password once Bluesky signs in with it, with the handle as Bluesky spells it.
+async fn connect_bluesky(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<BlueskyBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let login = bluesky::Login { handle: b.handle.trim().trim_start_matches('@').to_string(), password: b.password.trim().to_string() };
+    if login.handle.is_empty() || login.password.is_empty() {
+        return Err(AppError::BadRequest("Fill in the handle and app password".into()));
+    }
+    let session = Bluesky::sign_in(&login).await.map_err(|e| AppError::BadRequest(e.message()))?;
+    set_bluesky(&state, id, &session.handle, &crypto::encrypt(&state.cfg.app_secret, &login.password)).await
+}
+
+async fn disconnect_bluesky(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_bluesky(&state, id, "", "").await
+}
+
+async fn set_bluesky(state: &AppState, id: Uuid, handle: &str, password: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set bluesky_handle = $2, bluesky_password_enc = $3, bluesky_error = null, bluesky_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(handle)
+    .bind(password)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct MastodonBody {
+    url: String,
+    token: String,
+}
+
+/// Saves the token once the instance accepts it, with the account's handle and the instance's post limit.
+async fn connect_mastodon(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<MastodonBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let base = mastodon::instance_url(&b.url).ok_or_else(|| AppError::BadRequest("Write the instance's address, like mastodon.social".into()))?;
+    let token = b.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("Paste the access token".into()));
+    }
+    let account = Mastodon::new(&base, token).await.map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
+    let enc = crypto::encrypt(&state.cfg.app_secret, token);
+    set_mastodon(&state, id, &base, &enc, &account.handle, account.max_chars).await
+}
+
+async fn disconnect_mastodon(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_mastodon(&state, id, "", "", "", 500).await
+}
+
+async fn set_mastodon(state: &AppState, id: Uuid, url: &str, token: &str, handle: &str, max_chars: i32) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set mastodon_url = $2, mastodon_token_enc = $3, mastodon_handle = $4, mastodon_max_chars = $5,
+           mastodon_error = null, mastodon_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(url)
+    .bind(token)
+    .bind(handle)
+    .bind(max_chars)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

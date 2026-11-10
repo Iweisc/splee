@@ -1,7 +1,25 @@
 "use client";
 
 import { use, useState } from "react";
-import { AtSign, CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, MailPlus, MessagesSquare, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
+import {
+  AtSign,
+  CalendarCheck,
+  CalendarClock,
+  ClipboardList,
+  Cloud,
+  Contact,
+  Globe,
+  Hash,
+  MailCheck,
+  MailPlus,
+  MessagesSquare,
+  RefreshCw,
+  Send,
+  Trash2,
+  UserPlus,
+  UserSearch,
+  Webhook,
+} from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -846,7 +864,7 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
     if (await call({ dsn, token }, "Connected to Unipile")) setToken("");
   };
   const disconnect = () => {
-    if (confirm("Disconnect Unipile? Due LinkedIn steps will wait for you to send them.")) call(undefined, "Unipile disconnected");
+    if (confirm("Disconnect Unipile? Due LinkedIn steps will wait for you to send them, and approved LinkedIn posts will wait too.")) call(undefined, "Unipile disconnected");
   };
   return (
     <Section
@@ -855,7 +873,7 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
           <UserPlus className="size-4" /> LinkedIn sending
         </span>
       }
-      description="Sends each due LinkedIn step from your own LinkedIn account through Unipile."
+      description="Sends each due LinkedIn step, and the LinkedIn posts and comments you approve on the Social page, from your own account through Unipile."
       actions={
         settings.unipile_connected ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
@@ -867,7 +885,8 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
       {settings.unipile_connected ? (
         <p className="text-sm text-pretty">
           Sending as {settings.unipile_account_name || "your LinkedIn account"}. Each due step goes out in your sending hours, up to 25 a day, and
-          messages wait until they accept the connect note. A reply on LinkedIn stops their sequence and emails.
+          messages wait until they accept the connect note. A reply on LinkedIn stops their sequence and emails. Approved posts and comments go
+          out one at a time every ten minutes, up to 5 a day.
         </p>
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
@@ -1006,6 +1025,124 @@ function RedditSection({ projectId, settings }: { projectId: string; settings: P
   );
 }
 
+/** The app password is write-only. Connecting signs in to Bluesky with it and reads the handle back. */
+function BlueskySection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [handle, setHandle] = useState("");
+  const [password, setPassword] = useState("");
+  const { busy, call } = useConnection(projectId, "bluesky");
+  const connect = async () => {
+    if (await call({ handle, password }, "Connected to Bluesky")) {
+      setHandle("");
+      setPassword("");
+    }
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Bluesky? Approved posts for Bluesky will wait until you connect it again.")) call(undefined, "Bluesky disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Cloud className="size-4" /> Bluesky
+        </span>
+      }
+      description="Searches Bluesky as your account and posts what you approve on the Social page."
+      actions={
+        settings.bluesky_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.bluesky_connected ? (
+        <p className="text-sm text-pretty">Posting as @{settings.bluesky_handle}, up to 15 posts a day. Approved posts go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            Signed in as the account, open{" "}
+            <a href="https://bsky.app/settings/app-passwords" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              bsky.app/settings/app-passwords
+            </a>{" "}
+            and add an app password. Splee never needs the account&apos;s own password.
+          </p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <Field label="Handle" className="flex-1">
+              <Input autoComplete="off" placeholder="yourname.bsky.social" value={handle} onChange={(e) => setHandle(e.target.value.trim())} />
+            </Field>
+            <Field label="App password" className="flex-1">
+              <Input type="password" autoComplete="off" placeholder="xxxx-xxxx-xxxx-xxxx" value={password} onChange={(e) => setPassword(e.target.value.trim())} />
+            </Field>
+            <Button type="submit" loading={busy} disabled={!handle || !password}>
+              Connect
+            </Button>
+          </div>
+        </form>
+      )}
+      <LastFailure error={settings.bluesky_error} at={settings.bluesky_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** The token is write-only. Connecting checks it with the instance and reads the account and the instance's post limit back. */
+function MastodonSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const { busy, call } = useConnection(projectId, "mastodon");
+  const connect = async () => {
+    if (await call({ url, token }, "Connected to Mastodon")) {
+      setUrl("");
+      setToken("");
+    }
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Mastodon? Approved posts for Mastodon will wait until you connect it again.")) call(undefined, "Mastodon disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Globe className="size-4" /> Mastodon
+        </span>
+      }
+      description="Searches Mastodon as your account and posts what you approve on the Social page."
+      actions={
+        settings.mastodon_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.mastodon_connected ? (
+        <p className="text-sm text-pretty">
+          Posting as @{settings.mastodon_handle}, up to 15 posts a day of up to {settings.mastodon_max_chars} characters. Approved posts go out one at a time
+          every ten minutes.
+        </p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            On your instance, open Preferences, then Development, and create an application with the read and write:statuses scopes. Copy its access
+            token.
+          </p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <Field label="Instance" className="flex-1">
+              <Input autoComplete="off" placeholder="mastodon.social" value={url} onChange={(e) => setUrl(e.target.value.trim())} />
+            </Field>
+            <Field label="Access token" className="flex-1">
+              <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+            </Field>
+            <Button type="submit" loading={busy} disabled={!url || !token}>
+              Connect
+            </Button>
+          </div>
+        </form>
+      )}
+      <LastFailure error={settings.mastodon_error} at={settings.mastodon_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -1090,6 +1227,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <UnipileSection projectId={projectId} settings={s} />
           <XSection projectId={projectId} settings={s} />
           <RedditSection projectId={projectId} settings={s} />
+          <BlueskySection projectId={projectId} settings={s} />
+          <MastodonSection projectId={projectId} settings={s} />
 
           <Section
             title={
