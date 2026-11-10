@@ -15,9 +15,11 @@ use crate::mastodon::Mastodon;
 use crate::models::SocialPost;
 use crate::reddit::{Login, Reddit, Target};
 use crate::state::AppState;
+use crate::threads::{self, Threads};
 use crate::unipile::{self, Unipile};
+use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 5] = ["x", "reddit", "bluesky", "mastodon", "linkedin"];
+pub const PLATFORMS: [&str; 7] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube"];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
 
@@ -32,8 +34,15 @@ pub fn name(platform: &str) -> &'static str {
         "reddit" => "Reddit",
         "bluesky" => "Bluesky",
         "mastodon" => "Mastodon",
+        "threads" => "Threads",
+        "youtube" => "YouTube",
         _ => "LinkedIn",
     }
+}
+
+/// YouTube only takes comments, so it gets no original posts.
+pub fn takes_posts(platform: &str) -> bool {
+    platform != "youtube"
 }
 
 /// The most a reply or post can hold, as `length` counts it. Mastodon's limit is the instance's, read on connect.
@@ -42,6 +51,8 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("x", _) => 280,
         ("bluesky", _) => bluesky::GRAPHEMES,
         ("mastodon", _) => mastodon_chars,
+        ("threads", _) => threads::CHARS,
+        ("youtube", _) => youtube::CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -91,6 +102,13 @@ pub struct Accounts {
     pub mastodon_token_enc: String,
     pub mastodon_handle: String,
     pub mastodon_max_chars: i32,
+    pub threads_token_enc: String,
+    pub threads_user_id: String,
+    pub threads_username: String,
+    pub youtube_client_id: String,
+    pub youtube_secret_enc: String,
+    pub youtube_token_enc: String,
+    pub youtube_channel_id: String,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
@@ -98,7 +116,9 @@ pub struct Accounts {
 
 const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
                                s.reddit_password_enc, s.bluesky_handle, s.bluesky_password_enc, s.mastodon_url, s.mastodon_token_enc,
-                               s.mastodon_handle, s.mastodon_max_chars, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
+                               s.mastodon_handle, s.mastodon_max_chars, s.threads_token_enc, s.threads_user_id, s.threads_username,
+                               s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.unipile_dsn,
+                               s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
@@ -113,6 +133,8 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "reddit" => ("reddit_username", "reddit_failed_at"),
         "bluesky" => ("bluesky_handle", "bluesky_failed_at"),
         "mastodon" => ("mastodon_handle", "mastodon_failed_at"),
+        "threads" => ("threads_username", "threads_failed_at"),
+        "youtube" => ("youtube_channel_id", "youtube_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -123,6 +145,8 @@ fn alert(platform: &str) -> Alert {
         "reddit" => Alert::Reddit,
         "bluesky" => Alert::Bluesky,
         "mastodon" => Alert::Mastodon,
+        "threads" => Alert::Threads,
+        "youtube" => Alert::YouTube,
         _ => Alert::Unipile,
     }
 }
@@ -135,6 +159,8 @@ impl Accounts {
             "reddit" => (&self.reddit_username, &self.reddit_password_enc),
             "bluesky" => (&self.bluesky_handle, &self.bluesky_password_enc),
             "mastodon" => (&self.mastodon_handle, &self.mastodon_token_enc),
+            "threads" => (&self.threads_username, &self.threads_token_enc),
+            "youtube" => (&self.youtube_channel_id, &self.youtube_token_enc),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
     }
@@ -172,6 +198,22 @@ impl Accounts {
     pub async fn mastodon(&self, secret: &str) -> Result<Mastodon, Failure> {
         let token = decrypt(secret, &self.mastodon_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Mastodon token. Connect Mastodon again".into()))?;
         Mastodon::new(&self.mastodon_url, &token).await
+    }
+
+    pub fn threads(&self, secret: &str) -> Result<Threads, Failure> {
+        let token = decrypt(secret, &self.threads_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Threads token. Connect Threads again".into()))?;
+        Threads::new(&token, &self.threads_user_id)
+    }
+
+    pub fn youtube(&self, secret: &str) -> anyhow::Result<Option<youtube::Login>> {
+        if self.youtube_token_enc.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(youtube::Login {
+            client_id: self.youtube_client_id.clone(),
+            secret: decrypt(secret, &self.youtube_secret_enc)?,
+            refresh_token: decrypt(secret, &self.youtube_token_enc)?,
+        }))
     }
 
     pub fn unipile(&self, secret: &str) -> Result<Unipile, Failure> {
@@ -230,6 +272,8 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
         "reddit" => post_reddit(state, a, &post).await,
         "bluesky" => post_bluesky(state, a, &post).await,
         "mastodon" => post_mastodon(state, a, &post).await,
+        "threads" => post_threads(state, a, &post).await,
+        "youtube" => post_youtube(state, a, &post).await,
         _ => post_linkedin(state, a, &post).await,
     };
     let result = finish(&state.db, &post, account, published).await?;
@@ -318,6 +362,17 @@ async fn post_mastodon(state: &AppState, a: &Accounts, post: &SocialPost) -> Res
     a.mastodon(&state.cfg.app_secret).await?.post(post.in_reply_to.as_deref(), &post.body, &post.id.to_string()).await
 }
 
+async fn post_threads(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    a.threads(&state.cfg.app_secret)?.post(post.in_reply_to.as_deref(), &post.body).await
+}
+
+async fn post_youtube(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let login = a.youtube(&state.cfg.app_secret).ok().flatten().ok_or_else(|| Failure::Account("Couldn't read the saved YouTube login. Connect YouTube again".into()))?;
+    let link = post.in_reply_to.as_deref().ok_or_else(|| Failure::Post("YouTube only takes comments".into()))?;
+    let target = youtube::Target::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a YouTube video".into()))?;
+    YouTube::sign_in(&login).await?.comment(&target, &post.body).await
+}
+
 async fn post_linkedin(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
     let unipile = a.unipile(&state.cfg.app_secret)?;
     match post.in_reply_to.as_deref() {
@@ -394,14 +449,19 @@ mod tests {
     #[ignore = "needs Postgres"]
     async fn linkedin_stops_at_five_posts_a_day_and_the_others_at_fifteen(db: PgPool) {
         let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
-        sqlx::query("insert into project_settings (project_id, unipile_token_enc, unipile_account_id, bluesky_password_enc, bluesky_handle) values ($1, 'x', 'ACC', 'x', 'acme.bsky.social')")
-            .bind(project)
-            .execute(&db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "insert into project_settings (project_id, unipile_token_enc, unipile_account_id, bluesky_password_enc, bluesky_handle, threads_token_enc,
+               threads_username, youtube_token_enc, youtube_channel_id)
+             values ($1, 'x', 'ACC', 'x', 'acme.bsky.social', 'x', 'acme', 'x', 'UCacme')",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
         let a = accounts(&db, project).await.unwrap().unwrap();
-        assert_eq!(a.connected(), ["bluesky", "linkedin"]);
-        for (platform, account) in [("linkedin", "ACC"), ("bluesky", "acme.bsky.social")] {
+        assert_eq!(a.connected(), ["bluesky", "linkedin", "threads", "youtube"]);
+        let accounts = [("linkedin", "ACC"), ("bluesky", "acme.bsky.social"), ("threads", "acme"), ("youtube", "UCacme")];
+        for (platform, account) in accounts {
             approved(&db, project, platform).await;
             sqlx::query("insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, $2, 'Hi', 'posted', $3, now() from generate_series(1, 5)")
                 .bind(project)
@@ -412,7 +472,18 @@ mod tests {
                 .unwrap();
         }
         assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_none());
-        assert!(next_due(&db, project, "bluesky", "acme.bsky.social").await.unwrap().is_some());
+        for (platform, account) in &accounts[1..] {
+            assert!(next_due(&db, project, platform, account).await.unwrap().is_some(), "{platform}");
+        }
+        // Threads and YouTube stop at 15 too.
+        sqlx::query("insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, 'threads', 'Hi', 'posted', 'acme', now() from generate_series(1, 10)")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(next_due(&db, project, "threads", "acme").await.unwrap().is_none());
+        sqlx::query("update project_settings set youtube_failed_at = now() where project_id = $1").bind(project).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "youtube", "UCacme").await.unwrap().is_none());
         // A Unipile failure, from sending LinkedIn messages or posting, holds LinkedIn posting too.
         sqlx::query("delete from social_posts where platform = 'linkedin' and status = 'posted'").execute(&db).await.unwrap();
         assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_some());
@@ -427,6 +498,8 @@ mod tests {
         assert!(fits("bluesky", false, &"👍🏽".repeat(300), 500) && !fits("bluesky", false, &"a".repeat(301), 500));
         assert!(fits("mastodon", false, &"a".repeat(1000), 1000) && !fits("mastodon", false, &"a".repeat(501), 500));
         assert!(fits("linkedin", false, &"a".repeat(3000), 500) && !fits("linkedin", true, &"a".repeat(1251), 500));
+        assert!(fits("threads", true, &"é".repeat(500), 500) && !fits("threads", false, &"a".repeat(501), 500));
+        assert!(fits("youtube", true, &"a".repeat(10_000), 500) && !fits("youtube", true, &"a".repeat(10_001), 500));
         assert!(!fits("reddit", true, "", 500));
     }
 }

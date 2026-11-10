@@ -15,7 +15,9 @@ import {
   MessagesSquare,
   RefreshCw,
   Send,
+  Spool,
   Trash2,
+  TvMinimalPlay,
   UserPlus,
   UserSearch,
   Webhook,
@@ -1143,6 +1145,121 @@ function MastodonSection({ projectId, settings }: { projectId: string; settings:
   );
 }
 
+/** The token is write-only. Connecting checks it with Threads and reads the account back. */
+function ThreadsSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [token, setToken] = useState("");
+  const { busy, call } = useConnection(projectId, "threads");
+  const connect = async () => {
+    if (await call({ token }, "Connected to Threads")) setToken("");
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Threads? Approved posts for Threads will wait until you connect it again.")) call(undefined, "Threads disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Spool className="size-4" /> Threads
+        </span>
+      }
+      description="Searches Threads as your account and posts what you approve on the Social page."
+      actions={
+        settings.threads_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.threads_connected ? (
+        <p className="text-sm text-pretty">Posting as @{settings.threads_username}, up to 15 posts a day. Approved posts go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            In{" "}
+            <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              Meta for Developers
+            </a>
+            , create an app with the Threads API use case and the threads_basic, threads_content_publish, threads_read_replies and
+            threads_keyword_search permissions. Add your account as a Threads tester, then generate a long-lived access token.
+          </p>
+          <Field label="Access token" hint="It lasts 60 days. Until Meta approves keyword search for the app, searches only find your own posts.">
+            <div className="flex gap-2">
+              <Input aria-label="Access token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+              <Button type="submit" loading={busy} disabled={!token}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </form>
+      )}
+      <LastFailure error={settings.threads_error} at={settings.threads_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** The client secret and refresh token are write-only. Connecting trades the token with Google and reads the channel back. */
+function YouTubeSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [form, setForm] = useState({ client_id: "", secret: "", refresh_token: "" });
+  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: e.target.value.trim() });
+  const { busy, call } = useConnection(projectId, "youtube");
+  const connect = async () => {
+    if (await call(form, "Connected to YouTube")) setForm({ client_id: "", secret: "", refresh_token: "" });
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect YouTube? Approved comments for YouTube will wait until you connect it again.")) call(undefined, "YouTube disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <TvMinimalPlay className="size-4" /> YouTube
+        </span>
+      }
+      description="Searches YouTube for videos and posts the comments you approve on the Social page as your channel."
+      actions={
+        settings.youtube_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.youtube_connected ? (
+        <p className="text-sm text-pretty">
+          Commenting as {settings.youtube_channel}, up to 15 comments a day. Approved comments go out one at a time every ten minutes.
+        </p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            In Google Cloud, turn on the YouTube Data API v3, create an OAuth client and publish the app, since tokens from an app in testing
+            expire in 7 days. Then in the{" "}
+            <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              OAuth Playground
+            </a>
+            , use your own client, sign in as the channel with the youtube.force-ssl scope and copy the refresh token.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Client id">
+              <Input autoComplete="off" placeholder="1234.apps.googleusercontent.com" value={form.client_id} onChange={set("client_id")} />
+            </Field>
+            <Field label="Client secret">
+              <Input type="password" autoComplete="off" value={form.secret} onChange={set("secret")} />
+            </Field>
+            <Field label="Refresh token" className="sm:col-span-2">
+              <Input type="password" autoComplete="off" value={form.refresh_token} onChange={set("refresh_token")} />
+            </Field>
+          </div>
+          <Button type="submit" loading={busy} disabled={!form.client_id || !form.secret || !form.refresh_token} className="sm:self-start">
+            Connect
+          </Button>
+        </form>
+      )}
+      <LastFailure error={settings.youtube_error} at={settings.youtube_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -1229,6 +1346,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <RedditSection projectId={projectId} settings={s} />
           <BlueskySection projectId={projectId} settings={s} />
           <MastodonSection projectId={projectId} settings={s} />
+          <ThreadsSection projectId={projectId} settings={s} />
+          <YouTubeSection projectId={projectId} settings={s} />
 
           <Section
             title={

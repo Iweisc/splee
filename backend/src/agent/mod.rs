@@ -11,8 +11,10 @@ mod reddit;
 mod replies;
 pub mod sdk;
 pub mod social;
+mod threads;
 mod write;
 pub mod x;
+mod youtube;
 
 pub use write::{leads_without_initial, signature};
 

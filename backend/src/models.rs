@@ -214,6 +214,17 @@ pub struct ProjectSettings {
     pub mastodon_max_chars: i32,
     pub mastodon_error: Option<String>,
     pub mastodon_failed_at: Option<Ts>,
+    /// The Threads account social posts go out from. Its token stays out of this struct.
+    pub threads_connected: bool,
+    pub threads_username: String,
+    pub threads_error: Option<String>,
+    pub threads_failed_at: Option<Ts>,
+    /// The YouTube channel comments go out as, by its @handle or title. The OAuth client's secret and the refresh token stay
+    /// out of this struct.
+    pub youtube_connected: bool,
+    pub youtube_channel: String,
+    pub youtube_error: Option<String>,
+    pub youtube_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -569,7 +580,7 @@ pub struct SocialPost {
     pub id: Uuid,
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
-    /// "x", "reddit", "bluesky", "mastodon" or "linkedin".
+    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads" or "youtube".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
