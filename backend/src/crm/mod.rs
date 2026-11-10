@@ -32,108 +32,100 @@ use crate::hooks::{self, Alert};
 use crate::models::Lead;
 use crate::state::AppState;
 
-#[derive(Clone, Copy, Debug)]
-pub enum Crm {
-    HubSpot,
-    Pipedrive,
-    Attio,
-    Close,
-    Folk,
-    Capsule,
-    Brevo,
-    ZendeskSell,
-    Lacrm,
-    Salesflare,
-    Affinity,
-    Freshsales,
-    Copper,
-    Insightly,
-    Twenty,
-    TwentySelf,
-    Espo,
-    Odoo,
-    Notion,
-    Airtable,
+/// Declares every CRM once: its variant, its module (with `check` and `push`), its name and its label.
+macro_rules! crms {
+    ($($variant:ident: $module:ident, $name:literal, $label:literal;)+) => {
+        #[derive(Clone, Copy, Debug)]
+        pub enum Crm {
+            $($variant,)+
+        }
+
+        impl Crm {
+            /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in
+            /// frontend/src/lib/types.ts.
+            pub const ALL: &[Crm] = &[$(Crm::$variant,)+];
+
+            /// Also the prefix of its project_settings columns: {name}_token_enc, {name}_connected, {name}_error,
+            /// {name}_failed_at.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Crm::$variant => $name,)+
+                }
+            }
+
+            pub fn label(self) -> &'static str {
+                match self {
+                    $(Crm::$variant => $label,)+
+                }
+            }
+
+            /// Checks the CRM accepts the token, so a typo shows up when connecting and not on the first hot lead.
+            pub async fn check(self, token: &str) -> anyhow::Result<()> {
+                match self {
+                    $(Crm::$variant => $module::check(token).await,)+
+                }
+            }
+
+            async fn push(self, token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::Result<()> {
+                match self {
+                    $(Crm::$variant => $module::push(token, email, lead, note).await,)+
+                }
+            }
+        }
+    };
+}
+
+crms! {
+    HubSpot: hubspot, "hubspot", "HubSpot";
+    Pipedrive: pipedrive, "pipedrive", "Pipedrive";
+    Attio: attio, "attio", "Attio";
+    Close: close, "close", "Close";
+    Folk: folk, "folk", "folk";
+    Capsule: capsule, "capsule", "Capsule";
+    Brevo: brevo, "brevo", "Brevo";
+    ZendeskSell: zendesk_sell, "zendesk_sell", "Zendesk Sell";
+    Lacrm: lacrm, "lacrm", "Less Annoying CRM";
+    Salesflare: salesflare, "salesflare", "Salesflare";
+    Affinity: affinity, "affinity", "Affinity";
+    Freshsales: freshsales, "freshsales", "Freshsales";
+    Copper: copper, "copper", "Copper";
+    Insightly: insightly, "insightly", "Insightly";
+    Twenty: twenty_cloud, "twenty", "Twenty";
+    TwentySelf: twenty_self, "twenty_self", "Twenty (self-hosted)";
+    Espo: espocrm, "espocrm", "EspoCRM";
+    Odoo: odoo, "odoo", "Odoo";
+    Notion: notion, "notion", "Notion";
+    Airtable: airtable, "airtable", "Airtable";
+}
+
+/// Twenty's cloud and a self-hosted Twenty share one client, which is told which it is.
+mod twenty_cloud {
+    use crate::models::Lead;
+
+    pub async fn check(token: &str) -> anyhow::Result<()> {
+        super::twenty::check(token, false).await
+    }
+
+    pub async fn push(token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::Result<()> {
+        super::twenty::push(token, false, email, lead, note).await
+    }
+}
+
+mod twenty_self {
+    use crate::models::Lead;
+
+    pub async fn check(token: &str) -> anyhow::Result<()> {
+        super::twenty::check(token, true).await
+    }
+
+    pub async fn push(token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::Result<()> {
+        super::twenty::push(token, true, email, lead, note).await
+    }
 }
 
 impl Crm {
-    /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 20] = [
-        Crm::HubSpot,
-        Crm::Pipedrive,
-        Crm::Attio,
-        Crm::Close,
-        Crm::Folk,
-        Crm::Capsule,
-        Crm::Brevo,
-        Crm::ZendeskSell,
-        Crm::Lacrm,
-        Crm::Salesflare,
-        Crm::Affinity,
-        Crm::Freshsales,
-        Crm::Copper,
-        Crm::Insightly,
-        Crm::Twenty,
-        Crm::TwentySelf,
-        Crm::Espo,
-        Crm::Odoo,
-        Crm::Notion,
-        Crm::Airtable,
-    ];
-
     pub fn parse(name: &str) -> Option<Crm> {
-        Crm::ALL.into_iter().find(|crm| crm.name() == name)
-    }
-
-    /// Also the prefix of its project_settings columns: {name}_token_enc, {name}_connected, {name}_error, {name}_failed_at.
-    pub fn name(self) -> &'static str {
-        match self {
-            Crm::HubSpot => "hubspot",
-            Crm::Pipedrive => "pipedrive",
-            Crm::Attio => "attio",
-            Crm::Close => "close",
-            Crm::Folk => "folk",
-            Crm::Capsule => "capsule",
-            Crm::Brevo => "brevo",
-            Crm::ZendeskSell => "zendesk_sell",
-            Crm::Lacrm => "lacrm",
-            Crm::Salesflare => "salesflare",
-            Crm::Affinity => "affinity",
-            Crm::Freshsales => "freshsales",
-            Crm::Copper => "copper",
-            Crm::Insightly => "insightly",
-            Crm::Twenty => "twenty",
-            Crm::TwentySelf => "twenty_self",
-            Crm::Espo => "espocrm",
-            Crm::Odoo => "odoo",
-            Crm::Notion => "notion",
-            Crm::Airtable => "airtable",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Crm::HubSpot => "HubSpot",
-            Crm::Pipedrive => "Pipedrive",
-            Crm::Attio => "Attio",
-            Crm::Close => "Close",
-            Crm::Folk => "folk",
-            Crm::Capsule => "Capsule",
-            Crm::Brevo => "Brevo",
-            Crm::ZendeskSell => "Zendesk Sell",
-            Crm::Lacrm => "Less Annoying CRM",
-            Crm::Salesflare => "Salesflare",
-            Crm::Affinity => "Affinity",
-            Crm::Freshsales => "Freshsales",
-            Crm::Copper => "Copper",
-            Crm::Insightly => "Insightly",
-            Crm::Twenty => "Twenty",
-            Crm::TwentySelf => "Twenty (self-hosted)",
-            Crm::Espo => "EspoCRM",
-            Crm::Odoo => "Odoo",
-            Crm::Notion => "Notion",
-            Crm::Airtable => "Airtable",
-        }
+        Crm::ALL.iter().copied().find(|crm| crm.name() == name)
     }
 
     /// What the CRM needs besides the token to find the account, asked for on its own. It's saved in the token, a line
@@ -149,57 +141,6 @@ impl Crm {
             _ => None,
         }
     }
-
-    /// Checks the CRM accepts the token, so a typo shows up when connecting and not on the first hot lead.
-    pub async fn check(self, token: &str) -> anyhow::Result<()> {
-        match self {
-            Crm::HubSpot => hubspot::check(token).await,
-            Crm::Pipedrive => pipedrive::check(token).await,
-            Crm::Attio => attio::check(token).await,
-            Crm::Close => close::check(token).await,
-            Crm::Folk => folk::check(token).await,
-            Crm::Capsule => capsule::check(token).await,
-            Crm::Brevo => brevo::check(token).await,
-            Crm::ZendeskSell => zendesk_sell::check(token).await,
-            Crm::Lacrm => lacrm::check(token).await,
-            Crm::Salesflare => salesflare::check(token).await,
-            Crm::Affinity => affinity::check(token).await,
-            Crm::Freshsales => freshsales::check(token).await,
-            Crm::Copper => copper::check(token).await,
-            Crm::Insightly => insightly::check(token).await,
-            Crm::Twenty => twenty::check(token, false).await,
-            Crm::TwentySelf => twenty::check(token, true).await,
-            Crm::Espo => espocrm::check(token).await,
-            Crm::Odoo => odoo::check(token).await,
-            Crm::Notion => notion::check(token).await,
-            Crm::Airtable => airtable::check(token).await,
-        }
-    }
-
-    async fn push(self, token: &str, email: &str, lead: &Lead, note: &str) -> anyhow::Result<()> {
-        match self {
-            Crm::HubSpot => hubspot::push(token, email, lead, note).await,
-            Crm::Pipedrive => pipedrive::push(token, email, lead, note).await,
-            Crm::Attio => attio::push(token, email, lead, note).await,
-            Crm::Close => close::push(token, email, lead, note).await,
-            Crm::Folk => folk::push(token, email, lead, note).await,
-            Crm::Capsule => capsule::push(token, email, lead, note).await,
-            Crm::Brevo => brevo::push(token, email, lead, note).await,
-            Crm::ZendeskSell => zendesk_sell::push(token, email, lead, note).await,
-            Crm::Lacrm => lacrm::push(token, email, lead, note).await,
-            Crm::Salesflare => salesflare::push(token, email, lead, note).await,
-            Crm::Affinity => affinity::push(token, email, lead, note).await,
-            Crm::Freshsales => freshsales::push(token, email, lead, note).await,
-            Crm::Copper => copper::push(token, email, lead, note).await,
-            Crm::Insightly => insightly::push(token, email, lead, note).await,
-            Crm::Twenty => twenty::push(token, false, email, lead, note).await,
-            Crm::TwentySelf => twenty::push(token, true, email, lead, note).await,
-            Crm::Espo => espocrm::push(token, email, lead, note).await,
-            Crm::Odoo => odoo::push(token, email, lead, note).await,
-            Crm::Notion => notion::push(token, email, lead, note).await,
-            Crm::Airtable => airtable::push(token, email, lead, note).await,
-        }
-    }
 }
 
 /// Adds or updates the lead in every connected CRM and puts `note` on it. Failures are logged and shown on the
@@ -211,7 +152,7 @@ pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     let sql = format!("select array[{}] from project_settings where project_id = $1", columns.join(", "));
     let tokens: Option<Vec<String>> = sqlx::query_scalar(&sql).bind(project_id).fetch_optional(&state.db).await.ok().flatten();
     let Some(tokens) = tokens else { return };
-    for (crm, enc) in Crm::ALL.into_iter().zip(tokens) {
+    for (crm, enc) in Crm::ALL.iter().copied().zip(tokens) {
         if enc.is_empty() {
             continue;
         }
