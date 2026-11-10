@@ -132,6 +132,7 @@ const FORM_APPS = [
   ["Jotform", "Settings → Integrations → WebHooks."],
   ["Paperform", "After Submission → Integrations & Webhooks → Add Webhook, on New Submission."],
   ["Formbricks", "Configuration → Integrations → Manage Webhooks, on Response Finished."],
+  ["Netlify", "Forms → Submission notifications → Add notification → HTTP POST request."],
   ["Webflow", "Site settings → Integrations → Webhooks, with Form submission."],
 ] as const;
 
