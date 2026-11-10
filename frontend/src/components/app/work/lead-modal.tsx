@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
+import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -189,6 +189,22 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
             </ul>
           )}
           {lead.company?.fit_reason && <p className="mt-2 text-sm text-muted-foreground">Why this company: {lead.company.fit_reason}</p>}
+        </div>
+      )}
+
+      {lead.hiring.length > 0 && (
+        <div>
+          <MicroLabel className="mb-2">Hiring</MicroLabel>
+          <ul className="flex flex-col gap-1.5 text-sm">
+            {lead.hiring.map((post) => (
+              <li key={post.url} className="flex min-w-0 items-center gap-2">
+                <Briefcase className="size-3.5 shrink-0 text-sky-700" />
+                <a href={post.url} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 hover:underline">
+                  <span className="truncate">{post.title}</span> <ExternalLink className="size-3 shrink-0" />
+                </a>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

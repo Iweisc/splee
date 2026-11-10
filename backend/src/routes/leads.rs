@@ -15,6 +15,7 @@ use super::util_scope;
 use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
+use crate::hiring;
 use crate::models::{Company, EmailMessage, Lead};
 use crate::state::AppState;
 
@@ -38,10 +39,19 @@ pub struct ListQuery {
     pub q: Option<String>,
 }
 
-const COMPANY_FILTER: &str = "from companies where project_id = $1
+const COMPANY_FILTER: &str = "from companies c where project_id = $1
        and ($2::uuid is null or segment_id = $2)
        and ($3::text is null or status = $3)
        and ($4::text is null or name ilike $4 or domain::text ilike $4)";
+
+#[derive(Serialize, FromRow)]
+pub struct CompanyRow {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub company: Company,
+    /// The watched roles that open posts at the company match, newest first, each once.
+    pub hiring: Vec<String>,
+}
 
 async fn list_companies(
     State(state): State<AppState>,
@@ -49,7 +59,7 @@ async fn list_companies(
     Path(id): Path<Uuid>,
     Query(q): Query<ListQuery>,
     Query(page): Query<PageQuery>,
-) -> AppResult<Json<Paginated<Company>>> {
+) -> AppResult<Json<Paginated<CompanyRow>>> {
     auth.project(&state.db, id).await?;
     let like = util_input::like_pattern(q.q.as_deref());
     let status = q.status.filter(|s| !s.is_empty());
@@ -60,8 +70,10 @@ async fn list_companies(
         .bind(&like)
         .fetch_one(&state.db)
         .await?;
-    let items = sqlx::query_as::<_, Company>(&format!(
-        "select * {COMPANY_FILTER} order by fit_score desc, created_at desc limit $5 offset $6"
+    let items = sqlx::query_as::<_, CompanyRow>(&format!(
+        "select c.*, array(select j.role from job_openings j where j.project_id = c.project_id and j.domain = c.domain and j.closed_at is null
+                           group by j.role order by max(j.first_seen) desc, j.role) as hiring
+         {COMPANY_FILTER} order by fit_score desc, created_at desc limit $5 offset $6"
     ))
     .bind(id)
     .bind(q.segment_id)
@@ -102,12 +114,16 @@ pub struct LeadRow {
     pub lead: Lead,
     pub segment_name: Option<String>,
     pub last_email_status: Option<String>,
+    /// The watched roles that open posts at the lead's company match, newest first, each once.
+    pub hiring: Vec<String>,
 }
 
 /// Select list for LeadRow. Callers append `where` on `l` (leads) and `s` (segments).
 pub const LEAD_ROW_SELECT: &str = "select l.*, s.name as segment_name,
        (select e.status from email_messages e where e.lead_id = l.id and e.direction = 'outbound'
-         order by e.created_at desc limit 1) as last_email_status
+         order by e.created_at desc limit 1) as last_email_status,
+       array(select j.role from job_openings j where j.project_id = l.project_id and j.domain = l.company_domain and j.closed_at is null
+             group by j.role order by max(j.first_seen) desc, j.role) as hiring
      from leads l left join segments s on s.id = l.segment_id";
 
 pub async fn lead_rows(db: &PgPool, ids: &[Uuid]) -> AppResult<Vec<LeadRow>> {
@@ -207,6 +223,8 @@ pub struct LeadDetail {
     pub segment_name: Option<String>,
     pub company: Option<Company>,
     pub emails: Vec<EmailMessage>,
+    /// Open roles at the lead's company that match the project's hiring signals.
+    pub hiring: Vec<hiring::Post>,
 }
 
 /// Lead with its company and every email in both directions, oldest first. The caller checks org access.
@@ -223,7 +241,11 @@ pub async fn detail(db: &PgPool, lead: Lead) -> AppResult<LeadDetail> {
         .bind(lead.id)
         .fetch_all(db)
         .await?;
-    Ok(LeadDetail { lead, segment_name, company, emails })
+    let hiring = match &lead.company_domain {
+        Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
+        None => vec![],
+    };
+    Ok(LeadDetail { lead, segment_name, company, emails, hiring })
 }
 
 async fn get_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {

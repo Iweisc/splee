@@ -11,6 +11,7 @@ import { api, qs } from "@/lib/api";
 import type { LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
+import { HiringBadge } from "./hiring";
 import { LeadModal } from "./lead-modal";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
@@ -183,8 +184,13 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                       {/* Its click bubbles to the row, which opens the lead. */}
                       <button className="block text-left font-medium">{l.full_name || "—"}</button>
                       <p className="truncate text-xs text-muted-foreground">{l.title}</p>
+                      {/* The company column, where the badge sits from sm up, is hidden on phones. */}
+                      <HiringBadge roles={l.hiring} className="mt-1 sm:hidden" />
                     </Td>
-                    <Td className={cn(COMPANY, FILL, "w-[25%] truncate")}>{l.company_name}</Td>
+                    <Td className={cn(COMPANY, FILL, "w-[25%]")}>
+                      <p className="truncate">{l.company_name}</p>
+                      <HiringBadge roles={l.hiring} className="mt-1" />
+                    </Td>
                     <Td className={cn(WIDE, FILL, "w-[25%] truncate text-muted-foreground")}>{l.email ?? "—"}</Td>
                     {!segmentId && <Td className={cn(WIDE, FILL, "w-[20%] truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
                     <Td>

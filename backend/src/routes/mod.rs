@@ -11,6 +11,7 @@ mod bookings;
 mod directory;
 mod endpoints;
 mod forms;
+mod hiring;
 pub mod linkedin;
 mod calendar;
 mod saved_replies;
@@ -60,6 +61,7 @@ pub fn router() -> Router<AppState> {
         .merge(competitors::router())
         .merge(segments::router())
         .merge(leads::router())
+        .merge(hiring::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

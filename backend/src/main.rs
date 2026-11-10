@@ -14,7 +14,9 @@ mod directory_queue;
 mod error;
 mod events;
 mod grist;
+mod hiring;
 mod hooks;
+mod jobs;
 mod mail;
 mod mastodon;
 mod models;
@@ -92,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     agent::spawn_workers(state.clone());
     mail::spawn_workers(state.clone());
     directory_queue::spawn_worker(state.db.clone());
+    hiring::spawn_worker(state.db.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

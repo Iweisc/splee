@@ -116,6 +116,8 @@ export interface Targeting {
   exclude_countries?: string[];
   keywords?: string[];
   exclude_keywords?: string[];
+  /** Project targeting only: job titles that make a hiring signal. Unset means the campaigns' roles, empty turns it off. */
+  hiring_roles?: string[];
 }
 
 /** Every CRM, in the order the integrations page lists them. Keep in sync with Crm::ALL in backend/src/crm/mod.rs. */
@@ -501,12 +503,45 @@ export interface Lead {
 export interface LeadRow extends Lead {
   segment_name: string | null;
   last_email_status: string | null;
+  /** The watched roles that open posts at their company match, newest first. */
+  hiring: string[];
 }
 
 export interface LeadDetail extends Lead {
   segment_name: string | null;
   company: Company | null;
   emails: EmailMessage[];
+  hiring: JobPost[];
+}
+
+export interface CompanyRow extends Company {
+  hiring: string[];
+}
+
+export interface JobPost {
+  domain: string;
+  title: string;
+  url: string;
+  excerpt: string;
+}
+
+/** An open role at one of the project's companies that matches its hiring signals. `company_id` is null for a domain that only
+ * leads have, and `leads` counts the project's leads there. */
+export interface HiringSignal {
+  id: UUID;
+  domain: string;
+  company_id: UUID | null;
+  company_name: string;
+  segment_id: UUID | null;
+  leads: number;
+  title: string;
+  /** The watched role the title matched. */
+  role: string;
+  location: string;
+  department: string;
+  url: string;
+  posted_at: Ts | null;
+  first_seen: Ts;
 }
 
 export type EmailStatus =

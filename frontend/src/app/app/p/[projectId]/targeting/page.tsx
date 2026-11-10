@@ -64,11 +64,30 @@ export default function TargetingPage() {
               <ChipInput value={s.targeting.exclude_keywords ?? []} onChange={(v) => set("exclude_keywords", v)} placeholder="e.g. agency, government, nonprofit" label="Excluded keywords" />
             </Section>
 
+            <HiringRoles roles={s.targeting.hiring_roles} onChange={(v) => set("hiring_roles", v)} />
+
             <ResearchProfile />
           </>
         );
       }}
     </ProjectSettingsPage>
+  );
+}
+
+/** Until the project picks its own roles, the box shows its campaigns' roles, which the hiring worker uses then too. */
+function HiringRoles({ roles, onChange }: { roles: string[] | undefined; onChange: (v: string[]) => void }) {
+  const { projectId } = useParams<{ projectId: string }>();
+  const { data } = useSWR<{ default_roles: string[] }>(`/projects/${projectId}/hiring/roles`, fetcher);
+  return (
+    <Section
+      title="Hiring signals"
+      description="Every day Splee reads your companies' public job boards. A company hiring for one of these roles gets a Hiring badge, and the agent can open its email with the job post. Leave it empty to stop checking."
+    >
+      <ChipInput value={roles ?? data?.default_roles ?? []} onChange={onChange} placeholder="e.g. SDR, sales development, account executive" label="Roles to watch" />
+      {roles === undefined && !!data?.default_roles.length && (
+        <p className="mt-2 text-xs text-muted-foreground">Suggested from the roles your campaigns target.</p>
+      )}
+    </Section>
   );
 }
 

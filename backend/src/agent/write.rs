@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::explore::{self, Profile, load_project};
 use super::sdk::Call;
 use super::{Ctx, Outcome};
+use crate::hiring;
 use crate::models::{EmailMessage, Lead, Project, Segment};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
@@ -102,9 +103,23 @@ async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
         .join("\n"))
 }
 
-fn lead_brief(lead: &Lead) -> Value {
+/// Open roles at each lead's company that match the project's hiring signals, by lowercase domain. Two at most, newest first.
+async fn job_posts(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<HashMap<String, Vec<Value>>> {
+    let Some(project_id) = leads.first().map(|l| l.project_id) else { return Ok(HashMap::new()) };
+    let domains: Vec<String> = leads.iter().filter_map(|l| l.company_domain.clone()).collect();
+    let mut by_domain: HashMap<String, Vec<Value>> = HashMap::new();
+    for post in hiring::open_at(ctx.db(), project_id, &domains).await? {
+        let posts = by_domain.entry(post.domain.to_lowercase()).or_default();
+        if posts.len() < 2 {
+            posts.push(json!({"role": post.title, "url": post.url, "excerpt": post.excerpt}));
+        }
+    }
+    Ok(by_domain)
+}
+
+fn lead_brief(lead: &Lead, posts: &HashMap<String, Vec<Value>>) -> Value {
     let location = [lead.city.as_str(), lead.country_code.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
-    json!({
+    let mut brief = json!({
         "lead_id": lead.id,
         "name": lead.full_name,
         "first_name": lead.first_name,
@@ -114,7 +129,11 @@ fn lead_brief(lead: &Lead) -> Value {
         "location": location,
         "hook": lead.personalization["hook"],
         "facts": lead.personalization["facts"],
-    })
+    });
+    if let Some(posts) = lead.company_domain.as_ref().and_then(|d| posts.get(&d.to_lowercase())) {
+        brief["hiring"] = json!(posts);
+    }
+    brief
 }
 
 fn has_placeholder(text: &str) -> bool {
@@ -157,7 +176,8 @@ async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: boo
         if missing.is_empty() {
             break;
         }
-        let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l)).collect::<Vec<_>>())?;
+        let posts = job_posts(ctx, &missing).await?;
+        let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l, &posts)).collect::<Vec<_>>())?;
         let retry = if attempt > 0 { "\nWrite every email in full, with real names, and no placeholders." } else { "" };
         let drafts: Drafts =
             ctx.ask(&Call::writing(WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject))).await?;
@@ -293,6 +313,8 @@ fn initial_prompt(project: &Project, profile: &Profile, segment: Option<&Segment
          - Subject: \"{name} x <their company name>\", e.g. \"Larksilk x Tupelo Honey Flower\".\n\
          - Start with a greeting and their first name on its own line, in the language of the email (\"Hi Dana,\", \"Bonjour Robin,\").\n\
          - First sentence: one specific observation about their business from the lead's hook or facts. No flattery, no \"I hope this finds you well\", no \"I came across\".\n\
+         - A lead's \"hiring\" lists roles their company has open right now, from its job board. When one is a role our offer helps \
+         with, it usually makes the best first observation: name the role in plain words and tie it to what we do. Never paste the link.\n\
          - Then one or two sentences that tie that observation to a concrete problem and how we solve it.\n\
          - End with one short question as the call to action: {cta}.{booking}\n\
          - At most {max_words} words. Tone: {tone}. {language}\n\
@@ -565,7 +587,7 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          - message_2: sent a few days later if no answer, at most 350 characters, a different angle and an easy yes/no question.\n\
          Tone: {tone}. {language} Start each with their first name.",
         sender = settings.sender(&profile),
-        lead = serde_json::to_string_pretty(&lead_brief(&lead))?,
+        lead = serde_json::to_string_pretty(&lead_brief(&lead, &job_posts(ctx, &[&lead]).await?))?,
         brief = profile.brief(project.domain.as_deref()),
         campaign = segment.map(|s| format!("Campaign angle: {}", s.angle)).unwrap_or_default(),
         tone = settings.tone,
