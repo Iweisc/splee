@@ -33,7 +33,14 @@ pub async fn assign(db: &PgPool, leads: &mut [Lead]) -> sqlx::Result<()> {
         .await?;
         let known: HashSet<Uuid> = rows.iter().map(|r| r.0).collect();
         let mut active: Vec<(Uuid, i64)> = rows.iter().filter(|r| r.1).map(|r| (r.0, r.2)).collect();
+        // Read again under the lock: another run may have given these leads a variant since they were loaded.
+        let ids: Vec<Uuid> = leads.iter().filter(|l| l.segment_id == Some(segment_id)).map(|l| l.id).collect();
+        let current: HashMap<Uuid, Option<Uuid>> =
+            sqlx::query_as("select id, variant_id from leads where id = any($1)").bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect();
         for lead in leads.iter_mut().filter(|l| l.segment_id == Some(segment_id)) {
+            if let Some(variant) = current.get(&lead.id) {
+                lead.variant_id = *variant;
+            }
             if lead.variant_id.is_some_and(|id| known.contains(&id)) {
                 continue;
             }
@@ -137,7 +144,8 @@ pub fn compare(variants: &[&VariantStats]) -> Option<Comparison> {
     let rate = |v: &VariantStats| v.hits(metric) as f64 / v.sent as f64;
     // max_by keeps the last of equals, so walk backwards to keep the first in order on a tie.
     let (leader, best) = tested.iter().enumerate().rev().max_by(|a, b| rate(a.1).total_cmp(&rate(b.1)))?;
-    let verdict = if tested.iter().any(|v| v.sent < MIN_SENDS) {
+    // Every variant counts here, so one with no sends yet keeps the others from being called.
+    let verdict = if variants.iter().any(|v| v.sent < MIN_SENDS) {
         Verdict::TooFew
     } else if tested.iter().enumerate().all(|(i, v)| i == leader || beats(best.hits(metric), best.sent, v.hits(metric), v.sent)) {
         Verdict::Winner
@@ -265,6 +273,20 @@ pub async fn auto_pick(db: &PgPool) -> anyhow::Result<()> {
         let Some((winner, note)) = pick(test, after) else { continue };
         tracing::info!(segment_id = %segment.id, %winner, "auto-pick kept a variant");
         let mut tx = db.begin().await?;
+        // Checked again under the row lock the variant routes also take, since the test may have been reset or the winner
+        // removed since it was loaded.
+        let still: Option<Uuid> = sqlx::query_scalar(
+            "select id from segments s where id = $1 and variant_pick_after is not null and variant_picked_at is null
+               and exists (select 1 from segment_variants v where v.id = $2 and v.segment_id = s.id and v.paused_at is null)
+             for update",
+        )
+        .bind(segment.id)
+        .bind(winner)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if still.is_none() {
+            continue;
+        }
         sqlx::query("update segment_variants set paused_at = now() where segment_id = $1 and id <> $2 and paused_at is null")
             .bind(segment.id)
             .bind(winner)
@@ -349,9 +371,9 @@ pub(crate) mod tests {
         let (a, b, c) = (stats(100, 15, 15), stats(100, 10, 10), stats(100, 2, 2));
         assert_eq!(compare(&[&a, &b, &c]), Some(super::Comparison { metric: Metric::Hot, leader: 0, verdict: Verdict::Unclear }));
 
-        // A variant nobody has been sent yet isn't compared.
+        // A variant nobody has been sent yet keeps the others from being called.
         let (a, b, c) = (stats(100, 15, 15), stats(100, 2, 2), stats(0, 0, 0));
-        assert_eq!(compare(&[&a, &b, &c]).unwrap().verdict, Verdict::Winner);
+        assert_eq!(compare(&[&a, &b, &c]).unwrap().verdict, Verdict::TooFew);
         assert_eq!(compare(&[&a, &c]), None);
     }
 
@@ -446,6 +468,12 @@ pub(crate) mod tests {
         let mut more = add_leads(&db, &c, 2).await;
         assign(&db, &mut more).await.unwrap();
         assert_eq!(more.iter().map(|l| l.variant_id.unwrap()).collect::<Vec<_>>(), vec![c.variants[1], c.variants[2]]);
+
+        // A lead another run gave a variant since this one loaded it keeps that variant.
+        let mut stale = add_leads(&db, &c, 1).await;
+        sqlx::query("update leads set variant_id = $2 where id = $1").bind(stale[0].id).bind(c.variants[2]).execute(&db).await.unwrap();
+        assign(&db, &mut stale).await.unwrap();
+        assert_eq!(stale[0].variant_id, Some(c.variants[2]));
 
         // A paused variant gets no new leads.
         sqlx::query("update segment_variants set paused_at = now() where id = $1").bind(c.variants[0]).execute(&db).await.unwrap();

@@ -80,6 +80,8 @@ async fn save(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, J
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     body.validate()?;
     let mut tx = state.db.begin().await?;
+    // Auto-pick and assignment lock the campaign row too, so none of them act on a test the others are changing.
+    sqlx::query("select 1 from segments where id = $1 for update").bind(segment.id).execute(&mut *tx).await?;
     let existing: HashSet<Uuid> =
         sqlx::query_scalar("select id from segment_variants where segment_id = $1").bind(segment.id).fetch_all(&mut *tx).await?.into_iter().collect();
     if body.variants.iter().any(|v| v.id.is_some_and(|id| !existing.contains(&id))) {
@@ -115,6 +117,7 @@ async fn save(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, J
 async fn resume(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<AbTest>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     let mut tx = state.db.begin().await?;
+    sqlx::query("select 1 from segments where id = $1 for update").bind(segment.id).execute(&mut *tx).await?;
     clear_pick(&mut tx, segment.id).await?;
     sqlx::query("update segments set variant_pick_after = null where id = $1").bind(segment.id).execute(&mut *tx).await?;
     tx.commit().await?;
