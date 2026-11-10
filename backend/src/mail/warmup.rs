@@ -61,11 +61,13 @@ fn has_room(campaign_today: i64, warmup_today: i64, target: i32, total_limit: i3
     warmup_today < i64::from(target) && campaign_today + warmup_today < i64::from(total_limit)
 }
 
-/// Seconds until the next warmup email: the rest of the window split over one more than the emails left, times 0.5 to 1.5
-/// (`jitter` is 0 to 100), so they don't go out like clockwork. The extra slot keeps even the longest gap under three
-/// quarters of what's left, so every email of the day still fits in the window.
+/// Seconds until the next warmup email: what's left of the window, less a minute held back per email for the once-a-minute
+/// tick, split over one more than the emails left, times 0.5 to 1.5 (`jitter` is 0 to 100) so they don't go out like
+/// clockwork. Held-back minutes and the extra slot keep every email of the day inside the window even at the longest gaps.
 fn gap_secs(window_left_secs: i64, emails_left: i64, jitter: usize) -> i64 {
-    (window_left_secs / (emails_left.max(1) + 1) * (50 + jitter as i64) / 100).max(60)
+    let emails = emails_left.max(1);
+    let spare = (window_left_secs - 60 * (emails + 1)).max(0);
+    (spare / (emails + 1) * (50 + jitter as i64) / 100).max(60)
 }
 
 /// A random number below `n`. Warmup only needs variety, and a v4 UUID's random bits give it without another crate.
@@ -668,13 +670,20 @@ mod tests {
     #[test]
     fn spreads_the_day_with_jitter() {
         // 8 hours left for 4 emails is 2 hours apart, give or take half.
-        assert_eq!(gap_secs(10 * 3600, 4, 50), 2 * 3600);
-        assert_eq!(gap_secs(10 * 3600, 4, 0), 3600);
-        assert_eq!(gap_secs(10 * 3600, 4, 100), 3 * 3600);
-        // Day 1's two emails both fit even when every gap comes out as long as it can.
-        let window = 8 * 3600;
-        let first = gap_secs(window, 2, 100);
-        assert!(first + gap_secs(window - first, 1, 100) < window);
+        assert_eq!(gap_secs(10 * 3600 + 300, 4, 50), 2 * 3600);
+        assert_eq!(gap_secs(10 * 3600 + 300, 4, 0), 3600);
+        assert_eq!(gap_secs(10 * 3600 + 300, 4, 100), 3 * 3600);
+        // Every email of the day fits in an 8-hour window even when every gap is as long as it can be and each send waits
+        // for the next minute's tick: from day 1's 2 up to the 40 a day cap.
+        for target in [2, 12, 40] {
+            let window = 8 * 3600;
+            let mut at = 0;
+            for left in (1..=target).rev() {
+                at += gap_secs(window - at, left, 100);
+                at = (at + 59) / 60 * 60;
+                assert!(at < window, "email {} of {target} at {at}s", target - left + 1);
+            }
+        }
         assert_eq!(gap_secs(30, 0, 50), 60, "never faster than a minute");
     }
 
