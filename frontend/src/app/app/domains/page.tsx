@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Pause, Pencil, Play, Plug, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { DnsBadge } from "@/components/app/settings/dns-badge";
 import { LoadError, SectionsSkeleton } from "@/components/app/settings/layout";
 import { MailboxForm } from "@/components/app/settings/mailbox-form";
 import { useAction } from "@/components/app/settings/use-action";
@@ -13,7 +15,7 @@ import { Address, Badge, Card, EmptyState, Message, Modal, type BadgeTone } from
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { Switch } from "@/components/ui/form";
-import type { DnsCheck, Mailbox, MailboxInput, MailboxStats, WarmupHealth } from "@/lib/types";
+import type { Mailbox, MailboxInput, MailboxStats, WarmupHealth } from "@/lib/types";
 import { bouncing, heldForWarmup, landingInSpam, todayLimit, warmupStatus, wholePercent } from "@/lib/mailbox";
 import { dateTime, isPast, num, timeAgo } from "@/lib/utils";
 
@@ -123,7 +125,16 @@ export default function MailboxesPage() {
     <>
       <PageHeader
         title="Mailboxes"
-        description="Splee sends from your own mailboxes. Use a secondary domain (like try-yourbrand.com) so cold outreach can't hurt your main domain's reputation."
+        description={
+          <>
+            Splee sends from your own mailboxes. Use a secondary domain (like try-yourbrand.com) so cold outreach can&apos;t hurt your main domain&apos;s
+            reputation. Splee can{" "}
+            <Link href="/app/sending-domains" className="font-medium text-foreground underline-offset-4 hover:underline">
+              buy and set one up
+            </Link>{" "}
+            for you.
+          </>
+        }
         actions={data && data.length > 0 && connect}
       />
       <PageBody className="mx-auto max-w-5xl">
@@ -343,14 +354,5 @@ function Warmup({
         </div>
       )}
     </>
-  );
-}
-
-function DnsBadge({ name, check }: { name: string; check?: DnsCheck }) {
-  const tone: BadgeTone = !check ? "neutral" : check.ok ? "green" : "amber";
-  return (
-    <Badge tone={tone} title={check?.detail || check?.record || undefined} className="font-mono">
-      {name} {!check ? "·" : check.ok ? "✓" : "✗"}
-    </Badge>
   );
 }

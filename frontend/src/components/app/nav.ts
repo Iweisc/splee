@@ -7,6 +7,7 @@ import {
   CalendarClock,
   CircleUser,
   FileText,
+  Globe,
   Gauge,
   Inbox,
   KeyRound,
@@ -72,6 +73,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
 ];
 
 export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
+  { label: "Domains", href: "/app/sending-domains", icon: Globe },
   { label: "Mailboxes", href: "/app/domains", icon: Server }, // D2
   { label: "Do-not-contact", href: "/app/dedup", icon: ShieldBan }, // D2
   { label: "Team", href: "/app/organization", icon: Users }, // D2

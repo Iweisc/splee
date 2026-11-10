@@ -220,6 +220,34 @@ All paths below are under `/api`.
 | POST | /suppressions | `{values: string}` newline/comma separated emails or domains | `{added}` |
 | DELETE | /suppressions/:id | | `{ok}` |
 
+### Sending domains
+
+Lookalike domains to send from, bought through the org's Porkbun account (API v3, `routes/sending_domains.rs`, `domains.rs`, `porkbun.rs`). Keys go in `X-API-Key` and `X-Secret-API-Key`. Buying spends the account's prepaid credit.
+
+| method | path | body | response |
+|---|---|---|---|
+| GET/PUT/DELETE | /registrar | `{api_key, secret}` | `RegistrarAccount` `{provider: "porkbun", account, created_at}` or `null` / `{ok}`. PUT and DELETE are admin-only. PUT checks the pair with `POST /ping` (`credentialsValid`, `account` is the Porkbun username) and saves both encrypted as `api_key_enc` and `secret_enc`, which the API never returns. 400 with Porkbun's reason. |
+| GET | /sending-domains/suggestions?domain= | | `DomainAvailability[]` `{domain, available, price_micros, renewal_micros, premium}`. About 20 lookalikes of the domain's brand (the label before its suffix, `co.uk` and similar counted as one), made locally: `get`, `try`, `use`, `join`, `meet`, `hello`, `go` and `with` before it and `hq`, `app`, `team`, `mail`, `labs`, `-mail`, `-team` and `-hq` after it on .com, plus a few on .co and .io, never the domain itself. Checked in one `POST /domain/checkDomain` with `domains`. `price_micros` is the first registration for the registry's minimum term, `available` is null for a name the registry didn't answer for, and premium names can't be bought by API. Buyable ones first. 400 without a connected registrar. |
+| GET | /sending-domains | | `SendingDomain[]`, oldest first, with `mailboxes` (the org's mailboxes on the domain) and `warming` (those with warmup on). |
+| POST | /sending-domains | `{domains: [{domain, price_micros}], provider, forward_to?, dmarc_email?}` | `{domains: SendingDomain[], skipped: string[]}` (admin). 1 to 10 domains at the price the search showed, whole cents up to $100. `provider` is `google`, `microsoft`, `zoho`, `zoho_eu`, `migadu` or `other`. Each domain gets a `queued` row first, unique per org, and one the org already has that isn't `failed` is skipped. A `failed` one is queued again with a new `attempt_key`. A background task then buys them one at a time, a second apart: the row moves to `registering`, then `POST /domain/create/{domain}` with `cost` in cents (Porkbun refuses with `COST_MISMATCH` when the price changed, so nobody pays more than they confirmed), `agreeToTerms: "yes"` and `attempt_key` as `Idempotency-Key`. A `SUCCESS` makes it `registered`, with `order_id` and `expires_on` from `GET /domain/get/{domain}`, and sets its DNS. An `ERROR` that Porkbun answers itself, or a connection that never opened, makes it `failed` with the reason in plain words (insufficient funds with the shortfall, a price change, the monthly spend limit, a name taken since, rate limits, a refused key). Anything else, like a timeout or a 5xx, makes it `uncertain`, which is never retried on its own. On start, `queued` rows become `failed` and `registering` rows `uncertain`. |
+| POST | /sending-domains/:id/confirm | | `SendingDomain`. For an `uncertain` one only: `GET /domain/get/{domain}`. In the account, it becomes `registered` and gets its DNS. Otherwise its `error` says Porkbun doesn't list it yet. Never buys. |
+| POST | /sending-domains/:id/dns | | `SendingDomain`. Sets the records again for a `registered` one. |
+| POST | /sending-domains/:id/records | `{type: "TXT"\|"CNAME", name, content}` | `SendingDomain`, or 400 with Porkbun's reason, the record kept with its `error`. A record pasted from the mail provider, like its DKIM key or domain verification. `name` may end in the domain. Quoted TXT parts are joined. |
+| POST | /sending-domains/:id/check-dns | | `SendingDomain` with `dns` as the mailbox DNS check gives it, trying the selector of a pasted `{selector}._domainkey` record first, else the provider's (`google`, `selector1`, `key1`). |
+| DELETE | /sending-domains/:id | | `{ok}` (admin). Splee forgets it, Porkbun keeps it. 409 while it's `queued` or `registering`. |
+
+Setting DNS sends each record with `POST /dns/create/{domain}` (TTL 600) and the forward with `POST /domain/addUrlForward/{domain}` (`permanent`, no path, no wildcard). A record Porkbun already has (`DUPLICATE_RECORD`) counts as set, so setting it again only fills gaps. `records` holds `{type, name, content, prio?, ok, error?, added?}` for each, `name` relative to the domain and `added` for pasted ones, which setting DNS again keeps. `dns_status` is `set` when all went in, else `error`, and an `API_ACCESS_DISABLED` says to turn on API access for the domain. What Splee sets:
+
+| provider | MX | SPF include | also |
+|---|---|---|---|
+| google | 1 `smtp.google.com` | `_spf.google.com` | |
+| microsoft | 0 `{domain with dashes}.mail.protection.outlook.com` | `spf.protection.outlook.com` | |
+| zoho / zoho_eu | 10 `mx.zoho.com`, 20 `mx2`, 50 `mx3` (`.eu`) | `zohomail.com` / `zohomail.eu` | |
+| migadu | 10 `aspmx1.migadu.com`, 20 `aspmx2` | `spf.migadu.com` | CNAMEs `key1` to `key3._domainkey` → `key{n}.{domain}._domainkey.migadu.com` |
+| other | | | |
+
+Every domain also gets `v=spf1 include:{include} ~all` when there's an include, `_dmarc` `v=DMARC1; p=none` with `; rua=mailto:{dmarc_email}` when given, and the forward to `forward_to` when given.
+
 ### Company database
 
 `directory_companies` holds one row per company website from [Overture Maps](https://docs.overturemaps.org/guides/places/)' places, loaded by `splee import-companies [COUNTRY…]`. It's shared by every organization. The importer reads the newest release's GeoParquet files over HTTPS with range requests, skips row groups whose address countries can't match, and keeps open places that have a website. Pages on platforms like Facebook, Instagram or a booking site aren't the business's own domain, so those are skipped. One place per domain is kept, the one Overture is most confident about. Rows of the imported countries that the new release doesn't list are deleted afterwards.

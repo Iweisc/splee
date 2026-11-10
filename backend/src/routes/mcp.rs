@@ -394,6 +394,7 @@ mod tests {
                 bird_bin: None,
                 open_signup: true,
                 public_agent: false,
+                porkbun_api_url: String::new(),
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -7,6 +7,7 @@ mod bluesky;
 mod config;
 mod crm;
 mod crypto;
+mod domains;
 mod directory;
 mod error;
 mod events;
@@ -17,6 +18,7 @@ mod mastodon;
 mod models;
 mod nocodb;
 mod notion;
+mod porkbun;
 mod reddit;
 mod routes;
 mod social;
@@ -79,6 +81,9 @@ async fn main() -> anyhow::Result<()> {
         events,
     };
 
+    if let Err(e) = domains::recover(&state.db).await {
+        tracing::error!(error = ?e, "could not settle domain purchases a restart interrupted");
+    }
     agent::spawn_workers(state.clone());
     mail::spawn_workers(state.clone());
 

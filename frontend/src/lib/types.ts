@@ -542,6 +542,62 @@ export interface DnsCheck {
   detail?: string;
 }
 
+/** The org's registrar account. Porkbun is the only one. */
+export interface RegistrarAccount {
+  provider: "porkbun";
+  /** The Porkbun username the API key belongs to. */
+  account: string;
+  created_at: Ts;
+}
+
+export interface DomainAvailability {
+  domain: string;
+  /** null when the registry didn't answer in time. */
+  available: boolean | null;
+  /** What buying it charges, for the registry's minimum term. */
+  price_micros: number;
+  renewal_micros: number;
+  premium: boolean;
+}
+
+export type MailProvider = "google" | "microsoft" | "zoho" | "zoho_eu" | "migadu" | "other";
+
+/** A record Splee set or tried to. `name` is relative to the domain, "" for the root. Type "URL" is the root's forward. */
+export interface DomainRecord {
+  type: "MX" | "TXT" | "CNAME" | "URL";
+  name: string;
+  content: string;
+  prio?: number;
+  ok: boolean;
+  error?: string;
+  /** Pasted from the mail provider. */
+  added?: boolean;
+}
+
+export interface SendingDomain {
+  id: UUID;
+  org_id: UUID;
+  domain: string;
+  /** uncertain: no clear answer from Porkbun, so it may have been bought. Never retried on its own. */
+  status: "queued" | "registering" | "registered" | "uncertain" | "failed";
+  price_micros: number;
+  order_id: string;
+  error: string;
+  /** "2027-11-10" */
+  expires_on: string | null;
+  registered_at: Ts | null;
+  provider: MailProvider;
+  forward_to: string;
+  dmarc_email: string;
+  dns_status: "" | "setting" | "set" | "error";
+  records: DomainRecord[];
+  dns: Mailbox["dns"];
+  created_at: Ts;
+  /** The org's mailboxes on this domain, and those warming up. */
+  mailboxes: number;
+  warming: number;
+}
+
 export interface Mailbox {
   id: UUID;
   org_id: UUID;

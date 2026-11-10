@@ -14,6 +14,7 @@ mod forms;
 pub mod linkedin;
 mod calendar;
 mod saved_replies;
+mod sending_domains;
 mod social;
 pub mod org;
 pub mod projects;
@@ -65,6 +66,7 @@ pub fn router() -> Router<AppState> {
         .merge(linkedin::router())
         .merge(social::router())
         .merge(mailboxes::router())
+        .merge(sending_domains::router())
         .merge(settings::router())
         .merge(materials::router())
         .merge(imports::router())
