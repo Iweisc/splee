@@ -492,6 +492,13 @@ async fn exchange_code(state: &AppState, client: &Client, p: &TokenParams) -> Ap
         .fetch_optional(&mut *tx)
         .await?;
     let Some(code) = code.filter(|c| c.client_id == client.id) else { return Ok(Err(("invalid_grant", "The code is wrong or expired"))) };
+    if p.redirect_uri.as_deref().is_some_and(|uri| uri != code.redirect_uri) {
+        return Ok(Err(("invalid_grant", "redirect_uri isn't the one the code was issued for")));
+    }
+    if !pkce_matches(p.code_verifier.as_deref().unwrap_or_default(), &code.code_challenge) {
+        return Ok(Err(("invalid_grant", "code_verifier doesn't match the code_challenge")));
+    }
+    // Checked after PKCE, so only someone holding the verifier can end the grant by replaying the code.
     if let Some(grant) = code.grant_id {
         // A code used twice was likely stolen, so the tokens from its first use stop working too.
         revoke_grant(&mut tx, grant).await?;
@@ -500,12 +507,6 @@ async fn exchange_code(state: &AppState, client: &Client, p: &TokenParams) -> Ap
     }
     if code.expires_at < Utc::now() {
         return Ok(Err(("invalid_grant", "The code is wrong or expired")));
-    }
-    if p.redirect_uri.as_deref().is_some_and(|uri| uri != code.redirect_uri) {
-        return Ok(Err(("invalid_grant", "redirect_uri isn't the one the code was issued for")));
-    }
-    if !pkce_matches(p.code_verifier.as_deref().unwrap_or_default(), &code.code_challenge) {
-        return Ok(Err(("invalid_grant", "code_verifier doesn't match the code_challenge")));
     }
     if p.resource.as_deref().is_some_and(|r| !same_resource(r, &code.resource)) {
         return Ok(Err(("invalid_target", "resource isn't the one the code was issued for")));
@@ -743,6 +744,7 @@ mod tests {
                 database_url: String::new(),
                 app_secret: String::new(),
                 public_url: format!("{PUBLIC}/"),
+                unsubscribe_url: String::new(),
                 bind_addr: String::new(),
                 agent_model: String::new(),
                 agent_concurrency: 0,
@@ -1010,6 +1012,11 @@ mod tests {
         let (status, tokens) = server.exchange(&client_id, &code).await;
         assert_eq!(status, 200, "{tokens}");
         let access = tokens["access_token"].as_str().unwrap();
+        assert!(server.works(access).await);
+
+        // A replay without the verifier is refused and leaves the client's tokens working.
+        assert_eq!(server.token(&wrong_verifier).await.1["error"], "invalid_grant");
+        assert_eq!(server.token(&base).await.1["error"], "invalid_grant");
         assert!(server.works(access).await);
 
         // A code used twice was likely stolen, so what the first use got is revoked.
