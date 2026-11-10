@@ -25,19 +25,29 @@ fn attendees(body: &Value) -> Vec<&Value> {
     list.map(|a| a.iter().filter(|x| x["is_organizer"] != true).map(|x| &x["email"]).collect()).unwrap_or_default()
 }
 
+/// The emails in Appointlet's `entity.attendees`, which can list the host from `entity.host` too.
+fn appointlet_attendees(body: &Value) -> Vec<&Value> {
+    let (list, host) = (body["entity"]["attendees"].as_array(), &body["entity"]["host"]["email"]);
+    list.map(|a| a.iter().map(|x| &x["email"]).filter(|email| *email != host).collect()).unwrap_or_default()
+}
+
 /// The invitee emails in a new or moved booking, or none for other events (cancellations, pings).
 /// Calendly sends `invitee.created` with `payload.email` (a reschedule is a new invitee), Cal.com `BOOKING_CREATED` or
 /// `BOOKING_RESCHEDULED` and SavvyCal `event.created` or `event.rescheduled` with `payload.attendees[].email`, OnceHub
 /// `booking.scheduled` or `booking.rescheduled` with `data.form_submission.email`, Zcal `event.created` or
 /// `event.rescheduled` with `data.attendees[].email` (the same names as SavvyCal's), TidyCal `booking.created`,
-/// `booking.approved` (a booking that needed approval) or `booking.rescheduled` with `data.contact.email`, and anything
-/// else, like a Zapier step, can send `{"email": ...}`.
+/// `booking.approved` (a booking that needed approval) or `booking.rescheduled` with `data.contact.email`, Appointlet
+/// `Meeting.scheduled`, `Meeting.approved` or `Meeting.rescheduled` with `entity.attendees[].email`, and anything else,
+/// like a Zapier step, can send `{"email": ...}`.
 fn booked_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
         (Some("invitee.created"), _, _) => vec![&body["payload"]["email"]],
         (_, Some("BOOKING_CREATED" | "BOOKING_RESCHEDULED"), _) | (_, _, Some("event.created" | "event.rescheduled")) => attendees(body),
         (_, _, Some("booking.scheduled")) => vec![&body["data"]["form_submission"]["email"]],
         (_, _, Some("booking.created" | "booking.approved")) => vec![&body["data"]["contact"]["email"]],
+        (_, _, Some("Activity")) if matches!(body["action"].as_str(), Some("Meeting.scheduled" | "Meeting.approved" | "Meeting.rescheduled")) => {
+            appointlet_attendees(body)
+        }
         // OnceHub and TidyCal both call it this, and each has only its own field.
         (_, _, Some("booking.rescheduled")) => vec![&body["data"]["form_submission"]["email"], &body["data"]["contact"]["email"]],
         (None, None, None) => vec![&body["email"]],
@@ -48,7 +58,8 @@ fn booked_emails(body: &Value) -> Vec<String> {
 
 /// The invitee emails in a cancelled booking. Calendly cancels the old invitee when someone reschedules, with
 /// `payload.rescheduled` set, so that one isn't a cancellation, and neither is OnceHub's `booking.canceled_then_rescheduled`,
-/// whose new booking arrives as `booking.scheduled`. OnceHub's host cancelling to ask for a new time is one.
+/// whose new booking arrives as `booking.scheduled`. OnceHub's host cancelling to ask for a new time is one, and so is
+/// Appointlet's host declining a request.
 fn cancelled_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
         (Some("invitee.canceled"), _, _) if body["payload"]["rescheduled"] != true => vec![&body["payload"]["email"]],
@@ -57,17 +68,21 @@ fn cancelled_emails(body: &Value) -> Vec<String> {
         (_, _, Some("booking.canceled" | "booking.canceled_reschedule_requested")) => vec![&body["data"]["form_submission"]["email"]],
         // TidyCal spells it cancelled, OnceHub canceled.
         (_, _, Some("booking.cancelled")) => vec![&body["data"]["contact"]["email"]],
+        // Appointlet's docs name the event Meeting Cancelled, so this takes either spelling.
+        (_, _, Some("Activity")) if matches!(body["action"].as_str(), Some("Meeting.cancelled" | "Meeting.canceled" | "Meeting.declined")) => {
+            appointlet_attendees(body)
+        }
         _ => vec![],
     };
     found.into_iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect()
 }
 
 /// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`,
-/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, TidyCal's `data.starts_at`, or
-/// a plain `start_time`. None when the tool didn't say.
+/// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, TidyCal's `data.starts_at`,
+/// Appointlet's `entity.start`, or a plain `start_time`. None when the tool didn't say.
 fn meeting_start(body: &Value) -> Option<Ts> {
     let (payload, data) = (&body["payload"], &body["data"]);
-    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &data["starts_at"], &body["start_time"]]
+    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &data["starts_at"], &body["entity"]["start"], &body["start_time"]]
         .into_iter()
         .find_map(|v| DateTime::parse_from_rfc3339(v.as_str()?).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -93,8 +108,10 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
         .fetch_all(&state.db)
         .await?;
     let at = meeting_start(&body);
-    let rescheduled =
-        body["triggerEvent"] == "BOOKING_RESCHEDULED" || body["type"] == "event.rescheduled" || body["type"] == "booking.rescheduled";
+    let rescheduled = body["triggerEvent"] == "BOOKING_RESCHEDULED"
+        || body["type"] == "event.rescheduled"
+        || body["type"] == "booking.rescheduled"
+        || body["action"] == "Meeting.rescheduled";
     for lead in &leads {
         // Set before the move below, so its alerts carry the time. Only the request that changes the time gets the lead
         // back, if the tool retries.
@@ -254,6 +271,30 @@ mod tests {
         }
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-28T16:00:00Z").unwrap().with_timezone(&chrono::Utc);
         assert_eq!(meeting_start(&booking("booking.created")), Some(at));
+    }
+
+    #[test]
+    fn reads_appointlet_bookings() {
+        // Appointlet's documented sample, trimmed: the host is listed among the attendees too.
+        let activity = |action: &str| {
+            let host = json!({"type": "Attendee", "email": "host@us.com", "first_name": "Host"});
+            let attendees = json!([{"type": "Attendee", "email": "Lee@Corvid.com", "status": "confirmed"}, host]);
+            let entity = json!({"type": "Meeting", "start": "2024-06-03T14:00:00Z", "end": "2024-06-03T14:30:00Z", "host": host, "attendees": attendees});
+            json!({"id": 14224744, "type": "Activity", "action": action, "entity": entity})
+        };
+        for action in ["Meeting.scheduled", "Meeting.approved", "Meeting.rescheduled"] {
+            assert_eq!(booked_emails(&activity(action)), ["lee@corvid.com"], "{action}");
+            assert!(cancelled_emails(&activity(action)).is_empty(), "{action}");
+        }
+        for action in ["Meeting.cancelled", "Meeting.declined"] {
+            assert_eq!(cancelled_emails(&activity(action)), ["lee@corvid.com"], "{action}");
+            assert!(booked_emails(&activity(action)).is_empty(), "{action}");
+        }
+        for action in ["Meeting.tagged", "Attendee.reminded"] {
+            assert!(booked_emails(&activity(action)).is_empty() && cancelled_emails(&activity(action)).is_empty(), "{action}");
+        }
+        let at = chrono::DateTime::parse_from_rfc3339("2024-06-03T14:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(meeting_start(&activity("Meeting.scheduled")), Some(at));
     }
 
     #[test]

@@ -958,6 +958,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                 <li>Zcal: Integrations, then Connect next to Webhooks, and paste this URL as the Subscriber URL.</li>
                 <li>TidyCal: Integrations → Automations → Add webhook, with booking created, approved, rescheduled and cancelled.</li>
                 <li>OnceHub: Account Integrations → APIs &amp; Webhooks → Create webhook, with booking scheduled, rescheduled and canceled.</li>
+                <li>Appointlet: Settings → Webhooks → Add Webhook.</li>
                 <li>
                   Calendly: subscribe it to <code>invitee.created</code> and <code>invitee.canceled</code> with Calendly&apos;s webhook API.
                 </li>
