@@ -392,7 +392,7 @@ fn query(url: &str, key: &str) -> Option<String> {
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL on ntfy.sh or an ntfy.* server), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
-/// (an incoming webhook's URL) have their own shapes, and Gotify (its /message?token= URL) and Mattermost want markdown. Anything else gets Slack's `{text}`,
+/// (an incoming webhook's URL) have their own shapes, as does Zoho Cliq (a channel's `?zapikey=` URL), and Gotify (its /message?token= URL) and Mattermost want markdown. Anything else gets Slack's `{text}`,
 /// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
     let host = host(url);
@@ -471,6 +471,14 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
                 "actions": [{"type": "Action.OpenUrl", "title": a.link_text, "url": a.link}],
             },
         }]})
+    } else if host.starts_with("cliq.zoho") {
+        // Zoho Cliq, on cliq.zoho.com, cliq.zoho.eu and its other regions' hosts, shows the label as the card's title and
+        // reads markdown links. Its quote mark isn't markdown's, so the reply goes under the summary as it is. Cliq refuses
+        // text over 10,000 characters, and a long reply would pass that. The reply is cut, not the link.
+        let tail = format!("\n\n[{}]({})", a.link_text, a.link);
+        let reply = a.quote.map(|q| format!("\n\n{q}")).unwrap_or_default();
+        let text = format!("{}{}{tail}", a.summary, cut_bytes(&reply, 10_000usize.saturating_sub(a.summary.len() + tail.len())));
+        json!({"text": text, "card": {"title": a.label}})
     } else {
         json!({"text": format!("*{}:* {}{quote}\n<{}|{}>", a.label, a.summary, a.link, a.link_text)})
     }
@@ -737,6 +745,13 @@ mod tests {
         let content = content["markdown"].as_str().unwrap();
         assert!(content.len() <= 7439 && content.len() > 7400 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
         assert!(chat_payload("https://notdiscord.com/x", &a)["text"].is_string());
+        let cliq = "https://cliq.zoho.eu/api/v2/channelsbyname/sales/message?zapikey=abc";
+        let text = "Sarah replied to Acme\n\nSounds good\nTuesday?\n\n[Open the inbox](https://app/x)";
+        assert_eq!(chat_payload(cliq, &a), json!({"text": text, "card": {"title": "Hot lead"}}));
+        let long = "é".repeat(6000);
+        let content = chat_payload(cliq, &ChatAlert { quote: Some(&long), ..a });
+        let content = content["text"].as_str().unwrap();
+        assert!(content.len() <= 10_000 && content.len() > 9_950 && content.ends_with("…\n\n[Open the inbox](https://app/x)"));
         let mattermost = "**Hot lead:** Sarah replied to Acme\n> Sounds good\n> Tuesday?\n[Open the inbox](https://app/x)";
         assert_eq!(chat_payload("https://chat.acme.dev/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a), json!({"text": mattermost}));
         assert_eq!(chat_payload("https://acme.dev/mattermost/hooks/xjc7qbxb8jfgtmhtk1s5rwyeky", &a)["text"], mattermost);
