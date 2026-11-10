@@ -38,6 +38,7 @@ mod util_airtable;
 mod util_csv;
 pub mod util_input;
 mod util_lead_import;
+mod util_notion;
 mod util_pagination;
 mod util_scope;
 mod util_sheet;
