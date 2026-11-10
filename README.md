@@ -1,5 +1,24 @@
 # Splee
 
+**Paste your website. Splee finds your buyers, writes each one a personal cold email, sends it from your own mailbox and answers the replies.**
+
+![Splee: a campaign's leads, then a hot reply in the inbox with a drafted answer and booking link](docs/media/demo.gif)
+
+[Watch it in full quality (mp4)](docs/media/demo.mp4)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/overview.png" alt="Project overview with leads, replies, hot leads, spend and cost per hot lead"><br><sub><b>Overview.</b> Replies, meetings and the cost of each hot lead.</sub></td>
+    <td width="50%"><img src="docs/media/inbox.png" alt="Inbox with a hot reply and an auto-reply draft holding the booking link"><br><sub><b>Inbox.</b> Every hot reply gets an answer drafted.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/campaign.png" alt="A campaign with its find companies, find people, write emails and start steps"><br><sub><b>Campaigns.</b> Find companies, find people, write, send.</sub></td>
+    <td width="50%"><img src="docs/media/leads.png" alt="Leads table with titles, companies, emails, campaigns and statuses"><br><sub><b>Leads.</b> Every decision maker and where they stand.</sub></td>
+  </tr>
+</table>
+
+<sub>The screenshots show Fieldnote, a made-up company with made-up leads.</sub>
+
 Splee is a self-hosted AI outbound agent, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily email limit. It also reads the replies over IMAP and answers interested leads with your booking link.
 
 It runs on your machine or server, with your own Claude subscription and mailboxes. Nothing goes through a third-party outbound platform.
