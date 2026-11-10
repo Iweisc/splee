@@ -1,7 +1,7 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon, DeBounce, Bouncify and QuickEmailVerification take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
-//! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
+//! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
 //! Anymail Finder, LeadMagic, Apollo or Voila Norbert.
 
 use std::time::Duration;
@@ -40,6 +40,7 @@ pub enum Verifier {
     EmailListVerify,
     Bouncify,
     QuickEmailVerification,
+    Abstract,
 }
 
 impl Verifier {
@@ -57,6 +58,7 @@ impl Verifier {
             "emaillistverify" => Some(Verifier::EmailListVerify),
             "bouncify" => Some(Verifier::Bouncify),
             "quickemailverification" => Some(Verifier::QuickEmailVerification),
+            "abstract" => Some(Verifier::Abstract),
             _ => None,
         }
     }
@@ -75,6 +77,7 @@ impl Verifier {
             Verifier::EmailListVerify => "EmailListVerify",
             Verifier::Bouncify => "Bouncify",
             Verifier::QuickEmailVerification => "QuickEmailVerification",
+            Verifier::Abstract => "Abstract API",
         }
     }
 
@@ -102,6 +105,8 @@ impl Verifier {
             Verifier::QuickEmailVerification => {
                 qev_get(Url::parse_with_params(&format!("{QEV}/sandbox"), [("email", "valid@example.com"), ("apikey", key)])?).await.map(|_| ())
             }
+            // Abstract has no free call, so this check uses one credit.
+            Verifier::Abstract => abstract_get(Url::parse_with_params(ABSTRACT, [("email", "check@example.com")])?, key).await.map(|_| ()),
         }
     }
 
@@ -162,6 +167,7 @@ impl Verifier {
                 Ok(bouncify_verdict(&bouncify_get(url).await?))
             }
             Verifier::QuickEmailVerification => Ok(qev_verdict(&qev_get(Url::parse_with_params(QEV, [("email", email), ("apikey", key)])?).await?)),
+            Verifier::Abstract => Ok(abstract_verdict(&abstract_get(Url::parse_with_params(ABSTRACT, [("email", email)])?, key).await?)),
         }
     }
 }
@@ -771,6 +777,34 @@ fn qev_verdict(body: &Value) -> Verdict {
     }
 }
 
+const ABSTRACT: &str = "https://emailreputation.abstractapi.com/v1/";
+
+/// Abstract's Email Reputation API. A failure is `{error: {message}}`, like a used-up quota's 422.
+async fn abstract_get(url: Url, key: &str) -> anyhow::Result<Value> {
+    let res = client()?.get(url).bearer_auth(key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success(), "{}", body["error"]["message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// A throwaway inbox isn't worth sending to, a catch-all domain sends as it would without a verifier, and so does a mail
+/// server that didn't answer, which Abstract counts as undeliverable.
+fn abstract_verdict(body: &Value) -> Verdict {
+    if body["email_quality"]["is_disposable"] == true {
+        return Verdict::Invalid;
+    }
+    let deliverability = &body["email_deliverability"];
+    match (deliverability["status"].as_str().unwrap_or_default(), deliverability["status_detail"].as_str().unwrap_or_default()) {
+        ("deliverable", _) if body["email_quality"]["is_catchall"] == true => Verdict::Unsure,
+        ("deliverable", _) => Verdict::Valid,
+        ("undeliverable", "unavailable_server") => Verdict::Unsure,
+        ("undeliverable", _) => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -848,6 +882,18 @@ mod tests {
         assert_eq!(qev_verdict(&json!({"result": "valid", "disposable": "false", "accept_all": "true"})), Verdict::Unsure);
         assert_eq!(qev_verdict(&json!({"result": "invalid", "reason": "rejected_email", "disposable": "false"})), Verdict::Invalid);
         assert_eq!(qev_verdict(&json!({"result": "unknown", "reason": "timeout"})), Verdict::Unsure);
+        // Abstract's documented answers.
+        let abstract_api = |status: &str, detail: &str, catchall: bool, disposable: bool| {
+            json!({"email_deliverability": {"status": status, "status_detail": detail}, "email_quality": {"is_catchall": catchall, "is_disposable": disposable}})
+        };
+        assert_eq!(abstract_verdict(&abstract_api("deliverable", "valid_email", false, false)), Verdict::Valid);
+        assert_eq!(abstract_verdict(&abstract_api("deliverable", "valid_email", true, false)), Verdict::Unsure);
+        assert_eq!(abstract_verdict(&abstract_api("deliverable", "valid_email", false, true)), Verdict::Invalid);
+        assert_eq!(abstract_verdict(&abstract_api("undeliverable", "invalid_mailbox", false, false)), Verdict::Invalid);
+        assert_eq!(abstract_verdict(&abstract_api("undeliverable", "unavailable_server", false, false)), Verdict::Unsure);
+        assert_eq!(abstract_verdict(&abstract_api("unknown", "", false, false)), Verdict::Unsure);
+        let malformed = json!({"email_deliverability": {"status": "undeliverable", "status_detail": "invalid_format"}, "email_quality": {"is_disposable": null}});
+        assert_eq!(abstract_verdict(&malformed), Verdict::Invalid);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
