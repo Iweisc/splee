@@ -190,7 +190,8 @@ impl Unipile {
         }
         let (reason, kind) = explain(status, &body);
         Err(match status {
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE => {
+            // A 503 isn't here: Unipile may have reached LinkedIn before it failed.
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 Posting::Account(format!("Unipile couldn't use the LinkedIn account ({reason})"))
             }
             StatusCode::TOO_MANY_REQUESTS => Posting::Account("LinkedIn is rate limiting the account".into()),
@@ -532,6 +533,7 @@ mod tests {
             match fields.last().map(String::as_str) {
                 Some("text=expired") => (StatusCode::UNAUTHORIZED, Json(json!({ "status": 401, "type": "errors/disconnected_account", "title": "Disconnected account" }))),
                 Some("text=slow") => (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "status": 504, "type": "errors/request_timeout", "title": "Request timed out" }))),
+                Some("text=down") => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": 503, "type": "errors/provider_error", "title": "Provider error" }))),
                 Some("text=limit") => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "status": 422, "type": "errors/limit_exceeded", "title": "Limit exceeded" }))),
                 _ => {
                     calls.lock().unwrap().push(format!("post {}", fields.join(" ")));
@@ -592,6 +594,7 @@ mod tests {
         assert!(matches!(unipile.publish("limit").await, Err(Posting::Account(_))));
         // It may have gone out, so it fails rather than waiting to go out again.
         assert!(matches!(unipile.publish("slow").await, Err(Posting::Post(m)) if m == "Request timed out"));
+        assert!(matches!(unipile.publish("down").await, Err(Posting::Post(_))));
     }
 
     type Calls = Arc<Mutex<Vec<String>>>;
