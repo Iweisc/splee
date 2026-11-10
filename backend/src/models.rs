@@ -177,6 +177,9 @@ pub struct ProjectSettings {
     pub baserow_connected: bool,
     pub baserow_error: Option<String>,
     pub baserow_failed_at: Option<Ts>,
+    pub nocodb_connected: bool,
+    pub nocodb_error: Option<String>,
+    pub nocodb_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,

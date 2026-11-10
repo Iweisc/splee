@@ -420,6 +420,13 @@ const CRMS = {
     account: { label: "Table link", placeholder: "https://baserow.io/database/…/table/…" },
     hint: "On baserow.io or your own server, with create, read and update. The table needs an Email field and a long text field called Notes.",
   },
+  nocodb: {
+    name: "NocoDB",
+    record: "table rows",
+    field: "API token",
+    account: { label: "Table link", placeholder: "https://app.nocodb.com/#/…" },
+    hint: "On app.nocodb.com or your own server, from Account settings → Tokens. The table needs an Email column and a long text column called Notes.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
