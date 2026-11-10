@@ -153,7 +153,7 @@ export interface ProjectSettings extends CrmStatus {
   verifier_error: string | null;
   verifier_failed_at: string | null;
   /** Looks up the real address behind a guessed one. Its key is write-only, through PUT /integrations/finder. */
-  finder: "" | "hunter" | "findymail" | "prospeo" | "anymailfinder" | "leadmagic" | "apollo" | "voilanorbert";
+  finder: "" | "hunter" | "findymail" | "prospeo" | "anymailfinder" | "leadmagic" | "apollo" | "voilanorbert" | "skrapp";
   finder_error: string | null;
   finder_failed_at: string | null;
   /** Unipile sends due LinkedIn steps from this account. Its token is write-only. */

@@ -682,6 +682,7 @@ const FINDERS = {
   leadmagic: "LeadMagic",
   apollo: "Apollo",
   voilanorbert: "Voila Norbert",
+  skrapp: "Skrapp",
 } as const;
 
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
