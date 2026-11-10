@@ -102,6 +102,7 @@ const CHAT_APPS = [
   ["Rocket.Chat", "Integrations → New → Incoming"],
   ["Zulip", "an incoming webhook bot's Slack compatible URL"],
   ["Zoho Cliq", "Bots & Tools → Webhook Tokens → Get Webhook URL, for a channel"],
+  ["Pumble", "Workspace settings → General settings → Incoming Webhooks → New Webhook"],
 ] as const;
 
 /**
@@ -175,6 +176,7 @@ function chatApp(url: string): string {
   if (host === "webexapis.com") return "Webex";
   // cliq.zoho.com, cliq.zoho.eu and the other regions, the same way hooks::chat_payload tells them apart.
   if (host.startsWith("cliq.zoho")) return "Zoho Cliq";
+  if (host === "api.pumble.com") return "Pumble";
   // Self-hosted chats can be on any host, so their webhook paths tell them apart, the same way hooks::gotify and
   // hooks::mattermost do.
   if (path.at(-1) === "message" && token) return "Gotify";
