@@ -104,14 +104,9 @@ fn jotform(raw: &Value) -> Vec<(String, String)> {
     fields.sort_by_key(|(id, ..)| *id);
     let mut answers = Vec::new();
     for (_, name, value) in fields {
-        let question = name.chars().fold(String::new(), |mut q, c| {
-            match q.chars().last() {
-                None => q.extend(c.to_uppercase()),
-                Some(p) if c.is_uppercase() && (p.is_lowercase() || p.is_ascii_digit()) => q.extend([' ', c]),
-                Some(_) => q.push(c),
-            }
-            q
-        });
+        let spaced = camel_words(name);
+        let mut chars = spaced.chars();
+        let question: String = chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
         if value.get("first").is_some() || value.get("last").is_some() {
             answers.extend(["first", "last"].into_iter().filter_map(|part| Some((format!("{question} {part}"), text(&value[part])?))));
         } else if let Some(answer) = jotform_text(value) {
@@ -182,12 +177,29 @@ enum Slot {
     Linkedin,
 }
 
+/// "companyWebsite" as "company Website": a space wherever a capital follows a small letter or a digit.
+fn camel_words(name: &str) -> String {
+    name.chars().fold(String::new(), |mut q, c| {
+        if c.is_uppercase() && q.chars().last().is_some_and(|p| p.is_lowercase() || p.is_ascii_digit()) {
+            q.push(' ');
+        }
+        q.push(c);
+        q
+    })
+}
+
 /// Which lead field a question fills, from its words. The order matters: "Company website" is a website and
 /// "Company name" a company, not a name. Questions about the company that aren't its name, like its size, fill nothing.
+/// A camelCase key, like a plain JSON form's companyWebsite, is read by its words too, and LinkedIn is found anywhere,
+/// since linkedInUrl splits it.
 fn slot(question: &str) -> Option<Slot> {
-    let words: Vec<String> = question.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let spaced = camel_words(question);
+    let words: Vec<String> = [question, spaced.as_str()]
+        .into_iter()
+        .flat_map(|q| q.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>())
+        .collect();
     let has = |options: &[&str]| words.iter().any(|w| options.contains(&w.as_str()));
-    if has(&["linkedin"]) {
+    if question.to_lowercase().contains("linkedin") {
         Some(Slot::Linkedin)
     } else if has(&["website", "domain", "site", "url"]) {
         Some(Slot::Website)
@@ -354,6 +366,14 @@ mod tests {
         let webflow = json!({"triggerType": "form_submission", "payload": {"name": "Contact", "data": {"Name": "Priya", "Email": "priya@corvid.example", "Company Website": "corvid.example"}}});
         let (lead, _) = lead_from(answers(&webflow));
         assert_eq!((lead.full_name.as_str(), lead.company_domain.as_str()), ("Priya", "corvid.example"));
+
+        // A plain JSON form with camelCase keys.
+        let plain = json!({"firstName": "Dana", "workEmail": "dana@kestrel.example", "companyWebsite": "kestrel.example",
+            "linkedInUrl": "https://linkedin.com/in/dana", "jobTitle": "COO", "companySize": "51-200"});
+        let (lead, rest) = lead_from(answers(&plain));
+        assert_eq!((lead.first_name.as_str(), lead.email.as_str(), lead.title.as_str()), ("Dana", "dana@kestrel.example", "COO"));
+        assert_eq!((lead.company_domain.as_str(), lead.linkedin_url.as_str()), ("kestrel.example", "https://linkedin.com/in/dana"));
+        assert_eq!(rest, [("companySize".to_string(), "51-200".to_string())]);
 
         // Fillout's submission, as its webhook sends it: a choice is its text, and a hidden field a URL parameter.
         let fillout = json!({"submissionId": "abc", "submissionTime": "2026-11-10T10:00:00.000Z", "questions": [
