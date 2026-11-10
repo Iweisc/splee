@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Building2, Mail, Phone, Search, X } from "lucide-react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form";
@@ -32,9 +32,15 @@ const cityName = (city: string) => (city === city.toUpperCase() ? city.toLowerCa
 export function DirectoryView({ projectId }: { projectId: string }) {
   const { me } = useMe();
   const { data: countries, mutate: retryCountries } = useSWR<DirectoryCountry[]>("/directory/countries", fetcher);
+  const { mutate } = useSWRConfig();
+  // The search key doesn't change when a country finishes loading, so its results are refetched here.
+  const loaded = () => {
+    retryCountries();
+    mutate((key) => typeof key === "string" && key.startsWith("/directory/companies"));
+  };
   return (
     <>
-      {me?.operator && countries && <CountryLoader countries={countries} onLoaded={() => retryCountries()} />}
+      {me?.operator && countries && <CountryLoader countries={countries} onLoaded={loaded} />}
       <DirectorySearch projectId={projectId} operator={me?.operator ?? false} />
     </>
   );
