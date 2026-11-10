@@ -161,6 +161,16 @@ export interface ProjectSettings extends CrmStatus {
   unipile_account_name: string;
   unipile_error: string | null;
   unipile_failed_at: string | null;
+  /** The X account social posts go out from. Its cookies are write-only, through PUT /integrations/x. */
+  x_connected: boolean;
+  x_handle: string;
+  x_error: string | null;
+  x_failed_at: string | null;
+  /** The Reddit account social posts go out from. Its secret and password are write-only, through PUT /integrations/reddit. */
+  reddit_connected: boolean;
+  reddit_username: string;
+  reddit_error: string | null;
+  reddit_failed_at: string | null;
 }
 
 export type WebhookEvent =
@@ -581,7 +591,35 @@ export type RunKind =
   | "draft_reply"
   | "linkedin_sequence"
   | "explorer"
-  | "segment_from_prompt";
+  | "segment_from_prompt"
+  | "social";
+
+/** A reply or post for X or Reddit, drafted by a social run or written by hand, posted once approved. */
+export interface SocialPost {
+  id: UUID;
+  project_id: UUID;
+  run_id: UUID | null;
+  platform: "x" | "reddit";
+  /** The link of the post or comment it answers, null for an original post. */
+  in_reply_to: string | null;
+  /** The text it answers. */
+  context: string;
+  /** Where a Reddit post goes, or the subreddit of the thread it answers. */
+  subreddit: string;
+  /** Reddit posts only. */
+  title: string;
+  body: string;
+  /** Why the agent picked the thread. */
+  reason: string;
+  status: "draft" | "approved" | "posting" | "posted" | "failed" | "skipped";
+  /** The handle or username it went out from. */
+  account: string;
+  url: string;
+  error: string | null;
+  posted_at: Ts | null;
+  created_at: Ts;
+  updated_at: Ts;
+}
 
 export interface AgentRun {
   id: UUID;

@@ -191,6 +191,16 @@ pub struct ProjectSettings {
     pub unipile_account_name: String,
     pub unipile_error: Option<String>,
     pub unipile_failed_at: Option<Ts>,
+    /// The X account social posts go out from. Its cookies (x_auth_token_enc, x_ct0_enc) stay out of this struct.
+    pub x_connected: bool,
+    pub x_handle: String,
+    pub x_error: Option<String>,
+    pub x_failed_at: Option<Ts>,
+    /// The Reddit account social posts go out from. The app's secret and the password stay out of this struct.
+    pub reddit_connected: bool,
+    pub reddit_username: String,
+    pub reddit_error: Option<String>,
+    pub reddit_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -463,6 +473,36 @@ pub struct Import {
     pub skipped: i32,
     pub errors: Value,
     pub created_at: Ts,
+}
+
+/// A reply or post for X or Reddit, drafted by a social run or written by the user, posted once approved.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SocialPost {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub run_id: Option<Uuid>,
+    /// "x" or "reddit".
+    pub platform: String,
+    /// The link of the post or comment it answers, None for an original post.
+    pub in_reply_to: Option<String>,
+    /// The text it answers, for the reviewer.
+    pub context: String,
+    /// Reddit only: where an original post goes, or the thread's subreddit.
+    pub subreddit: String,
+    /// Reddit original posts only.
+    pub title: String,
+    pub body: String,
+    /// Why the agent picked the thread.
+    pub reason: String,
+    /// draft, approved, posted, failed or skipped.
+    pub status: String,
+    /// The handle or username it went out from.
+    pub account: String,
+    pub url: String,
+    pub error: Option<String>,
+    pub posted_at: Option<Ts>,
+    pub created_at: Ts,
+    pub updated_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

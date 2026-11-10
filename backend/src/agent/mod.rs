@@ -4,8 +4,10 @@
 mod directory;
 mod explore;
 mod prospect;
+mod reddit;
 mod replies;
 pub mod sdk;
+pub mod social;
 mod write;
 pub mod x;
 
@@ -36,6 +38,7 @@ pub mod kind {
     pub const LINKEDIN_SEQUENCE: &str = "linkedin_sequence";
     pub const EXPLORER: &str = "explorer";
     pub const SEGMENT_FROM_PROMPT: &str = "segment_from_prompt";
+    pub const SOCIAL: &str = "social";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -284,6 +287,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::DRAFT_REPLY => replies::draft_run(ctx).await,
         kind::EXPLORER => prospect::explorer_run(ctx).await,
         kind::SEGMENT_FROM_PROMPT => explore::segment_from_prompt_run(ctx).await,
+        kind::SOCIAL => social::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

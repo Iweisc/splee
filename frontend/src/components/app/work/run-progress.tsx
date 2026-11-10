@@ -26,6 +26,7 @@ const RUN_TITLES: Partial<Record<RunKind, string>> = {
   find_people: "Find decision makers",
   write_emails: "Write personal emails",
   segment_from_prompt: "Draft campaign",
+  social: "Find threads to join",
 };
 
 // Reply classification and LinkedIn runs are short background jobs. Showing them as progress would be noise.
