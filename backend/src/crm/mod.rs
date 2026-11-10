@@ -14,6 +14,7 @@ mod insightly;
 mod lacrm;
 mod pipedrive;
 mod salesflare;
+mod twenty;
 mod zendesk_sell;
 
 use std::time::Duration;
@@ -41,11 +42,12 @@ pub enum Crm {
     Freshsales,
     Copper,
     Insightly,
+    Twenty,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 14] = [
+    pub const ALL: [Crm; 15] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -60,6 +62,7 @@ impl Crm {
         Crm::Freshsales,
         Crm::Copper,
         Crm::Insightly,
+        Crm::Twenty,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -83,6 +86,7 @@ impl Crm {
             Crm::Freshsales => "freshsales",
             Crm::Copper => "copper",
             Crm::Insightly => "insightly",
+            Crm::Twenty => "twenty",
         }
     }
 
@@ -102,6 +106,7 @@ impl Crm {
             Crm::Freshsales => "Freshsales",
             Crm::Copper => "Copper",
             Crm::Insightly => "Insightly",
+            Crm::Twenty => "Twenty",
         }
     }
 
@@ -133,6 +138,7 @@ impl Crm {
             Crm::Freshsales => freshsales::check(token).await,
             Crm::Copper => copper::check(token).await,
             Crm::Insightly => insightly::check(token).await,
+            Crm::Twenty => twenty::check(token).await,
         }
     }
 
@@ -152,6 +158,7 @@ impl Crm {
             Crm::Freshsales => freshsales::push(token, email, lead, note).await,
             Crm::Copper => copper::push(token, email, lead, note).await,
             Crm::Insightly => insightly::push(token, email, lead, note).await,
+            Crm::Twenty => twenty::push(token, email, lead, note).await,
         }
     }
 }

@@ -323,6 +323,12 @@ const CRMS = {
     account: { label: "API URL", placeholder: "https://api.na1.insightly.com/v3.1/" },
     hint: "In Insightly: your profile → User Settings → API, which shows both.",
   },
+  twenty: {
+    name: "Twenty",
+    record: "people",
+    field: "API key",
+    hint: "In Twenty: Settings → APIs & Webhooks → Create API key.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
