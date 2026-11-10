@@ -42,11 +42,15 @@ const EMPTY: MailboxInput = {
   cost_per_email_micros: 0,
   ramp_up: true,
   dkim_selector: "",
+  warmup: true,
+  warmup_daily_cap: 40,
+  total_daily_limit: 80,
+  hold_until_warm: true,
 };
 
 function toInput(m: Mailbox): MailboxInput {
   const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username } = m;
-  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector } = m;
+  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm } = m;
   return {
     email,
     from_name,
@@ -65,6 +69,10 @@ function toInput(m: Mailbox): MailboxInput {
     cost_per_email_micros,
     ramp_up,
     dkim_selector,
+    warmup,
+    warmup_daily_cap,
+    total_daily_limit,
+    hold_until_warm,
   };
 }
 
@@ -127,6 +135,9 @@ export function MailboxForm({
     m.imap_host &&
     m.imap_port > 0 &&
     m.daily_limit > 0 &&
+    m.warmup_daily_cap >= 1 &&
+    m.warmup_daily_cap <= 200 &&
+    m.total_daily_limit >= 1 &&
     m.cost_per_email_micros >= 0 &&
     m.cost_per_email_micros <= 1_000_000;
 
@@ -288,6 +299,52 @@ export function MailboxForm({
         </div>
         <Switch checked={m.ramp_up} onChange={(ramp_up) => set({ ramp_up })} label="Ramp up slowly" />
       </div>
+
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Warm up</p>
+          <p className="mt-1 text-xs text-pretty text-muted-foreground">
+            Trade short emails with the other mailboxes warming up on this Splee. They read, answer and rescue each other&apos;s emails from
+            spam, so providers trust a new mailbox before it sends campaigns. Warmup emails are archived once read.
+          </p>
+        </div>
+        <Switch checked={m.warmup} onChange={(warmup) => set({ warmup })} label="Warm up" />
+      </div>
+
+      {m.warmup && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Warmup emails a day" hint="Starts at 2 and adds 2 a day up to this.">
+              <NumberInput
+                required
+                min={1}
+                max={200}
+                value={m.warmup_daily_cap}
+                onValueChange={(warmup_daily_cap) => set({ warmup_daily_cap })}
+                className="w-28 tabular-nums"
+              />
+            </Field>
+            <Field label="Total emails a day" hint="Campaign and warmup emails together never go past this.">
+              <NumberInput
+                required
+                min={1}
+                value={m.total_daily_limit}
+                onValueChange={(total_daily_limit) => set({ total_daily_limit })}
+                className="w-28 tabular-nums"
+              />
+            </Field>
+          </div>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Hold campaigns until warm</p>
+              <p className="mt-1 text-xs text-pretty text-muted-foreground">
+                No campaign emails in the first 14 days of warmup, or while its warmup emails land in spam.
+              </p>
+            </div>
+            <Switch checked={m.hold_until_warm} onChange={(hold_until_warm) => set({ hold_until_warm })} label="Hold campaigns until warm" />
+          </div>
+        </>
+      )}
 
       <Field
         label="Cost per 1,000 emails"

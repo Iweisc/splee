@@ -45,6 +45,8 @@ pub struct Outgoing<'a> {
     pub in_reply_to: Option<&'a str>,
     pub references: &'a [String],
     pub unsubscribe_url: Option<&'a str>,
+    /// The token of a warmup email, sent as X-Splee-Warmup. See warmup::find_token.
+    pub warmup: Option<&'a str>,
 }
 
 fn bracket(id: &str) -> String {
@@ -73,6 +75,9 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
         builder = builder
             .raw_header(HeaderValue::new(HeaderName::new_from_ascii_str("List-Unsubscribe"), format!("<{url}>")))
             .raw_header(HeaderValue::new(HeaderName::new_from_ascii_str("List-Unsubscribe-Post"), "List-Unsubscribe=One-Click".into()));
+    }
+    if let Some(token) = email.warmup {
+        builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str(super::warmup::HEADER), token.to_string()));
     }
     Ok(builder.body(email.body.to_string())?)
 }

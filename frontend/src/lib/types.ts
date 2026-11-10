@@ -571,6 +571,31 @@ export interface Mailbox {
   ramp_up: boolean;
   /** "2026-11-09", the UTC day it first sent. */
   first_sent_on: string | null;
+  /** Trades warmup emails with the other warming mailboxes in this Splee. */
+  warmup: boolean;
+  /** The UTC day of its first warmup email. Turning warmup off clears it. */
+  warmup_started_on: string | null;
+  warmup_daily_cap: number;
+  /** Campaign plus warmup emails a day, while warmup is on. */
+  total_daily_limit: number;
+  /** No campaign emails in the first 14 days of warmup, or while its warmup emails land in spam. */
+  hold_until_warm: boolean;
+}
+
+/** GET /mailboxes/warmup: one of the org's mailboxes with warmup on, over the last 14 days. */
+export interface WarmupHealth {
+  mailbox_id: UUID;
+  /** Day 1 is the day of its first warmup email. null before that. */
+  day: number | null;
+  sent_today: number;
+  target_today: number;
+  sent: number;
+  received: number;
+  /** Where its warmup emails landed, as the receiving mailboxes saw them. */
+  inbox: number;
+  spam: number;
+  /** Whether another mailbox in this Splee is warming up to trade emails with. */
+  has_peers: boolean;
 }
 
 /** GET /mailboxes/stats: distinct leads over the last 30 days. */
@@ -602,6 +627,10 @@ export interface MailboxInput {
   daily_limit: number;
   cost_per_email_micros: number;
   ramp_up: boolean;
+  warmup: boolean;
+  warmup_daily_cap: number;
+  total_daily_limit: number;
+  hold_until_warm: boolean;
   status?: "active" | "paused";
 }
 
