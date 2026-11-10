@@ -9,11 +9,13 @@ use uuid::Uuid;
 
 use crate::agent::x::{self, Cookies};
 use crate::bluesky::{self, Bluesky};
-use crate::crypto::decrypt;
+use crate::crypto::{decrypt, encrypt};
 use crate::dev::Dev;
+use crate::discourse::{self, Discourse, Topic};
 use crate::hooks::{self, Alert};
+use crate::lemmy::{self, Lemmy};
 use crate::mastodon::Mastodon;
-use crate::models::SocialPost;
+use crate::models::{DiscourseForum, SocialPost};
 use crate::reddit::{Login, Reddit, Target};
 use crate::stackexchange::{self, Question, StackExchange};
 use crate::state::AppState;
@@ -21,15 +23,17 @@ use crate::threads::{self, Threads};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 9] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev"];
+pub const PLATFORMS: [&str; 11] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy"];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
 
 /// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most. A
-/// Stack Exchange answer and a DEV article take far longer to read and judge than a reply, so they get fewer.
+/// Stack Exchange answer and a DEV article take far longer to read and judge than a reply, so they get fewer, and so does each
+/// Discourse forum and Lemmy, whose communities are small enough that a company replying often stands out.
 pub fn daily_cap(platform: &str) -> i64 {
     match platform {
-        "linkedin" | "stackexchange" => 5,
+        "linkedin" | "stackexchange" | "discourse" => 5,
+        "lemmy" => 10,
         "dev" => 2,
         _ => 15,
     }
@@ -45,6 +49,8 @@ pub fn name(platform: &str) -> &'static str {
         "youtube" => "YouTube",
         "stackexchange" => "Stack Exchange",
         "dev" => "DEV",
+        "discourse" => "Discourse",
+        "lemmy" => "Lemmy",
         _ => "LinkedIn",
     }
 }
@@ -68,6 +74,8 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("threads", _) => threads::CHARS,
         ("youtube", _) => youtube::CHARS,
         ("stackexchange", _) => stackexchange::CHARS,
+        ("discourse", _) => discourse::CHARS,
+        ("lemmy", _) => lemmy::CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -80,9 +88,13 @@ pub fn length(platform: &str, text: &str) -> usize {
     if platform == "bluesky" { text.graphemes(true).count() } else { text.chars().count() }
 }
 
-/// The least a reply or post needs. Stack Exchange turns down short answers.
+/// The least a reply or post needs. Stack Exchange and Discourse turn down short ones.
 pub fn min_length(platform: &str) -> usize {
-    if platform == "stackexchange" { stackexchange::MIN_CHARS } else { 1 }
+    match platform {
+        "stackexchange" => stackexchange::MIN_CHARS,
+        "discourse" => discourse::MIN_CHARS,
+        _ => 1,
+    }
 }
 
 pub fn fits(platform: &str, reply: bool, text: &str, mastodon_chars: usize) -> bool {
@@ -106,7 +118,7 @@ impl Failure {
 }
 
 /// A project's social sign-ins as stored, encrypted. LinkedIn is the project's Unipile connection.
-#[derive(sqlx::FromRow)]
+#[derive(Default, sqlx::FromRow)]
 pub struct Accounts {
     pub project_id: Uuid,
     pub x_auth_token_enc: String,
@@ -135,9 +147,17 @@ pub struct Accounts {
     pub stackexchange_account: String,
     pub dev_key_enc: String,
     pub dev_username: String,
+    pub lemmy_url: String,
+    pub lemmy_username: String,
+    pub lemmy_password_enc: String,
+    pub lemmy_jwt_enc: String,
+    pub lemmy_handle: String,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
+    /// Each forum is an account of its own. Loaded with `load_forums`.
+    #[sqlx(skip)]
+    pub forums: Vec<DiscourseForum>,
 }
 
 const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
@@ -145,11 +165,16 @@ const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.
                                s.mastodon_handle, s.mastodon_max_chars, s.threads_token_enc, s.threads_user_id, s.threads_username,
                                s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.stackexchange_key,
                                s.stackexchange_token_enc, s.stackexchange_site, s.stackexchange_account, s.dev_key_enc, s.dev_username,
-                               s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
+                               s.lemmy_url, s.lemmy_username, s.lemmy_password_enc, s.lemmy_jwt_enc, s.lemmy_handle, s.unipile_dsn,
+                               s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
-    sqlx::query_as(&format!("{ACCOUNTS} where s.project_id = $1")).bind(project_id).fetch_optional(db).await
+    let Some(mut a) = sqlx::query_as::<_, Accounts>(&format!("{ACCOUNTS} where s.project_id = $1")).bind(project_id).fetch_optional(db).await? else {
+        return Ok(None);
+    };
+    a.load_forums(db).await?;
+    Ok(Some(a))
 }
 
 /// The project_settings columns for a platform's account: its name, which the daily cap counts by in any project, and when it
@@ -164,6 +189,7 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "youtube" => ("youtube_channel_id", "youtube_failed_at"),
         "stackexchange" => ("stackexchange_account", "stackexchange_failed_at"),
         "dev" => ("dev_username", "dev_failed_at"),
+        "lemmy" => ("lemmy_handle", "lemmy_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -178,12 +204,15 @@ fn alert(platform: &str) -> Alert {
         "youtube" => Alert::YouTube,
         "stackexchange" => Alert::StackExchange,
         "dev" => Alert::Dev,
+        "discourse" => Alert::Discourse,
+        "lemmy" => Alert::Lemmy,
         _ => Alert::Unipile,
     }
 }
 
 impl Accounts {
     /// The account's name and its encrypted secret, which hooks::record matches on. The secret is empty when it isn't connected.
+    /// Discourse has one account per forum, see `forums`.
     pub fn account(&self, platform: &str) -> (&str, &str) {
         match platform {
             "x" => (&self.x_handle, &self.x_auth_token_enc),
@@ -194,12 +223,24 @@ impl Accounts {
             "youtube" => (&self.youtube_channel_id, &self.youtube_token_enc),
             "stackexchange" => (&self.stackexchange_account, &self.stackexchange_token_enc),
             "dev" => (&self.dev_username, &self.dev_key_enc),
+            "lemmy" => (&self.lemmy_handle, &self.lemmy_password_enc),
+            "discourse" => ("", ""),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
     }
 
     pub fn connected(&self) -> Vec<&'static str> {
-        PLATFORMS.into_iter().filter(|p| !self.account(p).1.is_empty()).collect()
+        PLATFORMS.into_iter().filter(|p| if *p == "discourse" { !self.forums.is_empty() } else { !self.account(p).1.is_empty() }).collect()
+    }
+
+    pub async fn load_forums(&mut self, db: &PgPool) -> sqlx::Result<()> {
+        self.forums = sqlx::query_as("select * from discourse_forums where project_id = $1 order by created_at").bind(self.project_id).fetch_all(db).await?;
+        Ok(())
+    }
+
+    /// The Lemmy home instance's host, which a community's bare name is on.
+    pub fn lemmy_host(&self) -> &str {
+        self.lemmy_url.trim_start_matches("https://")
     }
 
     pub fn cookies(&self, secret: &str) -> anyhow::Result<Option<Cookies>> {
@@ -260,6 +301,31 @@ impl Accounts {
         Dev::new(&key)
     }
 
+    pub async fn lemmy(&self, secret: &str) -> Result<Lemmy, Failure> {
+        let password = decrypt(secret, &self.lemmy_password_enc).map_err(|_| Failure::Account("Couldn't read the saved Lemmy password. Connect Lemmy again".into()))?;
+        // A JWT that can't be read is only traded for a new one.
+        let jwt = decrypt(secret, &self.lemmy_jwt_enc).unwrap_or_default();
+        Lemmy::new(&self.lemmy_url, &self.lemmy_username, &password, &jwt).await
+    }
+
+    /// Saves the JWT the client ended up with when it signed in again, so the next call doesn't have to.
+    pub async fn keep_lemmy_jwt(&self, db: &PgPool, secret: &str, lemmy: &Lemmy) {
+        let jwt = lemmy.jwt();
+        if jwt.is_empty() || decrypt(secret, &self.lemmy_jwt_enc).is_ok_and(|old| old == jwt) {
+            return;
+        }
+        // Matched on the password, so a reconnect since doesn't get an old account's JWT.
+        let saved = sqlx::query("update project_settings set lemmy_jwt_enc = $2 where project_id = $1 and lemmy_password_enc = $3")
+            .bind(self.project_id)
+            .bind(encrypt(secret, &jwt))
+            .bind(&self.lemmy_password_enc)
+            .execute(db)
+            .await;
+        if let Err(e) = saved {
+            tracing::warn!(error = %e, "couldn't save the Lemmy JWT");
+        }
+    }
+
     pub fn unipile(&self, secret: &str) -> Result<Unipile, Failure> {
         let token = decrypt(secret, &self.unipile_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Unipile token. Connect Unipile again".into()))?;
         Unipile::new(&self.unipile_dsn, &token, &self.unipile_account_id).map_err(|e| Failure::Account(e.to_string()))
@@ -267,6 +333,13 @@ impl Accounts {
 
     pub fn mastodon_chars(&self) -> usize {
         self.mastodon_max_chars.max(1) as usize
+    }
+}
+
+impl DiscourseForum {
+    pub async fn client(&self, secret: &str) -> Result<Discourse, Failure> {
+        let key = decrypt(secret, &self.key_enc).map_err(|_| Failure::Account(format!("Couldn't read the saved key for {}. Connect the forum again", self.url)))?;
+        Discourse::new(&self.url, &key, (self.key_kind == "admin").then_some(self.username.as_str())).await
     }
 }
 
@@ -288,10 +361,17 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     .await?;
     // The same account can be connected to several projects, and it still posts once a tick.
     let mut used = HashSet::new();
-    for a in waiting {
+    for mut a in waiting {
+        a.load_forums(&state.db).await?;
         for platform in a.connected() {
-            if let Err(e) = publish_next(state, &a, platform, &mut used).await {
-                tracing::error!(project_id = %a.project_id, platform, error = ?e, "social posting failed");
+            let accounts = match platform {
+                "discourse" => a.forums.iter().map(|f| (f.account.as_str(), f.key_enc.as_str(), Some(f))).collect(),
+                _ => vec![(a.account(platform).0, a.account(platform).1, None)],
+            };
+            for (account, enc, forum) in accounts {
+                if let Err(e) = publish_next(state, &a, platform, account, enc, forum, &mut used).await {
+                    tracing::error!(project_id = %a.project_id, platform, error = ?e, "social posting failed");
+                }
             }
         }
     }
@@ -299,9 +379,16 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// `used` holds the accounts that already posted this tick. An account only counts once it claims a post, so a project with
-/// nothing due doesn't hold up another project on the same account.
-async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, used: &mut HashSet<(&'static str, String)>) -> anyhow::Result<()> {
-    let (account, enc) = a.account(platform);
+/// nothing due doesn't hold up another project on the same account. `forum` is the Discourse forum `account` is on.
+async fn publish_next(
+    state: &AppState,
+    a: &Accounts,
+    platform: &'static str,
+    account: &str,
+    enc: &str,
+    forum: Option<&DiscourseForum>,
+    used: &mut HashSet<(&'static str, String)>,
+) -> anyhow::Result<()> {
     let key = (platform, account.to_lowercase());
     if used.contains(&key) {
         return Ok(());
@@ -320,6 +407,11 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
         "youtube" => post_youtube(state, a, &post).await,
         "stackexchange" => post_stackexchange(state, a, &post).await,
         "dev" => post_dev(state, a, &post).await,
+        "lemmy" => post_lemmy(state, a, &post).await,
+        "discourse" => match forum {
+            Some(forum) => post_discourse(state, forum, &post).await,
+            None => Err(Failure::Post("The forum isn't connected anymore".into())),
+        },
         _ => post_linkedin(state, a, &post).await,
     };
     let result = finish(&state.db, &post, account, published).await?;
@@ -328,20 +420,29 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
 }
 
 /// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap,
-/// had a failure in the last hour or, on Stack Exchange, is waiting out the API's backoff.
+/// had a failure in the last hour or, on Stack Exchange and Discourse, is waiting out the wait the API asked for. A Discourse
+/// forum is its own account, which only posts what's for that forum.
 async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) -> sqlx::Result<Option<SocialPost>> {
-    let (name, failed_at) = columns(platform);
-    let backoff = match platform {
-        "stackexchange" => "and not exists (select 1 from project_settings s where s.stackexchange_account = $3 and s.stackexchange_backoff_until > now())",
-        _ => "",
+    let held = match platform {
+        "discourse" => "and sp.forum_id in (select f.id from discourse_forums f where f.project_id = $1 and f.account = $3)
+           and not exists (select 1 from discourse_forums f
+                           where f.account = $3 and (f.failed_at > now() - interval '1 hour' or f.held_until > now()))"
+            .to_string(),
+        _ => {
+            let (name, failed_at) = columns(platform);
+            let backoff = match platform {
+                "stackexchange" => "and not exists (select 1 from project_settings s where s.stackexchange_account = $3 and s.stackexchange_backoff_until > now())",
+                _ => "",
+            };
+            format!("and not exists (select 1 from project_settings s where s.{name} = $3 and s.{failed_at} > now() - interval '1 hour') {backoff}")
+        }
     };
     sqlx::query_as(&format!(
         "select sp.* from social_posts sp
          where sp.project_id = $1 and sp.platform = $2 and sp.status = 'approved'
            and (select count(*) from social_posts o where o.platform = $2 and o.account = $3
                 and (o.status = 'posting' or o.status = 'posted' and o.posted_at > now() - interval '1 day')) < $4
-           and not exists (select 1 from project_settings s where s.{name} = $3 and s.{failed_at} > now() - interval '1 hour')
-           {backoff}
+           {held}
          order by sp.updated_at limit 1"
     ))
     .bind(project_id)
@@ -446,6 +547,40 @@ async fn post_stackexchange(state: &AppState, a: &Accounts, post: &SocialPost) -
 
 async fn post_dev(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
     a.dev(&state.cfg.app_secret)?.publish(&post.title, &post.body, &post.tags).await
+}
+
+async fn post_lemmy(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let lemmy = a.lemmy(&state.cfg.app_secret).await?;
+    let posted = match post.in_reply_to.as_deref() {
+        Some(link) => {
+            let link = lemmy::Link::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a Lemmy post or comment".into()))?;
+            lemmy.comment(&link, &post.body).await
+        }
+        None => lemmy.create_post(&post.subreddit, &post.title, &post.body).await,
+    };
+    a.keep_lemmy_jwt(&state.db, &state.cfg.app_secret, &lemmy).await;
+    posted
+}
+
+async fn post_discourse(state: &AppState, forum: &DiscourseForum, post: &SocialPost) -> Result<String, Failure> {
+    let d = forum.client(&state.cfg.app_secret).await?;
+    let posted = match (post.in_reply_to.as_deref(), forum.category_id) {
+        (Some(link), _) => d.reply(&Topic::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a Discourse topic".into()))?, &post.body).await,
+        (None, Some(category)) => d.create_topic(category, &post.title, &post.body).await,
+        (None, None) => Err(Failure::Post(format!("Pick a category for new topics on {} first", forum.url))),
+    };
+    // The forum's Retry-After can be shorter or longer than the hour a failure holds it.
+    if let Some(wait) = d.retry_after() {
+        let held = sqlx::query("update discourse_forums set held_until = now() + make_interval(secs => $2) where account = $1")
+            .bind(&forum.account)
+            .bind(wait as f64)
+            .execute(&state.db)
+            .await;
+        if let Err(e) = held {
+            tracing::warn!(error = %e, "couldn't save the forum's Retry-After");
+        }
+    }
+    posted
 }
 
 async fn post_linkedin(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
@@ -587,6 +722,62 @@ mod tests {
         assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_none());
     }
 
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn each_discourse_forum_posts_its_own_and_waits_out_its_retry_after(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, lemmy_password_enc, lemmy_handle) values ($1, 'x', 'ana@lemmy.world')")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let mut forums = Vec::new();
+        for (url, account) in [("https://forum.acme.com", "forum.acme.com/u/ana"), ("https://acme.com/forum", "acme.com/forum/u/ana")] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into discourse_forums (project_id, url, username, key_kind, key_enc, account) values ($1, $2, 'ana', 'user', $3, $3) returning id",
+            )
+            .bind(project)
+            .bind(url)
+            .bind(account)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            forums.push((id, account));
+        }
+        let a = accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(a.connected(), ["discourse", "lemmy"]);
+        let (first, second) = (forums[0], forums[1]);
+        let post: Uuid = sqlx::query_scalar("insert into social_posts (project_id, platform, body, status, forum_id) values ($1, 'discourse', 'Hi', 'approved', $2) returning id")
+            .bind(project)
+            .bind(first.0)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        // The post is for the first forum, so the second has nothing due.
+        assert_eq!(next_due(&db, project, "discourse", first.1).await.unwrap().map(|p| p.id), Some(post));
+        assert!(next_due(&db, project, "discourse", second.1).await.unwrap().is_none());
+        // A 429's Retry-After holds that forum only.
+        sqlx::query("update discourse_forums set held_until = now() + interval '2 minutes' where id = $1").bind(first.0).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "discourse", first.1).await.unwrap().is_none());
+        sqlx::query("update discourse_forums set held_until = now() - interval '1 second' where id = $1").bind(first.0).execute(&db).await.unwrap();
+        // A failure, recorded on the forum by its key, holds it for an hour.
+        hooks::record(&db, project, Alert::Discourse, first.1, &Err(anyhow::anyhow!("signed out"))).await;
+        assert!(next_due(&db, project, "discourse", first.1).await.unwrap().is_none());
+        assert!(next_due(&db, project, "discourse", second.1).await.unwrap().is_none());
+        hooks::record(&db, project, Alert::Discourse, first.1, &Ok(())).await;
+        // 5 replies a day per forum, and 10 on Lemmy.
+        let posted = "insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, $2, 'Hi', 'posted', $3, now() from generate_series(1, $4)";
+        sqlx::query(posted).bind(project).bind("discourse").bind(first.1).bind(4).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "discourse", first.1).await.unwrap().is_some());
+        sqlx::query(posted).bind(project).bind("discourse").bind(first.1).bind(1).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "discourse", first.1).await.unwrap().is_none());
+        approved(&db, project, "lemmy").await;
+        sqlx::query(posted).bind(project).bind("lemmy").bind("ana@lemmy.world").bind(9).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "lemmy", "ana@lemmy.world").await.unwrap().is_some());
+        sqlx::query(posted).bind(project).bind("lemmy").bind("ana@lemmy.world").bind(1).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "lemmy", "ana@lemmy.world").await.unwrap().is_none());
+    }
+
     #[test]
     fn each_platform_has_its_own_limit() {
         assert!(fits("x", true, &"a".repeat(280), 500) && !fits("x", true, &"a".repeat(281), 500));
@@ -599,5 +790,7 @@ mod tests {
         assert!(fits("stackexchange", true, &"a".repeat(30), 500) && !fits("stackexchange", true, &"a".repeat(29), 500));
         assert!(!fits("stackexchange", true, &"a".repeat(30_001), 500));
         assert!(!fits("reddit", true, "", 500));
+        assert!(fits("discourse", true, &"a".repeat(20), 500) && !fits("discourse", true, &"a".repeat(19), 500));
+        assert!(fits("lemmy", false, &"a".repeat(10_000), 500) && !fits("lemmy", true, &"a".repeat(10_001), 500));
     }
 }

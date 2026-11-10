@@ -221,6 +221,12 @@ export interface ProjectSettings extends CrmStatus {
   dev_username: string;
   dev_error: string | null;
   dev_failed_at: string | null;
+  /** The Lemmy account posts go out from, as name@instance. The password is write-only, through PUT /integrations/lemmy. */
+  lemmy_connected: boolean;
+  lemmy_url: string;
+  lemmy_handle: string;
+  lemmy_error: string | null;
+  lemmy_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -322,6 +328,26 @@ export interface Endpoint {
   url: string;
   error: string | null;
   failed_at: Ts | null;
+  created_at: Ts;
+}
+
+/** A Discourse forum the project joins, as one user. Its key is write-only, through POST /projects/:id/discourse-forums. */
+export interface DiscourseForum {
+  id: UUID;
+  project_id: UUID;
+  /** Like https://forum.example.com, or https://example.com/forum for a forum under a path. */
+  url: string;
+  username: string;
+  /** "user" for a User API Key, "admin" for an API key an admin made for the user. */
+  key_kind: "user" | "admin";
+  account: string;
+  /** Where new topics go, null for replies only. */
+  category_id: number | null;
+  category_name: string;
+  error: string | null;
+  failed_at: Ts | null;
+  /** Posting waits until then, after the forum asked Splee to slow down. */
+  held_until: Ts | null;
   created_at: Ts;
 }
 
@@ -867,14 +893,14 @@ export interface SocialPost {
   project_id: UUID;
   run_id: UUID | null;
   /** LinkedIn posts go out through the project's Unipile connection. */
-  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube" | "stackexchange" | "dev";
+  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube" | "stackexchange" | "dev" | "discourse" | "lemmy";
   /** The link of the post or comment it answers, null for an original post. */
   in_reply_to: string | null;
   /** The text it answers. */
   context: string;
-  /** Where a Reddit post goes, or the subreddit of the thread it answers. */
+  /** Where a Reddit post goes, or the subreddit of the thread it answers. The same for a Lemmy community, as name@instance. */
   subreddit: string;
-  /** Reddit posts and DEV articles only. */
+  /** Reddit, Lemmy and Discourse posts and DEV articles only. */
   title: string;
   /** DEV articles only, at most 4. */
   tags: string[];
@@ -889,6 +915,8 @@ export interface SocialPost {
   posted_at: Ts | null;
   created_at: Ts;
   updated_at: Ts;
+  /** Discourse only: the forum it goes to, null once that forum is removed. */
+  forum_id: UUID | null;
 }
 
 export interface AgentRun {

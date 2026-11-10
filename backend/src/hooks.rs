@@ -191,6 +191,10 @@ pub enum Alert {
     StackExchange,
     /// Matched on dev_key_enc.
     Dev,
+    /// Matched on discourse_forums.key_enc.
+    Discourse,
+    /// Matched on lemmy_password_enc.
+    Lemmy,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -200,8 +204,9 @@ pub enum Alert {
 pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url: &str, result: &anyhow::Result<()>) {
     // The names are fixed strings, never user input.
     let (prefix, column) = match alert {
-        Alert::Webhook => return record_endpoint(db, "webhook_endpoints", project_id, url, result).await,
-        Alert::Chat => return record_endpoint(db, "chat_channels", project_id, url, result).await,
+        Alert::Webhook => return record_row(db, "webhook_endpoints", "url", project_id, url, result).await,
+        Alert::Chat => return record_row(db, "chat_channels", "url", project_id, url, result).await,
+        Alert::Discourse => return record_row(db, "discourse_forums", "key_enc", project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
         Alert::Finder => ("finder", "finder_key_enc".to_string()),
@@ -214,6 +219,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::YouTube => ("youtube", "youtube_token_enc".to_string()),
         Alert::StackExchange => ("stackexchange", "stackexchange_token_enc".to_string()),
         Alert::Dev => ("dev", "dev_key_enc".to_string()),
+        Alert::Lemmy => ("lemmy", "lemmy_password_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(
@@ -226,10 +232,10 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
     }
 }
 
-/// `table` is chat_channels or webhook_endpoints, never user input.
-async fn record_endpoint(db: &sqlx::PgPool, table: &str, project_id: Uuid, url: &str, result: &anyhow::Result<()>) {
+/// A row of a table with its own error and failed_at, matched on `column`. Both are fixed names, never user input.
+async fn record_row(db: &sqlx::PgPool, table: &str, column: &str, project_id: Uuid, url: &str, result: &anyhow::Result<()>) {
     let error = result.as_ref().err().map(|e| format!("{e:#}").chars().take(500).collect::<String>());
-    let sql = format!("update {table} set error = $3, failed_at = case when $3::text is null then null else now() end where project_id = $1 and url = $2");
+    let sql = format!("update {table} set error = $3, failed_at = case when $3::text is null then null else now() end where project_id = $1 and {column} = $2");
     if let Err(e) = sqlx::query(&sql).bind(project_id).bind(url).bind(error).execute(db).await {
         tracing::warn!(error = %e, "couldn't save the alert outcome");
     }

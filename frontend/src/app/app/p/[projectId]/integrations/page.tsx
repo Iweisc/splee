@@ -13,6 +13,7 @@ import {
   MailCheck,
   MailPlus,
   MessageCircleQuestionMark,
+  MessageSquareText,
   MessagesSquare,
   Newspaper,
   RefreshCw,
@@ -22,6 +23,7 @@ import {
   TvMinimalPlay,
   UserPlus,
   UserSearch,
+  UsersRound,
   Webhook,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -39,7 +41,15 @@ import { Field, Input, Select, Switch } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import { CRM_NAMES, type CrmName, type Endpoint, type ProjectSettings, type WebhookDelivery, type WebhookEvent } from "@/lib/types";
+import {
+  CRM_NAMES,
+  type CrmName,
+  type DiscourseForum,
+  type Endpoint,
+  type ProjectSettings,
+  type WebhookDelivery,
+  type WebhookEvent,
+} from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 
 const PAYLOAD = `POST <your webhook URL>
@@ -1400,6 +1410,147 @@ function DevSection({ projectId, settings }: { projectId: string; settings: Proj
   );
 }
 
+/** Each forum is added and removed on its own, not with the page's Save. Keys are write-only, and adding checks the key with
+ *  the forum and reads back the user it posts as. Adding the same user again replaces the key and the category. */
+function DiscourseSection({ projectId }: { projectId: string }) {
+  const key = `/projects/${projectId}/discourse-forums`;
+  const { data, error, mutate } = useSWR<DiscourseForum[]>(key, fetcher);
+  const { pending, run } = useAction();
+  const empty = { url: "", key: "", username: "", category: "" };
+  const [form, setForm] = useState(empty);
+  const set = (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [field]: e.target.value });
+  const add = async () => {
+    const done = await run("add", async () => {
+      await api(key, { body: { ...form, url: form.url.trim(), key: form.key.trim() } });
+      await mutate();
+    }, `Joined ${hostOf(`https://${form.url.trim().replace(/^https?:\/\//, "")}`)}`);
+    if (done) setForm(empty);
+  };
+  const remove = (f: DiscourseForum) => {
+    if (!confirm(`Leave ${hostOf(f.url)}? Approved posts for it go back to drafts.`)) return;
+    run(f.id, async () => {
+      await api(`/discourse-forums/${f.id}`, { method: "DELETE" });
+      await mutate();
+    }, `Left ${hostOf(f.url)}`);
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <MessageSquareText className="size-4" /> Discourse forums
+        </span>
+      }
+      description="Searches the forums you join for recent topics where your buyers ask for help, and posts the replies you approve on the Social page."
+    >
+      {error ? (
+        <LoadError error={error} what="your forums" retry={() => mutate()} />
+      ) : (
+        <>
+          {!!data?.length && (
+            <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+              {data.map((f) => (
+                <li key={f.id} className="px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium">
+                        <Host host={f.url.replace(/^https:\/\//, "")} />
+                      </p>
+                      <p className="text-xs text-pretty text-muted-foreground">
+                        Posting as {f.username}, up to 5 a day. {f.category_id ? `New topics go in ${f.category_name}.` : "Replies only."}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => remove(f)} loading={pending === f.id} aria-label={`Leave ${hostOf(f.url)}`}>
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+                  <LastFailure error={f.error} at={f.failed_at} what="post" />
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={submit(add)} className="flex flex-col gap-4">
+            <p className="text-sm text-pretty text-muted-foreground">
+              On a forum you run, open Admin, then API, and make a key for your own user. On other forums, paste a User API Key and leave the
+              username empty.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={data?.length ? "Another forum" : "Forum"}>
+                <Input autoComplete="off" placeholder="forum.example.com" value={form.url} onChange={set("url")} />
+              </Field>
+              <Field label="API key">
+                <Input type="password" autoComplete="off" value={form.key} onChange={set("key")} />
+              </Field>
+              <Field label="Username" hint="Only for a key an admin made.">
+                <Input autoComplete="off" value={form.username} onChange={set("username")} />
+              </Field>
+              <Field label="Category for new topics" hint="Leave it empty for replies only.">
+                <Input autoComplete="off" placeholder="Name or link" value={form.category} onChange={set("category")} />
+              </Field>
+            </div>
+            <Button type="submit" loading={pending === "add"} disabled={!form.url.trim() || !form.key.trim()} className="sm:self-start">
+              Join forum
+            </Button>
+          </form>
+        </>
+      )}
+    </Section>
+  );
+}
+
+/** The password is write-only. Connecting signs in to the instance and reads the account back. */
+function LemmySection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [form, setForm] = useState({ url: "", username: "", password: "" });
+  const { busy, call } = useConnection(projectId, "lemmy");
+  const connect = async () => {
+    if (await call(form, "Connected to Lemmy")) setForm({ url: "", username: "", password: "" });
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Lemmy? Approved posts for Lemmy will wait until you connect it again.")) call(undefined, "Lemmy disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <UsersRound className="size-4" /> Lemmy
+        </span>
+      }
+      description="Searches Lemmy communities as your account and posts what you approve on the Social page."
+      actions={
+        settings.lemmy_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.lemmy_connected ? (
+        <p className="text-sm text-pretty">Posting as @{settings.lemmy_handle}, up to 10 posts a day. Approved posts go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            Splee signs in as your account on its instance. Accounts that sign in with two-factor codes can&apos;t be used.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Instance">
+              <Input autoComplete="off" placeholder="lemmy.world" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value.trim() })} />
+            </Field>
+            <Field label="Username">
+              <Input autoComplete="off" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.trim() })} />
+            </Field>
+            <Field label="Password">
+              <Input type="password" autoComplete="off" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </Field>
+          </div>
+          <Button type="submit" loading={busy} disabled={!form.url || !form.username || !form.password} className="sm:self-start">
+            Connect
+          </Button>
+        </form>
+      )}
+      <LastFailure error={settings.lemmy_error} at={settings.lemmy_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -1490,6 +1641,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <YouTubeSection projectId={projectId} settings={s} />
           <StackExchangeSection projectId={projectId} settings={s} />
           <DevSection projectId={projectId} settings={s} />
+          <DiscourseSection projectId={projectId} />
+          <LemmySection projectId={projectId} settings={s} />
 
           <Section
             title={
