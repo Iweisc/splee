@@ -5,7 +5,7 @@ use mail_parser::{HeaderValue, Message, MessageParser, MimeHeaders};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::imap;
+use super::{imap, warmup};
 use crate::agent::{self, kind};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
@@ -64,15 +64,29 @@ async fn poll(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
             return Ok(());
         }
     }
+    let mut warm = vec![];
     for (uid, raw) in messages {
-        if let Err(e) = store(state, mb, &raw).await {
-            tracing::warn!(mailbox = %mb.email, uid, error = ?e, "could not store inbound message");
+        match take(state, mb, &raw).await {
+            Ok(Some(found)) => warm.push((uid, found)),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(mailbox = %mb.email, uid, error = ?e, "could not store inbound message"),
         }
         sqlx::query("update mailboxes set imap_last_uid = greatest(imap_last_uid, $2) where id = $1")
             .bind(mb.id)
             .bind(i64::from(uid))
             .execute(&state.db)
             .await?;
+    }
+    // Warmup trouble shows in its health, not as the mailbox's error, since replies were still read.
+    if !warm.is_empty()
+        && let Err(e) = warmup::file_away(state, mb, &warm).await
+    {
+        tracing::warn!(mailbox = %mb.email, error = ?e, "could not file away warmup emails");
+    }
+    if mb.warmup
+        && let Err(e) = warmup::rescue_spam(state, mb).await
+    {
+        tracing::warn!(mailbox = %mb.email, error = ?e, "could not check the spam folder for warmup emails");
     }
     if !mb.last_error.is_empty() && mb.status == "active" {
         sqlx::query("update mailboxes set last_error = '' where id = $1 and status = 'active'").bind(mb.id).execute(&state.db).await?;
@@ -185,6 +199,16 @@ fn strip_quoted(body: &str) -> String {
     if text.is_empty() { body.trim().to_string() } else { text }
 }
 
+/// Stores `raw` as a reply or a bounce, unless it's a warmup email, which never reaches the inbox or the classifier and is
+/// returned to be filed away instead.
+async fn take(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<Option<warmup::Received>> {
+    if let Some(found) = warmup::received(&state.db, mb, raw).await? {
+        return Ok(Some(found));
+    }
+    store(state, mb, raw).await?;
+    Ok(None)
+}
+
 async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()> {
     let Some(msg) = MessageParser::default().parse(raw) else { return Ok(()) };
     let from = msg.from().and_then(|a| a.first()).and_then(|a| a.address()).map(str::to_lowercase).unwrap_or_default();
@@ -289,9 +313,96 @@ async fn match_lead(state: &AppState, mb: &Mailbox, ids: &[String], from: Option
 
 #[cfg(test)]
 mod tests {
-    use mail_parser::MessageParser;
+    use std::sync::Arc;
 
-    use super::{Report, strip_quoted};
+    use mail_parser::MessageParser;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{Report, strip_quoted, take};
+    use crate::config::Config;
+    use crate::models::Mailbox;
+    use crate::state::AppState;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn warmup_emails_never_reach_the_inbox_or_the_classifier(db: PgPool) {
+        let cfg = Config {
+            database_url: String::new(),
+            app_secret: String::new(),
+            public_url: String::new(),
+            bind_addr: String::new(),
+            agent_model: String::new(),
+            agent_concurrency: 0,
+            sending_enabled: false,
+            bird_bin: None,
+            open_signup: true,
+            public_agent: false,
+        };
+        let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str| {
+            sqlx::query_as::<_, Mailbox>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, warmup) values ($1, $2, 'smtp.test', '', '', true)
+                 returning *",
+            )
+            .bind(org)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (jo, sam) = (mailbox("jo@alpha.test").await.unwrap(), mailbox("sam@beta.test").await.unwrap());
+        // Sam is also a lead Jo emailed, so any other email from Sam is a reply.
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, email, status) values ($1, 'sam@beta.test', 'contacted') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at, message_id)
+             values ($1, $2, $3, 'outbound', 'initial', 'sent', now(), 'first@alpha.test')",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(jo.id)
+        .execute(&db)
+        .await
+        .unwrap();
+        for token in ["K4M9QX2D", "ZZ23AB45"] {
+            sqlx::query("insert into warmup_emails (token, from_mailbox_id, to_mailbox_id, subject, message_id, status) values ($1, $2, $3, 'Agenda', $1, 'sent')")
+                .bind(token)
+                .bind(sam.id)
+                .bind(jo.id)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let email = |headers: &str, body: &str| format!("From: Sam <sam@beta.test>\r\nTo: jo@alpha.test\r\n{headers}Subject: Agenda\r\n\r\n{body}\r\n");
+        let counts = || async {
+            sqlx::query_as::<_, (i64, i64)>(
+                "select (select count(*) from email_messages where direction = 'inbound'), (select count(*) from agent_runs where kind = 'classify_reply')",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+
+        // Threaded under Jo's campaign email, which would make it a reply if it weren't warmup, once with the header and
+        // once with only the code in the body.
+        let threaded = "Message-ID: <w1@beta.test>\r\nIn-Reply-To: <first@alpha.test>\r\n";
+        for raw in [email(&format!("{threaded}X-Splee-Warmup: K4M9QX2D\r\n"), "Hi Jo,\r\n\r\nThoughts?"), email("", "Hi Jo,\r\n\r\nThanks,\r\nSam\r\n\r\nSW-ZZ23AB45")] {
+            assert!(take(&state, &jo, raw.as_bytes()).await.unwrap().is_some());
+        }
+        assert_eq!(counts().await, (0, 0));
+        let landed: Vec<String> = sqlx::query_scalar("select landed from warmup_emails order by token").fetch_all(&db).await.unwrap();
+        assert_eq!(landed, ["inbox", "inbox"]);
+
+        // A code Splee never sent is ordinary mail, here Sam's reply.
+        assert!(take(&state, &jo, email("", "Sounds good.\r\n\r\nSW-QQQQQQQQ").as_bytes()).await.unwrap().is_none());
+        assert_eq!(counts().await, (1, 1));
+    }
 
     fn classify(from_local_part: &str, raw: &str) -> Report {
         super::classify(from_local_part, &MessageParser::default().parse(raw.as_bytes()).unwrap(), raw.as_bytes())

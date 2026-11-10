@@ -7,6 +7,7 @@ use chrono_tz::Tz;
 use serde_json::json;
 use uuid::Uuid;
 
+use super::warmup::{HOLD_DAYS, LANDING_IN_SPAM, WARMUP_SENT_TODAY};
 use super::{dns, smtp};
 use crate::agent::{self, kind};
 use crate::hooks::{self, Alert};
@@ -235,13 +236,17 @@ async fn replace_guessed(db: &sqlx::PgPool, lead: &Lead, found: &verify::Found) 
 const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 * (current_date - coalesce(m.first_sent_on, current_date)))
                            else m.daily_limit end";
 
-/// Mailboxes of the org that may still send today, least used first.
+/// Mailboxes of the org that may still send campaigns today, least used first. A warming mailbox also stays under its
+/// total with today's warmup emails. One held until warm sends none in its first 14 days of warmup, or while its warmup
+/// emails land in spam.
 async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
     Ok(sqlx::query_as::<_, Mailbox>(&format!(
         "select m.* from mailboxes m
          left join lateral (select count(*) as sent, max(sent_at) as last_sent from email_messages e
                             where e.mailbox_id = m.id and e.status = 'sent' and e.sent_at >= date_trunc('day', now())) t on true
          where m.org_id = $1 and m.status = 'active' and coalesce(t.sent, 0) < {TODAY_LIMIT}
+           and (not m.warmup or coalesce(t.sent, 0) + ({WARMUP_SENT_TODAY}) < m.total_daily_limit)
+           and not (m.warmup and m.hold_until_warm and (coalesce(current_date - m.warmup_started_on, 0) < {HOLD_DAYS} or {LANDING_IN_SPAM}))
          order by coalesce(t.sent, 0), t.last_sent nulls first",
     ))
     .bind(org_id)
@@ -397,6 +402,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             in_reply_to: in_reply_to.as_deref(),
             references: if in_reply_to.is_some() { &references } else { &[] },
             unsubscribe_url: Some(&one_click),
+            warmup: None,
         },
     );
     let message = match built {
@@ -432,14 +438,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             } else if e.is_transient() {
                 defer(&state.db, &email, &e.to_string()).await
             } else {
-                let recheck = if smtp::unreachable(&e) {
-                    Some(RECHECK_MINUTES)
-                } else if smtp::over_quota(&e) {
-                    Some(QUOTA_RECHECK_MINUTES)
-                } else {
-                    None
-                };
-                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}"), recheck).await
+                mailbox_failed(state, &mb, &email, &format!("SMTP: {e}"), recheck_after(&e)).await
             }
         }
     }
@@ -522,19 +521,32 @@ const QUOTA_RECHECK_MINUTES: i32 = 60;
 /// after `recheck` minutes. Anything else, like a rejected login, waits for someone to fix it and press Test, since
 /// retrying a bad password can lock the account.
 async fn mailbox_failed(state: &AppState, mb: &Mailbox, email: &EmailMessage, error: &str, recheck: Option<i32>) -> anyhow::Result<()> {
-    tracing::warn!(mailbox = %mb.email, %error, "mailbox failed, pausing it");
-    sqlx::query(
-        "update mailboxes set status = 'error', last_error = $2,
-           recheck_at = now() + make_interval(mins => $3)
-         where id = $1",
-    )
-    .bind(mb.id)
-    .bind(error)
-    .bind(recheck)
-    .execute(&state.db)
-    .await?;
+    stop_mailbox(&state.db, mb, error, recheck).await?;
     sqlx::query("update email_messages set status = 'approved', error = $2 where id = $1").bind(email.id).bind(error).execute(&state.db).await?;
     Ok(())
+}
+
+/// Sets the mailbox to error, which stops its campaign and warmup sends until it works again.
+pub(super) async fn stop_mailbox(db: &sqlx::PgPool, mb: &Mailbox, error: &str, recheck: Option<i32>) -> sqlx::Result<()> {
+    tracing::warn!(mailbox = %mb.email, %error, "mailbox failed, pausing it");
+    sqlx::query("update mailboxes set status = 'error', last_error = $2, recheck_at = now() + make_interval(mins => $3) where id = $1")
+        .bind(mb.id)
+        .bind(error)
+        .bind(recheck)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// When the sender tests a mailbox stopped by this SMTP error again on its own. None waits for someone to press Test.
+pub(super) fn recheck_after(e: &lettre::transport::smtp::Error) -> Option<i32> {
+    if smtp::unreachable(e) {
+        Some(RECHECK_MINUTES)
+    } else if smtp::over_quota(e) {
+        Some(QUOTA_RECHECK_MINUTES)
+    } else {
+        None
+    }
 }
 
 /// Tests the mailboxes stopped by an unreachable server or a sending quota, and puts each one back to work once its server
@@ -850,6 +862,78 @@ mod tests {
         assert!(has_room().await);
         send(1).await.unwrap();
         assert!(!has_room().await);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_warming_mailbox_keeps_campaign_and_warmup_emails_under_its_total(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, daily_limit, warmup, warmup_started_on,
+                                        total_daily_limit)
+                 values ($1, $2, 'smtp.example.test', 'x', 'x', 50, true, current_date - 20, 60) returning id",
+            )
+            .bind(org)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (warming, peer) = (mailbox("warm@alpha.test").await.unwrap(), mailbox("peer@beta.test").await.unwrap());
+        sqlx::query("update mailboxes set status = 'paused' where id = $1").bind(peer).execute(&db).await.unwrap();
+        let campaign = |n: i32| {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+                 select $1, $2, $3, 'outbound', 'initial', 'sent', now() from generate_series(1, $4)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(warming)
+            .bind(n)
+            .execute(&db)
+        };
+        let warmup = |n: i32, landed: &'static str, days_ago: i32| {
+            sqlx::query(
+                "insert into warmup_emails (token, from_mailbox_id, to_mailbox_id, subject, message_id, status, sent_at, landed)
+                 select gen_random_uuid()::text, $1, $2, 'Hi', gen_random_uuid()::text, 'sent', now() - make_interval(days => $3), nullif($4, '')
+                 from generate_series(1, $5)",
+            )
+            .bind(warming)
+            .bind(peer)
+            .bind(days_ago)
+            .bind(landed)
+            .bind(n)
+            .execute(&db)
+        };
+        let set = |sql: &'static str| sqlx::query(sql).bind(warming).execute(&db);
+        let has_room = || async { !mailboxes_with_room(&db, org).await.unwrap().is_empty() };
+
+        // 30 warmup and 29 campaign emails today, under the total of 60 and the daily limit of 50.
+        warmup(30, "", 0).await.unwrap();
+        campaign(29).await.unwrap();
+        assert!(has_room().await);
+        campaign(1).await.unwrap();
+        assert!(!has_room().await, "60 in all");
+        // Without warmup, only the daily limit counts, like before warmup existed.
+        set("update mailboxes set warmup = false where id = $1").await.unwrap();
+        assert!(has_room().await);
+
+        // Held until warm: on day 6 of warmup no campaign goes out.
+        set("update mailboxes set warmup = true, total_daily_limit = 1000, hold_until_warm = true, warmup_started_on = current_date - 5 where id = $1")
+            .await
+            .unwrap();
+        assert!(!has_room().await);
+        set("update mailboxes set warmup_started_on = current_date - 14 where id = $1").await.unwrap();
+        assert!(has_room().await, "day 15");
+        // Past day 14 but landing in spam: 3 of the last 10 the peers saw.
+        warmup(7, "inbox", 2).await.unwrap();
+        warmup(3, "spam", 2).await.unwrap();
+        assert!(!has_room().await);
+        set("update mailboxes set hold_until_warm = false where id = $1").await.unwrap();
+        assert!(has_room().await);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

@@ -12,7 +12,7 @@ use crate::auth::Auth;
 use crate::crypto::encrypt;
 use crate::error::{AppError, AppResult};
 use crate::mail;
-use crate::models::{Mailbox, MailboxStats};
+use crate::models::{Mailbox, MailboxStats, WarmupHealth};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/mailboxes", get(list).post(create))
         .route("/mailboxes/stats", get(stats))
         .route("/mailboxes/settings", get(settings))
+        .route("/mailboxes/warmup", get(warmup))
         .route("/mailboxes/{id}", patch(update).delete(remove))
         .route("/mailboxes/{id}/test", post(test))
         .route("/mailboxes/{id}/check-dns", post(check_dns))
@@ -69,6 +70,12 @@ const STATS: &str = "select m.id as mailbox_id, m.email::text,
                and e.created_at > now() - interval '30 days') as replied
          from mailboxes m";
 
+/// How warming up is going for each of the org's mailboxes with warmup on. Only their own counts: the mailboxes they
+/// trade emails with may belong to anyone on this Splee.
+async fn warmup(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<WarmupHealth>>> {
+    Ok(Json(mail::warmup::health(&state.db, auth.org_id).await?))
+}
+
 /// MailboxInput from types.ts. Every field is optional so PATCH can reuse it.
 #[derive(Deserialize)]
 struct MailboxBody {
@@ -92,6 +99,10 @@ struct MailboxBody {
     ramp_up: Option<bool>,
     /// Only for a provider that signs with a selector of its own. Empty clears it.
     dkim_selector: Option<String>,
+    warmup: Option<bool>,
+    warmup_daily_cap: Option<i32>,
+    total_daily_limit: Option<i32>,
+    hold_until_warm: Option<bool>,
 }
 
 fn trimmed(value: &Option<String>) -> Option<&str> {
@@ -116,6 +127,12 @@ impl MailboxBody {
         // Like isUrl in the form and the project's booking link, http is let through.
         if trimmed(&self.booking_link).is_some_and(|l| !Url::parse(l).is_ok_and(|u| matches!(u.scheme(), "https" | "http") && u.host_str().is_some())) {
             return Err(AppError::BadRequest("Booking link must be a full URL starting with https://".into()));
+        }
+        if self.warmup_daily_cap.is_some_and(|c| !(1..=200).contains(&c)) {
+            return Err(AppError::BadRequest("Warmup emails a day must be between 1 and 200".into()));
+        }
+        if self.total_daily_limit.is_some_and(|l| !(1..=5000).contains(&l)) {
+            return Err(AppError::BadRequest("Total emails a day must be between 1 and 5000".into()));
         }
         if self.cost_per_email_micros.is_some_and(|c| !(0..=1_000_000).contains(&c)) {
             return Err(AppError::BadRequest("Cost per email must be between $0 and $1".into()));
@@ -162,10 +179,10 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
            imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link,
-           dkim_selector)
+           dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
            $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''),
-           coalesce($19, ''))
+           coalesce($19, ''), coalesce($20, true), coalesce($21, 40), coalesce($22, 80), coalesce($23, true))
          returning *",
     )
     .bind(auth.org_id)
@@ -187,6 +204,10 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.signature.as_deref().map(str::trim))
     .bind(body.booking_link.as_deref().map(str::trim))
     .bind(dkim_selector)
+    .bind(body.warmup)
+    .bind(body.warmup_daily_cap)
+    .bind(body.total_daily_limit)
+    .bind(body.hold_until_warm)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -232,7 +253,14 @@ async fn update(
            ramp_up = coalesce($16, ramp_up),
            signature = coalesce($17, signature),
            booking_link = coalesce($18, booking_link),
-           dkim_selector = coalesce($19, dkim_selector)
+           dkim_selector = coalesce($19, dkim_selector),
+           warmup = coalesce($20, warmup),
+           -- Turned off and on again, warmup ramps up from the start.
+           warmup_started_on = case when $20 = false then null else warmup_started_on end,
+           warmup_next_at = case when $20 = false then null else warmup_next_at end,
+           warmup_daily_cap = coalesce($21, warmup_daily_cap),
+           total_daily_limit = coalesce($22, total_daily_limit),
+           hold_until_warm = coalesce($23, hold_until_warm)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -254,6 +282,10 @@ async fn update(
     .bind(body.signature.as_deref().map(str::trim))
     .bind(body.booking_link.as_deref().map(str::trim))
     .bind(dkim_selector)
+    .bind(body.warmup)
+    .bind(body.warmup_daily_cap)
+    .bind(body.total_daily_limit)
+    .bind(body.hold_until_warm)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

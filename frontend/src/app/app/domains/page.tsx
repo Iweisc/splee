@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Address, Badge, Card, EmptyState, Message, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { DnsCheck, Mailbox, MailboxInput, MailboxStats } from "@/lib/types";
-import { bouncing, todayLimit, wholePercent } from "@/lib/mailbox";
+import { Switch } from "@/components/ui/form";
+import type { DnsCheck, Mailbox, MailboxInput, MailboxStats, WarmupHealth } from "@/lib/types";
+import { bouncing, heldForWarmup, landingInSpam, todayLimit, warmupStatus, wholePercent } from "@/lib/mailbox";
 import { dateTime, isPast, num, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
@@ -54,6 +55,7 @@ export default function MailboxesPage() {
   const { data, error, mutate } = useSWR<Mailbox[]>("/mailboxes", fetcher, { refreshInterval: 60_000 });
   // A month of numbers barely moves in a minute, so this one loads with the page and isn't polled.
   const { data: stats } = useSWR<MailboxStats[]>("/mailboxes/stats", fetcher);
+  const { data: warmup, mutate: mutateWarmup } = useSWR<WarmupHealth[]>("/mailboxes/warmup", fetcher, { refreshInterval: 60_000 });
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Mailbox | "new" | null>(null);
 
@@ -74,6 +76,12 @@ export default function MailboxesPage() {
       replace(await api<Mailbox>(`/mailboxes/${m.id}`, { method: "PATCH", body: { status: m.status === "paused" ? "active" : "paused" } })),
     );
 
+  const patch = (key: string, m: Mailbox, body: Partial<MailboxInput>) =>
+    run(`${key}:${m.id}`, async () => {
+      replace(await api<Mailbox>(`/mailboxes/${m.id}`, { method: "PATCH", body }));
+      await mutateWarmup();
+    });
+
   const remove = (m: Mailbox) => {
     if (!confirm(`Remove ${m.email}? Emails already sent stay in your history.`)) return;
     run(`delete:${m.id}`, async () => {
@@ -92,11 +100,12 @@ export default function MailboxesPage() {
           const res = await api<TestResult>(`/mailboxes/${created.id}/test`, { method: "POST" }).catch(
             (e: Error): TestResult => ({ ok: false, error: e.message }),
           );
-          await mutate();
+          await Promise.all([mutate(), mutateWarmup()]);
           if (res.ok) toast.success("Mailbox connected");
           else toast.warning(`Mailbox added, but the connection test failed: ${res.error || "unknown error"}`);
         } else if (editing) {
           replace(await api<Mailbox>(`/mailboxes/${editing.id}`, { method: "PATCH", body: { ...input } }));
+          await mutateWarmup();
           toast.success("Mailbox saved");
         }
       },
@@ -201,6 +210,14 @@ export default function MailboxesPage() {
                   </span>
                 </div>
 
+                <Warmup
+                  m={m}
+                  health={warmup?.find((h) => h.mailbox_id === m.id)}
+                  pending={pending}
+                  toggle={() => patch("warmup", m, { warmup: !m.warmup })}
+                  hold={() => patch("hold", m, { hold_until_warm: true })}
+                />
+
                 <Health stats={stats?.find((s) => s.mailbox_id === m.id)} />
 
                 {m.last_error && (
@@ -260,6 +277,70 @@ function Health({ stats }: { stats?: MailboxStats }) {
           More than 1 in 20 emails from this mailbox bounced. Past that, providers start sending its mail to spam. Check the addresses in your
           lead lists before you send more. Past 1 in 10, Splee pauses it.
         </p>
+      )}
+    </>
+  );
+}
+
+function Warmup({
+  m,
+  health,
+  pending,
+  toggle,
+  hold,
+}: {
+  m: Mailbox;
+  health?: WarmupHealth;
+  pending: string | null;
+  toggle: () => void;
+  hold: () => void;
+}) {
+  const status = warmupStatus(m, health);
+  const seen = health ? health.inbox + health.spam : 0;
+  const spam = m.warmup && health && landingInSpam(health);
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <Switch checked={m.warmup} onChange={toggle} disabled={pending === `warmup:${m.id}`} label="Warmup" />
+        <span className="text-sm font-medium">Warmup</span>
+        {m.warmup ? <Badge tone={status.tone}>{status.label}</Badge> : <span className="text-xs text-muted-foreground">Off</span>}
+        {heldForWarmup(m, health) && !spam && <span className="text-xs whitespace-nowrap text-muted-foreground">Campaigns wait until it&apos;s warm</span>}
+      </div>
+      {m.warmup && health && health.sent + health.received > 0 && (
+        <p className="mt-2 flex flex-wrap gap-x-1.5 text-xs text-muted-foreground [&>span]:whitespace-nowrap">
+          <span>14 days: {num(health.sent)} sent ·</span>
+          <span>{num(health.received)} received ·</span>
+          {seen > 0 && (
+            <span>
+              <span className={spam ? "font-medium text-amber-700" : undefined}>{wholePercent(health.inbox, seen)} inbox placement</span> ·
+            </span>
+          )}
+          <span>
+            today {health.sent_today} of {health.target_today}
+          </span>
+        </p>
+      )}
+      {m.warmup && health && !health.has_peers && !health.day && (
+        <p className="mt-2 text-xs text-pretty text-muted-foreground">
+          Warmup trades emails with the other mailboxes warming up on this Splee. Turn it on for a second mailbox, ideally on another domain.
+        </p>
+      )}
+      {m.warmup && !m.imap_host && (
+        <p className="mt-2 text-xs text-pretty text-muted-foreground">Add IMAP settings so this mailbox can read and answer its warmup emails.</p>
+      )}
+      {spam && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p className="min-w-0 flex-1 basis-64 text-pretty">
+            {m.hold_until_warm
+              ? "Over 1 in 5 of its warmup emails landed in spam, so campaigns from this mailbox wait until most reach the inbox again."
+              : "Over 1 in 5 of its warmup emails landed in spam, and its campaign emails likely do too. Hold campaigns while warmup repairs it?"}
+          </p>
+          {!m.hold_until_warm && (
+            <Button variant="outline" size="sm" onClick={hold} loading={pending === `hold:${m.id}`}>
+              Hold campaigns
+            </Button>
+          )}
+        </div>
       )}
     </>
   );

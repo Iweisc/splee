@@ -410,6 +410,38 @@ pub struct Mailbox {
     /// Start at a few emails a day and work up to daily_limit. See sender::TODAY_LIMIT.
     pub ramp_up: bool,
     pub first_sent_on: Option<chrono::NaiveDate>,
+    /// Trade warmup emails with the other warming mailboxes in this Splee. See mail::warmup.
+    pub warmup: bool,
+    pub warmup_started_on: Option<chrono::NaiveDate>,
+    #[serde(skip)]
+    pub warmup_next_at: Option<Ts>,
+    pub warmup_daily_cap: i32,
+    /// Campaign plus warmup emails a day, while warmup is on.
+    pub total_daily_limit: i32,
+    /// No campaign emails until warmup has run 14 days.
+    pub hold_until_warm: bool,
+    #[serde(skip)]
+    pub warmup_junk_uid: i64,
+}
+
+/// GET /mailboxes/warmup: one of the org's mailboxes with warmup on, over the last 14 days. `inbox` and `spam` are
+/// where its warmup emails landed, as the receiving mailboxes saw them.
+#[derive(Debug, Serialize, FromRow)]
+pub struct WarmupHealth {
+    pub mailbox_id: Uuid,
+    /// Day 1 is the day of its first warmup email. None before that.
+    pub day: Option<i32>,
+    pub sent_today: i64,
+    #[sqlx(skip)]
+    pub target_today: i32,
+    #[serde(skip)]
+    pub cap: i32,
+    pub sent: i64,
+    pub received: i64,
+    pub inbox: i64,
+    pub spam: i64,
+    /// Whether another mailbox in this Splee is warming up to trade emails with. Never which one.
+    pub has_peers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
