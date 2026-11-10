@@ -18,7 +18,7 @@ type Preview = { filename: string; headers: string[]; rows: string[][]; suggeste
 
 /**
  * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's, Notion database's, Baserow
- * table's or NocoDB table's link and token. Sent again on import, since the server keeps none of them.
+ * table's, NocoDB table's or Grist page's link and token. Sent again on import, since the server keeps none of them.
  */
 type Source =
   | { file: File }
@@ -26,7 +26,8 @@ type Source =
   | { airtable_url: string; airtable_token: string }
   | { notion_url: string; notion_token: string }
   | { baserow_url: string; baserow_token: string }
-  | { nocodb_url: string; nocodb_token: string };
+  | { nocodb_url: string; nocodb_token: string }
+  | { grist_url: string; grist_token: string };
 
 const appendSource = (form: FormData, source: Source) => {
   for (const [key, value] of Object.entries(source)) form.append(key, value);
@@ -43,7 +44,9 @@ const sourceKind = (source: Source) =>
           ? "notion"
           : "baserow_url" in source
             ? "baserow"
-            : "nocodb";
+            : "nocodb_url" in source
+              ? "nocodb"
+              : "grist";
 
 type LinkSource = Exclude<ReturnType<typeof sourceKind>, "file">;
 
@@ -53,6 +56,7 @@ const LINK_SOURCES: { value: LinkSource; label: string }[] = [
   { value: "notion", label: "Notion" },
   { value: "baserow", label: "Baserow" },
   { value: "nocodb", label: "NocoDB" },
+  { value: "grist", label: "Grist" },
 ];
 
 const CHOOSE_ANOTHER: Record<ReturnType<typeof sourceKind>, string> = {
@@ -62,6 +66,7 @@ const CHOOSE_ANOTHER: Record<ReturnType<typeof sourceKind>, string> = {
   notion: "Choose another database",
   baserow: "Choose another table",
   nocodb: "Choose another table",
+  grist: "Choose another table",
 };
 
 // Lead columns the backend import accepts as mapping keys.
@@ -89,6 +94,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [notion, setNotion] = useState({ url: "", token: "" });
   const [baserow, setBaserow] = useState({ url: "", token: "" });
   const [nocodb, setNocodb] = useState({ url: "", token: "" });
+  const [grist, setGrist] = useState({ url: "", token: "" });
   const [linkSource, setLinkSource] = useState<LinkSource>("sheet");
 
   const choose = async (next: Source) => {
@@ -105,6 +111,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setNotion({ url: "", token: "" });
       setBaserow({ url: "", token: "" });
       setNocodb({ url: "", token: "" });
+      setGrist({ url: "", token: "" });
     } catch (e) {
       toastError(e);
     } finally {
@@ -121,7 +128,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB, Grist or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -157,14 +164,8 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
             <div className="flex flex-col gap-4 p-6">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <span className="text-sm font-medium">Or import from</span>
-                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get Google Sheet on a row
-                    of its own and the rest two by two. */}
-                <Tabs
-                  value={linkSource}
-                  onChange={setLinkSource}
-                  options={LINK_SOURCES}
-                  className="grid w-full grid-cols-2 *:first:col-span-2 sm:inline-flex sm:w-auto"
-                />
+                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get them two by two. */}
+                <Tabs value={linkSource} onChange={setLinkSource} options={LINK_SOURCES} className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto" />
               </div>
               {linkSource === "sheet" && (
                 <form
@@ -278,6 +279,31 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                     className="sm:mt-6"
                     loading={loading === "nocodb"}
                     disabled={!nocodb.url.trim() || !nocodb.token.trim() || !!loading}
+                  >
+                    <Table2 className="size-4" /> Read table
+                  </Button>
+                </form>
+              )}
+              {linkSource === "grist" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (grist.url.trim() && grist.token.trim()) choose({ grist_url: grist.url.trim(), grist_token: grist.token.trim() });
+                  }}
+                >
+                  <Field label="Page link" hint="The page with the table, on getgrist.com or your own server." className="min-w-56 flex-1">
+                    <Input value={grist.url} onChange={(e) => setGrist({ ...grist, url: e.target.value })} placeholder="https://docs.getgrist.com/…/p/…" />
+                  </Field>
+                  <Field label="API key" hint="From Profile settings → API. Never saved." className="min-w-56 flex-1">
+                    <Input type="password" value={grist.token} onChange={(e) => setGrist({ ...grist, token: e.target.value })} />
+                  </Field>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className="sm:mt-6"
+                    loading={loading === "grist"}
+                    disabled={!grist.url.trim() || !grist.token.trim() || !!loading}
                   >
                     <Table2 className="size-4" /> Read table
                   </Button>
