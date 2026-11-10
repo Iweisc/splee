@@ -3218,6 +3218,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "arrow-array",
+ "arrow-schema",
  "async-imap",
  "async-stream",
  "axum",

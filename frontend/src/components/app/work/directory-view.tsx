@@ -9,24 +9,17 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, Favicon, Host } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
+import { countryName } from "@/lib/countries";
 import { SOURCE_URL } from "@/lib/source";
 import type { DirectoryCompany, DirectoryCountry, DirectoryPage, SegmentWithStats } from "@/lib/types";
 import { cn, compact, num, plural } from "@/lib/utils";
-import { fetcher } from "@/hooks/use-me";
+import { fetcher, useMe } from "@/hooks/use-me";
+import { CountryLoader } from "./country-loader";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
 
 const CATEGORY = "hidden sm:table-cell";
 const CITY = "hidden md:table-cell";
-
-const regions = new Intl.DisplayNames(["en"], { type: "region" });
-const countryName = (code: string) => {
-  try {
-    return regions.of(code) ?? code;
-  } catch {
-    return code;
-  }
-};
 
 /** "dental_clinic" -> "Dental clinic" */
 const categoryWords = (category: string | null) => (category ? category[0].toUpperCase() + category.slice(1).replaceAll("_", " ") : "");
@@ -34,8 +27,20 @@ const categoryWords = (category: string | null) => (category ? category[0].toUpp
 /** Many listings shout their city, like LEEDS. Those read as Leeds, the rest stay as written, like St Leonards-on-Sea. */
 const cityName = (city: string) => (city === city.toUpperCase() ? city.toLowerCase().replace(/(^|[\s-])\p{L}/gu, (m) => m.toUpperCase()) : city);
 
-/** Search over the shared company database, and adding the ticked companies to one of the project's campaigns. */
+/** Search over the shared company database, and adding the ticked companies to one of the project's campaigns. Instance
+ * operators also get the control that loads countries into it, above the search. */
 export function DirectoryView({ projectId }: { projectId: string }) {
+  const { me } = useMe();
+  const { data: countries, mutate: retryCountries } = useSWR<DirectoryCountry[]>("/directory/countries", fetcher);
+  return (
+    <>
+      {me?.operator && countries && <CountryLoader countries={countries} onLoaded={() => retryCountries()} />}
+      <DirectorySearch projectId={projectId} operator={me?.operator ?? false} />
+    </>
+  );
+}
+
+function DirectorySearch({ projectId, operator }: { projectId: string; operator: boolean }) {
   const [q, setQ] = useState("");
   const [country, setCountry] = useState("");
   const [city, setCity] = useState("");
@@ -82,17 +87,24 @@ export function DirectoryView({ projectId }: { projectId: string }) {
   if (empty) {
     return (
       <Card>
-        <EmptyState
-          icon={<Building2 className="size-5" />}
-          title="The company database is empty"
-          action={
-            <LinkButton href={`${SOURCE_URL}#running-it-for-real`} target="_blank" rel="noreferrer" variant="outline" size="sm">
-              How to load it
-            </LinkButton>
-          }
-        >
-          Load a country&apos;s businesses by running <code className="font-mono text-xs whitespace-nowrap">splee import-companies GB</code> on the server.
-        </EmptyState>
+        {operator ? (
+          <EmptyState icon={<Building2 className="size-5" />} title="The company database is empty">
+            Pick a country above and press Load. Its businesses show up here once it&apos;s loaded.
+          </EmptyState>
+        ) : (
+          <EmptyState
+            icon={<Building2 className="size-5" />}
+            title="The company database is empty"
+            action={
+              <LinkButton href={`${SOURCE_URL}#running-it-for-real`} target="_blank" rel="noreferrer" variant="outline" size="sm">
+                How to load it
+              </LinkButton>
+            }
+          >
+            Whoever runs this Splee can load a country here, or by running{" "}
+            <code className="font-mono text-xs whitespace-nowrap">splee import-companies GB</code> on the server.
+          </EmptyState>
+        )}
       </Card>
     );
   }

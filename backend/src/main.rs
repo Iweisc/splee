@@ -10,6 +10,7 @@ mod crypto;
 mod dev;
 mod domains;
 mod directory;
+mod directory_queue;
 mod error;
 mod events;
 mod grist;
@@ -74,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
             println!("They're signed out everywhere and can change it under Account after they sign in.");
             return Ok(());
         }
-        Some(Command::ImportCompanies(countries)) => return directory::import(&db, &countries).await,
+        Some(Command::ImportCompanies(countries)) => return directory::import(&db, directory::CATALOG, &countries, None).await.map(drop),
         None => {}
     }
 
@@ -90,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     }
     agent::spawn_workers(state.clone());
     mail::spawn_workers(state.clone());
+    directory_queue::spawn_worker(state.db.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())
