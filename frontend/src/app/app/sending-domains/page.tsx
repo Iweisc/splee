@@ -39,10 +39,6 @@ const PROVIDERS: Record<MailProvider, { label: string; next: string }> = {
     label: "Migadu",
     next: "Splee set Migadu's DKIM records already. Add the domain in Migadu and add the TXT record it verifies with here.",
   },
-  other: {
-    label: "Another provider",
-    next: "Add your provider's MX, SPF and DKIM records here. Splee set DMARC and the forward to your site.",
-  },
 };
 
 const BUSY = (d: SendingDomain) => d.status === "queued" || d.status === "registering" || d.dns_status === "setting";
@@ -420,7 +416,7 @@ function DomainList({ domains, mutate }: { domains: SendingDomain[]; mutate: () 
                     </Button>
                   </>
                 )}
-                {!BUSY(d) && (
+                {!BUSY(d) && d.status !== "uncertain" && (
                   <Button variant="ghost" size="icon" onClick={() => remove(d)} loading={pending === `delete:${d.id}`} aria-label="Remove" title="Remove">
                     <Trash2 className="size-4" />
                   </Button>

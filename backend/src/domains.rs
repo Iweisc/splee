@@ -40,7 +40,7 @@ pub fn suggestions(domain: &str) -> Vec<String> {
     out
 }
 
-pub const PROVIDERS: &[&str] = &["google", "microsoft", "zoho", "zoho_eu", "migadu", "other"];
+pub const PROVIDERS: &[&str] = &["google", "microsoft", "zoho", "zoho_eu", "migadu"];
 
 /// The records Splee sets for a provider: what's known before the user has an account there. DKIM keys are made per
 /// account, so the user pastes those, except Migadu's, whose CNAMEs follow from the domain.
@@ -115,7 +115,8 @@ pub async fn queue(db: &PgPool, org_id: Uuid, orders: &[Order], setup: &Setup) -
             "insert into sending_domains (org_id, domain, price_micros, provider, forward_to, dmarc_email) values ($1, $2, $3, $4, $5, $6)
              on conflict (org_id, domain) do update
                set status = 'queued', attempt_key = gen_random_uuid(), price_micros = excluded.price_micros, provider = excluded.provider,
-                   forward_to = excluded.forward_to, dmarc_email = excluded.dmarc_email, error = '', records = '[]', dns_status = ''
+                   forward_to = excluded.forward_to, dmarc_email = excluded.dmarc_email, error = '', records = '[]', dns_status = '',
+                   created_at = now()
                where sending_domains.status = 'failed'
              returning id",
         )
@@ -184,8 +185,18 @@ async fn registered(db: &PgPool, pb: &Porkbun, id: Uuid, domain: &str) -> sqlx::
 /// For a purchase that ended unclear: asks Porkbun whether the domain is in the account. Never buys.
 pub async fn confirm(db: &PgPool, pb: &Porkbun, d: &SendingDomain) -> Result<bool, Failure> {
     let Some(expires) = pb.find(&d.domain).await? else {
-        let error = "Porkbun doesn't list it in your account. If it isn't there in a few minutes either, remove it here and buy it again.";
-        sqlx::query("update sending_domains set error = $2 where id = $1").bind(d.id).bind(error).execute(db).await.map_err(|e| Failure::Unknown(e.to_string()))?;
+        // A bought domain shows up in the account within minutes, so after a day it's safe to call it never bought.
+        sqlx::query(
+            "update sending_domains set
+               status = case when created_at < now() - interval '1 day' then 'failed' else status end,
+               error = case when created_at < now() - interval '1 day' then 'Porkbun never bought it, so you can buy it again.'
+                            else 'Porkbun doesn''t list it yet. Check again in a few minutes.' end
+             where id = $1 and status = 'uncertain'",
+        )
+        .bind(d.id)
+        .execute(db)
+        .await
+        .map_err(|e| Failure::Unknown(e.to_string()))?;
         return Ok(false);
     };
     sqlx::query("update sending_domains set status = 'registered', error = '', registered_at = coalesce(registered_at, now()), expires_on = $2 where id = $1 and status = 'uncertain'")
@@ -304,7 +315,6 @@ mod tests {
         assert_eq!(line(microsoft.last().unwrap()), "TXT _dmarc v=DMARC1; p=none");
         let migadu: Vec<String> = plan("getacme.com", "migadu", "", "").iter().map(line).collect();
         assert!(migadu.contains(&"CNAME key2._domainkey key2.getacme.com._domainkey.migadu.com".to_string()), "{migadu:?}");
-        assert_eq!(plan("getacme.com", "other", "", "").len(), 1);
     }
 
     async fn org(db: &PgPool) -> Uuid {
@@ -380,8 +390,19 @@ mod tests {
 
         // Buying it again does nothing while it's unclear.
         assert!(queue(&db, org, &orders(&["timeoutacme.com"]), &google()).await.unwrap().is_empty());
-        // Porkbun did buy it, which the check finds, and then the DNS goes on.
+        // Porkbun doesn't list one it never bought. It stays unclear for a day, then can be bought again.
+        let never = queue(&db, org, &orders(&["nevergot.com"]), &google()).await.unwrap();
+        sqlx::query("update sending_domains set status = 'uncertain' where id = $1").bind(never[0]).execute(&db).await.unwrap();
         let pb = Porkbun::new(&base, "pk1_good", "sk1_good");
+        let n = load(&db, never[0], org).await.unwrap().unwrap();
+        assert!(!confirm(&db, &pb, &n).await.unwrap());
+        assert_eq!(status(&db, org, "nevergot.com").await.0, "uncertain");
+        sqlx::query("update sending_domains set created_at = now() - interval '2 days' where id = $1").bind(never[0]).execute(&db).await.unwrap();
+        assert!(!confirm(&db, &pb, &n).await.unwrap());
+        assert_eq!(status(&db, org, "nevergot.com").await.0, "failed");
+        assert_eq!(queue(&db, org, &orders(&["nevergot.com"]), &google()).await.unwrap(), never);
+
+        // Porkbun did buy it, which the check finds, and then the DNS goes on.
         let d = load(&db, ids[0], org).await.unwrap().unwrap();
         assert!(confirm(&db, &pb, &d).await.unwrap());
         assert_eq!(status(&db, org, "timeoutacme.com").await, ("registered".into(), "set".into(), String::new()));

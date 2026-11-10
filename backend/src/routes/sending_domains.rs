@@ -206,6 +206,10 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
     if matches!(d.status.as_str(), "queued" | "registering") {
         return Err(AppError::Conflict("Wait until Splee has finished buying it".into()));
     }
+    // Removing it would let it be bought again while Porkbun may already have bought it.
+    if d.status == "uncertain" {
+        return Err(AppError::Conflict("Check Porkbun first. It may have bought it".into()));
+    }
     sqlx::query("delete from sending_domains where id = $1").bind(id).execute(&state.db).await?;
     Ok(Json(json!({ "ok": true })))
 }

@@ -560,7 +560,7 @@ export interface DomainAvailability {
   premium: boolean;
 }
 
-export type MailProvider = "google" | "microsoft" | "zoho" | "zoho_eu" | "migadu" | "other";
+export type MailProvider = "google" | "microsoft" | "zoho" | "zoho_eu" | "migadu";
 
 /** A record Splee set or tried to. `name` is relative to the domain, "" for the root. Type "URL" is the root's forward. */
 export interface DomainRecord {
