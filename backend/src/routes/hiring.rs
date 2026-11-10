@@ -99,22 +99,47 @@ async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Js
     if moved.is_empty() {
         return Err(AppError::Conflict("These companies already have leads".into()));
     }
-    let run_id = start_find_people(&state.db, auth.org_id, &segment, FindPeopleBody { company_ids: Some(moved.clone()) }).await?;
-    Ok(Json(json!({ "run_id": run_id, "added": moved.len() })))
+    let ids: Vec<Uuid> = moved.iter().map(|m| m.0).collect();
+    match start_find_people(&state.db, auth.org_id, &segment, FindPeopleBody { company_ids: Some(ids.clone()) }).await {
+        Ok(run_id) => Ok(Json(json!({ "run_id": run_id, "added": ids.len() }))),
+        Err(e) => {
+            // The run didn't start, so the companies go back where they were.
+            put_back(&state.db, &moved).await?;
+            Err(e)
+        }
+    }
 }
 
-async fn move_to_campaign(db: &PgPool, project_id: Uuid, segment_id: Uuid, company_ids: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
+/// Each moved company with the campaign and status it had before.
+type Moved = (Uuid, Option<Uuid>, String);
+
+async fn move_to_campaign(db: &PgPool, project_id: Uuid, segment_id: Uuid, company_ids: &[Uuid]) -> sqlx::Result<Vec<Moved>> {
+    sqlx::query_as(
         "update companies c set segment_id = $3, status = 'new'
-         where c.project_id = $1 and c.id = any($2)
+         from companies before
+         where before.id = c.id and c.project_id = $1 and c.id = any($2)
            and not exists (select 1 from leads l where l.project_id = c.project_id and (l.company_id = c.id or l.company_domain = c.domain))
-         returning c.id",
+         returning c.id, before.segment_id, before.status",
     )
     .bind(project_id)
     .bind(company_ids)
     .bind(segment_id)
     .fetch_all(db)
     .await
+}
+
+async fn put_back(db: &PgPool, moved: &[Moved]) -> sqlx::Result<()> {
+    let (ids, segments, statuses): (Vec<Uuid>, Vec<Option<Uuid>>, Vec<String>) = moved.iter().cloned().collect();
+    sqlx::query(
+        "update companies c set segment_id = b.segment_id, status = b.status
+         from unnest($1::uuid[], $2::uuid[], $3::text[]) as b(id, segment_id, status) where c.id = b.id",
+    )
+    .bind(&ids)
+    .bind(&segments)
+    .bind(&statuses)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -169,10 +194,19 @@ mod tests {
         assert_eq!(shown, [("Fresh", "SDR", 0, true), ("Lead Only", "SDR", 1, false)]);
         assert_eq!(super::signals(&db, project, None).await.unwrap().len(), 3);
 
+        sqlx::query("update companies set status = 'no_people' where id = $1").bind(fresh).execute(&db).await.unwrap();
+        let before: (Option<Uuid>, String) =
+            sqlx::query_as("select segment_id, status from companies where id = $1").bind(fresh).fetch_one(&db).await.unwrap();
         let moved = super::move_to_campaign(&db, project, segment, &[fresh, known]).await.unwrap();
-        assert_eq!(moved, [fresh]);
+        assert_eq!(moved, [(fresh, before.0, "no_people".to_string())]);
         let (segment_id, status): (Option<Uuid>, String) =
             sqlx::query_as("select segment_id, status from companies where id = $1").bind(fresh).fetch_one(&db).await.unwrap();
         assert_eq!((segment_id, status.as_str()), (Some(segment), "new"));
+
+        // When the run can't start, they go back.
+        super::put_back(&db, &moved).await.unwrap();
+        let after: (Option<Uuid>, String) =
+            sqlx::query_as("select segment_id, status from companies where id = $1").bind(fresh).fetch_one(&db).await.unwrap();
+        assert_eq!(after, before);
     }
 }

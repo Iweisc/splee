@@ -72,6 +72,8 @@ pub struct Boards {
     workable: String,
     recruitee: String,
     site: String,
+    /// Company sites are whatever domain a lead has, so off in tests only, whose fake site is on this machine.
+    public_only: bool,
 }
 
 impl Boards {
@@ -84,6 +86,7 @@ impl Boards {
             workable: "https://apply.workable.com/api/v1/widget/accounts/{slug}".into(),
             recruitee: "https://{slug}.recruitee.com/api/offers/".into(),
             site: "https://{domain}".into(),
+            public_only: true,
         })
     }
 
@@ -98,6 +101,7 @@ impl Boards {
             workable: format!("{base}/workable/{{slug}}"),
             recruitee: format!("{base}/recruitee/{{slug}}"),
             site: format!("{base}/site/{{domain}}"),
+            public_only: false,
         }
     }
 
@@ -156,10 +160,24 @@ impl Boards {
         None
     }
 
+    /// A page of the company's site. Each hop of a redirect is checked to be a public address before it's fetched, so a lead's
+    /// domain can't point the server at its own network.
     async fn page(&self, url: &str) -> Option<String> {
-        let res = self.client.get(url).send().await.ok().filter(|r| r.status().is_success())?;
-        let body = read_capped(res, MAX_PAGE_BYTES).await.ok()?;
-        Some(String::from_utf8_lossy(&body).into_owned())
+        let mut url = reqwest::Url::parse(url).ok()?;
+        for _ in 0..4 {
+            let client = if self.public_only { crate::hooks::public_client(&url).await.ok()? } else { self.client.clone() };
+            let res = client.get(url.clone()).header(reqwest::header::USER_AGENT, USER_AGENT).timeout(TIMEOUT).send().await.ok()?;
+            if res.status().is_redirection() {
+                url = url.join(res.headers().get(reqwest::header::LOCATION)?.to_str().ok()?).ok()?;
+                continue;
+            }
+            if !res.status().is_success() {
+                return None;
+            }
+            let body = read_capped(res, MAX_PAGE_BYTES).await.ok()?;
+            return Some(String::from_utf8_lossy(&body).into_owned());
+        }
+        None
     }
 }
 
@@ -608,6 +626,17 @@ pub mod tests {
         assert_eq!(slug_guesses("ashbyhq.com"), ["ashbyhq", "ashby"]);
         assert_eq!(slug_guesses("theblueground.com"), ["theblueground", "blueground"]);
         assert_eq!(slug_guesses("getapp.io"), ["getapp"]);
+    }
+
+    #[tokio::test]
+    async fn company_sites_on_private_addresses_are_not_fetched() {
+        let (mut boards, fake) = serve().await;
+        fake.page("private.com", r#"<a href="https://jobs.lever.co/private">Jobs</a>"#);
+        let url = boards.site.replace("{domain}", "private.com");
+        assert!(boards.page(&url).await.is_some());
+        // The fake site is on 127.0.0.1, like an internal service a lead's domain could point at.
+        boards.public_only = true;
+        assert!(boards.page(&url).await.is_none());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

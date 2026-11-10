@@ -36,11 +36,21 @@ pub async fn tick(db: &PgPool, boards: &Boards, daily: i64) -> anyhow::Result<()
         if roles.is_empty() {
             continue;
         }
+        // Held until this project's checks are done, so a second backend on the database skips it instead of checking it twice.
+        let mut lock = db.begin().await?;
+        let owned: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended('hiring:' || $1::text, 0))")
+            .bind(project_id)
+            .fetch_one(&mut *lock)
+            .await?;
+        if !owned {
+            continue;
+        }
         let roles = &roles;
         let checks = stream::iter(due_domains(db, project_id, daily).await?)
             .map(|domain| async move { check(db, boards, project_id, &domain, roles).await })
             .buffer_unordered(PARALLEL);
         checks.collect::<Vec<_>>().await.into_iter().collect::<anyhow::Result<()>>()?;
+        lock.commit().await?;
     }
     Ok(())
 }
