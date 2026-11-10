@@ -434,6 +434,13 @@ const CRMS = {
     account: { label: "Page link", placeholder: "https://docs.getgrist.com/…/p/…" },
     hint: "On getgrist.com or your own server, from Profile settings → API. The page's table needs text columns called Email and Notes.",
   },
+  teable: {
+    name: "Teable",
+    record: "table records",
+    field: "Personal access token",
+    account: { label: "Table link", placeholder: "https://app.teable.ai/base/…/table/…" },
+    hint: "On app.teable.ai or your own server, with record read, create and update. The table needs a text field called Email and a long text field called Notes.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */

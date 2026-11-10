@@ -183,6 +183,9 @@ pub struct ProjectSettings {
     pub grist_connected: bool,
     pub grist_error: Option<String>,
     pub grist_failed_at: Option<Ts>,
+    pub teable_connected: bool,
+    pub teable_error: Option<String>,
+    pub teable_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,

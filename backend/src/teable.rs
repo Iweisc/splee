@@ -1,5 +1,6 @@
-//! Where a Teable link points, for importing leads from a table (routes/util_teable.rs). Teable runs at app.teable.ai or on the customer's own server, and its API is at the
-//! link's origin either way, so requests only go to a public address (see hooks::public_client).
+//! Where a Teable link points, for importing leads from a table (routes/util_teable.rs) and adding hot and booked leads to
+//! one (crm/teable.rs). Teable runs at app.teable.ai or on the customer's own server, and its API is at the link's origin
+//! either way, so requests only go to a public address (see hooks::public_client).
 
 use reqwest::Url;
 
