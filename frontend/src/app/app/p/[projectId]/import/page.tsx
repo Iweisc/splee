@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CircleCheck, FileUp, Search, Sheet, Table2, Upload } from "lucide-react";
+import { CircleCheck, Database, FileUp, Search, Sheet, Table2, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CampaignField } from "@/components/app/settings/campaign-field";
@@ -17,16 +17,16 @@ import { fetcher } from "@/hooks/use-me";
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
 
 /**
- * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's link and token. Sent again on
- * import, since the server keeps none of them.
+ * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's or Notion database's link and
+ * token. Sent again on import, since the server keeps none of them.
  */
-type Source = { file: File } | { sheet_url: string } | { airtable_url: string; airtable_token: string };
+type Source = { file: File } | { sheet_url: string } | { airtable_url: string; airtable_token: string } | { notion_url: string; notion_token: string };
 
 const appendSource = (form: FormData, source: Source) => {
   for (const [key, value] of Object.entries(source)) form.append(key, value);
 };
 
-const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable");
+const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable_url" in source ? "airtable" : "notion");
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -50,6 +50,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [loading, setLoading] = useState<ReturnType<typeof sourceKind> | null>(null);
   const [sheetUrl, setSheetUrl] = useState("");
   const [airtable, setAirtable] = useState({ url: "", token: "" });
+  const [notion, setNotion] = useState({ url: "", token: "" });
 
   const choose = async (next: Source) => {
     setResult(null);
@@ -62,6 +63,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setPreview(p);
       setSheetUrl("");
       setAirtable({ url: "", token: "" });
+      setNotion({ url: "", token: "" });
     } catch (e) {
       toastError(e);
     } finally {
@@ -78,7 +80,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -149,6 +151,29 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                 <Table2 className="size-4" /> Read table
               </Button>
             </form>
+            <form
+              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (notion.url.trim() && notion.token.trim()) choose({ notion_url: notion.url.trim(), notion_token: notion.token.trim() });
+              }}
+            >
+              <Field label="Or a Notion database" hint="Every row, whatever view is open." className="min-w-56 flex-1">
+                <Input value={notion.url} onChange={(e) => setNotion({ ...notion, url: e.target.value })} placeholder="https://www.notion.so/…" />
+              </Field>
+              <Field label="Integration secret" hint="Added to the database under ••• → Connections. Never saved." className="min-w-56 flex-1">
+                <Input type="password" value={notion.token} onChange={(e) => setNotion({ ...notion, token: e.target.value })} placeholder="ntn_…" />
+              </Field>
+              <Button
+                type="submit"
+                variant="outline"
+                className="sm:mt-6"
+                loading={loading === "notion"}
+                disabled={!notion.url.trim() || !notion.token.trim() || !!loading}
+              >
+                <Database className="size-4" /> Read database
+              </Button>
+            </form>
           </Card>
         )}
         {!preview && <HunterImport projectId={projectId} onImported={setResult} />}
@@ -202,7 +227,7 @@ function MappingStep({
         <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
           {/* Short on phones, so a long sheet name keeps the width. */}
           <span className="sm:hidden">Change</span>
-          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table" }[sourceKind(source)]}</span>
+          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table", notion: "Choose another database" }[sourceKind(source)]}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
