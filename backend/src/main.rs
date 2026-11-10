@@ -1,4 +1,5 @@
 mod agent;
+mod airtable;
 mod auth;
 mod config;
 mod crm;

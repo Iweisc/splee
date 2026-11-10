@@ -402,6 +402,13 @@ const CRMS = {
     account: { label: "Database link", placeholder: "https://www.notion.so/…" },
     hint: "From an internal integration, added to the database under ••• → Connections. It needs an Email column.",
   },
+  airtable: {
+    name: "Airtable",
+    record: "table records",
+    field: "Personal access token",
+    account: { label: "Table link", placeholder: "https://airtable.com/app…/tbl…" },
+    hint: "With data.records:read, data.records:write, data.recordComments:write and schema.bases:read. It needs an Email field.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
