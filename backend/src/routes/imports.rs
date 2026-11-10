@@ -11,6 +11,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::util_airtable as airtable;
+use super::util_baserow as baserow;
 use super::util_input;
 use super::util_sheet as sheet;
 use super::util_lead_import::{self, NewLead};
@@ -64,6 +65,9 @@ struct Upload {
     /// A Notion database to read instead, with an integration's secret that's used for this request only.
     notion_url: Option<String>,
     notion_token: Option<String>,
+    /// A Baserow table to read instead, with a database token that's used for this request only.
+    baserow_url: Option<String>,
+    baserow_token: Option<String>,
     segment_id: Option<Uuid>,
     mapping: Option<HashMap<String, String>>,
 }
@@ -81,12 +85,14 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
                 let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
                 upload.sheet_url = Some(text.trim().to_string()).filter(|t| !t.is_empty());
             }
-            Some(name @ ("airtable_url" | "airtable_token" | "notion_url" | "notion_token")) => {
+            Some(name @ ("airtable_url" | "airtable_token" | "notion_url" | "notion_token" | "baserow_url" | "baserow_token")) => {
                 let slot = match name {
                     "airtable_url" => &mut upload.airtable_url,
                     "airtable_token" => &mut upload.airtable_token,
                     "notion_url" => &mut upload.notion_url,
-                    _ => &mut upload.notion_token,
+                    "notion_token" => &mut upload.notion_token,
+                    "baserow_url" => &mut upload.baserow_url,
+                    _ => &mut upload.baserow_token,
                 };
                 *slot = Some(field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?);
             }
@@ -107,8 +113,13 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
 }
 
 impl Upload {
-    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable table or the Notion database, and its name.
+    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable or Baserow table or the Notion database, and its
+    /// name.
     async fn csv(&mut self) -> AppResult<(String, Csv)> {
+        if let Some(link) = &self.baserow_url {
+            let table = baserow::fetch(link, self.baserow_token.as_deref().unwrap_or_default()).await?;
+            return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
+        }
         if let Some(link) = &self.notion_url {
             let table = notion::fetch(link, self.notion_token.as_deref().unwrap_or_default()).await?;
             return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
