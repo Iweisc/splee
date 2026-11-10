@@ -9,6 +9,8 @@ pub struct Config {
     pub app_secret: String,
     /// Where the Next.js app is served. Used for links in emails (unsubscribe, invites).
     pub public_url: String,
+    /// Where unsubscribe links point. PUBLIC_URL unless set, for a host whose app isn't reachable from the internet.
+    pub unsubscribe_url: String,
     pub bind_addr: String,
     pub agent_model: String,
     pub agent_concurrency: usize,
@@ -26,10 +28,12 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let public_url = env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3333".into());
         let cfg = Self {
             database_url: env::var("DATABASE_URL")?,
             app_secret: env::var("APP_SECRET")?,
-            public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3333".into()),
+            unsubscribe_url: env::var("UNSUBSCRIBE_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| public_url.clone()),
+            public_url,
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into()),
             agent_model: env::var("AGENT_MODEL").unwrap_or_else(|_| "claude-sonnet-5-5".into()),
             agent_concurrency: env::var("AGENT_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
@@ -69,6 +73,7 @@ mod tests {
             database_url: String::new(),
             app_secret: app_secret.into(),
             public_url: public_url.into(),
+            unsubscribe_url: public_url.into(),
             bind_addr: String::new(),
             agent_model: String::new(),
             agent_concurrency: 1,

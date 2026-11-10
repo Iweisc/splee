@@ -399,6 +399,7 @@ pub(crate) mod tests {
             database_url: String::new(),
             app_secret: String::new(),
             public_url: "http://localhost:3349".into(),
+            unsubscribe_url: "http://localhost:3349".into(),
             bind_addr: String::new(),
             agent_model: String::new(),
             agent_concurrency: 0,

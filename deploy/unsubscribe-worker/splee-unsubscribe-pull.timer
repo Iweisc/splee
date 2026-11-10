@@ -1,0 +1,9 @@
+[Unit]
+Description=Hand queued unsubscribes to the Splee API every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

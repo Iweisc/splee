@@ -1,0 +1,9 @@
+# Example user unit. Copy it and the timer to ~/.config/systemd/user/, put UNSUBSCRIBE_URL and PULL_SECRET in the
+# EnvironmentFile, then `systemctl --user enable --now splee-unsubscribe-pull.timer`.
+[Unit]
+Description=Hand queued unsubscribes to the Splee API
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/splee-unsubscribe/env
+ExecStart=/opt/splee/deploy/unsubscribe-worker/pull.sh

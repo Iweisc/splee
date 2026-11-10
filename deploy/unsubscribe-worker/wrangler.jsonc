@@ -1,0 +1,11 @@
+// Deploy with routes on the host in UNSUBSCRIBE_URL, e.g. for https://example.com:
+//   npx wrangler deploy --route 'example.com/unsubscribe/*' --route 'example.com/api/unsubscribe*'
+//   npx wrangler secret put PULL_SECRET
+{
+  "name": "splee-unsubscribe",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  // Wrangler creates the namespace on the first deploy.
+  "kv_namespaces": [{ "binding": "UNSUBSCRIBES" }]
+}
