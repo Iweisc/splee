@@ -5,6 +5,7 @@ mod baserow;
 mod config;
 mod crm;
 mod crypto;
+mod directory;
 mod error;
 mod events;
 mod grist;
@@ -30,30 +31,40 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 use crate::state::AppState;
 
+enum Command {
+    ResetPassword(String),
+    ImportCompanies(Vec<String>),
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let reset_email = match args.as_slice() {
+    let command = match args.as_slice() {
         [] => None,
-        [cmd, email] if cmd == "reset-password" => Some(email.clone()),
-        _ => anyhow::bail!("usage: splee [reset-password <email>]"),
+        [cmd, email] if cmd == "reset-password" => Some(Command::ResetPassword(email.clone())),
+        [cmd, countries @ ..] if cmd == "import-companies" => Some(Command::ImportCompanies(countries.to_vec())),
+        _ => anyhow::bail!("usage: splee [reset-password <email> | import-companies [COUNTRY…]]"),
     };
 
     let cfg = Config::from_env()?;
     let db = PgPoolOptions::new().max_connections(20).connect(&cfg.database_url).await?;
     sqlx::migrate!().run(&db).await?;
 
-    // This runs once and exits, without the API or workers, so it's safe next to a running server.
-    if let Some(email) = reset_email {
-        let Some(password) = auth::reset_password(&db, &email).await? else {
-            anyhow::bail!("no user with email {email}");
-        };
-        println!("New password for {email}: {password}");
-        println!("They're signed out everywhere and can change it under Account after they sign in.");
-        return Ok(());
+    // These run once and exit, without the API or workers, so they're safe next to a running server.
+    match command {
+        Some(Command::ResetPassword(email)) => {
+            let Some(password) = auth::reset_password(&db, &email).await? else {
+                anyhow::bail!("no user with email {email}");
+            };
+            println!("New password for {email}: {password}");
+            println!("They're signed out everywhere and can change it under Account after they sign in.");
+            return Ok(());
+        }
+        Some(Command::ImportCompanies(countries)) => return directory::import(&db, &countries).await,
+        None => {}
     }
 
     let (events, _) = broadcast::channel(1024);

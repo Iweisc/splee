@@ -202,6 +202,14 @@ All paths below are under `/api`.
 | POST | /suppressions | `{values: string}` newline/comma separated emails or domains | `{added}` |
 | DELETE | /suppressions/:id | | `{ok}` |
 
+### Company database
+
+`directory_companies` holds one row per company website from [Overture Maps](https://docs.overturemaps.org/guides/places/)' places, loaded by `splee import-companies [COUNTRY…]`. It's shared by every organization. The importer reads the newest release's GeoParquet files over HTTPS with range requests, skips row groups whose address countries can't match, and keeps open places that have a website. Pages on platforms like Facebook, Instagram or a booking site aren't the business's own domain, so those are skipped. One place per domain is kept, the one Overture is most confident about. Rows of the imported countries that the new release doesn't list are deleted afterwards.
+
+| method | path | body | response |
+|---|---|---|---|
+| GET | /directory/companies?q&country&city&category&has_email&has_phone&page&per_page | | `{items: DirectoryCompany[], total, capped}`, most confident first. every word in `q` must start a word in the name or category, so `dent` finds `general_dentistry`, `country` is a two-letter code (400 otherwise), `city` is matched case-insensitively and `category` is an Overture category or any of its parents, like `restaurant`. `total` stops at 10,000 and `capped` says there are more. |
+
 ### Runs
 
 | method | path | response |
