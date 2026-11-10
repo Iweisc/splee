@@ -8,7 +8,7 @@ import { CampaignField } from "@/components/app/settings/campaign-field";
 import { ListSkeleton, LoadError, MicroLabel, Td, Th, toastError, Tr } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
-import { Card, EmptyState, FileName, Spinner } from "@/components/ui/misc";
+import { Card, EmptyState, FileName, Spinner, Tabs } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { dateTime, num, plural } from "@/lib/utils";
@@ -34,6 +34,15 @@ const appendSource = (form: FormData, source: Source) => {
 const sourceKind = (source: Source) =>
   "file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable_url" in source ? "airtable" : "notion_url" in source ? "notion" : "baserow";
 
+type LinkSource = Exclude<ReturnType<typeof sourceKind>, "file">;
+
+const LINK_SOURCES: { value: LinkSource; label: string }[] = [
+  { value: "sheet", label: "Google Sheet" },
+  { value: "airtable", label: "Airtable" },
+  { value: "notion", label: "Notion" },
+  { value: "baserow", label: "Baserow" },
+];
+
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
   { key: "email", label: "Email" },
@@ -58,6 +67,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [airtable, setAirtable] = useState({ url: "", token: "" });
   const [notion, setNotion] = useState({ url: "", token: "" });
   const [baserow, setBaserow] = useState({ url: "", token: "" });
+  const [linkSource, setLinkSource] = useState<LinkSource>("sheet");
 
   const choose = async (next: Source) => {
     setResult(null);
@@ -121,90 +131,105 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                 }}
               />
             </label>
-            <form
-              className="flex flex-wrap items-start gap-4 p-6"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (sheetUrl.trim()) choose({ sheet_url: sheetUrl.trim() });
-              }}
-            >
-              <Field label="Or a Google Sheet" hint="Shared with Anyone with the link. The tab that was open is the one read." className="min-w-56 flex-1">
-                <Input value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" />
-              </Field>
-              {/* Level with the field. On phones it sits under it. */}
-              <Button type="submit" variant="outline" className="sm:mt-6" loading={loading === "sheet"} disabled={!sheetUrl.trim() || !!loading}>
-                <Sheet className="size-4" /> Read sheet
-              </Button>
-            </form>
-            <form
-              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (airtable.url.trim() && airtable.token.trim()) choose({ airtable_url: airtable.url.trim(), airtable_token: airtable.token.trim() });
-              }}
-            >
-              <Field label="Or an Airtable table" hint="The table or view open in your browser." className="min-w-56 flex-1">
-                <Input value={airtable.url} onChange={(e) => setAirtable({ ...airtable, url: e.target.value })} placeholder="https://airtable.com/app…/tbl…" />
-              </Field>
-              <Field label="Personal access token" hint="With data.records:read, from Builder Hub. Never saved." className="min-w-56 flex-1">
-                <Input type="password" value={airtable.token} onChange={(e) => setAirtable({ ...airtable, token: e.target.value })} placeholder="pat…" />
-              </Field>
-              <Button
-                type="submit"
-                variant="outline"
-                className="sm:mt-6"
-                loading={loading === "airtable"}
-                disabled={!airtable.url.trim() || !airtable.token.trim() || !!loading}
-              >
-                <Table2 className="size-4" /> Read table
-              </Button>
-            </form>
-            <form
-              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (notion.url.trim() && notion.token.trim()) choose({ notion_url: notion.url.trim(), notion_token: notion.token.trim() });
-              }}
-            >
-              <Field label="Or a Notion database" hint="Every row, whatever view is open." className="min-w-56 flex-1">
-                <Input value={notion.url} onChange={(e) => setNotion({ ...notion, url: e.target.value })} placeholder="https://www.notion.so/…" />
-              </Field>
-              <Field label="Integration secret" hint="Added to the database under ••• → Connections. Never saved." className="min-w-56 flex-1">
-                <Input type="password" value={notion.token} onChange={(e) => setNotion({ ...notion, token: e.target.value })} placeholder="ntn_…" />
-              </Field>
-              <Button
-                type="submit"
-                variant="outline"
-                className="sm:mt-6"
-                loading={loading === "notion"}
-                disabled={!notion.url.trim() || !notion.token.trim() || !!loading}
-              >
-                <Database className="size-4" /> Read database
-              </Button>
-            </form>
-            <form
-              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (baserow.url.trim() && baserow.token.trim()) choose({ baserow_url: baserow.url.trim(), baserow_token: baserow.token.trim() });
-              }}
-            >
-              <Field label="Or a Baserow table" hint="On baserow.io or your own server. A view's filters apply." className="min-w-56 flex-1">
-                <Input value={baserow.url} onChange={(e) => setBaserow({ ...baserow, url: e.target.value })} placeholder="https://baserow.io/database/…/table/…" />
-              </Field>
-              <Field label="Database token" hint="From Settings → Database tokens, with read access. Never saved." className="min-w-56 flex-1">
-                <Input type="password" value={baserow.token} onChange={(e) => setBaserow({ ...baserow, token: e.target.value })} />
-              </Field>
-              <Button
-                type="submit"
-                variant="outline"
-                className="sm:mt-6"
-                loading={loading === "baserow"}
-                disabled={!baserow.url.trim() || !baserow.token.trim() || !!loading}
-              >
-                <Table2 className="size-4" /> Read table
-              </Button>
-            </form>
+            <div className="flex flex-col gap-4 p-6">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <span className="text-sm font-medium">Or import from</span>
+                {/* Four across is wider than a phone, and a scrolling row hides the last one, so phones get two rows. */}
+                <Tabs value={linkSource} onChange={setLinkSource} options={LINK_SOURCES} className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto" />
+              </div>
+              {linkSource === "sheet" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (sheetUrl.trim()) choose({ sheet_url: sheetUrl.trim() });
+                  }}
+                >
+                  <Field label="Sheet link" hint="Shared with Anyone with the link. The tab that was open is the one read." className="min-w-56 flex-1">
+                    <Input value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" />
+                  </Field>
+                  {/* Level with the field. On phones it sits under it. */}
+                  <Button type="submit" variant="outline" className="sm:mt-6" loading={loading === "sheet"} disabled={!sheetUrl.trim() || !!loading}>
+                    <Sheet className="size-4" /> Read sheet
+                  </Button>
+                </form>
+              )}
+              {linkSource === "airtable" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (airtable.url.trim() && airtable.token.trim()) choose({ airtable_url: airtable.url.trim(), airtable_token: airtable.token.trim() });
+                  }}
+                >
+                  <Field label="Table link" hint="The table or view open in your browser." className="min-w-56 flex-1">
+                    <Input value={airtable.url} onChange={(e) => setAirtable({ ...airtable, url: e.target.value })} placeholder="https://airtable.com/app…/tbl…" />
+                  </Field>
+                  <Field label="Personal access token" hint="With data.records:read, from Builder Hub. Never saved." className="min-w-56 flex-1">
+                    <Input type="password" value={airtable.token} onChange={(e) => setAirtable({ ...airtable, token: e.target.value })} placeholder="pat…" />
+                  </Field>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className="sm:mt-6"
+                    loading={loading === "airtable"}
+                    disabled={!airtable.url.trim() || !airtable.token.trim() || !!loading}
+                  >
+                    <Table2 className="size-4" /> Read table
+                  </Button>
+                </form>
+              )}
+              {linkSource === "notion" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (notion.url.trim() && notion.token.trim()) choose({ notion_url: notion.url.trim(), notion_token: notion.token.trim() });
+                  }}
+                >
+                  <Field label="Database link" hint="Every row, whatever view is open." className="min-w-56 flex-1">
+                    <Input value={notion.url} onChange={(e) => setNotion({ ...notion, url: e.target.value })} placeholder="https://www.notion.so/…" />
+                  </Field>
+                  <Field label="Integration secret" hint="Added to the database under ••• → Connections. Never saved." className="min-w-56 flex-1">
+                    <Input type="password" value={notion.token} onChange={(e) => setNotion({ ...notion, token: e.target.value })} placeholder="ntn_…" />
+                  </Field>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className="sm:mt-6"
+                    loading={loading === "notion"}
+                    disabled={!notion.url.trim() || !notion.token.trim() || !!loading}
+                  >
+                    <Database className="size-4" /> Read database
+                  </Button>
+                </form>
+              )}
+              {linkSource === "baserow" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (baserow.url.trim() && baserow.token.trim()) choose({ baserow_url: baserow.url.trim(), baserow_token: baserow.token.trim() });
+                  }}
+                >
+                  <Field label="Table link" hint="On baserow.io or your own server. A view's filters apply." className="min-w-56 flex-1">
+                    <Input value={baserow.url} onChange={(e) => setBaserow({ ...baserow, url: e.target.value })} placeholder="https://baserow.io/database/…/table/…" />
+                  </Field>
+                  <Field label="Database token" hint="From Settings → Database tokens, with read access. Never saved." className="min-w-56 flex-1">
+                    <Input type="password" value={baserow.token} onChange={(e) => setBaserow({ ...baserow, token: e.target.value })} />
+                  </Field>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className="sm:mt-6"
+                    loading={loading === "baserow"}
+                    disabled={!baserow.url.trim() || !baserow.token.trim() || !!loading}
+                  >
+                    <Table2 className="size-4" /> Read table
+                  </Button>
+                </form>
+              )}
+            </div>
           </Card>
         )}
         {!preview && <HunterImport projectId={projectId} onImported={setResult} />}
