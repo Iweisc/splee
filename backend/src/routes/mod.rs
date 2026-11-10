@@ -37,6 +37,7 @@ pub mod unsubscribe;
 mod util_airtable;
 mod util_baserow;
 mod util_grist;
+mod util_teable;
 mod util_nocodb;
 mod util_csv;
 pub mod util_input;

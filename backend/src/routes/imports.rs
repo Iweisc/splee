@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::util_airtable as airtable;
 use super::util_baserow as baserow;
 use super::util_grist as grist;
+use super::util_teable as teable;
 use super::util_nocodb as nocodb;
 use super::util_input;
 use super::util_sheet as sheet;
@@ -76,6 +77,9 @@ struct Upload {
     /// A Grist table to read instead, with an API key that's used for this request only.
     grist_url: Option<String>,
     grist_token: Option<String>,
+    /// A Teable table to read instead, with a personal access token that's used for this request only.
+    teable_url: Option<String>,
+    teable_token: Option<String>,
     segment_id: Option<Uuid>,
     mapping: Option<HashMap<String, String>>,
 }
@@ -95,7 +99,7 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
             }
             Some(
                 name @ ("airtable_url" | "airtable_token" | "notion_url" | "notion_token" | "baserow_url" | "baserow_token"
-                | "nocodb_url" | "nocodb_token" | "grist_url" | "grist_token"),
+                | "nocodb_url" | "nocodb_token" | "grist_url" | "grist_token" | "teable_url" | "teable_token"),
             ) => {
                 let slot = match name {
                     "airtable_url" => &mut upload.airtable_url,
@@ -107,7 +111,9 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
                     "nocodb_url" => &mut upload.nocodb_url,
                     "nocodb_token" => &mut upload.nocodb_token,
                     "grist_url" => &mut upload.grist_url,
-                    _ => &mut upload.grist_token,
+                    "grist_token" => &mut upload.grist_token,
+                    "teable_url" => &mut upload.teable_url,
+                    _ => &mut upload.teable_token,
                 };
                 *slot = Some(field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?);
             }
@@ -128,9 +134,13 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
 }
 
 impl Upload {
-    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable, Baserow, NocoDB or Grist table or the Notion
+    /// The uploaded file, the Google Sheet's tab read as CSV, the Airtable, Baserow, NocoDB, Grist or Teable table or the Notion
     /// database, and its name.
     async fn csv(&mut self) -> AppResult<(String, Csv)> {
+        if let Some(link) = &self.teable_url {
+            let table = teable::fetch(link, self.teable_token.as_deref().unwrap_or_default()).await?;
+            return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
+        }
         if let Some(link) = &self.grist_url {
             let table = grist::fetch(link, self.grist_token.as_deref().unwrap_or_default()).await?;
             return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));

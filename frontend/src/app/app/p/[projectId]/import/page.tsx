@@ -11,7 +11,7 @@ import { Field, Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, FileName, Spinner, Tabs } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
-import { dateTime, num, plural } from "@/lib/utils";
+import { cn, dateTime, num, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
@@ -53,6 +53,13 @@ const TABLE_SOURCES = {
     label: "Grist",
     link: { label: "Page link", hint: "The page with the table, on getgrist.com or your own server.", placeholder: "https://docs.getgrist.com/…/p/…" },
     token: { label: "API key", hint: "From Profile settings → API. Never saved.", placeholder: "" },
+    icon: Table2,
+    noun: "table",
+  },
+  teable: {
+    label: "Teable",
+    link: { label: "Table link", hint: "On app.teable.ai or your own server. A view's filters apply.", placeholder: "https://app.teable.ai/base/…/table/…" },
+    token: { label: "Personal access token", hint: "With record and field read access to the base. Never saved.", placeholder: "teable_…" },
     icon: Table2,
     noun: "table",
   },
@@ -142,7 +149,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB, Grist or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB, Grist, Teable or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -178,8 +185,14 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
             <div className="flex flex-col gap-4 p-6">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <span className="text-sm font-medium">Or import from</span>
-                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get them two by two. */}
-                <Tabs value={linkSource} onChange={setLinkSource} options={LINK_SOURCES} className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto" />
+                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get them two by two. With
+                    an odd number, Google Sheet takes a row of its own so the last one isn't left alone with a gap beside it. */}
+                <Tabs
+                  value={linkSource}
+                  onChange={setLinkSource}
+                  options={LINK_SOURCES}
+                  className={cn("grid w-full grid-cols-2 sm:inline-flex sm:w-auto", LINK_SOURCES.length % 2 === 1 && "*:first:col-span-2")}
+                />
               </div>
               {linkSource === "sheet" && (
                 <form
