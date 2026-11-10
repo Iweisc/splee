@@ -370,6 +370,13 @@ const CRMS = {
     field: "API key",
     hint: "In Twenty: Settings → APIs & Webhooks → Create API key.",
   },
+  espocrm: {
+    name: "EspoCRM",
+    record: "contacts",
+    field: "API key",
+    account: { label: "Site URL", placeholder: "https://crm.acme.com" },
+    hint: "In EspoCRM: Administration → API Users → Create, with API Key auth and a role that can create Contacts.",
+  },
 } as const satisfies Record<CrmName, Crm>;
 
 /** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
