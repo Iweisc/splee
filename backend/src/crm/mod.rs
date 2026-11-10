@@ -2,6 +2,7 @@
 //! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
 
 mod affinity;
+mod airtable;
 mod attio;
 mod brevo;
 mod capsule;
@@ -52,11 +53,12 @@ pub enum Crm {
     Espo,
     Odoo,
     Notion,
+    Airtable,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 19] = [
+    pub const ALL: [Crm; 20] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -76,6 +78,7 @@ impl Crm {
         Crm::Espo,
         Crm::Odoo,
         Crm::Notion,
+        Crm::Airtable,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -104,6 +107,7 @@ impl Crm {
             Crm::Espo => "espocrm",
             Crm::Odoo => "odoo",
             Crm::Notion => "notion",
+            Crm::Airtable => "airtable",
         }
     }
 
@@ -128,6 +132,7 @@ impl Crm {
             Crm::Espo => "EspoCRM",
             Crm::Odoo => "Odoo",
             Crm::Notion => "Notion",
+            Crm::Airtable => "Airtable",
         }
     }
 
@@ -140,6 +145,7 @@ impl Crm {
             Crm::Insightly => Some("API URL"),
             Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
             Crm::Notion => Some("database link"),
+            Crm::Airtable => Some("table link"),
             _ => None,
         }
     }
@@ -166,6 +172,7 @@ impl Crm {
             Crm::Espo => espocrm::check(token).await,
             Crm::Odoo => odoo::check(token).await,
             Crm::Notion => notion::check(token).await,
+            Crm::Airtable => airtable::check(token).await,
         }
     }
 
@@ -190,6 +197,7 @@ impl Crm {
             Crm::Espo => espocrm::push(token, email, lead, note).await,
             Crm::Odoo => odoo::push(token, email, lead, note).await,
             Crm::Notion => notion::push(token, email, lead, note).await,
+            Crm::Airtable => airtable::push(token, email, lead, note).await,
         }
     }
 }

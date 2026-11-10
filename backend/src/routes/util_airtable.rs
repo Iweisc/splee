@@ -7,9 +7,8 @@ use std::time::Duration;
 use reqwest::Url;
 use serde_json::Value;
 
+use crate::airtable::{API, Ids};
 use crate::error::{AppError, AppResult};
-
-const API: &str = "https://api.airtable.com/v0";
 
 /// Airtable sends 100 records a page. 100 pages is 10,000 leads, more than an import should take in one go.
 const MAX_PAGES: usize = 100;
@@ -65,30 +64,6 @@ fn columns(mut headers: Vec<String>, records: &[Value]) -> Vec<String> {
     headers
 }
 
-struct Ids {
-    base: String,
-    table: String,
-    view: Option<String>,
-}
-
-impl Ids {
-    /// https://airtable.com/{app…}/{tbl…}/{viw…}?blocks=hide, as the address bar shows a table or one of its views.
-    fn parse(link: &str) -> Option<Ids> {
-        let url = Url::parse(link.trim()).ok()?;
-        if !matches!(url.host_str(), Some("airtable.com" | "www.airtable.com")) {
-            return None;
-        }
-        let segments: Vec<&str> = url.path_segments()?.collect();
-        let id = |prefix: &str| segments.iter().find(|s| is_id(s, prefix)).map(|s| s.to_string());
-        Some(Ids { base: id("app")?, table: id("tbl")?, view: id("viw") })
-    }
-}
-
-/// Airtable's ids are a three-letter prefix and 14 letters or digits, like appXXXXXXXXXXXXXX.
-fn is_id(segment: &str, prefix: &str) -> bool {
-    segment.len() == 17 && segment.starts_with(prefix) && segment.bytes().all(|b| b.is_ascii_alphanumeric())
-}
-
 /// The table's name and columns in its own order. Reading them needs the token's schema.bases:read scope, so without it
 /// the import goes on with a plain name.
 async fn schema(client: &reqwest::Client, ids: &Ids, token: &str) -> Option<(String, Vec<String>)> {
@@ -130,17 +105,7 @@ fn cell(value: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{Ids, cell, columns};
-
-    #[test]
-    fn only_an_airtable_table_link_is_read() {
-        let ids = Ids::parse("https://airtable.com/appAbCdEfGhIjKlMn/tblAbCdEfGhIjKlMn/viwAbCdEfGhIjKlMn?blocks=hide").unwrap();
-        assert_eq!((ids.base.as_str(), ids.table.as_str(), ids.view.as_deref()), ("appAbCdEfGhIjKlMn", "tblAbCdEfGhIjKlMn", Some("viwAbCdEfGhIjKlMn")));
-        assert!(Ids::parse("https://airtable.com/appAbCdEfGhIjKlMn/tblAbCdEfGhIjKlMn").unwrap().view.is_none());
-        assert!(Ids::parse("https://airtable.com/appAbCdEfGhIjKlMn").is_none());
-        assert!(Ids::parse("https://evil.example/appAbCdEfGhIjKlMn/tblAbCdEfGhIjKlMn").is_none());
-        assert!(Ids::parse("https://airtable.com/appShort/tblAbCdEfGhIjKlMn").is_none());
-    }
+    use super::{cell, columns};
 
     #[test]
     fn columns_the_schema_misses_follow_in_name_order() {
