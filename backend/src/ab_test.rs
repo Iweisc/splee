@@ -270,23 +270,21 @@ pub async fn auto_pick(db: &PgPool) -> anyhow::Result<()> {
     let tests = load(db, &segments.iter().collect::<Vec<_>>()).await?;
     for segment in &segments {
         let (Some(test), Some(after)) = (tests.get(&segment.id), segment.variant_pick_after) else { continue };
-        let Some((winner, note)) = pick(test, after) else { continue };
-        tracing::info!(segment_id = %segment.id, %winner, "auto-pick kept a variant");
-        let mut tx = db.begin().await?;
-        // Checked again under the row lock the variant routes also take, since the test may have been reset or the winner
-        // removed since it was loaded.
-        let still: Option<Uuid> = sqlx::query_scalar(
-            "select id from segments s where id = $1 and variant_pick_after is not null and variant_picked_at is null
-               and exists (select 1 from segment_variants v where v.id = $2 and v.segment_id = s.id and v.paused_at is null)
-             for update",
-        )
-        .bind(segment.id)
-        .bind(winner)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if still.is_none() {
+        if pick(test, after).is_none() {
             continue;
         }
+        // Decided again under the campaign row lock the variant routes and assignment take, since the test may have been
+        // reset, its threshold raised or a variant added since it was loaded. While it's held nothing can change them.
+        let mut tx = db.begin().await?;
+        let locked: Option<Segment> =
+            sqlx::query_as("select * from segments where id = $1 and variant_pick_after is not null and variant_picked_at is null for update")
+                .bind(segment.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(locked) = locked else { continue };
+        let Some(after) = locked.variant_pick_after else { continue };
+        let Some((winner, note)) = pick(&load_one(db, &locked).await?, after) else { continue };
+        tracing::info!(segment_id = %segment.id, %winner, "auto-pick kept a variant");
         sqlx::query("update segment_variants set paused_at = now() where segment_id = $1 and id <> $2 and paused_at is null")
             .bind(segment.id)
             .bind(winner)
