@@ -208,6 +208,11 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         bluesky::SEARCH => format!("searching Bluesky \"{}\"…", input["query"].as_str().unwrap_or_default()),
         mastodon::SEARCH => format!("searching Mastodon \"{}\"…", input["query"].as_str().unwrap_or_default()),
         linkedin::SEARCH => format!("searching LinkedIn \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        linkedin::PEOPLE => match input["company"].as_str().filter(|c| !c.trim().is_empty()) {
+            Some(company) => format!("searching LinkedIn for people at {}…", company.trim()),
+            None => format!("searching LinkedIn for {}…", input["titles"].as_str().or(input["keywords"].as_str()).unwrap_or("people")),
+        },
+        linkedin::PROFILE => format!("reading {}…", short_url(input["profile"].as_str().unwrap_or_default())),
         threads::SEARCH => format!("searching Threads \"{}\"…", input["query"].as_str().unwrap_or_default()),
         youtube::SEARCH => format!("searching YouTube \"{}\"…", input["query"].as_str().unwrap_or_default()),
         bluesky::READ | mastodon::READ | linkedin::READ | threads::READ => format!("reading {}…", short_url(input["post"].as_str().unwrap_or_default())),

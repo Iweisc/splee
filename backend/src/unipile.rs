@@ -8,6 +8,7 @@ use anyhow::Context;
 use chrono::Utc;
 use chrono_tz::Tz;
 use reqwest::{StatusCode, Url};
+use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -24,6 +25,9 @@ const DAILY_SENDS: i64 = 25;
 const ACCEPT_DAYS: i64 = 21;
 /// LinkedIn's limits, which pause the account's sending for an hour rather than failing the lead.
 const ACCOUNT_LIMITS: [&str; 2] = ["errors/limit_exceeded", "errors/cannot_resend_yet"];
+/// People search result pages per LinkedIn account a day, counted in linkedin_searches. LinkedIn restricts accounts that search
+/// far more than a person would, and a classic page holds 10 people.
+pub const DAILY_SEARCH_PAGES: i32 = 100;
 
 pub struct Unipile {
     base: String,
@@ -117,9 +121,86 @@ pub fn post_link(urn: &str) -> String {
 }
 
 /// The public id in a profile URL, like sam-lee in https://www.linkedin.com/in/sam-lee/.
-fn profile_id(url: &str) -> Option<&str> {
+pub fn profile_id(url: &str) -> Option<&str> {
     let id = url.split_once("linkedin.com/in/")?.1.split(['/', '?', '#']).next()?;
     (!id.is_empty()).then_some(id)
+}
+
+/// A LinkedIn people search. Empty fields are left out.
+#[derive(Debug, Default)]
+pub struct PeopleSearch {
+    pub keywords: String,
+    /// A company's name, matched to its LinkedIn page, so only people who work there now are found.
+    pub company: String,
+    /// Words in their job title. LinkedIn takes OR between titles, like `Owner OR Founder`.
+    pub title: String,
+    /// A city, region or country, matched to LinkedIn's place.
+    pub location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Person {
+    pub name: String,
+    pub headline: String,
+    pub company: String,
+    pub location: String,
+    pub linkedin_url: String,
+    pub provider_id: String,
+}
+
+#[derive(Debug)]
+pub struct People {
+    pub people: Vec<Person>,
+    /// Gives the next page to search_people, None on the last one.
+    pub cursor: Option<String>,
+}
+
+/// LinkedIn's titles for job roles, ORed together, with the multi-word ones quoted.
+pub fn any_title(roles: &[String]) -> String {
+    let roles = roles.iter().map(|r| r.trim().replace('"', "")).filter(|r| !r.is_empty());
+    roles.map(|r| if r.contains(' ') { format!("\"{r}\"") } else { r }).collect::<Vec<_>>().join(" OR ")
+}
+
+/// Only letters and digits, lowercased, so "Smile Dental Ltd." matches "smile dental ltd".
+fn squash(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// A LinkedIn link without its tracking query, or "".
+fn clean_link(url: &str) -> String {
+    url.split(['?', '#']).next().unwrap_or_default().trim().to_string()
+}
+
+/// One person from a search page. Classic search only gives the headline, so their company is the one searched, else what the
+/// headline says after " at ". LinkedIn hides the names of some people outside the account's network, and those are left out.
+fn person(item: &Value, company: &str) -> Option<Person> {
+    let s = |v: &Value| v.as_str().unwrap_or_default().trim().to_string();
+    let name = Some(s(&item["name"])).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{} {}", s(&item["first_name"]), s(&item["last_name"])).trim().to_string());
+    if name.is_empty() || name == "LinkedIn Member" {
+        return None;
+    }
+    let headline = s(&item["headline"]);
+    let company = Some(s(&item["current_positions"][0]["company"]))
+        .filter(|c| !c.is_empty())
+        .or_else(|| (!company.is_empty()).then(|| company.to_string()))
+        .or_else(|| headline.rsplit_once(" at ").map(|(_, c)| c.trim().to_string()))
+        .unwrap_or_default();
+    let link = item["public_profile_url"].as_str().filter(|u| !u.is_empty()).or(item["profile_url"].as_str()).unwrap_or_default();
+    Some(Person { name, headline, company, location: s(&item["location"]), linkedin_url: clean_link(link), provider_id: s(&item["id"]) })
+}
+
+/// Counts a people search page against the account's day, or says no when it has had DAILY_SEARCH_PAGES.
+async fn take_search_page(db: &PgPool, account: &str) -> sqlx::Result<bool> {
+    let pages: Option<i32> = sqlx::query_scalar(
+        "insert into linkedin_searches (account_id, day, pages) values ($1, (now() at time zone 'utc')::date, 1)
+         on conflict (account_id, day) do update set pages = linkedin_searches.pages + 1 where linkedin_searches.pages < $2
+         returning pages",
+    )
+    .bind(account)
+    .bind(DAILY_SEARCH_PAGES)
+    .fetch_optional(db)
+    .await?;
+    Ok(pages.is_some())
 }
 
 /// The LinkedIn account behind a Unipile token, checked before it's saved: the first one that's running, else the first.
@@ -236,6 +317,75 @@ impl Unipile {
     pub async fn comment(&self, urn: &str, text: &str) -> Result<(), Posting> {
         let form = reqwest::multipart::Form::new().text("account_id", self.account.clone()).text("text", text.to_string());
         self.social(self.client.post(format!("{}/posts/{urn}/comments", self.base)).multipart(form)).await.map(|_| ())
+    }
+
+    /// LinkedIn's id for a company page or place (`kind` COMPANY or LOCATION), and its name there. A company has to match by name,
+    /// so a search never runs on some other company's people.
+    async fn search_parameter(&self, kind: &str, name: &str) -> Result<Option<(String, String)>, Posting> {
+        let url = self.url("/linkedin/search/parameters", &[("type", kind), ("keywords", name), ("limit", "10")])?;
+        let found = self.social(self.client.get(url)).await?;
+        let items = found["items"].as_array().cloned().unwrap_or_default();
+        let id_title = |i: &Value| Some((i["id"].as_str().filter(|id| !id.is_empty())?.to_string(), i["title"].as_str().unwrap_or_default().to_string()));
+        if kind != "COMPANY" {
+            return Ok(items.first().and_then(id_title));
+        }
+        let want = squash(name);
+        let exact = items.iter().find(|i| squash(i["title"].as_str().unwrap_or_default()) == want);
+        // A legal suffix often differs, like Smile Dental and Smile Dental Ltd.
+        let close = || {
+            items.iter().find(|i| {
+                let title = squash(i["title"].as_str().unwrap_or_default());
+                !title.is_empty() && !want.is_empty() && (title.starts_with(&want) || want.starts_with(&title))
+            })
+        };
+        Ok(exact.or_else(close).and_then(id_title))
+    }
+
+    /// A page of up to 10 people through classic LinkedIn search, which every account has. `cursor` comes from the page before.
+    /// Each page counts against the account's DAILY_SEARCH_PAGES.
+    pub async fn search_people(&self, db: &PgPool, search: &PeopleSearch, cursor: Option<&str>) -> Result<People, Posting> {
+        // Counted first, so a capped account doesn't look up the company either.
+        if !take_search_page(db, &self.account).await.map_err(|e| Posting::Post(format!("Couldn't count today's LinkedIn searches: {e}")))? {
+            return Err(Posting::Account(format!(
+                "Splee has run {DAILY_SEARCH_PAGES} LinkedIn searches on this account today, the most it runs in a day. More can run tomorrow"
+            )));
+        }
+        let mut body = json!({ "api": "classic", "category": "people" });
+        let mut company = String::new();
+        if !search.company.trim().is_empty() {
+            let Some((id, title)) = self.search_parameter("COMPANY", search.company.trim()).await? else {
+                return Err(Posting::Post("LinkedIn has no company page by that name".into()));
+            };
+            body["company"] = json!([id]);
+            company = title;
+        }
+        if !search.location.trim().is_empty() {
+            let Some((id, _)) = self.search_parameter("LOCATION", search.location.trim()).await? else {
+                return Err(Posting::Post(format!("LinkedIn doesn't know the place {}", search.location.trim())));
+            };
+            body["location"] = json!([id]);
+        }
+        if !search.keywords.trim().is_empty() {
+            body["keywords"] = json!(search.keywords.trim());
+        }
+        if !search.title.trim().is_empty() {
+            body["advanced_keywords"] = json!({ "title": search.title.trim() });
+        }
+        let mut query = vec![("limit", "10")];
+        query.extend(cursor.filter(|c| !c.is_empty()).map(|c| ("cursor", c)));
+        let found = self.social(self.client.post(self.url("/linkedin/search", &query)?).json(&body)).await?;
+        let items = found["items"].as_array().into_iter().flatten();
+        let people = items.filter(|i| i["type"].as_str().is_none_or(|t| t == "PEOPLE")).filter_map(|i| person(i, &company)).collect();
+        Ok(People { people, cursor: found["cursor"].as_str().filter(|c| !c.is_empty()).map(String::from) })
+    }
+
+    /// Someone's LinkedIn profile, with their experience, by profile link, public id or provider id.
+    pub async fn person(&self, identifier: &str) -> Result<Value, Posting> {
+        let id = profile_id(identifier).unwrap_or(identifier.trim());
+        if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || "-_%".contains(c)) {
+            return Err(Posting::Post(format!("{identifier} isn't a LinkedIn profile link or id")));
+        }
+        self.social(self.client.get(self.url(&format!("/users/{id}"), &[("linkedin_sections", "experience_preview")])?)).await
     }
 
     /// The lead's LinkedIn profile, with their `provider_id`.
@@ -472,6 +622,71 @@ async fn send_next(db: &PgPool, unipile: &Unipile, project: Uuid) -> anyhow::Res
         Err(Failure::Account(e)) => return Ok(Some(Err(e))),
     }
     Ok(Some(Ok(())))
+}
+
+/// Unipile's people search as the docs describe it, for tests here and in the routes and agent tools that use it. Smile Dental
+/// has two pages of people, Blocked Dental one person, and any other company has no LinkedIn page.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use axum::extract::{Path, Query, State};
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use serde_json::{Value, json};
+
+    pub type Calls = Arc<Mutex<Vec<String>>>;
+
+    pub async fn people() -> (String, Calls) {
+        async fn parameters(Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+            let items = match (q["type"].as_str(), q["keywords"].as_str()) {
+                ("COMPANY", "Smile Dental") => json!([{ "id": "111", "title": "Smile Dental Ltd" }, { "id": "999", "title": "Smiles Inc" }]),
+                ("COMPANY", "Blocked Dental") => json!([{ "id": "222", "title": "Blocked Dental" }]),
+                ("COMPANY", _) => json!([{ "id": "5", "title": "Totally Other" }]),
+                ("LOCATION", "Leeds") => json!([{ "id": "102", "title": "Leeds, England, United Kingdom" }]),
+                _ => json!([]),
+            };
+            Json(json!({ "object": "LinkedinSearchParametersList", "items": items }))
+        }
+        async fn search(State(calls): State<Calls>, Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>) -> Json<Value> {
+            let cursor = q.get("cursor").cloned().unwrap_or_default();
+            calls.lock().unwrap().push(format!("search {} {} {cursor} {body}", q["account_id"], q["limit"]));
+            let person = |id: &str, name: &str, headline: &str, slug: &str| {
+                json!({ "type": "PEOPLE", "id": id, "name": name, "headline": headline, "location": "Leeds, England, United Kingdom",
+                        "network_distance": "DISTANCE_2", "profile_url": format!("https://www.linkedin.com/in/{slug}?miniProfileUrn=x") })
+            };
+            let (items, next) = match (body["company"][0].as_str(), cursor.as_str()) {
+                (Some("111"), "") => (
+                    json!([person("P-SAM", "Sam Lee", "Owner at Smile Dental", "sam-lee"), person("P-HID", "LinkedIn Member", "Dentist", "x"),
+                           person("P-ANA", "Ana Diaz", "Practice Manager", "ana-diaz")]),
+                    json!("C2"),
+                ),
+                (Some("111"), "C2") => (json!([person("P-BO", "Bo Chen", "Dentist and Owner at Smile Dental", "bo-chen")]), Value::Null),
+                (Some("222"), _) => (json!([person("P-CY", "Cy Doe", "Founder at Blocked Dental", "cy-doe")]), Value::Null),
+                _ => (json!([]), Value::Null),
+            };
+            Json(json!({ "object": "LinkedinSearch", "items": items, "config": {}, "paging": { "start": 0, "page_count": 10, "total_count": 4 },
+                         "cursor": next }))
+        }
+        async fn user(Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+            assert_eq!((id.as_str(), q["linkedin_sections"].as_str()), ("sam-lee", "experience_preview"));
+            Json(json!({ "provider_id": "P-SAM", "public_identifier": "sam-lee", "first_name": "Sam", "last_name": "Lee", "headline": "Owner",
+                         "location": "Leeds", "websites": ["https://smile.co.uk"],
+                         "work_experience": [{ "company": "Smile Dental", "position": "Owner", "start": "1/2019", "end": null, "skills": [] },
+                                             { "company": "NHS", "position": "Dentist", "start": "1/2010", "end": "1/2019", "skills": [] }] }))
+        }
+        let calls = Calls::default();
+        let app = Router::new()
+            .route("/api/v1/linkedin/search/parameters", get(parameters))
+            .route("/api/v1/linkedin/search", post(search))
+            .route("/api/v1/users/{id}", get(user))
+            .with_state(calls.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
 }
 
 #[cfg(test)]
@@ -780,5 +995,67 @@ mod tests {
         assert_eq!((step(&db, sam[1]).await.status, step(&db, sam[2]).await.status), ("skipped".into(), "skipped".into()));
         // A second message from someone who already replied doesn't alert again.
         assert!(on_event(&db, project, "ACC", &message("P-SAM", "ACC")).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn roles_become_one_linkedin_title_search() {
+        assert_eq!(any_title(&["Owner".into(), " Practice Manager ".into(), "".into(), "\"CEO\"".into()]), "Owner OR \"Practice Manager\" OR CEO");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn people_search_pages_through_classic_linkedin_search(db: PgPool) {
+        let (base, calls) = super::fake::people().await;
+        let unipile = Unipile::new(&base, "TOKEN", "ACC").unwrap();
+        let search = PeopleSearch { company: "Smile Dental".into(), title: "Owner OR Founder".into(), location: "Leeds".into(), ..PeopleSearch::default() };
+
+        let first = unipile.search_people(&db, &search, None).await.ok().unwrap();
+        // LinkedIn hides the name of someone outside the network, so they're left out.
+        assert_eq!(first.people.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Sam Lee", "Ana Diaz"]);
+        assert_eq!(first.people[0], Person {
+            name: "Sam Lee".into(),
+            headline: "Owner at Smile Dental".into(),
+            company: "Smile Dental Ltd".into(),
+            location: "Leeds, England, United Kingdom".into(),
+            linkedin_url: "https://www.linkedin.com/in/sam-lee".into(),
+            provider_id: "P-SAM".into(),
+        });
+        let second = unipile.search_people(&db, &search, first.cursor.as_deref()).await.ok().unwrap();
+        assert_eq!((second.people[0].name.as_str(), second.cursor), ("Bo Chen", None));
+        let body = r#"{"advanced_keywords":{"title":"Owner OR Founder"},"api":"classic","category":"people","company":["111"],"location":["102"]}"#;
+        assert_eq!(*calls.lock().unwrap(), [format!("search ACC 10  {body}"), format!("search ACC 10 C2 {body}")]);
+
+        // A company LinkedIn has no page for is never searched as some other company.
+        let nowhere = PeopleSearch { company: "Nowhere Ltd".into(), ..PeopleSearch::default() };
+        assert!(matches!(unipile.search_people(&db, &nowhere, None).await, Err(Posting::Post(m)) if m == "LinkedIn has no company page by that name"));
+        assert_eq!(calls.lock().unwrap().len(), 2);
+
+        let profile = unipile.person("https://www.linkedin.com/in/sam-lee/?trk=x").await.ok().unwrap();
+        assert_eq!(profile["provider_id"], "P-SAM");
+        assert!(matches!(unipile.person("../accounts").await, Err(Posting::Post(_))));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn people_search_stops_at_the_daily_cap_for_the_account(db: PgPool) {
+        let (base, calls) = super::fake::people().await;
+        let unipile = Unipile::new(&base, "TOKEN", "ACC").unwrap();
+        let search = PeopleSearch { company: "Blocked Dental".into(), ..PeopleSearch::default() };
+        sqlx::query("insert into linkedin_searches (account_id, day, pages) values ('ACC', (now() at time zone 'utc')::date, $1), ('ACC', '2020-01-01', 0)")
+            .bind(DAILY_SEARCH_PAGES - 1)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        assert_eq!(unipile.search_people(&db, &search, None).await.ok().unwrap().people.len(), 1);
+        let capped = unipile.search_people(&db, &search, None).await;
+        assert!(matches!(capped, Err(Posting::Account(m)) if m.contains("100 LinkedIn searches on this account today")));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+
+        // Another account has its own day.
+        let other = Unipile::new(&base, "TOKEN", "OTHER").unwrap();
+        assert!(other.search_people(&db, &search, None).await.is_ok());
+        let pages: Vec<i32> = sqlx::query_scalar("select pages from linkedin_searches order by account_id, day").fetch_all(&db).await.unwrap();
+        assert_eq!(pages, [0, DAILY_SEARCH_PAGES, 1]);
     }
 }

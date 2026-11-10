@@ -431,6 +431,12 @@ export interface DirectoryPage extends Paginated<DirectoryCompany> {
   capped: boolean;
 }
 
+/** What "Find people" on the Companies page added from LinkedIn. A skipped company has an empty name. */
+export interface FoundPeople {
+  added: { name: string; title: string; company: string; linkedin_url: string }[];
+  skipped: { name: string; company: string; reason: string }[];
+}
+
 export interface DirectoryCountry {
   country_code: string;
   companies: number;
@@ -481,7 +487,7 @@ export interface Lead {
   company_domain: string | null;
   city: string;
   country_code: string;
-  source: "agent" | "import" | "api" | "form";
+  source: "agent" | "import" | "api" | "form" | "linkedin";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;
