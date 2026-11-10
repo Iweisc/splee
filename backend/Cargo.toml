@@ -44,6 +44,7 @@ tokio-stream = "0.1.19"
 tower-http = { version = "0.7.1", features = ["cors", "trace", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-segmentation = "1.13.3"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 zip = { version = "9.5.0", default-features = false }
 parquet = { version = "60.1.0", default-features = false, features = ["async", "arrow", "zstd"] }

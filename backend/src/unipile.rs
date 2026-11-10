@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::hooks::{self, Alert};
 use crate::models::{Lead, LinkedinMessage, Ts};
 use crate::routes::linkedin::mark;
+use crate::social::Failure as Posting;
 use crate::state::AppState;
 
 /// Sends per LinkedIn account a day, well under the 80 to 100 invitations LinkedIn takes from a paid account.
@@ -79,6 +80,42 @@ pub fn base_url(dsn: &str) -> Option<String> {
     })
 }
 
+/// Unipile explains a failure in `detail` or `title`, and names it in `type`, like errors/resource_not_found.
+fn explain(status: StatusCode, body: &Value) -> (String, String) {
+    let reason = ["detail", "title"].iter().find_map(|k| body[k].as_str().filter(|r| !r.is_empty())).unwrap_or(status.as_str()).to_string();
+    (reason, body["type"].as_str().unwrap_or_default().to_string())
+}
+
+/// The post a LinkedIn link points at, as the urn Unipile takes: urn:li:activity:<id>, or the ugcPost or share kind. Reads
+/// feed/update links, /posts/ share links and bare urns.
+pub fn post_urn(link: &str) -> Option<String> {
+    let link = link.trim().replace("%3A", ":").replace("%3a", ":");
+    let kinds = ["activity", "ugcPost", "share"];
+    let urn = |kind: &str, rest: &str| {
+        let id: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        (8..=25).contains(&id.len()).then(|| format!("urn:li:{kind}:{id}"))
+    };
+    let in_text = |s: &str| kinds.iter().find_map(|k| s.find(&format!("urn:li:{k}:")).and_then(|at| urn(k, &s[at + k.len() + 8..])));
+    if link.starts_with("urn:li:") {
+        return in_text(&link);
+    }
+    let url = Url::parse(&if link.contains("://") { link.clone() } else { format!("https://{link}") }).ok()?;
+    let host = url.host_str()?;
+    if !(host == "linkedin.com" || host.ends_with(".linkedin.com")) {
+        return None;
+    }
+    // Share links end in the id, like /posts/sam-lee_some-title-activity-7236734771807019010-AbCd.
+    in_text(url.path()).or_else(|| {
+        let slug = url.path().strip_prefix("/posts/")?;
+        kinds.iter().find_map(|k| slug.rfind(&format!("-{k}-")).and_then(|at| urn(k, &slug[at + k.len() + 2..])))
+    })
+}
+
+/// The one link Splee keeps for a LinkedIn post.
+pub fn post_link(urn: &str) -> String {
+    format!("https://www.linkedin.com/feed/update/{urn}/")
+}
+
 /// The public id in a profile URL, like sam-lee in https://www.linkedin.com/in/sam-lee/.
 fn profile_id(url: &str) -> Option<&str> {
     let id = url.split_once("linkedin.com/in/")?.1.split(['/', '?', '#']).next()?;
@@ -128,23 +165,76 @@ impl Unipile {
         Ok(Self { base: base.into(), token: token.into(), account: account.into(), client })
     }
 
-    /// Unipile explains a failure in `detail` or `title`, and names it in `type`, like errors/resource_not_found.
-    async fn call(&self, request: reqwest::RequestBuilder) -> Result<Value, Failure> {
-        let res = request
-            .header("X-API-KEY", &self.token)
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Failure::Account(e.without_url().into()))?;
+    async fn request(&self, request: reqwest::RequestBuilder) -> reqwest::Result<(StatusCode, Value)> {
+        let res = request.header("X-API-KEY", &self.token).header("accept", "application/json").send().await?;
         let status = res.status();
-        let body: Value = res.json().await.unwrap_or_default();
+        Ok((status, res.json().await.unwrap_or_default()))
+    }
+
+    async fn call(&self, request: reqwest::RequestBuilder) -> Result<Value, Failure> {
+        let (status, body) = self.request(request).await.map_err(|e| Failure::Account(e.without_url().into()))?;
         if status.is_success() {
             return Ok(body);
         }
-        let reason = ["detail", "title"].iter().find_map(|k| body[k].as_str().filter(|r| !r.is_empty())).unwrap_or(status.as_str()).to_string();
-        let kind = body["type"].as_str().unwrap_or_default().to_string();
+        let (reason, kind) = explain(status, &body);
         let about_lead = status == StatusCode::NOT_FOUND || (status == StatusCode::UNPROCESSABLE_ENTITY && !ACCOUNT_LIMITS.contains(&kind.as_str()));
         Err(if about_lead { Failure::Lead { kind, reason } } else { Failure::Account(anyhow::anyhow!("{reason}")) })
+    }
+
+    /// For social posts and the agent's LinkedIn tools. Unlike `call`, a request that may have reached LinkedIn, one that timed
+    /// out or failed inside Unipile, fails the post, so it never goes out twice.
+    async fn social(&self, request: reqwest::RequestBuilder) -> Result<Value, Posting> {
+        let (status, body) = self.request(request).await.map_err(|e| Posting::Post(format!("Unipile didn't answer: {}", e.without_url())))?;
+        if status.is_success() {
+            return Ok(body);
+        }
+        let (reason, kind) = explain(status, &body);
+        Err(match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE => {
+                Posting::Account(format!("Unipile couldn't use the LinkedIn account ({reason})"))
+            }
+            StatusCode::TOO_MANY_REQUESTS => Posting::Account("LinkedIn is rate limiting the account".into()),
+            StatusCode::UNPROCESSABLE_ENTITY if ACCOUNT_LIMITS.contains(&kind.as_str()) => Posting::Account(format!("LinkedIn limited the account ({reason})")),
+            StatusCode::NOT_FOUND => Posting::Post("LinkedIn couldn't find it. It may have been deleted".into()),
+            _ => Posting::Post(reason),
+        })
+    }
+
+    fn url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url, Posting> {
+        Url::parse_with_params(&format!("{}{path}", self.base), [("account_id", self.account.as_str())].iter().chain(query)).map_err(|e| Posting::Post(e.to_string()))
+    }
+
+    /// LinkedIn posts from the last month that match `keywords`, newest first.
+    pub async fn search_posts(&self, keywords: &str, limit: u64) -> Result<Vec<Value>, Posting> {
+        let search = json!({ "api": "classic", "category": "posts", "keywords": keywords, "sort_by": "date", "date_posted": "past_month" });
+        let found = self.social(self.client.post(self.url("/linkedin/search", &[("limit", &limit.to_string())])?).json(&search)).await?;
+        Ok(found["items"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// A post by its urn (see post_urn), and up to 20 of its comments.
+    pub async fn linkedin_post(&self, urn: &str) -> Result<(Value, Vec<Value>), Posting> {
+        let post = self.social(self.client.get(self.url(&format!("/posts/{urn}"), &[])?)).await?;
+        let comments = self.social(self.client.get(self.url(&format!("/posts/{urn}/comments"), &[("limit", "20")])?)).await;
+        Ok((post, comments.map(|c| c["items"].as_array().cloned().unwrap_or_default()).unwrap_or_default()))
+    }
+
+    /// Posts `text` from the account and returns the post's link, or "" when Unipile doesn't give one.
+    pub async fn publish(&self, text: &str) -> Result<String, Posting> {
+        let form = reqwest::multipart::Form::new().text("account_id", self.account.clone()).text("text", text.to_string());
+        let made = self.social(self.client.post(format!("{}/posts", self.base)).multipart(form)).await?;
+        let Some(id) = made["post_id"].as_str().filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == ':')) else {
+            return Ok(String::new());
+        };
+        // It's posted either way, so a failed lookup only leaves the link out.
+        let Ok(url) = self.url(&format!("/posts/{id}"), &[]) else { return Ok(String::new()) };
+        let share = self.social(self.client.get(url)).await.map(|p| p["share_url"].as_str().unwrap_or_default().to_string()).unwrap_or_default();
+        Ok(share.split('?').next().unwrap_or_default().to_string())
+    }
+
+    /// Comments `text` on the post with this urn.
+    pub async fn comment(&self, urn: &str, text: &str) -> Result<(), Posting> {
+        let form = reqwest::multipart::Form::new().text("account_id", self.account.clone()).text("text", text.to_string());
+        self.social(self.client.post(format!("{}/posts/{urn}/comments", self.base)).multipart(form)).await.map(|_| ())
     }
 
     /// The lead's LinkedIn profile, with their `provider_id`.
@@ -410,6 +500,98 @@ mod tests {
         assert_eq!(profile_id("linkedin.com/in/sam-lee?trk=x"), Some("sam-lee"));
         assert_eq!(profile_id("https://www.linkedin.com/company/acme"), None);
         assert_eq!(profile_id("https://www.linkedin.com/in/"), None);
+    }
+
+    #[test]
+    fn linkedin_post_links_become_urns() {
+        let activity = Some("urn:li:activity:7236734771807019010".to_string());
+        for link in [
+            "https://www.linkedin.com/feed/update/urn:li:activity:7236734771807019010/",
+            "https://www.linkedin.com/feed/update/urn%3Ali%3Aactivity%3A7236734771807019010?utm_source=share",
+            "https://www.linkedin.com/posts/sam-lee_cold-email-activity-7236734771807019010-AbCd?utm_source=share",
+            "linkedin.com/posts/sam-lee_a-b-activity-7236734771807019010-x",
+            "urn:li:activity:7236734771807019010",
+        ] {
+            assert_eq!(post_urn(link), activity, "{link}");
+        }
+        assert_eq!(post_urn("https://www.linkedin.com/feed/update/urn:li:ugcPost:7336013677930006817/").as_deref(), Some("urn:li:ugcPost:7336013677930006817"));
+        for link in ["https://www.linkedin.com/in/sam-lee/", "https://example.com/feed/update/urn:li:activity:7236734771807019010/", "urn:li:activity:12", ""] {
+            assert_eq!(post_urn(link), None, "{link}");
+        }
+        assert_eq!(post_link("urn:li:activity:1"), "https://www.linkedin.com/feed/update/urn:li:activity:1/");
+    }
+
+    /// Unipile's post routes as the docs describe them. The text picks how posting goes.
+    async fn fake_unipile_posts() -> (String, Calls) {
+        async fn publish(State(calls): State<Calls>, mut form: Multipart) -> (StatusCode, Json<Value>) {
+            let mut fields = Vec::new();
+            while let Some(field) = form.next_field().await.unwrap() {
+                let name = field.name().unwrap().to_owned();
+                fields.push(format!("{name}={}", field.text().await.unwrap()));
+            }
+            match fields.last().map(String::as_str) {
+                Some("text=expired") => (StatusCode::UNAUTHORIZED, Json(json!({ "status": 401, "type": "errors/disconnected_account", "title": "Disconnected account" }))),
+                Some("text=slow") => (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "status": 504, "type": "errors/request_timeout", "title": "Request timed out" }))),
+                Some("text=limit") => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "status": 422, "type": "errors/limit_exceeded", "title": "Limit exceeded" }))),
+                _ => {
+                    calls.lock().unwrap().push(format!("post {}", fields.join(" ")));
+                    (StatusCode::CREATED, Json(json!({ "object": "PostCreated", "post_id": "7400000000000000001" })))
+                }
+            }
+        }
+        async fn one(Path(id): Path<String>) -> (StatusCode, Json<Value>) {
+            match id.as_str() {
+                "7400000000000000001" => (StatusCode::OK, Json(json!({ "share_url": "https://www.linkedin.com/posts/acme_a-lesson-activity-7400000000000000001-Ab?utm_source=x" }))),
+                _ => (StatusCode::NOT_FOUND, Json(json!({ "status": 404, "type": "errors/resource_not_found", "title": "Post not found" }))),
+            }
+        }
+        async fn comment(State(calls): State<Calls>, Path(id): Path<String>, mut form: Multipart) -> (StatusCode, Json<Value>) {
+            if id != "urn:li:activity:7236734771807019010" {
+                return (StatusCode::NOT_FOUND, Json(json!({ "status": 404, "type": "errors/resource_not_found", "title": "Post not found" })));
+            }
+            let mut fields = Vec::new();
+            while let Some(field) = form.next_field().await.unwrap() {
+                let name = field.name().unwrap().to_owned();
+                fields.push(format!("{name}={}", field.text().await.unwrap()));
+            }
+            calls.lock().unwrap().push(format!("comment {id} {}", fields.join(" ")));
+            (StatusCode::CREATED, Json(json!({ "object": "CommentSent" })))
+        }
+        async fn search(State(calls): State<Calls>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>, Json(body): Json<Value>) -> Json<Value> {
+            calls.lock().unwrap().push(format!("search {} {} {} {}", q["account_id"], q["limit"], body["category"], body["keywords"]));
+            Json(json!({ "object": "LinkedinSearch", "items": [{ "type": "POST", "social_id": "urn:li:activity:7236734771807019010", "text": "Any tips?" }] }))
+        }
+        let calls = Calls::default();
+        let app = Router::new()
+            .route("/api/v1/posts", post(publish))
+            .route("/api/v1/posts/{id}", get(one))
+            .route("/api/v1/posts/{id}/comments", post(comment))
+            .route("/api/v1/linkedin/search", post(search))
+            .with_state(calls.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
+
+    #[tokio::test]
+    async fn linkedin_posts_and_comments_go_out_and_failures_say_whose_problem_it_is() {
+        let (base, calls) = fake_unipile_posts().await;
+        let unipile = Unipile::new(&base, "TOKEN", "ACC").unwrap();
+        assert_eq!(unipile.search_posts("cold email", 10).await.ok().unwrap()[0]["text"], "Any tips?");
+        assert_eq!(unipile.publish("A lesson").await.ok().unwrap(), "https://www.linkedin.com/posts/acme_a-lesson-activity-7400000000000000001-Ab");
+        unipile.comment("urn:li:activity:7236734771807019010", "Try this").await.ok().unwrap();
+        assert_eq!(*calls.lock().unwrap(), [
+            "search ACC 10 \"posts\" \"cold email\"",
+            "post account_id=ACC text=A lesson",
+            "comment urn:li:activity:7236734771807019010 account_id=ACC text=Try this",
+        ]);
+
+        assert!(matches!(unipile.comment("urn:li:activity:7236734771807019099", "Hi").await, Err(Posting::Post(m)) if m.contains("couldn't find")));
+        assert!(matches!(unipile.publish("expired").await, Err(Posting::Account(_))));
+        assert!(matches!(unipile.publish("limit").await, Err(Posting::Account(_))));
+        // It may have gone out, so it fails rather than waiting to go out again.
+        assert!(matches!(unipile.publish("slow").await, Err(Posting::Post(m)) if m == "Request timed out"));
     }
 
     type Calls = Arc<Mutex<Vec<String>>>;

@@ -1,22 +1,62 @@
-//! Posts approved X and Reddit drafts from each project's connected accounts: one per account each tick, at most
-//! DAILY_POSTS a day, so a day's posts spread out instead of going in a burst. agent::social finds threads and drafts.
+//! Posts approved social drafts from each project's connected accounts: one per account each tick, at most the platform's
+//! daily cap, so a day's posts spread out instead of going in a burst. agent::social finds threads and drafts.
 
 use std::collections::HashSet;
 
 use sqlx::PgPool;
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::agent::x::{self, Cookies};
+use crate::bluesky::{self, Bluesky};
 use crate::crypto::decrypt;
 use crate::hooks::{self, Alert};
+use crate::mastodon::Mastodon;
 use crate::models::SocialPost;
 use crate::reddit::{Login, Reddit, Target};
 use crate::state::AppState;
+use crate::unipile::{self, Unipile};
 
-/// Posts per X or Reddit account a day. New accounts that post more than this get flagged as spam by both.
-pub const DAILY_POSTS: i64 = 15;
+pub const PLATFORMS: [&str; 5] = ["x", "reddit", "bluesky", "mastodon", "linkedin"];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
+
+/// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most.
+pub fn daily_cap(platform: &str) -> i64 {
+    if platform == "linkedin" { 5 } else { 15 }
+}
+
+pub fn name(platform: &str) -> &'static str {
+    match platform {
+        "x" => "X",
+        "reddit" => "Reddit",
+        "bluesky" => "Bluesky",
+        "mastodon" => "Mastodon",
+        _ => "LinkedIn",
+    }
+}
+
+/// The most a reply or post can hold, as `length` counts it. Mastodon's limit is the instance's, read on connect.
+pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
+    match (platform, reply) {
+        ("x", _) => 280,
+        ("bluesky", _) => bluesky::GRAPHEMES,
+        ("mastodon", _) => mastodon_chars,
+        ("linkedin", true) => 1250,
+        ("linkedin", false) => 3000,
+        (_, true) => 10_000,
+        _ => 40_000,
+    }
+}
+
+/// Bluesky counts graphemes, the rest count characters.
+pub fn length(platform: &str, text: &str) -> usize {
+    if platform == "bluesky" { text.graphemes(true).count() } else { text.chars().count() }
+}
+
+pub fn fits(platform: &str, reply: bool, text: &str, mastodon_chars: usize) -> bool {
+    !text.is_empty() && length(platform, text) <= max_length(platform, reply, mastodon_chars)
+}
 
 #[derive(Debug)]
 pub enum Failure {
@@ -26,7 +66,15 @@ pub enum Failure {
     Account(String),
 }
 
-/// A project's X and Reddit sign-ins as stored, encrypted.
+impl Failure {
+    pub fn message(self) -> String {
+        match self {
+            Failure::Post(m) | Failure::Account(m) => m,
+        }
+    }
+}
+
+/// A project's social sign-ins as stored, encrypted. LinkedIn is the project's Unipile connection.
 #[derive(sqlx::FromRow)]
 pub struct Accounts {
     pub project_id: Uuid,
@@ -37,17 +85,64 @@ pub struct Accounts {
     pub reddit_secret_enc: String,
     pub reddit_username: String,
     pub reddit_password_enc: String,
+    pub bluesky_handle: String,
+    pub bluesky_password_enc: String,
+    pub mastodon_url: String,
+    pub mastodon_token_enc: String,
+    pub mastodon_handle: String,
+    pub mastodon_max_chars: i32,
+    pub unipile_dsn: String,
+    pub unipile_token_enc: String,
+    pub unipile_account_id: String,
 }
 
 const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
-                               s.reddit_password_enc
+                               s.reddit_password_enc, s.bluesky_handle, s.bluesky_password_enc, s.mastodon_url, s.mastodon_token_enc,
+                               s.mastodon_handle, s.mastodon_max_chars, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
     sqlx::query_as(&format!("{ACCOUNTS} where s.project_id = $1")).bind(project_id).fetch_optional(db).await
 }
 
+/// The project_settings columns for a platform's account: its name, which the daily cap counts by in any project, and when it
+/// last failed. Fixed strings, never user input.
+fn columns(platform: &str) -> (&'static str, &'static str) {
+    match platform {
+        "x" => ("x_handle", "x_failed_at"),
+        "reddit" => ("reddit_username", "reddit_failed_at"),
+        "bluesky" => ("bluesky_handle", "bluesky_failed_at"),
+        "mastodon" => ("mastodon_handle", "mastodon_failed_at"),
+        _ => ("unipile_account_id", "unipile_failed_at"),
+    }
+}
+
+fn alert(platform: &str) -> Alert {
+    match platform {
+        "x" => Alert::X,
+        "reddit" => Alert::Reddit,
+        "bluesky" => Alert::Bluesky,
+        "mastodon" => Alert::Mastodon,
+        _ => Alert::Unipile,
+    }
+}
+
 impl Accounts {
+    /// The account's name and its encrypted secret, which hooks::record matches on. The secret is empty when it isn't connected.
+    pub fn account(&self, platform: &str) -> (&str, &str) {
+        match platform {
+            "x" => (&self.x_handle, &self.x_auth_token_enc),
+            "reddit" => (&self.reddit_username, &self.reddit_password_enc),
+            "bluesky" => (&self.bluesky_handle, &self.bluesky_password_enc),
+            "mastodon" => (&self.mastodon_handle, &self.mastodon_token_enc),
+            _ => (&self.unipile_account_id, &self.unipile_token_enc),
+        }
+    }
+
+    pub fn connected(&self) -> Vec<&'static str> {
+        PLATFORMS.into_iter().filter(|p| !self.account(p).1.is_empty()).collect()
+    }
+
     pub fn cookies(&self, secret: &str) -> anyhow::Result<Option<Cookies>> {
         if self.x_auth_token_enc.is_empty() {
             return Ok(None);
@@ -65,6 +160,27 @@ impl Accounts {
             username: self.reddit_username.clone(),
             password: decrypt(secret, &self.reddit_password_enc)?,
         }))
+    }
+
+    pub fn bluesky(&self, secret: &str) -> anyhow::Result<Option<bluesky::Login>> {
+        if self.bluesky_password_enc.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(bluesky::Login { handle: self.bluesky_handle.clone(), password: decrypt(secret, &self.bluesky_password_enc)? }))
+    }
+
+    pub async fn mastodon(&self, secret: &str) -> Result<Mastodon, Failure> {
+        let token = decrypt(secret, &self.mastodon_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Mastodon token. Connect Mastodon again".into()))?;
+        Mastodon::new(&self.mastodon_url, &token).await
+    }
+
+    pub fn unipile(&self, secret: &str) -> Result<Unipile, Failure> {
+        let token = decrypt(secret, &self.unipile_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Unipile token. Connect Unipile again".into()))?;
+        Unipile::new(&self.unipile_dsn, &token, &self.unipile_account_id).map_err(|e| Failure::Account(e.to_string()))
+    }
+
+    pub fn mastodon_chars(&self) -> usize {
+        self.mastodon_max_chars.max(1) as usize
     }
 }
 
@@ -87,7 +203,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     // The same account can be connected to several projects, and it still posts once a tick.
     let mut used = HashSet::new();
     for a in waiting {
-        for platform in ["x", "reddit"] {
+        for platform in a.connected() {
             if let Err(e) = publish_next(state, &a, platform, &mut used).await {
                 tracing::error!(project_id = %a.project_id, platform, error = ?e, "social posting failed");
             }
@@ -99,12 +215,9 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
 /// `used` holds the accounts that already posted this tick. An account only counts once it claims a post, so a project with
 /// nothing due doesn't hold up another project on the same account.
 async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, used: &mut HashSet<(&'static str, String)>) -> anyhow::Result<()> {
-    let (account, enc, alert) = match platform {
-        "x" => (&a.x_handle, &a.x_auth_token_enc, Alert::X),
-        _ => (&a.reddit_username, &a.reddit_password_enc, Alert::Reddit),
-    };
+    let (account, enc) = a.account(platform);
     let key = (platform, account.to_lowercase());
-    if enc.is_empty() || used.contains(&key) {
+    if used.contains(&key) {
         return Ok(());
     }
     let Some(post) = next_due(&state.db, a.project_id, platform, account).await? else { return Ok(()) };
@@ -114,18 +227,20 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &'static str, us
     used.insert(key);
     let published = match platform {
         "x" => post_x(state, a, &post).await,
-        _ => post_reddit(state, a, &post).await,
+        "reddit" => post_reddit(state, a, &post).await,
+        "bluesky" => post_bluesky(state, a, &post).await,
+        "mastodon" => post_mastodon(state, a, &post).await,
+        _ => post_linkedin(state, a, &post).await,
     };
     let result = finish(&state.db, &post, account, published).await?;
-    hooks::record(&state.db, a.project_id, alert, enc, &result).await;
+    hooks::record(&state.db, a.project_id, alert(platform), enc, &result).await;
     Ok(())
 }
 
-/// The project's longest-approved post on the platform, unless the account (in any project) is at its daily cap or had
-/// a failure in the last hour.
+/// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap
+/// or had a failure in the last hour.
 async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) -> sqlx::Result<Option<SocialPost>> {
-    // The names are fixed strings, never user input.
-    let (name, failed_at) = if platform == "x" { ("x_handle", "x_failed_at") } else { ("reddit_username", "reddit_failed_at") };
+    let (name, failed_at) = columns(platform);
     sqlx::query_as(&format!(
         "select sp.* from social_posts sp
          where sp.project_id = $1 and sp.platform = $2 and sp.status = 'approved'
@@ -137,7 +252,7 @@ async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) 
     .bind(project_id)
     .bind(platform)
     .bind(account)
-    .bind(DAILY_POSTS)
+    .bind(daily_cap(platform))
     .fetch_optional(db)
     .await
 }
@@ -190,6 +305,27 @@ async fn post_reddit(state: &AppState, a: &Accounts, post: &SocialPost) -> Resul
     match post.in_reply_to.as_deref() {
         Some(link) => reddit.comment(&Target::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a Reddit post".into()))?, &post.body).await,
         None => reddit.submit(&post.subreddit, &post.title, &post.body).await,
+    }
+}
+
+async fn post_bluesky(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let login = a.bluesky(&state.cfg.app_secret).ok().flatten().ok_or_else(|| Failure::Account("Couldn't read the saved Bluesky app password. Connect Bluesky again".into()))?;
+    Bluesky::sign_in(&login).await?.post(post.in_reply_to.as_deref(), &post.body).await
+}
+
+async fn post_mastodon(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    // The post's id as the idempotency key, so Mastodon posts it once even if the request goes twice.
+    a.mastodon(&state.cfg.app_secret).await?.post(post.in_reply_to.as_deref(), &post.body, &post.id.to_string()).await
+}
+
+async fn post_linkedin(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let unipile = a.unipile(&state.cfg.app_secret)?;
+    match post.in_reply_to.as_deref() {
+        Some(link) => {
+            let urn = unipile::post_urn(link).ok_or_else(|| Failure::Post("That isn't a link to a LinkedIn post".into()))?;
+            unipile.comment(&urn, &post.body).await.map(|_| link.to_string())
+        }
+        None => unipile.publish(&post.body).await,
     }
 }
 
@@ -252,5 +388,45 @@ mod tests {
         .unwrap();
         assert!(next_due(&db, project, "x", "acme").await.unwrap().is_none());
         assert!(next_due(&db, project, "reddit", "acme_on_reddit").await.unwrap().is_some());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn linkedin_stops_at_five_posts_a_day_and_the_others_at_fifteen(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, unipile_token_enc, unipile_account_id, bluesky_password_enc, bluesky_handle) values ($1, 'x', 'ACC', 'x', 'acme.bsky.social')")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let a = accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(a.connected(), ["bluesky", "linkedin"]);
+        for (platform, account) in [("linkedin", "ACC"), ("bluesky", "acme.bsky.social")] {
+            approved(&db, project, platform).await;
+            sqlx::query("insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, $2, 'Hi', 'posted', $3, now() from generate_series(1, 5)")
+                .bind(project)
+                .bind(platform)
+                .bind(account)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_none());
+        assert!(next_due(&db, project, "bluesky", "acme.bsky.social").await.unwrap().is_some());
+        // A Unipile failure, from sending LinkedIn messages or posting, holds LinkedIn posting too.
+        sqlx::query("delete from social_posts where platform = 'linkedin' and status = 'posted'").execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_some());
+        sqlx::query("update project_settings set unipile_failed_at = now() where project_id = $1").bind(project).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "linkedin", "ACC").await.unwrap().is_none());
+    }
+
+    #[test]
+    fn each_platform_has_its_own_limit() {
+        assert!(fits("x", true, &"a".repeat(280), 500) && !fits("x", true, &"a".repeat(281), 500));
+        // 300 thumbs with a skin tone are 600 characters but 300 graphemes.
+        assert!(fits("bluesky", false, &"👍🏽".repeat(300), 500) && !fits("bluesky", false, &"a".repeat(301), 500));
+        assert!(fits("mastodon", false, &"a".repeat(1000), 1000) && !fits("mastodon", false, &"a".repeat(501), 500));
+        assert!(fits("linkedin", false, &"a".repeat(3000), 500) && !fits("linkedin", true, &"a".repeat(1251), 500));
+        assert!(!fits("reddit", true, "", 500));
     }
 }

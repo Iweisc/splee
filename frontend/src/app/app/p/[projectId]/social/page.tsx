@@ -19,8 +19,7 @@ import { useAgentEvents } from "@/hooks/use-agent-events";
 type Platform = SocialPost["platform"];
 type Tab = "draft" | "approved" | "posted" | "closed";
 
-const X_CHARS = 280;
-const PLATFORMS: Record<Platform, string> = { x: "X", reddit: "Reddit" };
+const PLATFORMS: Record<Platform, string> = { x: "X", reddit: "Reddit", bluesky: "Bluesky", mastodon: "Mastodon", linkedin: "LinkedIn" };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
   { value: "approved", label: "Approved", statuses: ["approved", "posting"] },
@@ -29,12 +28,28 @@ const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = 
 ];
 const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
-  approved: { title: "Nothing waiting to post", text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each." },
+  approved: { title: "Nothing waiting to post", text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, or 5 on LinkedIn." },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
-  closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones X or Reddit turn down, end up here." },
+  closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
-const chars = (s: string) => [...s].length;
+/** LinkedIn goes out through the Unipile connection for LinkedIn sending. */
+const isConnected = (s: ProjectSettings, p: Platform) => (p === "linkedin" ? s.unipile_connected : s[`${p}_connected`]);
+const dailyCap = (p: Platform) => (p === "linkedin" ? 5 : 15);
+
+/** The most a reply or post can hold, like social::max_length on the backend. Reddit's limits are far above any reply, so it
+ *  gets no counter. */
+function maxLength(p: Platform, reply: boolean, mastodonChars: number): number | null {
+  if (p === "x") return 280;
+  if (p === "bluesky") return 300;
+  if (p === "mastodon") return mastodonChars;
+  if (p === "linkedin") return reply ? 1250 : 3000;
+  return null;
+}
+
+/** Bluesky counts graphemes, so an emoji with a skin tone counts once. The others count characters. */
+const graphemes = new Intl.Segmenter();
+const length = (p: Platform, s: string) => (p === "bluesky" ? [...graphemes.segment(s)].length : [...s].length);
 
 export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/social">) {
   const { projectId } = use(params);
@@ -55,7 +70,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     }
   });
 
-  const connected = (["x", "reddit"] as const).filter((p) => settings?.[`${p}_connected`]);
+  const connected = settings ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, p)) : [];
   const start = async () => {
     setStarting(true);
     try {
@@ -76,7 +91,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X and Reddit where your buyers talk about the problem you solve, and drafts helpful replies and a few posts. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon and LinkedIn where your buyers talk about the problem you solve, and drafts helpful replies and a few posts. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -100,20 +115,20 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
           <Card>
             <EmptyState
               icon={<Megaphone className="size-5" />}
-              title="Connect X or Reddit first"
+              title="Connect an account first"
               action={
                 <LinkButton href={`/app/p/${projectId}/integrations`} variant="outline" size="sm">
                   Go to integrations
                 </LinkButton>
               }
             >
-              Splee searches, drafts and posts as your own accounts. Connect one on the integrations page.
+              Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky or Mastodon, or LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
           <>
             {run && <RunProgress key={run.id} run={run} />}
-            {connected.length > 0 && <Composer projectId={projectId} platforms={connected} onAdded={() => mutate()} />}
+            {connected.length > 0 && <Composer projectId={projectId} platforms={connected} mastodonChars={settings.mastodon_max_chars} onAdded={() => mutate()} />}
             {/* Four tabs with counts don't fit a phone's width, so phones get a select instead. */}
             <div>
               <Tabs value={tab} onChange={setTab} options={TABS.map((t) => ({ value: t.value, label: `${t.label} (${count(t)})` }))} className="max-sm:hidden" />
@@ -134,7 +149,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
             ) : (
               <ul className="flex flex-col gap-3">
                 {posts.map((p) => (
-                  <PostCard key={p.id} post={p} onChange={() => mutate()} />
+                  <PostCard key={p.id} post={p} mastodonChars={settings.mastodon_max_chars} onChange={() => mutate()} />
                 ))}
               </ul>
             )}
@@ -146,7 +161,17 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
 }
 
 /** A post written by hand, which goes straight to Approved. */
-function Composer({ projectId, platforms, onAdded }: { projectId: string; platforms: Platform[]; onAdded: () => Promise<unknown> }) {
+function Composer({
+  projectId,
+  platforms,
+  mastodonChars,
+  onAdded,
+}: {
+  projectId: string;
+  platforms: Platform[];
+  mastodonChars: number;
+  onAdded: () => Promise<unknown>;
+}) {
   const [platform, setPlatform] = useState<Platform>(platforms[0]!);
   const [body, setBody] = useState("");
   const [title, setTitle] = useState("");
@@ -154,7 +179,8 @@ function Composer({ projectId, platforms, onAdded }: { projectId: string; platfo
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
-  const ready = !!body.trim() && (reddit ? !!title.trim() && !!subreddit.trim() : chars(body) <= X_CHARS);
+  const max = maxLength(on, false, mastodonChars);
+  const ready = !!body.trim() && (reddit ? !!title.trim() && !!subreddit.trim() : max === null || length(on, body) <= max);
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,8 +203,18 @@ function Composer({ projectId, platforms, onAdded }: { projectId: string; platfo
       <form onSubmit={add} className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="font-medium">Write a post</p>
+          {/* Five platforms don't fit next to the heading on a phone, so phones get a select instead. */}
           {platforms.length > 1 && (
-            <Tabs value={on} onChange={setPlatform} options={platforms.map((p) => ({ value: p, label: PLATFORMS[p] }))} />
+            <>
+              <Tabs value={on} onChange={setPlatform} options={platforms.map((p) => ({ value: p, label: PLATFORMS[p] }))} className="max-sm:hidden" />
+              <Select value={on} onChange={(e) => setPlatform(e.target.value as Platform)} aria-label="Platform" className="w-auto sm:hidden">
+                {platforms.map((p) => (
+                  <option key={p} value={p}>
+                    {PLATFORMS[p]}
+                  </option>
+                ))}
+              </Select>
+            </>
           )}
         </div>
         {reddit && (
@@ -194,15 +230,18 @@ function Composer({ projectId, platforms, onAdded }: { projectId: string; platfo
         <Textarea
           aria-label="Post"
           rows={3}
-          placeholder={reddit ? "What you want to share or ask" : "What's happening"}
+          placeholder={reddit ? "What you want to share or ask" : on === "linkedin" ? "What you want to share" : "What's happening"}
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-pretty text-muted-foreground">
-            {on === "x" && <CharCount text={body} />}
-            {on === "x" && " · "}
-            Goes out within ten minutes, up to 15 a day.
+            {max !== null && (
+              <>
+                <CharCount n={length(on, body)} max={max} /> ·{" "}
+              </>
+            )}
+            Goes out within ten minutes, up to {dailyCap(on)} a day.
           </p>
           <Button type="submit" size="sm" loading={busy} disabled={!ready} className="max-sm:ml-auto">
             <Send className="size-3.5" /> Queue post
@@ -213,9 +252,12 @@ function Composer({ projectId, platforms, onAdded }: { projectId: string; platfo
   );
 }
 
-function CharCount({ text }: { text: string }) {
-  const n = chars(text);
-  return <span className={cn("tabular-nums", n > X_CHARS && "font-medium text-danger")}>{n}/{X_CHARS}</span>;
+function CharCount({ n, max }: { n: number; max: number }) {
+  return (
+    <span className={cn("tabular-nums", n > max && "font-medium text-danger")}>
+      {n}/{max}
+    </span>
+  );
 }
 
 const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> = {
@@ -228,7 +270,7 @@ const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> =
 };
 
 /** A draft stays editable until it's posted. Every button saves the edits along with the new status. */
-function PostCard({ post: p, onChange }: { post: SocialPost; onChange: () => Promise<unknown> }) {
+function PostCard({ post: p, mastodonChars, onChange }: { post: SocialPost; mastodonChars: number; onChange: () => Promise<unknown> }) {
   const [body, setBody] = useState(p.body);
   const [title, setTitle] = useState(p.title);
   const [subreddit, setSubreddit] = useState(p.subreddit);
@@ -237,7 +279,10 @@ function PostCard({ post: p, onChange }: { post: SocialPost; onChange: () => Pro
   const redditPost = p.platform === "reddit" && !reply;
   const posted = p.status === "posted";
   const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit;
-  const tooLong = p.platform === "x" && chars(body) > X_CHARS;
+  const max = maxLength(p.platform, reply, mastodonChars);
+  const tooLong = max !== null && length(p.platform, body) > max;
+  // LinkedIn calls a reply a comment.
+  const kind = reply ? (p.platform === "linkedin" ? "comment" : "reply") : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
@@ -271,7 +316,7 @@ function PostCard({ post: p, onChange }: { post: SocialPost; onChange: () => Pro
       <Card className="flex flex-col gap-3 p-4 wrap-anywhere sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="dark">{PLATFORMS[p.platform]}</Badge>
-          <span className="text-sm font-medium">{reply ? "Reply" : "Post"}</span>
+          <span className="text-sm font-medium capitalize">{kind}</span>
           {p.subreddit && <span className="text-sm text-muted-foreground">r/{p.subreddit}</span>}
           <span className="text-xs text-muted-foreground" title={dateTime(p.posted_at ?? p.created_at)}>
             {posted ? `Posted ${timeAgo(p.posted_at ?? p.created_at)}` : timeAgo(p.created_at)}
@@ -282,7 +327,7 @@ function PostCard({ post: p, onChange }: { post: SocialPost; onChange: () => Pro
         {reply && (
           <div className="rounded-lg bg-muted/60 px-3 py-2.5">
             <a href={p.in_reply_to!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium hover:underline">
-              Replying to this thread on {PLATFORMS[p.platform]} <ExternalLink className="size-3" />
+              {p.platform === "linkedin" ? "Commenting on this post" : "Replying to this thread"} on {PLATFORMS[p.platform]} <ExternalLink className="size-3" />
             </a>
             {p.context && <p className="mt-1 line-clamp-4 text-sm whitespace-pre-wrap text-muted-foreground">{p.context}</p>}
           </div>
@@ -317,18 +362,18 @@ function PostCard({ post: p, onChange }: { post: SocialPost; onChange: () => Pro
               </div>
             )}
             <div className="flex flex-col gap-1">
-              <MicroLabel>{reply ? "Your reply" : "Your post"}</MicroLabel>
+              <MicroLabel>Your {kind}</MicroLabel>
               {/* Grows with the text, so a long reply can be read without scrolling inside the box. */}
               <Textarea
-                aria-label={reply ? "Your reply" : "Your post"}
+                aria-label={`Your ${kind}`}
                 rows={3}
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 className="field-sizing-content"
               />
-              {p.platform === "x" && (
+              {max !== null && (
                 <p className="text-right text-xs text-muted-foreground">
-                  <CharCount text={body} />
+                  <CharCount n={length(p.platform, body)} max={max} />
                 </p>
               )}
             </div>

@@ -171,6 +171,19 @@ export interface ProjectSettings extends CrmStatus {
   reddit_username: string;
   reddit_error: string | null;
   reddit_failed_at: string | null;
+  /** The Bluesky account social posts go out from. Its app password is write-only, through PUT /integrations/bluesky. */
+  bluesky_connected: boolean;
+  bluesky_handle: string;
+  bluesky_error: string | null;
+  bluesky_failed_at: string | null;
+  /** The Mastodon account social posts go out from, as user@instance. Its token is write-only, through PUT /integrations/mastodon. */
+  mastodon_connected: boolean;
+  mastodon_url: string;
+  mastodon_handle: string;
+  /** The instance's post limit, read on connect. */
+  mastodon_max_chars: number;
+  mastodon_error: string | null;
+  mastodon_failed_at: string | null;
 }
 
 export type WebhookEvent =
@@ -594,12 +607,13 @@ export type RunKind =
   | "segment_from_prompt"
   | "social";
 
-/** A reply or post for X or Reddit, drafted by a social run or written by hand, posted once approved. */
+/** A reply or post for a social platform, drafted by a social run or written by hand, posted once approved. */
 export interface SocialPost {
   id: UUID;
   project_id: UUID;
   run_id: UUID | null;
-  platform: "x" | "reddit";
+  /** LinkedIn posts go out through the project's Unipile connection. */
+  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin";
   /** The link of the post or comment it answers, null for an original post. */
   in_reply_to: string | null;
   /** The text it answers. */
@@ -612,7 +626,7 @@ export interface SocialPost {
   /** Why the agent picked the thread. */
   reason: string;
   status: "draft" | "approved" | "posting" | "posted" | "failed" | "skipped";
-  /** The handle or username it went out from. */
+  /** The handle or username it went out from, or the Unipile account id for LinkedIn. */
   account: string;
   url: string;
   error: string | null;

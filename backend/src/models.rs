@@ -201,6 +201,19 @@ pub struct ProjectSettings {
     pub reddit_username: String,
     pub reddit_error: Option<String>,
     pub reddit_failed_at: Option<Ts>,
+    /// The Bluesky account social posts go out from. Its app password stays out of this struct.
+    pub bluesky_connected: bool,
+    pub bluesky_handle: String,
+    pub bluesky_error: Option<String>,
+    pub bluesky_failed_at: Option<Ts>,
+    /// The Mastodon account social posts go out from, as user@instance, and the instance's post limit. Its token stays out
+    /// of this struct.
+    pub mastodon_connected: bool,
+    pub mastodon_url: String,
+    pub mastodon_handle: String,
+    pub mastodon_max_chars: i32,
+    pub mastodon_error: Option<String>,
+    pub mastodon_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -475,13 +488,13 @@ pub struct Import {
     pub created_at: Ts,
 }
 
-/// A reply or post for X or Reddit, drafted by a social run or written by the user, posted once approved.
+/// A reply or post for a social platform, drafted by a social run or written by the user, posted once approved.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SocialPost {
     pub id: Uuid,
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
-    /// "x" or "reddit".
+    /// "x", "reddit", "bluesky", "mastodon" or "linkedin".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -496,7 +509,7 @@ pub struct SocialPost {
     pub reason: String,
     /// draft, approved, posted, failed or skipped.
     pub status: String,
-    /// The handle or username it went out from.
+    /// The handle or username it went out from, or the Unipile account id for LinkedIn.
     pub account: String,
     pub url: String,
     pub error: Option<String>,
