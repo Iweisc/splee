@@ -184,6 +184,38 @@ export interface ProjectSettings extends CrmStatus {
   mastodon_max_chars: number;
   mastodon_error: string | null;
   mastodon_failed_at: string | null;
+  /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
+  autopilot: boolean;
+  /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
+  autopilot_budget_micros: number;
+  /** New leads emailed a month. Past it, first emails wait for the next month while autopilot is on. */
+  autopilot_lead_cap: number;
+  /** Autopilot's emails go out without approval. */
+  autopilot_auto_send: boolean;
+}
+
+/** GET /projects/:id/autopilot. Spend and leads count the current calendar month (UTC). */
+export interface AutopilotStatus {
+  enabled: boolean;
+  auto_send: boolean;
+  budget_micros: number;
+  spent_micros: number;
+  lead_cap: number;
+  contacted: number;
+  /** First emails in sending campaigns that wait for approval. */
+  awaiting_approval: number;
+  /** Why it's waiting, from its last check. Empty right after it started a run. */
+  note: string;
+  checked_at: Ts | null;
+  /** Its run going now, else its last one. */
+  run: {
+    id: UUID;
+    kind: RunKind;
+    status: AgentRun["status"];
+    campaign: string | null;
+    created_at: Ts;
+    finished_at: Ts | null;
+  } | null;
 }
 
 export type WebhookEvent =

@@ -1,6 +1,7 @@
 mod agent;
 mod airtable;
 mod auth;
+mod autopilot;
 mod baserow;
 mod bluesky;
 mod config;

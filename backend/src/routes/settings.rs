@@ -72,6 +72,10 @@ struct SettingsBody {
     chat_weekly_report: Option<bool>,
     /// Empty turns it off.
     bcc_email: Option<String>,
+    autopilot: Option<bool>,
+    autopilot_budget_micros: Option<i64>,
+    autopilot_lead_cap: Option<i32>,
+    autopilot_auto_send: Option<bool>,
 }
 
 async fn update_settings(
@@ -119,6 +123,12 @@ async fn update_settings(
     for event in body.webhook_events.iter().flatten() {
         util_input::one_of("webhook_events", event, &hooks::EVENTS)?;
     }
+    if body.autopilot_budget_micros.is_some_and(|m| !(0..=100_000_000_000).contains(&m)) {
+        return bad("Autopilot budget must be between $0 and $100,000 a month");
+    }
+    if body.autopilot_lead_cap.is_some_and(|n| !(0..=100_000).contains(&n)) {
+        return bad("Autopilot lead cap must be between 0 and 100,000 a month");
+    }
     let bcc_email = match body.bcc_email.as_deref().map(str::trim) {
         Some("") => Some(String::new()),
         Some(raw) => match util_input::email(raw) {
@@ -152,7 +162,11 @@ async fn update_settings(
            chat_weekly_report = coalesce($21, chat_weekly_report),
            bcc_error = case when $22::text <> bcc_email then null else bcc_error end,
            bcc_failed_at = case when $22::text <> bcc_email then null else bcc_failed_at end,
-           bcc_email = coalesce($22, bcc_email)
+           bcc_email = coalesce($22, bcc_email),
+           autopilot = coalesce($23, autopilot),
+           autopilot_budget_micros = coalesce($24, autopilot_budget_micros),
+           autopilot_lead_cap = coalesce($25, autopilot_lead_cap),
+           autopilot_auto_send = coalesce($26, autopilot_auto_send)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -177,6 +191,10 @@ async fn update_settings(
     .bind(body.webhook_events)
     .bind(body.chat_weekly_report)
     .bind(bcc_email)
+    .bind(body.autopilot)
+    .bind(body.autopilot_budget_micros)
+    .bind(body.autopilot_lead_cap)
+    .bind(body.autopilot_auto_send)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))
