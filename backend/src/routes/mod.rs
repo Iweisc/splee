@@ -34,6 +34,7 @@ pub mod runs;
 pub mod support;
 pub mod explorer;
 pub mod unsubscribe;
+mod util_airtable;
 mod util_csv;
 pub mod util_input;
 mod util_lead_import;
