@@ -159,15 +159,16 @@ impl FromRequestParts<AppState> for ApiKeyAuth {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or(AppError::Unauthorized)?;
-        let org_id: Option<Uuid> = sqlx::query_scalar(
-            "update api_keys set last_used_at = now()
-             where key_hash = $1 and revoked_at is null returning org_id",
-        )
-        .bind(sha256_hex(key))
-        .fetch_optional(&state.db)
-        .await?;
-        Ok(ApiKeyAuth { org_id: org_id.ok_or(AppError::Unauthorized)? })
+        Ok(ApiKeyAuth { org_id: api_key_org(&state.db, key).await?.ok_or(AppError::Unauthorized)? })
     }
+}
+
+/// The organization of a live API key.
+pub async fn api_key_org(db: &PgPool, key: &str) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar("update api_keys set last_used_at = now() where key_hash = $1 and revoked_at is null returning org_id")
+        .bind(sha256_hex(key))
+        .fetch_optional(db)
+        .await
 }
 
 #[cfg(test)]

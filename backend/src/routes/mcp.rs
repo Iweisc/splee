@@ -1,6 +1,8 @@
-//! Splee as a remote MCP server, so Claude Code, Cursor and other MCP clients can prospect from chat. It follows the
-//! initialize-based revisions of https://modelcontextprotocol.io/specification/2025-11-25 over Streamable HTTP, with one
-//! JSON answer per POST and no SSE stream or session. Each tool calls the matching public API v1 handler with the same key.
+//! Splee as a remote MCP server, so ChatGPT, Claude, Cursor and other MCP clients can prospect from chat. It serves both eras of
+//! https://modelcontextprotocol.io/specification/2026-07-28 over Streamable HTTP: the stateless 2026-07-28 revision, and the
+//! initialize-based 2025-11-25 and 2025-06-18 ones. Every POST gets one JSON answer, with no SSE stream or session. A request
+//! signs in with an API key or an access token from Splee's OAuth (routes/oauth.rs), and each tool calls the matching public
+//! API v1 handler for that organization.
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -8,6 +10,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use reqwest::Url;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -15,8 +19,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::api_v1 as v1;
+use super::oauth;
 use super::util_input::LEAD_STATUSES;
-use crate::auth::ApiKeyAuth;
+use crate::auth::{ApiKeyAuth, api_key_org};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -25,8 +30,13 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/mcp", post(handle).get(not_allowed).delete(not_allowed))
 }
 
-/// Newest first. The 2026-07-28 revision drops initialize, and its clients fall back to these on the 400 below.
-const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18"];
+/// The revisions with an initialize handshake, newest first.
+const LEGACY: &[&str] = &["2025-11-25", "2025-06-18"];
+/// The stateless revision: no initialize, and each request names its version in _meta and the MCP-Protocol-Version header.
+const STATELESS: &str = "2026-07-28";
+const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
+/// How long a stateless client may keep tools/list and server/discover. The tools only change with a new Splee version.
+const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
@@ -37,32 +47,29 @@ async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
-async fn handle(State(state): State<AppState>, headers: HeaderMap, auth: Result<ApiKeyAuth, AppError>, body: Bytes) -> Response {
-    // The key already stops a page from driving the server through someone's browser. This is the check the spec asks for anyway.
+async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    // The token already stops a page from driving the server through someone's browser. This is the check the spec asks for anyway.
     if let Some(origin) = headers.get(header::ORIGIN)
         && Url::parse(&state.cfg.public_url).map(|u| u.origin().ascii_serialization()).ok().as_deref() != origin.to_str().ok()
     {
         return failure(StatusCode::FORBIDDEN, -32600, "This origin can't use the MCP server");
     }
-    if let Some(version) = headers.get("mcp-protocol-version")
-        && !version.to_str().is_ok_and(|v| VERSIONS.contains(&v))
-    {
-        return failure(StatusCode::BAD_REQUEST, -32600, &format!("Unsupported protocol version. Supported: {}", VERSIONS.join(", ")));
-    }
-    let auth = match auth {
-        Ok(auth) => auth,
-        Err(AppError::Unauthorized) => {
-            let mut res = failure(StatusCode::UNAUTHORIZED, -32001, "Send a Splee API key as Authorization: Bearer splee_…");
-            res.headers_mut().insert(header::WWW_AUTHENTICATE, "Bearer".parse().expect("valid header"));
-            return res;
-        }
-        Err(e) => return e.into_response(),
+    let org_id = match authenticate(&state, &headers).await {
+        Ok(org_id) => org_id,
+        Err(res) => return res,
     };
     let Ok(message) = serde_json::from_slice::<Value>(&body) else {
         return failure(StatusCode::BAD_REQUEST, -32700, "The body isn't JSON");
     };
     if !message.is_object() {
         return failure(StatusCode::BAD_REQUEST, -32600, "Send one JSON-RPC message per request");
+    }
+    // A legacy client names its version only in the header, after initialize. Anything newer is served statelessly, which
+    // answers a version Splee doesn't know with the list of ones it does.
+    let header_version = headers.get("mcp-protocol-version").and_then(|v| v.to_str().ok());
+    let asked = message["params"]["_meta"][VERSION_KEY].as_str().or(header_version);
+    if message["method"] != "initialize" && asked.is_some_and(|v| !LEGACY.contains(&v)) {
+        return stateless(&state, org_id, &headers, &message).await;
     }
     // Notifications, like notifications/initialized, and responses need nothing back.
     let (Some(id), Some(method)) = (message.get("id"), message.get("method").and_then(Value::as_str)) else {
@@ -73,7 +80,7 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, auth: Result<
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(&state, auth.org_id, &params).await,
+        "tools/call" => call_tool(&state, org_id, &params).await,
         _ => Err((-32601, format!("Unknown method {method}"))),
     };
     Json(match outcome {
@@ -83,20 +90,117 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, auth: Result<
     .into_response()
 }
 
+/// An API key, or an OAuth access token issued for this server. A 401 points the client at the protected resource metadata,
+/// where it finds Splee's authorization server and signs the user in.
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Uuid, Response> {
+    let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let found = match token {
+        Some(token) => match api_key_org(&state.db, token).await {
+            Ok(Some(org_id)) => Ok(Some(org_id)),
+            Ok(None) => oauth::token_org(&state.db, token, &oauth::resource(&state.cfg)).await,
+            Err(e) => Err(e),
+        },
+        None => Ok(None),
+    };
+    let metadata = oauth::resource_metadata_url(&state.cfg);
+    let challenge = match (found, token) {
+        (Ok(Some(org_id)), _) => return Ok(org_id),
+        (Err(e), _) => return Err(AppError::from(e).into_response()),
+        (Ok(None), None) => format!("Bearer resource_metadata=\"{metadata}\""),
+        (Ok(None), Some(_)) => format!("Bearer error=\"invalid_token\", error_description=\"The token is wrong, expired or revoked\", resource_metadata=\"{metadata}\""),
+    };
+    let mut res = failure(StatusCode::UNAUTHORIZED, -32001, "Sign in to Splee, or send a Splee API key as Authorization: Bearer splee_…");
+    res.headers_mut().insert(header::WWW_AUTHENTICATE, challenge.parse().expect("valid header"));
+    Err(res)
+}
+
+fn rpc_error(status: StatusCode, id: &Value, code: i64, message: &str, data: Option<Value>) -> Response {
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(data) = data {
+        error["data"] = data;
+    }
+    (status, Json(json!({ "jsonrpc": "2.0", "id": id, "error": error }))).into_response()
+}
+
 /// A JSON-RPC error without an id, for requests refused before they're read.
 fn failure(status: StatusCode, code: i64, message: &str) -> Response {
-    (status, Json(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": code, "message": message } }))).into_response()
+    rpc_error(status, &Value::Null, code, message, None)
+}
+
+fn server_info() -> Value {
+    json!({ "name": "splee", "title": "Splee", "version": env!("CARGO_PKG_VERSION") })
 }
 
 fn initialize(params: &Value) -> Value {
     let asked = params["protocolVersion"].as_str().unwrap_or_default();
-    let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
+    let version = LEGACY.iter().find(|v| **v == asked).unwrap_or(&LEGACY[0]);
     json!({
         "protocolVersion": version,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "splee", "title": "Splee", "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": server_info(),
         "instructions": INSTRUCTIONS,
     })
+}
+
+/// Mcp-Name carries a value that isn't plain ASCII as =?base64?…?=.
+fn header_value(value: &str) -> Option<String> {
+    match value.strip_prefix("=?base64?").and_then(|v| v.strip_suffix("?=")) {
+        Some(encoded) => STANDARD.decode(encoded).ok().and_then(|b| String::from_utf8(b).ok()),
+        None => Some(value.to_string()),
+    }
+}
+
+/// The 2026-07-28 revision. The body is the source of truth, and the headers that mirror it have to agree with it.
+async fn stateless(state: &AppState, org_id: Uuid, headers: &HeaderMap, message: &Value) -> Response {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let params = &message["params"];
+    let meta = &params["_meta"];
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let refuse = |status: StatusCode, code: i64, text: &str| rpc_error(status, &id, code, text, None);
+    let supported: Vec<&str> = std::iter::once(STATELESS).chain(LEGACY.iter().copied()).collect();
+    let asked = meta[VERSION_KEY].as_str().or(header("mcp-protocol-version")).unwrap_or_default();
+    if asked != STATELESS {
+        let data = json!({ "supported": supported, "requested": asked });
+        return rpc_error(StatusCode::BAD_REQUEST, &id, -32022, "Unsupported protocol version", Some(data));
+    }
+    // This revision has no notifications from the client, and clients never send responses.
+    let Some(method) = message["method"].as_str().filter(|_| message.get("id").is_some()) else {
+        return StatusCode::ACCEPTED.into_response();
+    };
+    if meta[VERSION_KEY].as_str().is_none() || !meta["io.modelcontextprotocol/clientCapabilities"].is_object() {
+        let text = "Send io.modelcontextprotocol/protocolVersion and io.modelcontextprotocol/clientCapabilities in params._meta";
+        return refuse(StatusCode::BAD_REQUEST, -32602, text);
+    }
+    let mismatch = if header("mcp-protocol-version") != Some(STATELESS) {
+        Some("MCP-Protocol-Version")
+    } else if header("mcp-method") != Some(method) {
+        Some("Mcp-Method")
+    } else if method == "tools/call" && header("mcp-name").and_then(header_value).as_deref() != params["name"].as_str() {
+        Some("Mcp-Name")
+    } else {
+        None
+    };
+    if let Some(name) = mismatch {
+        return refuse(StatusCode::BAD_REQUEST, -32020, &format!("Header mismatch: {name} is missing or doesn't match the body"));
+    }
+    let mut result = match method {
+        "server/discover" => json!({
+            "supportedVersions": supported,
+            "capabilities": { "tools": {} },
+            "instructions": INSTRUCTIONS,
+            "ttlMs": CACHE_MS,
+            "cacheScope": "private",
+        }),
+        "tools/list" => json!({ "tools": tools(), "ttlMs": CACHE_MS, "cacheScope": "private" }),
+        "tools/call" => match call_tool(state, org_id, params).await {
+            Ok(result) => result,
+            Err((code, text)) => return refuse(StatusCode::OK, code, &text),
+        },
+        _ => return refuse(StatusCode::NOT_FOUND, -32601, &format!("Unknown method {method}")),
+    };
+    result["resultType"] = json!("complete");
+    result["_meta"] = json!({ "io.modelcontextprotocol/serverInfo": server_info() });
+    Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
 }
 
 async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Value, (i64, String)> {
@@ -479,9 +583,13 @@ mod tests {
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
 
-        // A modern client announces its version in a header, and a 400 sends it back to initialize.
-        let res = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2026-07-28").json(&json!({})).send().await.unwrap();
+        // A version Splee doesn't know gets the list of ones it does, which tells a newer client to pick one rather than fall back.
+        let request = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2099-01-01" } } });
+        let res = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2099-01-01").json(&request).send().await.unwrap();
         assert_eq!(res.status(), 400);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!((body["id"].clone(), body["error"]["code"].clone()), (json!(4), json!(-32022)));
+        assert_eq!(body["error"]["data"], json!({ "supported": ["2026-07-28", "2025-11-25", "2025-06-18"], "requested": "2099-01-01" }));
         assert_eq!(server.client.get(&server.url).bearer_auth(KEY).send().await.unwrap().status(), 405);
         let res = server.client.post(&server.url).bearer_auth(KEY).header("origin", "https://evil.example").json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 403);
@@ -557,6 +665,72 @@ mod tests {
         assert!(body["error"]["message"].as_str().unwrap().contains("API key"));
         let res = server.client.post(&server.url).json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" })).send().await.unwrap();
         assert_eq!(res.status(), 401);
-        assert_eq!(res.headers()["www-authenticate"], "Bearer");
+        assert_eq!(res.headers()["www-authenticate"], "Bearer resource_metadata=\"http://localhost:3346/.well-known/oauth-protected-resource/api/mcp\"");
+        let res = server.client.post(&server.url).bearer_auth("splee_wrong").json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" })).send().await.unwrap();
+        assert!(res.headers()["www-authenticate"].to_str().unwrap().starts_with("Bearer error=\"invalid_token\""));
+    }
+
+    /// A 2026-07-28 request with the headers that mirror its body.
+    async fn stateless(server: &Server, method: &str, name: Option<&str>, mut params: Value) -> (u16, Value) {
+        params["_meta"] = json!({ "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} });
+        let body = json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params });
+        let mut req = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2026-07-28").header("mcp-method", method);
+        if let Some(name) = name {
+            req = req.header("mcp-name", name);
+        }
+        let res = req.json(&body).send().await.unwrap();
+        (res.status().as_u16(), res.json().await.unwrap_or(Value::Null))
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_stateless_revision_works_without_initialize(db: PgPool) {
+        seed(&db).await;
+        let server = Server::start(db).await;
+
+        let (status, body) = stateless(&server, "server/discover", None, json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        let result = &body["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["supportedVersions"][0], "2026-07-28");
+        assert!(result["capabilities"]["tools"].is_object() && result["instructions"].is_string());
+        assert_eq!(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "splee");
+
+        let (_, body) = stateless(&server, "tools/list", None, json!({})).await;
+        assert!(body["result"]["tools"].as_array().unwrap().len() >= 12);
+        assert_eq!((body["result"]["cacheScope"].as_str(), body["result"]["ttlMs"].is_u64()), (Some("private"), true));
+
+        let (status, body) = stateless(&server, "tools/call", Some("list_projects"), json!({ "name": "list_projects", "arguments": {} })).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(body["result"]["content"][0]["text"].as_str().unwrap().contains("Acme project"));
+        // Mcp-Name can carry a name in base64.
+        let encoded = "=?base64?bGlzdF9wcm9qZWN0cw==?=";
+        let (status, _) = stateless(&server, "tools/call", Some(encoded), json!({ "name": "list_projects", "arguments": {} })).await;
+        assert_eq!(status, 200);
+
+        // The headers have to match the body.
+        let (status, body) = stateless(&server, "tools/call", Some("list_leads"), json!({ "name": "list_projects", "arguments": {} })).await;
+        assert_eq!((status, body["error"]["code"].clone()), (400, json!(-32020)));
+        let (status, body) = stateless(&server, "tools/call", None, json!({ "name": "list_projects", "arguments": {} })).await;
+        assert_eq!((status, body["error"]["code"].clone()), (400, json!(-32020)));
+        let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } } });
+        let res = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2026-07-28").json(&request).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+        assert_eq!(res.json::<Value>().await.unwrap()["error"]["code"], -32020);
+
+        // Every request has to say what the client can do, and the handshake's methods are gone.
+        let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } });
+        let res = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/list");
+        let res = res.json(&request).send().await.unwrap();
+        assert_eq!((res.status().as_u16(), res.json::<Value>().await.unwrap()["error"]["code"].clone()), (400, json!(-32602)));
+        let (status, body) = stateless(&server, "ping", None, json!({})).await;
+        assert_eq!((status, body["error"]["code"].clone()), (404, json!(-32601)));
+
+        // initialize still starts a legacy session, whatever header comes with it.
+        let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2026-07-28", "capabilities": {} } });
+        let (status, body) = server.post(KEY, init).await;
+        assert_eq!((status, body["result"]["protocolVersion"].as_str()), (200, Some("2025-11-25")));
     }
 }

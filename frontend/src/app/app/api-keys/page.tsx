@@ -8,13 +8,13 @@ import { CodeBlock } from "@/components/app/settings/code-block";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { LoadError, Section, SectionsSkeleton, SettingsColumn } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
-import { MicroLabel } from "@/components/app/work/states";
+import { LoadError as LoadErrorState, MicroLabel } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
-import { Badge, Card, EmptyState, Modal } from "@/components/ui/misc";
+import { Badge, Card, EmptyState, Modal, Skeleton } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { ApiKey, ProjectSummary } from "@/lib/types";
+import type { ApiKey, ConnectedApp, ProjectSummary } from "@/lib/types";
 import { timeAgo } from "@/lib/utils";
 
 export default function ApiKeysPage() {
@@ -89,6 +89,7 @@ export default function ApiKeysPage() {
               ))}
             </Card>
           )}
+          <ConnectedApps />
           <ConnectAssistant />
         </SettingsColumn>
       </PageBody>
@@ -100,7 +101,54 @@ export default function ApiKeysPage() {
   );
 }
 
-/** Claude.ai and ChatGPT were checked against their docs in November 2026. Update this when ChatGPT takes an API key. */
+function ConnectedApps() {
+  const { me } = useMe();
+  const { data, error, mutate } = useSWR<ConnectedApp[]>("/organization/connected-apps", fetcher);
+  const { pending, run } = useAction();
+  const admin = me?.role === "owner" || me?.role === "admin";
+
+  const disconnect = (app: ConnectedApp) => {
+    if (!confirm(`Disconnect ${app.name}? It loses access right away and has to be allowed again.`)) return;
+    run(app.id, async () => {
+      await api(`/organization/connected-apps/${app.id}`, { method: "DELETE" });
+      await mutate();
+    }, "App disconnected");
+  };
+
+  return (
+    <Section title="Connected apps" description="Apps someone allowed to use Splee through the MCP server, like ChatGPT or Claude.ai. Each can do what a member can.">
+      {error ? (
+        <LoadErrorState error={error} what="connected apps" retry={() => mutate()} />
+      ) : !data ? (
+        <Skeleton className="h-10 w-full" />
+      ) : data.length === 0 ? (
+        <p className="text-sm text-muted-foreground">None yet. ChatGPT and Claude.ai show up here once someone allows them.</p>
+      ) : (
+        <div className="-my-3 divide-y divide-border">
+          {data.map((app) => (
+            <div key={app.id} className="flex items-center gap-4 py-3 text-sm">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{app.name}</p>
+                <p className="mt-0.5 text-xs break-words text-muted-foreground">
+                  {app.mine ? "You" : app.user_name || app.user_email}{" "}
+                  <span className="whitespace-nowrap">connected it {timeAgo(app.created_at)} ·</span>{" "}
+                  <span className="whitespace-nowrap">{app.last_used_at ? `last used ${timeAgo(app.last_used_at)}` : "never used"}</span>
+                </p>
+              </div>
+              {(app.mine || admin) && (
+                <Button variant="outline" size="sm" onClick={() => disconnect(app)} loading={pending === app.id}>
+                  Disconnect
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** ChatGPT's and Claude.ai's steps were checked against their docs in November 2026. */
 function ConnectAssistant() {
   const { me } = useMe();
   if (!me) return null;
@@ -109,8 +157,8 @@ function ConnectAssistant() {
   const cursor = JSON.stringify({ mcpServers: { splee: { url, headers: { Authorization: "Bearer <key>" } } } }, null, 2);
   return (
     <Section
-      title="Connect Claude or Cursor"
-      description="Prospect from a chat with Splee's MCP server. Search companies, start campaigns, find people and approve emails. Put one of your keys where it says <key>."
+      title="Connect ChatGPT, Claude or Cursor"
+      description="Prospect from a chat with Splee's MCP server. Search companies, start campaigns, find people and approve emails."
     >
       <div className="grid gap-4 text-sm">
         <div>
@@ -119,6 +167,20 @@ function ConnectAssistant() {
             <CopyField value={url} />
           </div>
         </div>
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">ChatGPT:</span> in Plugins, select the plus button, then Add custom MCP server. Name it Splee,
+          paste the server URL under Connection, choose OAuth for authentication, select I understand and want to continue, then Create as a plugin.
+          Install the plugin and select Allow on the Splee page that opens. A workspace admin may have to allow custom MCP servers first.
+        </p>
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">Claude.ai:</span> under Customize, Connectors, select Add custom connector and paste the server
+          URL. If it asks how to sign in, keep Sign in now and Use Claude&apos;s published identity. Select Add, then Connect, and Allow on the Splee page
+          that opens. On Team and Enterprise plans an Owner adds it under Organization settings, Connectors.
+        </p>
+        <p className="text-muted-foreground">
+          Both reach Splee over the internet, so PUBLIC_URL must be a public https address. Claude Code and Cursor take an API key instead. Put one of
+          your keys where it says <code className="font-mono">&lt;key&gt;</code>.
+        </p>
         <CodeBlock label="Claude Code" code={claudeCode} wrap />
         <div className="grid gap-2">
           <p className="text-muted-foreground">
@@ -127,15 +189,6 @@ function ConnectAssistant() {
           </p>
           <CodeBlock label="Cursor" code={cursor} wrap />
         </div>
-        <p className="text-muted-foreground">
-          <span className="font-medium text-foreground">Claude.ai:</span> under Customize, Connectors, add a custom connector with the server URL, choose No
-          sign-in and add an <code className="font-mono">authorization</code> request header with <code className="font-mono">Bearer &lt;key&gt;</code>. Request
-          headers are in beta for some organizations, and Claude.ai connects over the internet, so PUBLIC_URL must be a public https address.
-        </p>
-        <p className="text-muted-foreground">
-          <span className="font-medium text-foreground">ChatGPT:</span> it only connects to servers that sign in with OAuth, which Splee doesn&apos;t offer
-          yet. Use Claude Code or Cursor for now.
-        </p>
       </div>
     </Section>
   );

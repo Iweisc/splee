@@ -108,6 +108,8 @@ All paths below are under `/api`.
 | DELETE | /organization | | `{ok}` (owner) |
 | GET/POST | /organization/api-keys | `{name}` | `ApiKey[]` / `{api_key: ApiKey, secret}` (secret shown once) |
 | DELETE | /organization/api-keys/:id | | `{ok}` (revoke) |
+| GET | /organization/connected-apps | | `[{id, name, client_id, user_name, user_email, mine, created_at, last_used_at}]`: the org's OAuth grants that can still get tokens, newest first |
+| DELETE | /organization/connected-apps/:id | | `{ok}`: revokes the grant and its tokens. Admins can disconnect any app, members the ones they connected. 404 otherwise. |
 | GET/PUT | /notification-preferences | `NotificationPrefs` | `NotificationPrefs` |
 
 ### Projects and campaigns
@@ -275,9 +277,12 @@ A key acts for its whole organization, like a member: anything a member may do i
 
 ### MCP server (`POST /api/mcp`)
 
-A remote MCP server for Claude Code, Cursor and other MCP clients, in `routes/mcp.rs`. It follows the initialize-based revisions of the spec, `2025-11-25` and `2025-06-18`, over Streamable HTTP without SSE or sessions: every POST carries one JSON-RPC message and gets one `application/json` answer, notifications and client responses get 202, and GET and DELETE get 405. `initialize` answers with the client's `protocolVersion` when it's one of those, else `2025-11-25`, with `capabilities: {tools: {}}` and `instructions` describing the loop. It also answers `ping`, `tools/list` and `tools/call`, and -32601 to anything else. An `MCP-Protocol-Version` header naming another version gets 400, which sends clients of the stateless `2026-07-28` revision back to `initialize`. An `Origin` other than PUBLIC_URL's gets 403.
+A remote MCP server for ChatGPT, Claude.ai, Claude Code, Cursor and other MCP clients, in `routes/mcp.rs`, over Streamable HTTP without SSE or sessions: every POST carries one JSON-RPC message and gets one `application/json` answer, and GET and DELETE get 405. An `Origin` other than PUBLIC_URL's gets 403. It serves two eras of the spec on the same URL:
 
-Auth is `Authorization: Bearer splee_…`, checked like `ApiKeyAuth`. A missing or wrong key gets 401 with `WWW-Authenticate: Bearer` and a JSON-RPC error. Each tool calls the v1 handler with the same key, so it has the same org scoping and rules, and returns compact JSON as one text item. A failed call (bad id, an id of another org, a 409) is a result with `isError: true` and the API's error message. An unknown tool is JSON-RPC error -32602. Pages default to 20 items.
+- Stateless `2026-07-28`: a request whose `params._meta["io.modelcontextprotocol/protocolVersion"]` (or, without one, `MCP-Protocol-Version` header) names anything but the legacy versions. It needs `_meta` `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` (else 400, -32602) and the headers `MCP-Protocol-Version`, `Mcp-Method` and, for `tools/call`, `Mcp-Name` (`=?base64?…?=` decoded), each equal to the body (else 400, -32020 HeaderMismatch). Another version gets 400, -32022 with `data: {supported: ["2026-07-28", "2025-11-25", "2025-06-18"], requested}`. It answers `server/discover` (`supportedVersions`, `capabilities: {tools: {}}`, `instructions`), `tools/list` and `tools/call`, each result with `resultType: "complete"` and `_meta["io.modelcontextprotocol/serverInfo"]`, discover and tools/list with `ttlMs` (an hour) and `cacheScope: "private"`. Other methods, `ping` included, get 404 with -32601. Notifications get 202.
+- Initialize-based `2025-11-25` and `2025-06-18`: `initialize` (whatever headers come with it) answers with the client's `protocolVersion` when it's one of those, else `2025-11-25`, with `capabilities: {tools: {}}` and `instructions` describing the loop. Then `ping`, `tools/list` and `tools/call` with an `MCP-Protocol-Version` of one of those or none, -32601 to anything else, and 202 for notifications and client responses.
+
+Auth is `Authorization: Bearer …` with an API key (`splee_…`, checked like `ApiKeyAuth`) or an OAuth access token issued for `PUBLIC_URL/api/mcp` (below). Without one it's 401 with `WWW-Authenticate: Bearer resource_metadata="PUBLIC_URL/.well-known/oauth-protected-resource/api/mcp"` and a JSON-RPC error, and with a wrong, expired or revoked one also `error="invalid_token"`. Each tool calls the v1 handler for the key's or token's organization, so it has the same org scoping and rules, and returns compact JSON as one text item. A failed call (bad id, an id of another org, a 409) is a result with `isError: true` and the API's error message. An unknown tool is JSON-RPC error -32602. Pages default to 20 items.
 
 | tool | v1 operation |
 |---|---|
@@ -294,7 +299,24 @@ Auth is `Authorization: Bearer splee_…`, checked like `ApiKeyAuth`. A missing 
 | approve_email, skip_email | `POST /v1/emails/:id/approve`, `/skip` |
 | list_replies | `GET /v1/inbox` |
 
-Tools take `campaign_id` where the API says segment. create_campaign, find_people and write_emails return `{run_id, next}`, `next` telling the model to poll get_run. Read-only tools carry `readOnlyHint`. The API keys page shows the URL (`PUBLIC_URL/api/mcp`) and setup for Claude Code, Cursor and Claude.ai. ChatGPT only connects with OAuth, which Splee doesn't offer.
+Tools take `campaign_id` where the API says segment. create_campaign, find_people and write_emails return `{run_id, next}`, `next` telling the model to poll get_run. Read-only tools carry `readOnlyHint`. The API keys page shows the URL (`PUBLIC_URL/api/mcp`), how to add it in ChatGPT and Claude.ai (just the URL, signing in with OAuth) and the Claude Code and Cursor setup with an API key.
+
+### OAuth for the MCP server
+
+Splee is the authorization server of its own MCP server, in `routes/oauth.rs`, following the `2026-07-28` authorization spec: OAuth 2.1 authorization code with S256 PKCE only, RFC 9728, RFC 8414, client ID metadata documents and RFC 7591 registration, RFC 8707 resources, RFC 9207 `iss` and RFC 7009 revocation. The frontend rewrites `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource[/…]` from the public origin to the API's `/api/.well-known/…`, and sends `Content-Security-Policy: frame-ancestors 'none'` on `/oauth/*`. The issuer is `PUBLIC_URL` without its trailing slash.
+
+| method | path | body / query | response |
+|---|---|---|---|
+| GET | /.well-known/oauth-protected-resource, /.well-known/oauth-protected-resource/api/mcp | | `{resource: PUBLIC_URL/api/mcp, authorization_servers: [issuer], bearer_methods_supported: ["header"], resource_name}` |
+| GET | /.well-known/oauth-authorization-server | | `{issuer, authorization_endpoint: PUBLIC_URL/oauth/authorize, token_endpoint, registration_endpoint, revocation_endpoint (PUBLIC_URL/api/oauth/…), response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported and revocation_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"], client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true}` |
+| POST | /oauth/register | JSON `{redirect_uris, client_name?, token_endpoint_auth_method?, grant_types?, response_types?}` | 201 with the client and a UUID `client_id`, plus `client_secret` (stored hashed, `client_secret_expires_at: 0`) unless the method is `none`. The method defaults to `client_secret_basic` as RFC 7591 says. 400 `invalid_redirect_uri` unless there are 1 to 10, each https, or http on localhost, 127.0.0.1 or [::1], without a fragment or credentials. 400 `invalid_client_metadata` for another method, grant or response type. |
+| GET | /oauth/authorize | the authorization request (session) | `{client_name, client_host, redirect_host, local}` for the consent page, or `{redirect}` with an OAuth error for the app. A `client_id` that is an https URL with a path, spelled as parsing spells it, names a metadata document, fetched from a public address (5 s, 64 KB, no redirects) when unknown or read over an hour ago and kept in `oauth_clients`. The document's `client_id` must be its URL and it needs `client_name` and an https or loopback `redirect_uris`, and may not ask for a client secret. Until the app and its redirect URI check out it's 400 with the error shown on the page, never a redirect. `redirect_uri` must equal a registered one, except that a loopback one may name any port (RFC 8252), and may be left out when there's one. Then `response_type=code`, a 43-character `code_challenge` with `code_challenge_method=S256` and a `resource` (optional, compared without case in scheme and host or a trailing slash) of `PUBLIC_URL/api/mcp`, else the redirect carries `unsupported_response_type`, `invalid_request` or `invalid_target`. |
+| POST | /oauth/authorize | JSON: the same parameters plus `{allow, org_id?}` (session) | `{redirect}`: with `code` (5 minutes, stored hashed with the user, the org, the redirect URI, the challenge and the resource), or `error=access_denied`. Every redirect carries the app's `state` and `iss`. 403 when the user isn't in `org_id`, which defaults to the session's. |
+| POST | /oauth/token | form, with `client_secret_basic`, `client_secret_post` or a public `client_id` | `authorization_code` (`code`, `code_verifier`, optional `redirect_uri` and `resource` that must match the code's) or `refresh_token` → `{access_token: "splee_at_…", token_type: "Bearer", expires_in: 3600, refresh_token: "splee_rt_…"}`, `Cache-Control: no-store`. A code works once for its client, and a second use revokes the grant it made. A refresh token lasts 30 days and works once: it rotates, and using a used one revokes the whole grant. 400 `invalid_grant` for a wrong, expired or revoked code or token, a wrong verifier or redirect URI, or a user who left the org, `invalid_target` for another resource, `unsupported_grant_type`. 401 `invalid_client` for an unknown client or a wrong secret. |
+| POST | /oauth/revoke | form `token`, client authentication as above | 200 whatever the token. Either token of a grant revokes the grant. |
+
+A grant is one Allow: an app, a user, an org and the resource. An access token works on the MCP server only (not `/v1`), while it's under an hour old, its grant isn't revoked and its user is still in the org, and it sets the grant's `last_used_at`. It can do what a member can, like an API key.
+
 
 ## Background workers
 
@@ -310,6 +332,6 @@ Tools take `campaign_id` where the API says segment. create_campaign, find_peopl
 
 ## Frontend routes
 
-Marketing: `/`, `/about`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
+Marketing: `/`, `/about`, `/b2b-database`, `/b2b-database/locations/[region]`, `/gm-dataset`, `/tools/explorer`, `/compliance-faq`, `/terms-of-use`, `/privacy-policy`, `/autogtm`, `/unsubscribe/[token]`, `/signin`, `/signup`, `/invite/[token]`, `/oauth/authorize` (the consent page, signing in first), demo `/auto-gtm/company/[slug]/explore` (slug = domain, or `p-<project_id>` for "I don't have a website"), and the support chat bubble on every page.
 
 App under `/app`: see `frontend/src/components/app/nav.ts`.
