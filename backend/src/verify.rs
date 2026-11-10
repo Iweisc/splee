@@ -1,6 +1,6 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
-//! Reoon, DeBounce and Bouncify take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
+//! Reoon, DeBounce, Bouncify and QuickEmailVerification take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
 //! Anymail Finder, LeadMagic or Apollo.
 
@@ -39,6 +39,7 @@ pub enum Verifier {
     DeBounce,
     EmailListVerify,
     Bouncify,
+    QuickEmailVerification,
 }
 
 impl Verifier {
@@ -55,6 +56,7 @@ impl Verifier {
             "debounce" => Some(Verifier::DeBounce),
             "emaillistverify" => Some(Verifier::EmailListVerify),
             "bouncify" => Some(Verifier::Bouncify),
+            "quickemailverification" => Some(Verifier::QuickEmailVerification),
             _ => None,
         }
     }
@@ -72,6 +74,7 @@ impl Verifier {
             Verifier::DeBounce => "DeBounce",
             Verifier::EmailListVerify => "EmailListVerify",
             Verifier::Bouncify => "Bouncify",
+            Verifier::QuickEmailVerification => "QuickEmailVerification",
         }
     }
 
@@ -95,6 +98,10 @@ impl Verifier {
             Verifier::DeBounce => debounce_get(Url::parse_with_params("https://api.debounce.io/v1/balance/", [("api", key)])?).await.map(|_| ()),
             Verifier::EmailListVerify => elv_get(Url::parse(&format!("{ELV}/credits"))?, key).await.map(|_| ()),
             Verifier::Bouncify => bouncify_get(Url::parse_with_params("https://api.bouncify.io/v1/info", [("apikey", key)])?).await.map(|_| ()),
+            // The sandbox costs no credit and still turns down a wrong key.
+            Verifier::QuickEmailVerification => {
+                qev_get(Url::parse_with_params(&format!("{QEV}/sandbox"), [("email", "valid@example.com"), ("apikey", key)])?).await.map(|_| ())
+            }
         }
     }
 
@@ -154,6 +161,7 @@ impl Verifier {
                 let url = Url::parse_with_params("https://api.bouncify.io/v1/verify", [("apikey", key), ("email", email)])?;
                 Ok(bouncify_verdict(&bouncify_get(url).await?))
             }
+            Verifier::QuickEmailVerification => Ok(qev_verdict(&qev_get(Url::parse_with_params(QEV, [("email", email), ("apikey", key)])?).await?)),
         }
     }
 }
@@ -692,6 +700,31 @@ fn bouncify_verdict(body: &Value) -> Verdict {
     }
 }
 
+const QEV: &str = "https://api.quickemailverification.com/v1/verify";
+
+/// A failure is `{success: "false", message}`, like "Low credit. Payment required", and a wrong key a 401.
+async fn qev_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(status.is_success() && body["success"] == "true", "{}", body["message"].as_str().filter(|m| !m.is_empty()).unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// A throwaway inbox isn't worth sending to even when it exists, and a domain that accepts every address sends like a
+/// catch-all. Its flags are the strings "true" and "false".
+fn qev_verdict(body: &Value) -> Verdict {
+    if body["disposable"] == "true" {
+        return Verdict::Invalid;
+    }
+    match body["result"].as_str().unwrap_or_default() {
+        "valid" if body["accept_all"] != "true" => Verdict::Valid,
+        "invalid" => Verdict::Invalid,
+        _ => Verdict::Unsure,
+    }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -763,6 +796,12 @@ mod tests {
         assert_eq!(bouncify_verdict(&json!({"result": "deliverable", "spamtrap": true})), Verdict::Invalid);
         assert_eq!(bouncify_verdict(&json!({"result": "accept all", "accept_all": 1})), Verdict::Unsure);
         assert_eq!(bouncify_verdict(&json!({"result": "unknown"})), Verdict::Unsure);
+        // QuickEmailVerification's sandbox answers, with its flags as strings.
+        assert_eq!(qev_verdict(&json!({"result": "valid", "reason": "accepted_email", "disposable": "false", "accept_all": "false"})), Verdict::Valid);
+        assert_eq!(qev_verdict(&json!({"result": "valid", "disposable": "true", "accept_all": "false"})), Verdict::Invalid);
+        assert_eq!(qev_verdict(&json!({"result": "valid", "disposable": "false", "accept_all": "true"})), Verdict::Unsure);
+        assert_eq!(qev_verdict(&json!({"result": "invalid", "reason": "rejected_email", "disposable": "false"})), Verdict::Invalid);
+        assert_eq!(qev_verdict(&json!({"result": "unknown", "reason": "timeout"})), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));

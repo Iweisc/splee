@@ -634,6 +634,7 @@ const VERIFIERS = {
   debounce: "DeBounce",
   emaillistverify: "EmailListVerify",
   bouncify: "Bouncify",
+  quickemailverification: "QuickEmailVerification",
 } as const;
 
 const FINDERS = {
@@ -743,7 +744,7 @@ function ServiceKeySection<K extends string>({
         <p className="text-sm">{connected(name)}</p>
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
-          <Field label="Service" className="sm:w-44">
+          <Field label="Service" className="sm:w-52">
             <Select value={provider} onChange={(e) => setProvider(e.target.value as K)}>
               {(Object.entries(services) as [K, string][]).map(([value, label]) => (
                 <option key={value} value={value}>
