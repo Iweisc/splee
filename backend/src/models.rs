@@ -156,6 +156,9 @@ pub struct ProjectSettings {
     pub insightly_connected: bool,
     pub insightly_error: Option<String>,
     pub insightly_failed_at: Option<Ts>,
+    pub twenty_connected: bool,
+    pub twenty_error: Option<String>,
+    pub twenty_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,
