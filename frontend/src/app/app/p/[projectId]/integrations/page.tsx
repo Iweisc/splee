@@ -93,6 +93,7 @@ const CHAT_APPS = [
   ["Telegram", "bot's sendMessage URL with ?chat_id="],
   ["ntfy", "https://ntfy.sh/ or your ntfy.* server, and a topic only you know"],
   ["Pushover", "https://api.pushover.net/1/messages.json?token=APP_TOKEN&user=USER_KEY"],
+  ["Bark", "the https://api.day.app/ URL the app shows, ending in your device key"],
   ["Gotify", "your server's /message?token=APP_TOKEN"],
   ["Lark or Feishu", "group Settings → Bots → Custom Bot"],
   ["DingTalk", "group Bots → Custom, with IP security"],
@@ -103,6 +104,7 @@ const CHAT_APPS = [
   ["Zulip", "an incoming webhook bot's Slack compatible URL"],
   ["Zoho Cliq", "Bots & Tools → Webhook Tokens → Get Webhook URL, for a channel"],
   ["Pumble", "Workspace settings → General settings → Incoming Webhooks → New Webhook"],
+  ["Flock", "App Store → Webhooks → Incoming Webhook → Add, for a channel"],
 ] as const;
 
 /**
@@ -178,6 +180,8 @@ function chatApp(url: string): string {
   // cliq.zoho.com, cliq.zoho.eu and the other regions, the same way hooks::chat_payload tells them apart.
   if (host.startsWith("cliq.zoho")) return "Zoho Cliq";
   if (host === "api.pumble.com") return "Pumble";
+  if (host === "api.day.app") return "Bark";
+  if (host === "api.flock.com") return "Flock";
   // Self-hosted chats can be on any host, so their webhook paths tell them apart, the same way hooks::gotify and
   // hooks::mattermost do.
   if (path.at(-1) === "message" && token) return "Gotify";

@@ -355,7 +355,8 @@ fn host(url: &str) -> String {
 
 /// Where a chat alert is posted. ntfy takes JSON only at its root, with the topic from the user's https://ntfy.sh/{topic}
 /// URL in the body, and keeps the query, where a self-hosted server's `?auth=` goes. Pushover reads its token and user key
-/// from the body only, so they move there from the query. Everything else is posted to the URL as given.
+/// from the body only, so they move there from the query. Bark's URL can carry a title and body after the device key, as
+/// its app shows one, which a JSON post doesn't take. Everything else is posted to the URL as given.
 pub fn chat_endpoint(url: &str) -> String {
     if ntfy(url)
         && let Ok(mut root) = Url::parse(url)
@@ -365,6 +366,10 @@ pub fn chat_endpoint(url: &str) -> String {
     }
     match host(url).as_str() {
         PUSHOVER => format!("https://{PUSHOVER}/1/messages.json"),
+        BARK => {
+            let key = Url::parse(url).ok().and_then(|u| u.path_segments()?.next().map(str::to_string)).unwrap_or_default();
+            format!("https://{BARK}/{key}")
+        }
         _ => url.to_string(),
     }
 }
@@ -376,6 +381,7 @@ fn ntfy(url: &str) -> bool {
 }
 
 const PUSHOVER: &str = "api.pushover.net";
+const BARK: &str = "api.day.app";
 
 /// A Gotify server can be on any host, so it's told apart by its URL for sending a message: /message with the app's
 /// `?token=`. Keep in sync with chatApp in the integrations page.
@@ -398,7 +404,8 @@ fn query(url: &str, key: &str) -> Option<String> {
 /// The JSON a chat webhook takes. Discord, Teams (Workflows and the older connectors), Telegram (a bot's sendMessage
 /// URL with `?chat_id=`), ntfy (a topic URL on ntfy.sh or an ntfy.* server), Pushover (its messages.json URL with `?token=` and `&user=`), Lark or
 /// Feishu (a custom bot's URL), DingTalk (a robot's `?access_token=` URL), WeCom (a group robot's `?key=` URL) and Webex
-/// (an incoming webhook's URL) have their own shapes, as does Zoho Cliq (a channel's `?zapikey=` URL), and Gotify (its /message?token= URL),
+/// (an incoming webhook's URL) have their own shapes, as do Zoho Cliq (a channel's `?zapikey=` URL), Gotify (its /message?token= URL),
+/// Bark (an api.day.app/{device key} URL) and Flock (an incoming webhook's URL),
 /// Mattermost and Pumble want markdown. Anything else gets Slack's `{text}`,
 /// which Google Chat, Rocket.Chat and Zulip's Slack compatible webhook also read, links included.
 pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
@@ -426,6 +433,13 @@ pub fn chat_payload(url: &str, a: &ChatAlert) -> Value {
             "token": query(url, "token"), "user": query(url, "user"), "title": a.label, "message": message,
             "url": a.link, "url_title": a.link_text,
         })
+    } else if host == BARK {
+        json!({"title": a.label, "body": message, "url": a.link, "group": "Splee"})
+    } else if host == "api.flock.com" {
+        // FlockML, Flock's subset of HTML, for the bold label and the link.
+        let quote = a.quote.map(|q| format!("<br/><i>{}</i>", html(q).replace('\n', "<br/>"))).unwrap_or_default();
+        let text = format!("<b>{}:</b> {}{quote}<br/><a href=\"{}\">{}</a>", html(a.label), html(a.summary), html(a.link), html(a.link_text));
+        json!({"flockml": format!("<flockml>{text}</flockml>")})
     } else if LARK.contains(&host.as_str()) {
         let mut lines = vec![json!([{"tag": "text", "text": a.summary}])];
         if let Some(q) = a.quote {
@@ -503,7 +517,7 @@ fn cut_bytes(text: &str, max: usize) -> String {
     format!("{}…", &text[..end])
 }
 
-/// For Telegram's HTML mode, which needs only these escaped.
+/// For Telegram's HTML mode and Flock's FlockML, which need only these escaped.
 fn html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
@@ -769,6 +783,18 @@ mod tests {
         assert_eq!(gotify["extras"]["client::notification"]["click"]["url"], "https://app/x");
         assert_eq!(gotify["priority"], 5);
         assert!(chat_payload("https://push.acme.dev/message", &a)["text"].is_string());
+        let bark = "https://api.day.app/AbCdEfGh123/Test%20title/Test%20body";
+        assert_eq!(chat_endpoint(bark), "https://api.day.app/AbCdEfGh123");
+        assert_eq!(
+            chat_payload(bark, &a),
+            json!({"title": "Hot lead", "body": "Sarah replied to Acme\n\nSounds good\nTuesday?", "url": "https://app/x", "group": "Splee"})
+        );
+        let flock = chat_payload("https://api.flock.com/hooks/sendMessage/0f6c1e2a-7d1b-4c3e-9a5f-2b8d4e6f1a3c", &ChatAlert { summary: "Sarah <CEO> replied", ..a });
+        assert_eq!(
+            flock["flockml"],
+            "<flockml><b>Hot lead:</b> Sarah &lt;CEO&gt; replied<br/><i>Sounds good<br/>Tuesday?</i><br/><a href=\"https://app/x\">Open the inbox</a></flockml>"
+        );
+        assert_eq!(reason(br#"{"error":"InvalidParameter","description":"A required parameter for the method call is missing or invalid"}"#).as_deref(), Some("A required parameter for the method call is missing or invalid"));
         assert_eq!(reason(br#"{"error":"Unauthorized","errorCode":401,"errorDescription":"you need to provide a valid access token"}"#).as_deref(), Some("you need to provide a valid access token"));
         // Rocket.Chat's /hooks/{id}/{token} and Zulip read Slack's format.
         assert_eq!(chat_payload("https://chat.acme.dev/hooks/66c9b2b8b6a2d5a1e8c1f0a2/AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdefghij", &a)["text"], slack);
