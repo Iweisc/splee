@@ -4,7 +4,7 @@ use anyhow::Context;
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
-use super::{client, split_name};
+use super::{client, plain_markdown, split_name};
 use crate::models::Lead;
 
 const API: &str = "https://api.twenty.com/rest";
@@ -60,30 +60,11 @@ fn matching_person(found: &Value, email: &str) -> Option<String> {
     person["id"].as_str().map(str::to_string)
 }
 
-/// Twenty reads a note's body as markdown, so a reply's `#`, `*` or `1.` would become a heading, bold or a list. Every
-/// punctuation mark is escaped, which markdown shows as written, except in a link, which Twenty makes clickable only as
-/// written. Line breaks stay line breaks.
-fn plain_markdown(text: &str) -> String {
-    let word = |word: &str| {
-        if word.starts_with("https://") || word.starts_with("http://") {
-            return word.to_string();
-        }
-        word.chars().fold(String::new(), |mut out, c| {
-            if c.is_ascii_punctuation() {
-                out.push('\\');
-            }
-            out.push(c);
-            out
-        })
-    };
-    text.split('\n').map(|line| line.split(' ').map(word).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{matching_person, plain_markdown};
+    use super::matching_person;
 
     #[test]
     fn only_a_person_with_the_exact_address_matches() {
@@ -93,11 +74,5 @@ mod tests {
         ]}});
         assert_eq!(matching_person(&found, "sarah.x@acme.com"), Some("b".to_string()));
         assert_eq!(matching_person(&found, "sarah@acme.com"), None);
-    }
-
-    #[test]
-    fn replies_stay_plain_text() {
-        assert_eq!(plain_markdown("# Hi *you*\n1. ok"), "\\# Hi \\*you\\*\n1\\. ok");
-        assert_eq!(plain_markdown("Booked.\nhttps://app/p/1/inbox?lead=a_b"), "Booked\\.\nhttps://app/p/1/inbox?lead=a_b");
     }
 }

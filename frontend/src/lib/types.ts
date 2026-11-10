@@ -105,7 +105,7 @@ export interface Targeting {
 }
 
 /** Every CRM, in the order the integrations page lists them. Keep in sync with Crm::ALL in backend/src/crm/mod.rs. */
-export const CRM_NAMES = ["hubspot", "pipedrive", "attio", "close", "folk", "capsule", "brevo", "zendesk_sell", "lacrm", "salesflare", "affinity", "freshsales", "copper", "insightly", "twenty"] as const;
+export const CRM_NAMES = ["hubspot", "pipedrive", "attio", "close", "folk", "capsule", "brevo", "zendesk_sell", "lacrm", "salesflare", "affinity", "freshsales", "copper", "insightly", "twenty", "espocrm"] as const;
 export type CrmName = (typeof CRM_NAMES)[number];
 
 /** Each CRM's connection and last failed sync, as {crm}_connected, {crm}_error and {crm}_failed_at. Its token is write-only,

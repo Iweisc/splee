@@ -18,24 +18,30 @@ use uuid::Uuid;
 use crate::models::{Lead, Ts, WebhookDelivery};
 use crate::state::AppState;
 
-pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
-    let url = Url::parse(raw.trim())?;
+/// A client for a URL someone typed, which only reaches that URL's host at the public addresses it resolved to now, so the
+/// URL can't point the server at itself or its network. It doesn't follow redirects, which could lead anywhere.
+pub async fn public_client(url: &Url) -> anyhow::Result<reqwest::Client> {
     anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "only http and https URLs are allowed");
-    let host = url.host_str().context("the URL has no host")?.to_string();
+    let host = url.host_str().context("the URL has no host")?;
     let port = url.port_or_known_default().context("the URL has no port")?;
     let addrs: Vec<SocketAddr> = match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => tokio::net::lookup_host((host.as_str(), port)).await?.collect(),
+        Err(_) => tokio::net::lookup_host((host, port)).await?.collect(),
     };
     anyhow::ensure!(!addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip())), "{host} is not a public address");
-
-    let client = reqwest::Client::builder()
+    Ok(reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         // A proxy from HTTP(S)_PROXY would resolve the host itself and skip the check above.
         .no_proxy()
-        .resolve_to_addrs(&host, &addrs)
-        .build()?;
+        .resolve_to_addrs(host, &addrs)
+        .build()?)
+}
+
+pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
+    let url = Url::parse(raw.trim())?;
+    let client = public_client(&url).await?;
+    let host = url.host_str().unwrap_or_default().to_string();
     // Serialized once so the signature covers exactly the bytes sent.
     let body = serde_json::to_vec(body)?;
     let mut request = client.post(url).header(CONTENT_TYPE, "application/json");

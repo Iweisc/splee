@@ -7,6 +7,7 @@ mod brevo;
 mod capsule;
 mod close;
 mod copper;
+mod espocrm;
 mod folk;
 mod freshsales;
 mod hubspot;
@@ -43,11 +44,12 @@ pub enum Crm {
     Copper,
     Insightly,
     Twenty,
+    Espo,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 15] = [
+    pub const ALL: [Crm; 16] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -63,6 +65,7 @@ impl Crm {
         Crm::Copper,
         Crm::Insightly,
         Crm::Twenty,
+        Crm::Espo,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -87,6 +90,7 @@ impl Crm {
             Crm::Copper => "copper",
             Crm::Insightly => "insightly",
             Crm::Twenty => "twenty",
+            Crm::Espo => "espocrm",
         }
     }
 
@@ -107,6 +111,7 @@ impl Crm {
             Crm::Copper => "Copper",
             Crm::Insightly => "Insightly",
             Crm::Twenty => "Twenty",
+            Crm::Espo => "EspoCRM",
         }
     }
 
@@ -117,6 +122,7 @@ impl Crm {
             Crm::Freshsales => Some("bundle alias"),
             Crm::Copper => Some("email"),
             Crm::Insightly => Some("API URL"),
+            Crm::Espo => Some("site URL"),
             _ => None,
         }
     }
@@ -139,6 +145,7 @@ impl Crm {
             Crm::Copper => copper::check(token).await,
             Crm::Insightly => insightly::check(token).await,
             Crm::Twenty => twenty::check(token).await,
+            Crm::Espo => espocrm::check(token).await,
         }
     }
 
@@ -159,6 +166,7 @@ impl Crm {
             Crm::Copper => copper::push(token, email, lead, note).await,
             Crm::Insightly => insightly::push(token, email, lead, note).await,
             Crm::Twenty => twenty::push(token, email, lead, note).await,
+            Crm::Espo => espocrm::push(token, email, lead, note).await,
         }
     }
 }
@@ -217,9 +225,28 @@ fn note_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
+/// Twenty and EspoCRM read a note as markdown, so a reply's `#`, `*` or `1.` would become a heading, bold or a list. Every
+/// punctuation mark is escaped, which markdown shows as written, except in a link, which they make clickable only as
+/// written. Line breaks stay line breaks.
+fn plain_markdown(text: &str) -> String {
+    let word = |word: &str| {
+        if word.starts_with("https://") || word.starts_with("http://") {
+            return word.to_string();
+        }
+        word.chars().fold(String::new(), |mut out, c| {
+            if c.is_ascii_punctuation() {
+                out.push('\\');
+            }
+            out.push(c);
+            out
+        })
+    };
+    text.split('\n').map(|line| line.split(' ').map(word).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{note_html, split_name};
+    use super::{note_html, plain_markdown, split_name};
 
     #[test]
     fn names_split_at_the_first_space() {
@@ -230,5 +257,11 @@ mod tests {
     #[test]
     fn notes_keep_lines_and_escape_html() {
         assert_eq!(note_html("Tuesday works <3\nSarah & co"), "Tuesday works &lt;3<br>Sarah &amp; co");
+    }
+
+    #[test]
+    fn replies_stay_plain_text() {
+        assert_eq!(plain_markdown("# Hi *you*\n1. ok"), "\\# Hi \\*you\\*\n1\\. ok");
+        assert_eq!(plain_markdown("Booked.\nhttps://app/p/1/inbox?lead=a_b"), "Booked\\.\nhttps://app/p/1/inbox?lead=a_b");
     }
 }
