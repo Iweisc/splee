@@ -2,7 +2,7 @@
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon, DeBounce, Bouncify, QuickEmailVerification, MailboxValidator and MyEmailVerifier take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
-//! Anymail Finder, LeadMagic, Apollo, Voila Norbert or Skrapp.
+//! Anymail Finder, LeadMagic, Apollo, Voila Norbert, Skrapp or Lusha.
 
 use std::time::Duration;
 
@@ -242,6 +242,7 @@ pub enum Finder {
     Apollo,
     Norbert,
     Skrapp,
+    Lusha,
 }
 
 impl Finder {
@@ -255,6 +256,7 @@ impl Finder {
             "apollo" => Some(Finder::Apollo),
             "voilanorbert" => Some(Finder::Norbert),
             "skrapp" => Some(Finder::Skrapp),
+            "lusha" => Some(Finder::Lusha),
             _ => None,
         }
     }
@@ -269,6 +271,7 @@ impl Finder {
             Finder::Apollo => "Apollo",
             Finder::Norbert => "Voila Norbert",
             Finder::Skrapp => "Skrapp",
+            Finder::Lusha => "Lusha",
         }
     }
 
@@ -288,6 +291,7 @@ impl Finder {
             }
             Finder::Norbert => norbert_call(client()?.get(format!("{NORBERT}/account/")), key).await.map(|_| ()),
             Finder::Skrapp => skrapp_call(client()?.get(format!("{SKRAPP}/v2/account")), key).await.map(|_| ()),
+            Finder::Lusha => lusha_call(client()?.get(format!("{LUSHA}/account/usage")), key).await.map(|_| ()),
         }
     }
 
@@ -350,6 +354,13 @@ impl Finder {
                 let name = if last.is_empty() { vec![("fullName", first)] } else { vec![("firstName", first), ("lastName", last)] };
                 let url = Url::parse_with_params(&format!("{SKRAPP}/v3/people/email"), name.into_iter().chain([("domain", domain)]))?;
                 Ok(skrapp_found(&skrapp_call(client()?.get(url), key).await?, domain))
+            }
+            // Lusha needs a last name, and charges for every search, even one that finds no one.
+            Finder::Lusha if last.is_empty() => Ok(None),
+            Finder::Lusha => {
+                let contact = json!({ "firstName": first, "lastName": last, "companyDomain": domain });
+                let req = client()?.post(format!("{LUSHA}/contacts/search-and-enrich")).json(&json!({ "contacts": [contact], "reveal": ["emails"] }));
+                Ok(lusha_found(&lusha_call(req, key).await?, domain))
             }
         }
     }
@@ -579,6 +590,30 @@ fn skrapp_found(body: &Value, domain: &str) -> Option<Found> {
         _ => return None,
     };
     at_domain(body["email"].as_str(), domain).map(|email| Found { email, verified })
+}
+
+const LUSHA: &str = "https://api.lusha.com/v3";
+
+/// Lusha explains a failure in `message`: a 401 (or a 400 for a key that isn't shaped like one) is a wrong key, a 402
+/// is no credits left, and a 403 an inactive account or one without V3 API access.
+async fn lusha_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("api_key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    let message = body["message"].as_str().unwrap_or(status.as_str());
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED && message != "Invalid API key format", "the API key was rejected");
+    anyhow::ensure!(status != reqwest::StatusCode::PAYMENT_REQUIRED, "the account is out of credits");
+    anyhow::ensure!(status.is_success(), "{message}");
+    Ok(body)
+}
+
+/// Lusha grades each address A+ (very likely to deliver) or A (likely), and a result it couldn't find has an `error`
+/// instead. An A+ address is verified, an A one is kept for the verifier to check before sending, and lower grades aren't
+/// kept.
+fn lusha_found(body: &Value, domain: &str) -> Option<Found> {
+    let emails = body["results"][0]["emails"].as_array()?;
+    let graded = |grade: &str| emails.iter().find_map(|e| at_domain(e["email"].as_str().filter(|_| e["confidence"] == grade), domain));
+    graded("A+").map(|email| Found { email, verified: true }).or_else(|| graded("A").map(|email| Found { email, verified: false }))
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -1057,6 +1092,16 @@ mod tests {
         assert_eq!(skrapp_found(&skrapp("unknown"), "example.com"), None);
         assert_eq!(skrapp_found(&skrapp("valid"), "other.com"), None);
         assert_eq!(skrapp_found(&serde_json::Value::Null, "example.com"), None);
+        // Lusha's documented answer, by grade, and a contact it couldn't find.
+        let lusha = |grade: &str| json!({"results": [{"id": "1", "emails": [
+            {"email": "jane@gmail.com", "type": "private", "confidence": "A+"},
+            {"email": "Jane.Doe@Example.com", "type": "work", "confidence": grade},
+        ]}], "billing": {"creditsCharged": 2}});
+        assert_eq!(lusha_found(&lusha("A+"), "example.com"), Some(Found { email: "jane.doe@example.com".into(), verified: true }));
+        assert_eq!(lusha_found(&lusha("A"), "example.com"), Some(Found { email: "jane.doe@example.com".into(), verified: false }));
+        assert_eq!(lusha_found(&lusha("B"), "example.com"), None);
+        assert_eq!(lusha_found(&lusha("A+"), "other.com"), None);
+        assert_eq!(lusha_found(&json!({"results": [{"error": {"code": "NOT_FOUND"}}]}), "example.com"), None);
         let unfinished = json!({"id": 1, "searching": true, "email": {"email": "fake@example.com", "score": 100}});
         assert_eq!(norbert_found(&unfinished, "example.com"), None);
         // Findymail's documented answer, and the empty body a 404 becomes.

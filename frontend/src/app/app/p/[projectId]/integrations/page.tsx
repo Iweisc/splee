@@ -705,6 +705,7 @@ const FINDERS = {
   apollo: "Apollo",
   voilanorbert: "Voila Norbert",
   skrapp: "Skrapp",
+  lusha: "Lusha",
 } as const;
 
 function VerifierSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
