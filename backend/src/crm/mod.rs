@@ -13,6 +13,7 @@ mod freshsales;
 mod hubspot;
 mod insightly;
 mod lacrm;
+mod odoo;
 mod pipedrive;
 mod salesflare;
 mod twenty;
@@ -45,11 +46,12 @@ pub enum Crm {
     Insightly,
     Twenty,
     Espo,
+    Odoo,
 }
 
 impl Crm {
     /// Every CRM, in the order the integrations page lists them. Keep in sync with CRM_NAMES in frontend/src/lib/types.ts.
-    pub const ALL: [Crm; 16] = [
+    pub const ALL: [Crm; 17] = [
         Crm::HubSpot,
         Crm::Pipedrive,
         Crm::Attio,
@@ -66,6 +68,7 @@ impl Crm {
         Crm::Insightly,
         Crm::Twenty,
         Crm::Espo,
+        Crm::Odoo,
     ];
 
     pub fn parse(name: &str) -> Option<Crm> {
@@ -91,6 +94,7 @@ impl Crm {
             Crm::Insightly => "insightly",
             Crm::Twenty => "twenty",
             Crm::Espo => "espocrm",
+            Crm::Odoo => "odoo",
         }
     }
 
@@ -112,6 +116,7 @@ impl Crm {
             Crm::Insightly => "Insightly",
             Crm::Twenty => "Twenty",
             Crm::Espo => "EspoCRM",
+            Crm::Odoo => "Odoo",
         }
     }
 
@@ -122,7 +127,7 @@ impl Crm {
             Crm::Freshsales => Some("bundle alias"),
             Crm::Copper => Some("email"),
             Crm::Insightly => Some("API URL"),
-            Crm::Espo => Some("site URL"),
+            Crm::Espo | Crm::Odoo => Some("site URL"),
             _ => None,
         }
     }
@@ -146,6 +151,7 @@ impl Crm {
             Crm::Insightly => insightly::check(token).await,
             Crm::Twenty => twenty::check(token).await,
             Crm::Espo => espocrm::check(token).await,
+            Crm::Odoo => odoo::check(token).await,
         }
     }
 
@@ -167,6 +173,7 @@ impl Crm {
             Crm::Insightly => insightly::push(token, email, lead, note).await,
             Crm::Twenty => twenty::push(token, email, lead, note).await,
             Crm::Espo => espocrm::push(token, email, lead, note).await,
+            Crm::Odoo => odoo::push(token, email, lead, note).await,
         }
     }
 }
@@ -220,7 +227,7 @@ fn split_name(full: &str) -> (&str, &str) {
     full.split_once(' ').map(|(f, l)| (f, l.trim())).unwrap_or((full, ""))
 }
 
-/// HubSpot, Pipedrive, Brevo and Insightly render notes as HTML, so the reply is escaped and its line breaks kept.
+/// HubSpot, Pipedrive, Brevo, Insightly and Odoo render notes as HTML, so the reply is escaped and its line breaks kept.
 fn note_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
