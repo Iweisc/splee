@@ -332,6 +332,7 @@ mod tests {
             database_url: String::new(),
             app_secret: String::new(),
             public_url: String::new(),
+            unsubscribe_url: String::new(),
             bind_addr: String::new(),
             agent_model: String::new(),
             agent_concurrency: 0,

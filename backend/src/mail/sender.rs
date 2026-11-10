@@ -385,8 +385,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     .await?;
     // Unthreaded follow-ups (written before the parent had an id) still attach to the latest message.
     let in_reply_to = email.in_reply_to.clone().or_else(|| if email.kind == "initial" { None } else { references.last().cloned() });
-    let unsubscribe_page = format!("{}/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
-    let one_click = format!("{}/api/unsubscribe/{}", state.cfg.public_url, lead.unsubscribe_token);
+    let unsubscribe_page = format!("{}/unsubscribe/{}", state.cfg.unsubscribe_url, lead.unsubscribe_token);
+    let one_click = format!("{}/api/unsubscribe/{}", state.cfg.unsubscribe_url, lead.unsubscribe_token);
     // Saved as sent, so the app shows the signature the lead got.
     let email = EmailMessage { body: as_mailbox(&state.db, &email, &mb).await?, ..email };
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
