@@ -145,6 +145,7 @@ const BOOKING_APPS = [
   ["TidyCal", "Integrations → Automations → Add webhook, with booking created, approved, rescheduled and cancelled."],
   ["OnceHub", "Account Integrations → APIs & Webhooks → Create webhook, with booking scheduled, rescheduled and canceled."],
   ["Appointlet", "Settings → Webhooks → Add Webhook."],
+  ["Chili Piper", "Command Center → Integrations → Create Custom Webhook, once each for New Meeting, Meeting Update and Canceled Meeting, then Enabled."],
 ] as const;
 
 /** Which app a chat URL posts to, for its row. The same hosts hooks::chat_payload formats alerts for. */

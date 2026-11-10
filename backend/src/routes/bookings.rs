@@ -31,13 +31,23 @@ fn appointlet_attendees(body: &Value) -> Vec<&Value> {
     list.map(|a| a.iter().map(|x| &x["email"]).filter(|email| *email != host).collect()).unwrap_or_default()
 }
 
+/// The guests of a Chili Piper meeting, which is told apart by its `meetingIdChili`, since its `type` (Created, Updated
+/// or Deleted) could be anyone's.
+fn chili_piper_guests(body: &Value) -> Option<Vec<&Value>> {
+    body["meetingIdChili"].is_string().then(|| {
+        let extra = body["additionalGuests"].as_array().map(Vec::as_slice).unwrap_or_default();
+        std::iter::once(&body["primaryGuestEmail"]).chain(extra.iter().map(|g| &g["email"])).collect()
+    })
+}
+
 /// The invitee emails in a new or moved booking, or none for other events (cancellations, pings).
 /// Calendly sends `invitee.created` with `payload.email` (a reschedule is a new invitee), Cal.com `BOOKING_CREATED` or
 /// `BOOKING_RESCHEDULED` and SavvyCal `event.created` or `event.rescheduled` with `payload.attendees[].email`, OnceHub
 /// `booking.scheduled` or `booking.rescheduled` with `data.form_submission.email`, Zcal `event.created` or
 /// `event.rescheduled` with `data.attendees[].email` (the same names as SavvyCal's), TidyCal `booking.created`,
 /// `booking.approved` (a booking that needed approval) or `booking.rescheduled` with `data.contact.email`, Appointlet
-/// `Meeting.scheduled`, `Meeting.approved` or `Meeting.rescheduled` with `entity.attendees[].email`, and anything else,
+/// `Meeting.scheduled`, `Meeting.approved` or `Meeting.rescheduled` with `entity.attendees[].email`, Chili Piper `Created`
+/// or `Updated` (rescheduled or reassigned) with `primaryGuestEmail` and `additionalGuests[].email`, and anything else,
 /// like a Zapier step, can send `{"email": ...}`.
 fn booked_emails(body: &Value) -> Vec<String> {
     let found: Vec<&Value> = match (body["event"].as_str(), body["triggerEvent"].as_str(), body["type"].as_str()) {
@@ -48,6 +58,7 @@ fn booked_emails(body: &Value) -> Vec<String> {
         (_, _, Some("Activity")) if matches!(body["action"].as_str(), Some("Meeting.scheduled" | "Meeting.approved" | "Meeting.rescheduled")) => {
             appointlet_attendees(body)
         }
+        (_, _, Some("Created" | "Updated")) => chili_piper_guests(body).unwrap_or_default(),
         // OnceHub and TidyCal both call it this, and each has only its own field.
         (_, _, Some("booking.rescheduled")) => vec![&body["data"]["form_submission"]["email"], &body["data"]["contact"]["email"]],
         (None, None, None) => vec![&body["email"]],
@@ -72,6 +83,7 @@ fn cancelled_emails(body: &Value) -> Vec<String> {
         (_, _, Some("Activity")) if matches!(body["action"].as_str(), Some("Meeting.cancelled" | "Meeting.canceled" | "Meeting.declined")) => {
             appointlet_attendees(body)
         }
+        (_, _, Some("Deleted")) => chili_piper_guests(body).unwrap_or_default(),
         _ => vec![],
     };
     found.into_iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect()
@@ -79,10 +91,10 @@ fn cancelled_emails(body: &Value) -> Vec<String> {
 
 /// When the booked call starts: Calendly's `payload.scheduled_event.start_time`, Cal.com's `payload.startTime`,
 /// SavvyCal's `payload.start_at`, OnceHub's `data.starting_time`, Zcal's `data.startDate`, TidyCal's `data.starts_at`,
-/// Appointlet's `entity.start`, or a plain `start_time`. None when the tool didn't say.
+/// Appointlet's `entity.start`, Chili Piper's `meetingStartTime`, or a plain `start_time`. None when the tool didn't say.
 fn meeting_start(body: &Value) -> Option<Ts> {
     let (payload, data) = (&body["payload"], &body["data"]);
-    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &data["starts_at"], &body["entity"]["start"], &body["start_time"]]
+    [&payload["scheduled_event"]["start_time"], &payload["startTime"], &payload["start_at"], &data["starting_time"], &data["startDate"], &data["starts_at"], &body["entity"]["start"], &body["meetingStartTime"], &body["start_time"]]
         .into_iter()
         .find_map(|v| DateTime::parse_from_rfc3339(v.as_str()?).ok())
         .map(|t| t.with_timezone(&Utc))
@@ -111,7 +123,8 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
     let rescheduled = body["triggerEvent"] == "BOOKING_RESCHEDULED"
         || body["type"] == "event.rescheduled"
         || body["type"] == "booking.rescheduled"
-        || body["action"] == "Meeting.rescheduled";
+        || body["action"] == "Meeting.rescheduled"
+        || (body["type"] == "Updated" && body["meetingIdChili"].is_string());
     for lead in &leads {
         // Set before the move below, so its alerts carry the time. Only the request that changes the time gets the lead
         // back, if the tool retries.
@@ -295,6 +308,26 @@ mod tests {
         }
         let at = chrono::DateTime::parse_from_rfc3339("2024-06-03T14:00:00Z").unwrap().with_timezone(&chrono::Utc);
         assert_eq!(meeting_start(&activity("Meeting.scheduled")), Some(at));
+    }
+
+    #[test]
+    fn reads_chili_piper_bookings() {
+        // Chili Piper's documented request body, trimmed. Its host and booker aren't guests.
+        let meeting = |kind: &str| {
+            json!({"meetingIdChili": "123e4567-e89b-12d3-a456-426614174000", "meetingStartTime": "2025-03-21T20:30:00Z",
+                "hostEmail": "host@us.com", "bookerEmail": "booker@us.com", "primaryGuestEmail": "Demo@Corvid.com",
+                "additionalGuests": [{"email": "guest1@corvid.com", "fullName": "Taylor Williams"}], "type": kind})
+        };
+        for kind in ["Created", "Updated"] {
+            assert_eq!(booked_emails(&meeting(kind)), ["demo@corvid.com", "guest1@corvid.com"], "{kind}");
+            assert!(cancelled_emails(&meeting(kind)).is_empty(), "{kind}");
+        }
+        assert_eq!(cancelled_emails(&meeting("Deleted")), ["demo@corvid.com", "guest1@corvid.com"]);
+        assert!(booked_emails(&meeting("Deleted")).is_empty());
+        // Another tool's Created without Chili Piper's meeting id adds nobody.
+        assert!(booked_emails(&json!({"type": "Created", "primaryGuestEmail": "a@x.com"})).is_empty());
+        let at = chrono::DateTime::parse_from_rfc3339("2025-03-21T20:30:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(meeting_start(&meeting("Created")), Some(at));
     }
 
     #[test]
