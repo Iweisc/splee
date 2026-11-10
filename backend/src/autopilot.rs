@@ -66,6 +66,17 @@ pub async fn contacted_since(db: &PgPool, project_id: Uuid, since: Ts) -> sqlx::
 
 /// What a run of this kind will likely cost the project: the average of its last 5 that cost anything, else of the last
 /// 20 across Splee, else a guess for a project that has never run one.
+/// What the project's queued and running runs, autopilot's or the user's, will likely spend on top of what they have so far.
+async fn still_to_spend(db: &PgPool, project_id: Uuid) -> sqlx::Result<i64> {
+    let going: Vec<(String, f64)> =
+        sqlx::query_as("select kind, cost_usd::float8 from agent_runs where project_id = $1 and status in ('queued', 'running')").bind(project_id).fetch_all(db).await?;
+    let mut total = 0;
+    for (kind, so_far) in going {
+        total += (estimate_cost(db, project_id, &kind).await? - (so_far * 1_000_000.0) as i64).max(0);
+    }
+    Ok(total)
+}
+
 pub async fn estimate_cost(db: &PgPool, project_id: Uuid, run_kind: &str) -> sqlx::Result<i64> {
     let usd: Option<f64> = sqlx::query_scalar(
         "select coalesce(
@@ -180,12 +191,14 @@ struct Settings {
     daily_email_limit: i32,
     autopilot_budget_micros: i64,
     autopilot_lead_cap: i32,
-    autopilot_auto_send: bool,
 }
 
 /// One look at a project: starts the next run it needs, or records why it waits. Returns the run it started.
 pub async fn check(state: &AppState, project_id: Uuid, now: Ts) -> anyhow::Result<Option<Uuid>> {
     let db = &state.db;
+    // Held until the run is queued, so two checks of the same project can't both find it idle and both start one.
+    let mut lock = db.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('autopilot:' || $1::text, 0))").bind(project_id).execute(&mut *lock).await?;
     let busy: bool = sqlx::query_scalar("select exists (select 1 from agent_runs where project_id = $1 and status in ('queued', 'running') and input ? 'autopilot')")
         .bind(project_id)
         .fetch_one(db)
@@ -195,7 +208,7 @@ pub async fn check(state: &AppState, project_id: Uuid, now: Ts) -> anyhow::Resul
     }
     let s = sqlx::query_as::<_, Settings>(
         "select p.org_id, coalesce(nullif(p.name, ''), p.domain, 'your project') as name, s.daily_email_limit, s.autopilot_budget_micros,
-                s.autopilot_lead_cap, s.autopilot_auto_send
+                s.autopilot_lead_cap
          from project_settings s join projects p on p.id = s.project_id where s.project_id = $1 and p.org_id is not null",
     )
     .bind(project_id)
@@ -230,6 +243,7 @@ pub async fn check(state: &AppState, project_id: Uuid, now: Ts) -> anyhow::Resul
     };
 
     let cost = estimate_cost(db, project_id, step.kind()).await?;
+    let spent = spent + still_to_spend(db, project_id).await?;
     if spent + cost > s.autopilot_budget_micros {
         alert_budget(state, project_id, s.org_id, &s.name, s.autopilot_budget_micros, month, &resumes).await?;
         let why = format!("The next run would likely cost {}, more than the {} left this month. It starts again on {resumes}.", usd(cost), usd(s.autopilot_budget_micros - spent));
@@ -237,13 +251,11 @@ pub async fn check(state: &AppState, project_id: Uuid, now: Ts) -> anyhow::Resul
     }
 
     let mut input = json!({ "segment_id": campaign.id, "autopilot": true });
-    match step {
-        Step::FindCompanies(count) => input["count"] = json!(count),
-        // A working campaign queues what it writes. Autopilot holds it as drafts until the user opts out of approving.
-        Step::WriteEmails if !s.autopilot_auto_send => input["drafts"] = json!(true),
-        _ => {}
+    if let Step::FindCompanies(count) = step {
+        input["count"] = json!(count);
     }
-    let run_id = agent::enqueue(db, step.kind(), Some(project_id), Some(s.org_id), input).await?;
+    let run_id = agent::enqueue(&mut *lock, step.kind(), Some(project_id), Some(s.org_id), input).await?;
+    lock.commit().await?;
     tracing::info!(%project_id, %run_id, kind = step.kind(), campaign = %campaign.name, "autopilot started a run");
     note(db, project_id, now, "").await?;
     Ok(Some(run_id))
@@ -507,7 +519,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let fourth = check(&s.state, s.project, now).await.unwrap().unwrap();
-        assert_eq!(started(&db, fourth).await, (kind::WRITE_EMAILS.to_string(), json!({"segment_id": s.campaign, "autopilot": true, "drafts": true})));
+        assert_eq!(started(&db, fourth).await, (kind::WRITE_EMAILS.to_string(), json!({"segment_id": s.campaign, "autopilot": true})));
         sqlx::query("update agent_runs set status = 'succeeded'").execute(&db).await.unwrap();
 
         // A failed autopilot run sets its campaign aside for a few hours. With both campaigns resting it waits.
@@ -583,6 +595,15 @@ pub(crate) mod tests {
             note_of(&db, s.project).await,
             format!("The next run would likely cost $1.50, more than the $1.00 left this month. It starts again on {}.", next_month(now).format("%B 1"))
         );
+
+        // $3 left fits it, until a research run started by hand is still going: research has cost $7 on average, so it holds that.
+        sqlx::query("update project_settings set autopilot_budget_micros = 8000000").execute(&db).await.unwrap();
+        let manual = run(&db, s.project, kind::EXPLORE, "running", 0.0, now).await;
+        assert_eq!(check(&s.state, s.project, now).await.unwrap(), None);
+        assert!(note_of(&db, s.project).await.starts_with("The next run would likely cost $1.50"));
+        sqlx::query("delete from agent_runs where id = $1").bind(manual).execute(&db).await.unwrap();
+        let fits = check(&s.state, s.project, now).await.unwrap().unwrap();
+        sqlx::query("delete from agent_runs where id = $1").bind(fits).execute(&db).await.unwrap();
 
         // 20 new leads emailed this month is the cap, whatever the budget.
         sqlx::query("update project_settings set autopilot_budget_micros = 100000000").execute(&db).await.unwrap();

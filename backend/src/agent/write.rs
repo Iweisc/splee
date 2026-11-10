@@ -326,9 +326,14 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     if updated.rows_affected() > 0 {
         return Ok(());
     }
-    // A campaign that is already sending takes new leads straight into the queue, unless autopilot asked for drafts because
-    // the project still approves what it writes.
-    let drafts = ctx.run.input["drafts"].as_bool().unwrap_or(false);
+    // A campaign that is already sending takes new leads straight into the queue, unless autopilot wrote them and the project
+    // approves autopilot's emails. Read now, not when the run was queued, so turning auto-send off holds what's still writing.
+    let drafts = ctx.run.input["autopilot"].as_bool().unwrap_or(false)
+        && !sqlx::query_scalar::<_, bool>("select autopilot_auto_send from project_settings where project_id = $1")
+            .bind(lead.project_id)
+            .fetch_optional(ctx.db())
+            .await?
+            .unwrap_or(false);
     let sending = !drafts && segment.is_some_and(|s| s.status == "working" || s.status == "scaling");
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for, to_email)
