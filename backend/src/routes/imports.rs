@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::util_airtable as airtable;
 use super::util_input;
 use super::util_sheet as sheet;
 use super::util_lead_import::{self, NewLead};
@@ -56,6 +57,9 @@ struct Upload {
     file: Option<Vec<u8>>,
     /// A Google Sheet to read instead of a file.
     sheet_url: Option<String>,
+    /// An Airtable table to read instead, with a token that's used for this request only.
+    airtable_url: Option<String>,
+    airtable_token: Option<String>,
     segment_id: Option<Uuid>,
     mapping: Option<HashMap<String, String>>,
 }
@@ -72,6 +76,10 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
             Some("sheet_url") => {
                 let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
                 upload.sheet_url = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+            }
+            Some(name @ ("airtable_url" | "airtable_token")) => {
+                let slot = if name == "airtable_url" { &mut upload.airtable_url } else { &mut upload.airtable_token };
+                *slot = Some(field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?);
             }
             Some("segment_id") => {
                 let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
@@ -90,8 +98,12 @@ async fn read_upload(mut multipart: Multipart) -> AppResult<Upload> {
 }
 
 impl Upload {
-    /// The uploaded file, or the Google Sheet's tab read as CSV, and its name.
+    /// The uploaded file, the Google Sheet's tab read as CSV or the Airtable table, and its name.
     async fn csv(&mut self) -> AppResult<(String, Csv)> {
+        if let Some(link) = &self.airtable_url {
+            let table = airtable::fetch(link, self.airtable_token.as_deref().unwrap_or_default()).await?;
+            return Ok((table.name, Csv { headers: table.headers, rows: table.rows }));
+        }
         if let Some(link) = &self.sheet_url {
             let (name, bytes) = sheet::fetch(link).await?;
             return Ok((name, parse_csv(&bytes)?));

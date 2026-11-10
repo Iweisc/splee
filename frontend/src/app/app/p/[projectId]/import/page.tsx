@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CircleCheck, FileUp, Search, Sheet, Upload } from "lucide-react";
+import { CircleCheck, FileUp, Search, Sheet, Table2, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CampaignField } from "@/components/app/settings/campaign-field";
@@ -16,11 +16,17 @@ import { fetcher } from "@/hooks/use-me";
 
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
 
-/** Where the rows come from: an uploaded file or a Google Sheet's link. Sent again on import, since the server keeps neither. */
-type Source = { file: File } | { sheet_url: string };
+/**
+ * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's link and token. Sent again on
+ * import, since the server keeps none of them.
+ */
+type Source = { file: File } | { sheet_url: string } | { airtable_url: string; airtable_token: string };
 
-const appendSource = (form: FormData, source: Source) =>
-  "file" in source ? form.append("file", source.file) : form.append("sheet_url", source.sheet_url);
+const appendSource = (form: FormData, source: Source) => {
+  for (const [key, value] of Object.entries(source)) form.append(key, value);
+};
+
+const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable");
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -41,12 +47,13 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [source, setSource] = useState<Source | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [result, setResult] = useState<Import | null>(null);
-  const [loading, setLoading] = useState<"file" | "sheet" | null>(null);
+  const [loading, setLoading] = useState<ReturnType<typeof sourceKind> | null>(null);
   const [sheetUrl, setSheetUrl] = useState("");
+  const [airtable, setAirtable] = useState({ url: "", token: "" });
 
   const choose = async (next: Source) => {
     setResult(null);
-    setLoading("file" in next ? "file" : "sheet");
+    setLoading(sourceKind(next));
     try {
       const form = new FormData();
       appendSource(form, next);
@@ -54,6 +61,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setSource(next);
       setPreview(p);
       setSheetUrl("");
+      setAirtable({ url: "", token: "" });
     } catch (e) {
       toastError(e);
     } finally {
@@ -70,7 +78,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -116,6 +124,29 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
               {/* Level with the field. On phones it sits under it. */}
               <Button type="submit" variant="outline" className="sm:mt-6" loading={loading === "sheet"} disabled={!sheetUrl.trim() || !!loading}>
                 <Sheet className="size-4" /> Read sheet
+              </Button>
+            </form>
+            <form
+              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (airtable.url.trim() && airtable.token.trim()) choose({ airtable_url: airtable.url.trim(), airtable_token: airtable.token.trim() });
+              }}
+            >
+              <Field label="Or an Airtable table" hint="The table or view open in your browser." className="min-w-56 flex-1">
+                <Input value={airtable.url} onChange={(e) => setAirtable({ ...airtable, url: e.target.value })} placeholder="https://airtable.com/app…/tbl…" />
+              </Field>
+              <Field label="Personal access token" hint="With data.records:read, from Builder Hub. Never saved." className="min-w-56 flex-1">
+                <Input type="password" value={airtable.token} onChange={(e) => setAirtable({ ...airtable, token: e.target.value })} placeholder="pat…" />
+              </Field>
+              <Button
+                type="submit"
+                variant="outline"
+                className="sm:mt-6"
+                loading={loading === "airtable"}
+                disabled={!airtable.url.trim() || !airtable.token.trim() || !!loading}
+              >
+                <Table2 className="size-4" /> Read table
               </Button>
             </form>
           </Card>
@@ -171,7 +202,7 @@ function MappingStep({
         <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
           {/* Short on phones, so a long sheet name keeps the width. */}
           <span className="sm:hidden">Change</span>
-          <span className="max-sm:hidden">{"file" in source ? "Choose another file" : "Choose another sheet"}</span>
+          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table" }[sourceKind(source)]}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
