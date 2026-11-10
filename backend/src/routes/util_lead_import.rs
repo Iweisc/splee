@@ -72,22 +72,37 @@ struct Columns {
 /// skipped when their company's domain is on the do-not-contact list.
 pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, rows: Vec<(usize, NewLead)>) -> AppResult<Outcome> {
     let linkedin = source == "linkedin";
-    let suppressed: HashSet<String> =
-        sqlx::query_scalar::<_, String>("select value::text from suppressions where org_id = $1").bind(org_id).fetch_all(db).await?.into_iter().collect();
+    let mut tx = db.begin().await?;
+    // Email-less leads have no unique index to fall back on, so two LinkedIn imports into a project take turns.
+    if linkedin {
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('linkedin-leads:' || $1::text, 0))").bind(project_id).execute(&mut *tx).await?;
+    }
+    let suppressed: HashSet<String> = sqlx::query_scalar::<_, String>("select value::text from suppressions where org_id = $1")
+        .bind(org_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
     let mut seen: HashSet<String> = sqlx::query_scalar::<_, String>("select email::text from leads where project_id = $1 and email is not null")
         .bind(project_id)
-        .fetch_all(db)
+        .fetch_all(&mut *tx)
         .await?
         .into_iter()
         .collect();
     let mut profiles: HashSet<String> = HashSet::new();
     if linkedin {
-        let links: Vec<String> =
-            sqlx::query_scalar("select linkedin_url from leads where project_id = $1 and linkedin_url <> ''").bind(project_id).fetch_all(db).await?;
+        let links: Vec<String> = sqlx::query_scalar("select linkedin_url from leads where project_id = $1 and linkedin_url <> ''")
+            .bind(project_id)
+            .fetch_all(&mut *tx)
+            .await?;
         profiles.extend(links.iter().filter_map(|l| profile_key(l)));
     }
-    let segments: HashSet<Uuid> =
-        sqlx::query_scalar::<_, Uuid>("select id from segments where project_id = $1").bind(project_id).fetch_all(db).await?.into_iter().collect();
+    let segments: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>("select id from segments where project_id = $1")
+        .bind(project_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
 
     let total = rows.len() as i64;
     let mut errors = Vec::new();
@@ -172,9 +187,10 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     .bind(&cols.country_code)
     .bind(&cols.segment_id)
     .bind(&cols.linkedin_provider_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?
     .rows_affected() as i64;
+    tx.commit().await?;
     Ok(Outcome { imported, skipped: total - imported, errors })
 }
 
