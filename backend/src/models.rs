@@ -174,6 +174,9 @@ pub struct ProjectSettings {
     pub airtable_connected: bool,
     pub airtable_error: Option<String>,
     pub airtable_failed_at: Option<Ts>,
+    pub baserow_connected: bool,
+    pub baserow_error: Option<String>,
+    pub baserow_failed_at: Option<Ts>,
     /// Unipile sends due LinkedIn steps from this account. Its token (unipile_token_enc) stays out of this struct.
     pub unipile_connected: bool,
     pub unipile_account_name: String,
