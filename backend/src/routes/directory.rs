@@ -30,7 +30,7 @@ pub fn router() -> Router<AppState> {
 const COUNT_CAP: i64 = 10_000;
 
 #[derive(Deserialize)]
-struct SearchQuery {
+pub(super) struct SearchQuery {
     q: Option<String>,
     country: Option<String>,
     city: Option<String>,
@@ -42,7 +42,7 @@ struct SearchQuery {
 }
 
 #[derive(Serialize)]
-struct Page {
+pub(super) struct Page {
     items: Vec<Listing>,
     /// The number of matches, at most COUNT_CAP. `capped` says there are more.
     total: i64,
@@ -51,11 +51,15 @@ struct Page {
 
 /// Companies whose name or category has words starting with each word in `q` and the filters, the most reliable listings first.
 async fn search(State(state): State<AppState>, _auth: Auth, Query(q): Query<SearchQuery>, Query(page): Query<PageQuery>) -> AppResult<Json<Page>> {
+    Ok(Json(page_of(&state.db, &q, &page).await?))
+}
+
+pub(super) async fn page_of(db: &PgPool, q: &SearchQuery, page: &PageQuery) -> AppResult<Page> {
     let search = Search::new(q.q.as_deref(), q.country.as_deref(), q.city.as_deref(), q.category.as_deref(), q.has_email, q.has_phone)
         .map_err(AppError::BadRequest)?;
-    let total = directory::count(&state.db, &search, COUNT_CAP).await?;
-    let items = directory::search(&state.db, &search, page.limit(), page.offset()).await?;
-    Ok(Json(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP }))
+    let total = directory::count(db, &search, COUNT_CAP).await?;
+    let items = directory::search(db, &search, page.limit(), page.offset()).await?;
+    Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -96,7 +100,7 @@ struct AddBody {
 }
 
 #[derive(Serialize)]
-struct Added {
+pub(super) struct Added {
     added: u64,
     skipped: u64,
 }
@@ -106,15 +110,20 @@ struct Added {
 async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<AddBody>) -> AppResult<Json<Added>> {
     auth.project(&state.db, id).await?;
     check_segment(&state, id, Some(body.segment_id)).await?;
-    if body.domains.len() > MAX_ADD {
+    Ok(Json(add_domains(&state.db, auth.org_id, id, body.segment_id, &body.domains).await?))
+}
+
+/// The caller checks that the campaign belongs to the project and the project to the organization.
+pub(super) async fn add_domains(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> AppResult<Added> {
+    if domains.len() > MAX_ADD {
         return Err(AppError::BadRequest(format!("Add at most {MAX_ADD} companies at a time")));
     }
-    let domains: Vec<String> = body.domains.iter().filter_map(|d| util_input::domain(d)).collect::<HashSet<_>>().into_iter().collect();
+    let domains: Vec<String> = domains.iter().filter_map(|d| util_input::domain(d)).collect::<HashSet<_>>().into_iter().collect();
     if domains.is_empty() {
         return Err(AppError::BadRequest("Pick at least one company".into()));
     }
-    let added = add_companies(&state.db, auth.org_id, id, body.segment_id, &domains).await?;
-    Ok(Json(Added { added, skipped: domains.len() as u64 - added }))
+    let added = add_companies(db, org_id, project_id, segment_id, &domains).await?;
+    Ok(Added { added, skipped: domains.len() as u64 - added })
 }
 
 async fn add_companies(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> sqlx::Result<u64> {

@@ -4,13 +4,15 @@ import { useState } from "react";
 import useSWR from "swr";
 import { BookOpen, KeyRound, Plus, TriangleAlert } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { CodeBlock } from "@/components/app/settings/code-block";
 import { CopyField } from "@/components/app/settings/copy-button";
-import { LoadError, SectionsSkeleton, SettingsColumn } from "@/components/app/settings/layout";
+import { LoadError, Section, SectionsSkeleton, SettingsColumn } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
+import { MicroLabel } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Modal } from "@/components/ui/misc";
-import { fetcher } from "@/hooks/use-me";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { ApiKey, ProjectSummary } from "@/lib/types";
 import { timeAgo } from "@/lib/utils";
@@ -40,7 +42,7 @@ export default function ApiKeysPage() {
     <>
       <PageHeader
         title="API keys"
-        description="Keys for the Splee API. A key can read and add leads in every project of this organization."
+        description="Keys for the Splee API and MCP server. A key can do what a member can in every project of this organization."
         actions={
           <>
             {docsProject && (
@@ -87,6 +89,7 @@ export default function ApiKeysPage() {
               ))}
             </Card>
           )}
+          <ConnectAssistant />
         </SettingsColumn>
       </PageBody>
 
@@ -94,6 +97,47 @@ export default function ApiKeysPage() {
         {open && <CreateKey onCreated={() => mutate()} onDone={() => setOpen(false)} />}
       </Modal>
     </>
+  );
+}
+
+/** Claude.ai and ChatGPT were checked against their docs in November 2026. Update this when ChatGPT takes an API key. */
+function ConnectAssistant() {
+  const { me } = useMe();
+  if (!me) return null;
+  const url = `${me.public_url.replace(/\/+$/, "")}/api/mcp`;
+  const claudeCode = `claude mcp add --transport http splee ${url} \\\n  --header "Authorization: Bearer <key>"`;
+  const cursor = JSON.stringify({ mcpServers: { splee: { url, headers: { Authorization: "Bearer <key>" } } } }, null, 2);
+  return (
+    <Section
+      title="Connect Claude or Cursor"
+      description="Prospect from a chat with Splee's MCP server. Search companies, start campaigns, find people and approve emails. Put one of your keys where it says <key>."
+    >
+      <div className="grid gap-4 text-sm">
+        <div>
+          <MicroLabel>Server URL</MicroLabel>
+          <div className="mt-1">
+            <CopyField value={url} />
+          </div>
+        </div>
+        <CodeBlock label="Claude Code" code={claudeCode} wrap />
+        <div className="grid gap-2">
+          <p className="text-muted-foreground">
+            For Cursor, add this to <code className="font-mono">.cursor/mcp.json</code> in a project, or to <code className="font-mono">~/.cursor/mcp.json</code>{" "}
+            for all of them.
+          </p>
+          <CodeBlock label="Cursor" code={cursor} wrap />
+        </div>
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">Claude.ai:</span> under Customize, Connectors, add a custom connector with the server URL, choose No
+          sign-in and add an <code className="font-mono">authorization</code> request header with <code className="font-mono">Bearer &lt;key&gt;</code>. Request
+          headers are in beta for some organizations, and Claude.ai connects over the internet, so PUBLIC_URL must be a public https address.
+        </p>
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">ChatGPT:</span> it only connects to servers that sign in with OAuth, which Splee doesn&apos;t offer
+          yet. Use Claude Code or Cursor for now.
+        </p>
+      </div>
+    </Section>
   );
 }
 

@@ -41,6 +41,11 @@ pub(super) async fn load(db: &PgPool, org_id: Uuid, id: Uuid) -> AppResult<Agent
     .ok_or(AppError::NotFound)
 }
 
+/// The run's latest progress line, like "Found 25 companies" once it's done.
+pub(super) async fn last_message(db: &PgPool, run_id: Uuid) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar("select message from agent_events where run_id = $1 order by id desc limit 1").bind(run_id).fetch_optional(db).await
+}
+
 pub async fn run_events(state: &AppState, run_id: Uuid) -> AppResult<Vec<AgentEvent>> {
     Ok(sqlx::query_as::<_, AgentEvent>("select * from agent_events where run_id = $1 order by id").bind(run_id).fetch_all(&state.db).await?)
 }

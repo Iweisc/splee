@@ -49,10 +49,16 @@ impl IntoResponse for AppError {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
-        let message = match &self {
+        (status, Json(json!({ "error": self.public_message() }))).into_response()
+    }
+}
+
+impl AppError {
+    /// What the caller sees. Internal errors are logged by IntoResponse and stay vague.
+    pub fn public_message(&self) -> String {
+        match self {
             AppError::Internal(_) => "Something went wrong".to_string(),
             other => other.to_string(),
-        };
-        (status, Json(json!({ "error": message }))).into_response()
+        }
     }
 }

@@ -64,10 +64,89 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: `/projects/${projectId}/campaigns`,
+      summary: "Campaigns of a project with their funnel. spend_micros is in micro-dollars (1,000,000 = $1).",
+      response: `[
+  {
+    "id": "5d0a…",
+    "name": "Design studios",
+    "description": "Independent design studios in the US",
+    "status": "working",
+    "companies": 40,
+    "leads": 72,
+    "sent": 150,
+    "contacted": 70,
+    "replies": 6,
+    "bounced": 1,
+    "hot": 2,
+    "spend_micros": 4210000,
+    "created_at": "2026-11-01T12:05:00Z"
+  }
+]`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/campaigns`,
+      summary:
+        "Create a campaign from a description of who to reach, like describing one in the app. The agent names it and sets its targeting in a run you can follow with GET /runs below.",
+      body: `{ "prompt": "Dental clinics in Leeds" }`,
+      response: `{ "campaign_id": "5d0a…", "run_id": "9b4f…" }`,
+    },
+    {
+      method: "GET",
+      path: "/companies?q=dental&city=Leeds&country=GB",
+      summary:
+        "Search the company database, the most reliable listings first. q matches words at the start of words in the name or category. total stops counting at 10,000, and capped says there are more.",
+      params: [
+        ["q", "optional words in the name or category"],
+        ["country", "optional two-letter code, like GB"],
+        ["city", "optional city, any case"],
+        ["category", "optional exact category, like dental_clinic"],
+        ["has_email, has_phone", "optional true to keep only companies that list one"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "domain": "smiledental.co.uk",
+      "name": "Smile Dental",
+      "website": "https://smiledental.co.uk",
+      "phone": "+44 113 000 0000",
+      "email": "hello@smiledental.co.uk",
+      "city": "Leeds",
+      "country_code": "GB",
+      "category": "dental_clinic",
+      "…": "…"
+    }
+  ],
+  "total": 125,
+  "capped": false
+}`,
+    },
+    {
+      method: "POST",
+      path: "/segments/5d0a…/companies",
+      summary:
+        "Add companies from the search above to a campaign by domain, up to 500 at a time. Companies the project already has and ones on your do-not-contact list are skipped.",
+      body: `{ "domains": ["smiledental.co.uk", "brightsmiles.co.uk"] }`,
+      response: `{ "added": 2, "skipped": 0 }`,
+    },
+    {
+      method: "POST",
+      path: "/segments/5d0a…/find-people",
+      summary:
+        "Have the agent find decision makers and their emails at the campaign's new companies, like Find people in the app. Send company_ids to pick some, or no body for all.",
+      body: `{ "company_ids": ["e810…"] }`,
+      response: `{ "run_id": "9b4f…" }`,
+    },
+    {
+      method: "GET",
       path: `/projects/${projectId}/leads?status=hot&page=1`,
-      summary: "Leads of a project, newest first.",
+      summary: "Leads of a project, newest first, with their campaign and the status of the last email to them.",
       params: [
         ["status", "optional lead status: new, contacted, replied, hot, meeting_booked, …"],
+        ["segment_id", "optional campaign id"],
+        ["q", "optional text in the name, email, company or title"],
         ["page", "1-based page number"],
         ["per_page", "1 to 200, default 50"],
       ],
@@ -110,18 +189,20 @@ function endpoints(projectId: string): Endpoint[] {
       method: "POST",
       path: "/segments/5d0a…/write-emails",
       summary:
-        "Have the agent write a first email for every lead in a campaign that doesn't have one yet, like Write emails in the app. Add leads with segment_id above (campaign ids are in stats below), then call this. In a campaign that's sending, the new emails are approved straight away. 409 when every lead already has an email.",
+        "Have the agent write a first email for every lead in a campaign that doesn't have one yet, like Write emails in the app. Add leads with segment_id above, then call this. In a campaign that's sending, the new emails are approved straight away. 409 when every lead already has an email. The body is optional: lead_ids writes for just those leads, and instructions guides this batch.",
+      body: `{ "instructions": "Mention our Leeds office" }`,
       response: `{ "run_id": "9b4f…" }`,
     },
     {
       method: "GET",
       path: "/runs/9b4f…",
       summary:
-        "A run's progress, for example one started by write-emails. status goes from queued to running, then succeeded, failed or cancelled. error says why a run failed, and cost_usd is what Claude Code reported for it.",
+        "A run's progress, for example one started by write-emails. status goes from queued to running, then succeeded, failed or cancelled. message is its latest progress line, error says why a run failed, and cost_usd is what Claude Code reported for it.",
       response: `{
   "id": "9b4f…",
   "kind": "write_emails",
   "status": "succeeded",
+  "message": "Wrote 12 emails",
   "error": "",
   "cost_usd": 0.42,
   "created_at": "2026-11-04T10:00:00Z",
@@ -220,6 +301,87 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: `/inbox?project_id=${projectId}&filter=needs_reply`,
+      summary:
+        "Reply threads like the Inbox page, the latest first, with the last message in either direction cut to 300 characters.",
+      params: [
+        ["project_id", "optional, all projects without it"],
+        ["filter", "all, needs_reply, hot, auto_replied or other, default all"],
+        ["q", "optional text in the lead's name, email or company"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "lead_id": "c42e…",
+      "project_id": "${projectId}",
+      "project_name": "Acme",
+      "lead_name": "Sarah Chen",
+      "lead_email": "sarah@northwind.studio",
+      "company_name": "Northwind Studio",
+      "lead_status": "hot",
+      "classification": "hot",
+      "pending_auto_reply": false,
+      "last_message": {
+        "id": "71aa…",
+        "direction": "inbound",
+        "subject": "Re: Northwind Studio x Acme",
+        "snippet": "Sounds interesting, can you send times for next week?",
+        "at": "2026-11-04T10:12:00Z"
+      }
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "GET",
+      path: `/emails?project_id=${projectId}`,
+      summary:
+        "Draft emails waiting for approval, oldest first, across all projects or one. Pass status to see others, like approved or sent.",
+      params: [
+        ["project_id, segment_id", "optional project or campaign"],
+        ["status", "optional, draft by default, comma-separated for several"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "a19c…",
+      "project_id": "${projectId}",
+      "segment_id": "5d0a…",
+      "campaign": "Design studios",
+      "lead_id": "c42e…",
+      "lead_name": "Sarah Chen",
+      "lead_email": "sarah@northwind.studio",
+      "company_name": "Northwind Studio",
+      "kind": "initial",
+      "step": 0,
+      "subject": "Northwind Studio x Acme",
+      "body": "Hi Sarah, …",
+      "status": "draft",
+      "scheduled_for": null,
+      "created_at": "2026-11-04T10:03:00Z"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "POST",
+      path: "/emails/a19c…/approve",
+      summary:
+        "Approve an email, like Approve in the app. It goes out from your mailboxes on the project's schedule once its campaign is sending. Approving a failed or cancelled email sends it again. 400 once it was sent.",
+      response: `{ "id": "a19c…", "status": "approved", "…": "…" }`,
+    },
+    {
+      method: "POST",
+      path: "/emails/a19c…/skip",
+      summary: "Cancel an email so it never goes out. Approve can still send it later.",
+      response: `{ "id": "a19c…", "status": "cancelled", "…": "…" }`,
+    },
+    {
+      method: "GET",
       path: `/projects/${projectId}/sent-emails?since=2026-11-01T00:00:00Z`,
       summary:
         "Emails Splee sent your leads: first emails, follow-ups, auto-replies and replies from the inbox. Oldest first, up to 500 per request. Poll with since set to the last sent_at you saw, or get each one as it goes out with the Email sent webhook.",
@@ -296,7 +458,7 @@ export default function DocsPage() {
     <>
       <PageHeader
         title="API"
-        description="Read leads, replies and results, push your own leads into Splee, and mark leads from your CRM or scripts."
+        description="Run campaigns from your own scripts or CRM: find companies and people, approve emails, and read replies and results."
         actions={
           <LinkButton href="/app/api-keys" variant="outline">
             <KeyRound className="size-4" /> API keys
