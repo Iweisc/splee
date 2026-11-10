@@ -333,7 +333,8 @@ fn tools() -> Vec<Value> {
             "list_campaigns",
             "List campaigns",
             "A project's campaigns with their funnel: companies, leads, emails sent, leads contacted, replies, bounces, hot leads and \
-             spend in micro-dollars.",
+             spend in micro-dollars. A campaign that A/B tests its email angle has ab_test: each variant's instructions and results, \
+             whether a winner is clear yet in note, and the winner auto-pick kept, if any.",
             json!({ "project_id": project }),
             &["project_id"],
             read.clone(),

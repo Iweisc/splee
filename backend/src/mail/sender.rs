@@ -686,7 +686,8 @@ async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Hourly: campaigns with enough data move between scaling, working and paused by emails sent per hot lead.
+/// Hourly: campaigns with enough data move between scaling, working and paused by emails sent per hot lead, and A/B tests
+/// with auto-pick on keep their winner.
 pub async fn optimize(db: &sqlx::PgPool) -> anyhow::Result<()> {
     let rows: Vec<(Uuid, String, bool, i64, i64)> = sqlx::query_as(
         "select s.id, s.status, s.auto_paused_at is not null,
@@ -712,7 +713,7 @@ pub async fn optimize(db: &sqlx::PgPool) -> anyhow::Result<()> {
                 .await?;
         }
     }
-    Ok(())
+    crate::ab_test::auto_pick(db).await
 }
 
 /// Where the optimizer puts a campaign, or None while it has too little data to judge.

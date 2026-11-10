@@ -360,6 +360,46 @@ export interface Segment {
   created_at: Ts;
   /** When the optimizer paused it. It never pauses a campaign twice, so resuming one sticks. */
   auto_paused_at: Ts | null;
+  /** A/B test auto-pick: sends per variant before it keeps a clear winner. Null when it's off. */
+  variant_pick_after: number | null;
+  variant_winner_id: UUID | null;
+  variant_picked_at: Ts | null;
+  variant_pick_note: string;
+}
+
+/** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */
+export interface Variant {
+  id: UUID;
+  segment_id: UUID;
+  name: string;
+  instructions: string;
+  position: number;
+  /** New leads skip a paused variant. Leads that already have it keep it. */
+  paused_at: Ts | null;
+  created_at: Ts;
+}
+
+/** Counted by lead: leads whose first email of this variant went out, and of those who replied, turned hot, bounced or unsubscribed. */
+export interface VariantStats extends Variant {
+  sent: number;
+  replies: number;
+  hot: number;
+  bounced: number;
+  unsubscribed: number;
+}
+
+/** GET /segments/{id}/variants. Variants are compared on hot rate, or reply rate while none has a hot lead. */
+export interface AbTest {
+  variants: VariantStats[];
+  metric: "hot" | "reply";
+  verdict: "too_few" | "unclear" | "winner";
+  leader_id: UUID | null;
+  /** The verdict in plain words. */
+  note: string;
+  pick_after: number | null;
+  winner_id: UUID | null;
+  picked_at: Ts | null;
+  pick_note: string;
 }
 
 /** Emails sent and the leads whose first reply came after one of them. See RepliesSection. */
@@ -498,6 +538,8 @@ export interface Lead {
   meeting_at: Ts | null;
   last_contacted_at: Ts | null;
   created_at: Ts;
+  /** The campaign's A/B test variant, picked when its first email is written. */
+  variant_id: UUID | null;
 }
 
 export interface LeadRow extends Lead {
@@ -582,6 +624,8 @@ export interface EmailMessage {
   /** Inbound only: when you marked the reply as needing no answer. */
   handled_at: Ts | null;
   deferrals: number; // times the receiving server said to try again later
+  /** The A/B test variant it was written for. Follow-ups keep the first email's. */
+  variant_id: UUID | null;
 }
 
 export interface EmailRow extends EmailMessage {
@@ -590,6 +634,7 @@ export interface EmailRow extends EmailMessage {
   company_name: string;
   segment_name: string | null;
   project_name: string;
+  variant_name: string | null;
 }
 
 export interface InboxThread {

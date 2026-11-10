@@ -40,6 +40,7 @@ pub mod runs;
 pub mod support;
 pub mod explorer;
 pub mod unsubscribe;
+mod variants;
 mod util_airtable;
 mod util_baserow;
 mod util_grist;
@@ -85,6 +86,7 @@ pub fn router() -> Router<AppState> {
         .merge(support::router())
         .merge(explorer::router())
         .merge(unsubscribe::router())
+        .merge(variants::router())
         .merge(bookings::router())
         .merge(forms::router())
         .merge(calendar::router())

@@ -33,14 +33,17 @@ pub(super) struct EmailRow {
     pub company_name: String,
     pub segment_name: Option<String>,
     pub project_name: String,
+    /// The A/B test variant's name, when it was written for one.
+    pub variant_name: Option<String>,
 }
 
 const ROW_SELECT: &str = "select e.*, l.full_name as lead_name, l.email::text as lead_email, l.company_name,
-       s.name as segment_name, p.name as project_name
+       s.name as segment_name, p.name as project_name, v.name as variant_name
      from email_messages e
      join leads l on l.id = e.lead_id
      join projects p on p.id = e.project_id
-     left join segments s on s.id = e.segment_id";
+     left join segments s on s.id = e.segment_id
+     left join segment_variants v on v.id = e.variant_id";
 
 #[derive(Deserialize, Default)]
 pub(super) struct ListQuery {

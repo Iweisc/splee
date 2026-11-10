@@ -316,6 +316,25 @@ pub struct Segment {
     pub created_at: Ts,
     /// When the optimizer paused it. It never pauses a campaign twice, so resuming one sticks.
     pub auto_paused_at: Option<Ts>,
+    /// A/B test auto-pick: once every variant has this many sends and one is clearly ahead, the others are paused.
+    pub variant_pick_after: Option<i32>,
+    pub variant_winner_id: Option<Uuid>,
+    pub variant_picked_at: Option<Ts>,
+    /// Why auto-pick kept the winner, in words for the campaign page.
+    pub variant_pick_note: String,
+}
+
+/// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Variant {
+    pub id: Uuid,
+    pub segment_id: Uuid,
+    pub name: String,
+    pub instructions: String,
+    pub position: i32,
+    /// New leads skip a paused variant. Leads that already have it keep it.
+    pub paused_at: Option<Ts>,
+    pub created_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -365,6 +384,8 @@ pub struct Lead {
     pub unsubscribe_token: String,
     pub last_contacted_at: Option<Ts>,
     pub created_at: Ts,
+    /// The campaign's A/B test variant, picked when its first email is written and kept from then on.
+    pub variant_id: Option<Uuid>,
 }
 
 /// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.
@@ -529,6 +550,8 @@ pub struct EmailMessage {
     pub handled_at: Option<Ts>,
     /// Times the receiving server answered "try again later".
     pub deferrals: i32,
+    /// The A/B test variant it was written for. Follow-ups keep the first email's.
+    pub variant_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
