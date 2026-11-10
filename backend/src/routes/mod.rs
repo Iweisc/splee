@@ -14,6 +14,7 @@ mod forms;
 pub mod linkedin;
 mod calendar;
 mod saved_replies;
+mod social;
 pub mod org;
 pub mod projects;
 pub mod competitors;
@@ -61,6 +62,7 @@ pub fn router() -> Router<AppState> {
         .merge(saved_replies::router())
         .merge(endpoints::router())
         .merge(linkedin::router())
+        .merge(social::router())
         .merge(mailboxes::router())
         .merge(settings::router())
         .merge(materials::router())

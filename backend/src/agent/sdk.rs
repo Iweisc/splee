@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, ContentBlock, McpServers, Message, Tools};
+use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, ContentBlock, McpServerConfig, McpServers, Message, Tools};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, directory, x};
+use super::{Ctx, directory, reddit, x};
 use crate::events;
 use crate::state::AppState;
 
@@ -28,6 +28,10 @@ pub struct Call {
     pub max_turns: u32,
     pub budget_usd: f64,
     pub timeout: Duration,
+    /// In-process MCP servers by name, and the tools from them Claude may use. When set they replace the X tools a
+    /// research call gets otherwise.
+    pub servers: HashMap<String, McpServerConfig>,
+    pub server_tools: Vec<String>,
 }
 
 impl Call {
@@ -42,6 +46,8 @@ impl Call {
             max_turns,
             budget_usd: 1.0,
             timeout: Duration::from_secs(6 * 60),
+            servers: HashMap::new(),
+            server_tools: vec![],
         }
     }
 
@@ -56,6 +62,8 @@ impl Call {
             max_turns: 4,
             budget_usd: 0.25,
             timeout: Duration::from_secs(2 * 60),
+            servers: HashMap::new(),
+            server_tools: vec![],
         }
     }
 }
@@ -99,9 +107,10 @@ pub async fn ask<T: DeserializeOwned>(state: &AppState, run: Option<&Ctx>, call:
 async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: String) -> anyhow::Result<Attempt> {
     let tools: Vec<String> = if call.web { WEB_TOOLS.iter().map(|t| t.to_string()).collect() } else { vec![] };
     let mut allowed = tools.clone();
-    let mut servers = HashMap::new();
-    if let (true, Some(bird)) = (call.web, &state.cfg.bird_bin) {
-        servers.insert("x".to_string(), x::server(bird.clone()));
+    let mut servers = call.servers.clone();
+    allowed.extend(call.server_tools.iter().cloned());
+    if let (true, true, Some(bird)) = (call.web, servers.is_empty(), &state.cfg.bird_bin) {
+        servers.insert("x".to_string(), x::server(bird.clone(), None));
         allowed.extend([x::SEARCH.to_string(), x::READ.to_string()]);
         // In the task prompt, not the system prompt: the tasks' own step lists win over system guidance.
         prompt.push_str(x::GUIDANCE);
@@ -191,6 +200,11 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
             let words = ["q", "category", "city", "country"].iter().filter_map(|k| input[*k].as_str()).filter(|s| !s.trim().is_empty());
             format!("searching the company database for \"{}\"…", words.collect::<Vec<_>>().join(" "))
         }
+        reddit::SEARCH => match input["subreddit"].as_str().filter(|s| !s.is_empty()) {
+            Some(sr) => format!("searching r/{sr} \"{}\"…", input["query"].as_str().unwrap_or_default()),
+            None => format!("searching Reddit \"{}\"…", input["query"].as_str().unwrap_or_default()),
+        },
+        reddit::READ => format!("reading {}…", short_url(input["thread"].as_str().unwrap_or_default())),
         other => format!("{other}…"),
     };
     let step = ctx.step();

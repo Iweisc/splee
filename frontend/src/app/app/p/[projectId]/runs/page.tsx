@@ -22,6 +22,7 @@ const TITLES: Record<RunKind, string> = {
   linkedin_sequence: "Write LinkedIn messages",
   explorer: "Segments Explorer",
   segment_from_prompt: "Draft a campaign",
+  social: "Find threads to join",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

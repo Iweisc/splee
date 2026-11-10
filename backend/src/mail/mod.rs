@@ -20,7 +20,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies and LinkedIn steps wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, LinkedIn steps and social posts wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -35,6 +35,9 @@ pub fn spawn_workers(state: AppState) {
         // Every 10 minutes, one step per project, which keeps the profile lookups under LinkedIn's daily limit too.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::unipile::tick(&s), "linkedin sender").await });
+        // One post per account a tick, so 15 approved posts go out over a couple of hours.
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });

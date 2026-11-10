@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, MailPlus, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
+import { AtSign, CalendarCheck, CalendarClock, ClipboardList, Contact, Hash, MailCheck, MailPlus, MessagesSquare, RefreshCw, Send, Trash2, UserPlus, UserSearch, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
 import { CodeBlock } from "@/components/app/settings/code-block";
@@ -216,7 +216,7 @@ function TestButton({ projectId, target, url, compact }: { projectId: string; ta
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" | "copy" }) {
+function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" | "copy" | "post" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -889,6 +889,123 @@ function UnipileSection({ projectId, settings }: { projectId: string; settings: 
   );
 }
 
+/** The cookies are write-only. Connecting has bird sign in with them and reports the handle. */
+function XSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [authToken, setAuthToken] = useState("");
+  const [ct0, setCt0] = useState("");
+  const { busy, call } = useConnection(projectId, "x");
+  const connect = async () => {
+    if (await call({ auth_token: authToken, ct0 }, "Connected to X")) {
+      setAuthToken("");
+      setCt0("");
+    }
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect X? Approved posts for X will wait until you connect it again.")) call(undefined, "X disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <AtSign className="size-4" /> X
+        </span>
+      }
+      description="Searches X as your account and posts what you approve on the Social page."
+      actions={
+        settings.x_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.x_connected ? (
+        <p className="text-sm text-pretty">Posting as @{settings.x_handle}, up to 15 posts a day. Approved posts go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            In a browser that&apos;s signed in to x.com, open the dev tools and copy the auth_token and ct0 cookies.
+          </p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <Field label="auth_token" className="flex-1">
+              <Input type="password" autoComplete="off" value={authToken} onChange={(e) => setAuthToken(e.target.value.trim())} />
+            </Field>
+            <Field label="ct0" className="flex-1">
+              <Input type="password" autoComplete="off" value={ct0} onChange={(e) => setCt0(e.target.value.trim())} />
+            </Field>
+            <Button type="submit" loading={busy} disabled={!authToken || !ct0}>
+              Connect
+            </Button>
+          </div>
+        </form>
+      )}
+      <LastFailure error={settings.x_error} at={settings.x_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** The secret and password are write-only. Connecting signs in to Reddit with them and reads the username back. */
+function RedditSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [form, setForm] = useState({ client_id: "", secret: "", username: "", password: "" });
+  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: e.target.value });
+  const { busy, call } = useConnection(projectId, "reddit");
+  const connect = async () => {
+    if (await call(form, "Connected to Reddit")) setForm({ client_id: "", secret: "", username: "", password: "" });
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Reddit? Approved posts for Reddit will wait until you connect it again.")) call(undefined, "Reddit disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <MessagesSquare className="size-4" /> Reddit
+        </span>
+      }
+      description="Searches Reddit as your account and posts what you approve on the Social page."
+      actions={
+        settings.reddit_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.reddit_connected ? (
+        <p className="text-sm text-pretty">Posting as u/{settings.reddit_username}, up to 15 posts a day. Approved posts go out one at a time every ten minutes.</p>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            Signed in as the account, open{" "}
+            <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              reddit.com/prefs/apps
+            </a>{" "}
+            and create a script app. Any redirect URI works. The client id is the code under the app&apos;s name.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Client id">
+              <Input autoComplete="off" value={form.client_id} onChange={set("client_id")} />
+            </Field>
+            <Field label="Secret">
+              <Input type="password" autoComplete="off" value={form.secret} onChange={set("secret")} />
+            </Field>
+            <Field label="Username">
+              <Input autoComplete="off" placeholder="u/yourname" value={form.username} onChange={set("username")} />
+            </Field>
+            <Field label="Password" hint="Accounts with two-factor sign-in can't connect this way.">
+              <Input type="password" autoComplete="off" value={form.password} onChange={set("password")} />
+            </Field>
+          </div>
+          <Button type="submit" loading={busy} disabled={!form.client_id.trim() || !form.secret.trim() || !form.username.trim() || !form.password} className="self-start">
+            Connect
+          </Button>
+        </form>
+      )}
+      <LastFailure error={settings.reddit_error} at={settings.reddit_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -971,6 +1088,8 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <VerifierSection projectId={projectId} settings={s} />
           <FinderSection projectId={projectId} settings={s} />
           <UnipileSection projectId={projectId} settings={s} />
+          <XSection projectId={projectId} settings={s} />
+          <RedditSection projectId={projectId} settings={s} />
 
           <Section
             title={
