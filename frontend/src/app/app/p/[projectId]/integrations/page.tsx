@@ -671,6 +671,7 @@ const VERIFIERS = {
   bouncify: "Bouncify",
   quickemailverification: "QuickEmailVerification",
   abstract: "Abstract API",
+  mailboxvalidator: "MailboxValidator",
 } as const;
 
 const FINDERS = {

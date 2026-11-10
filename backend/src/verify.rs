@@ -1,6 +1,6 @@
 //! Checks a lead's address with an email verification service before its first cold email, so addresses that don't
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
-//! Reoon, DeBounce, Bouncify and QuickEmailVerification take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
+//! Reoon, DeBounce, Bouncify, QuickEmailVerification and MailboxValidator take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
 //! Anymail Finder, LeadMagic, Apollo or Voila Norbert.
 
@@ -41,6 +41,7 @@ pub enum Verifier {
     Bouncify,
     QuickEmailVerification,
     Abstract,
+    MailboxValidator,
 }
 
 impl Verifier {
@@ -59,6 +60,7 @@ impl Verifier {
             "bouncify" => Some(Verifier::Bouncify),
             "quickemailverification" => Some(Verifier::QuickEmailVerification),
             "abstract" => Some(Verifier::Abstract),
+            "mailboxvalidator" => Some(Verifier::MailboxValidator),
             _ => None,
         }
     }
@@ -78,6 +80,7 @@ impl Verifier {
             Verifier::Bouncify => "Bouncify",
             Verifier::QuickEmailVerification => "QuickEmailVerification",
             Verifier::Abstract => "Abstract API",
+            Verifier::MailboxValidator => "MailboxValidator",
         }
     }
 
@@ -107,6 +110,8 @@ impl Verifier {
             }
             // Abstract has no free call, so this check uses one credit.
             Verifier::Abstract => abstract_get(Url::parse_with_params(ABSTRACT, [("email", "check@example.com")])?, key).await.map(|_| ()),
+            // MailboxValidator has no free call either, and asks for an address before it looks at the key.
+            Verifier::MailboxValidator => mbv_get(Url::parse_with_params(MBV, [("email", "check@example.com"), ("key", key)])?).await.map(|_| ()),
         }
     }
 
@@ -168,6 +173,7 @@ impl Verifier {
             }
             Verifier::QuickEmailVerification => Ok(qev_verdict(&qev_get(Url::parse_with_params(QEV, [("email", email), ("apikey", key)])?).await?)),
             Verifier::Abstract => Ok(abstract_verdict(&abstract_get(Url::parse_with_params(ABSTRACT, [("email", email)])?, key).await?)),
+            Verifier::MailboxValidator => Ok(mbv_verdict(&mbv_get(Url::parse_with_params(MBV, [("email", email), ("key", key)])?).await?)),
         }
     }
 }
@@ -805,6 +811,34 @@ fn abstract_verdict(body: &Value) -> Verdict {
     }
 }
 
+const MBV: &str = "https://api.mailboxvalidator.com/v2/validation/single";
+
+/// MailboxValidator answers every key problem with a 401 and says which in `{error: {error_code, error_message}}`, where
+/// 10004 is a used-up balance.
+async fn mbv_get(url: Url) -> anyhow::Result<Value> {
+    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    let error = &body["error"];
+    anyhow::ensure!(error["error_code"] != 10004, "the account is out of credits");
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    anyhow::ensure!(status.is_success(), "{}", error["error_message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// `status` is MailboxValidator's overall verdict, which also turns down role and risky addresses that may well exist,
+/// so only what says the address can't get mail is Invalid. A catch-all domain, or a server that was down, greylisted or
+/// didn't say, sends as it would without a verifier.
+fn mbv_verdict(body: &Value) -> Verdict {
+    if body["is_disposable"] == true || body["is_syntax"] == false || body["is_domain"] == false || body["is_verified"] == false {
+        return Verdict::Invalid;
+    }
+    if body["is_catchall"] == true || body["is_server_down"] == true || body["is_greylisted"] == true || !body["is_verified"].is_boolean() {
+        return Verdict::Unsure;
+    }
+    if body["status"] == true { Verdict::Valid } else { Verdict::Unsure }
+}
+
 fn millionverifier_verdict(result: &str) -> Verdict {
     match result {
         "ok" => Verdict::Valid,
@@ -894,6 +928,21 @@ mod tests {
         assert_eq!(abstract_verdict(&abstract_api("unknown", "", false, false)), Verdict::Unsure);
         let malformed = json!({"email_deliverability": {"status": "undeliverable", "status_detail": "invalid_format"}, "email_quality": {"is_disposable": null}});
         assert_eq!(abstract_verdict(&malformed), Verdict::Invalid);
+        // MailboxValidator's documented fields.
+        let mbv = |fields: Value| {
+            let mut body = json!({"is_syntax": true, "is_domain": true, "is_verified": true, "is_catchall": false, "is_disposable": false,
+                "is_server_down": false, "is_greylisted": false, "status": true});
+            body.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+            mbv_verdict(&body)
+        };
+        assert_eq!(mbv(json!({})), Verdict::Valid);
+        assert_eq!(mbv(json!({"is_verified": false, "status": false})), Verdict::Invalid);
+        assert_eq!(mbv(json!({"is_domain": false, "is_verified": null, "status": false})), Verdict::Invalid);
+        assert_eq!(mbv(json!({"is_disposable": true})), Verdict::Invalid);
+        assert_eq!(mbv(json!({"is_catchall": true})), Verdict::Unsure);
+        assert_eq!(mbv(json!({"is_verified": null, "is_server_down": true, "status": false})), Verdict::Unsure);
+        // A role address that exists, which MailboxValidator's status turns down.
+        assert_eq!(mbv(json!({"status": false})), Verdict::Unsure);
         // Hunter's test key answers with this person whatever was asked.
         let found = json!({"data": {"email": "Richard@piedpiper.com", "score": 99, "verification": {"status": "valid"}}});
         assert_eq!(hunter_found(&found, "piedpiper.com"), Some(Found { email: "richard@piedpiper.com".into(), verified: true }));
