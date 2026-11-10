@@ -2,7 +2,7 @@
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon, DeBounce, Bouncify, QuickEmailVerification and MailboxValidator take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
-//! Anymail Finder, LeadMagic, Apollo or Voila Norbert.
+//! Anymail Finder, LeadMagic, Apollo, Voila Norbert or Skrapp.
 
 use std::time::Duration;
 
@@ -228,6 +228,7 @@ pub enum Finder {
     LeadMagic,
     Apollo,
     Norbert,
+    Skrapp,
 }
 
 impl Finder {
@@ -240,6 +241,7 @@ impl Finder {
             "leadmagic" => Some(Finder::LeadMagic),
             "apollo" => Some(Finder::Apollo),
             "voilanorbert" => Some(Finder::Norbert),
+            "skrapp" => Some(Finder::Skrapp),
             _ => None,
         }
     }
@@ -253,6 +255,7 @@ impl Finder {
             Finder::LeadMagic => "LeadMagic",
             Finder::Apollo => "Apollo",
             Finder::Norbert => "Voila Norbert",
+            Finder::Skrapp => "Skrapp",
         }
     }
 
@@ -271,6 +274,7 @@ impl Finder {
                 Ok(())
             }
             Finder::Norbert => norbert_call(client()?.get(format!("{NORBERT}/account/")), key).await.map(|_| ()),
+            Finder::Skrapp => skrapp_call(client()?.get(format!("{SKRAPP}/v2/account")), key).await.map(|_| ()),
         }
     }
 
@@ -328,6 +332,11 @@ impl Finder {
                     body = norbert_call(client()?.get(format!("{NORBERT}/contacts/{id}")), key).await?;
                 }
                 Ok(norbert_found(&body, domain))
+            }
+            Finder::Skrapp => {
+                let name = if last.is_empty() { vec![("fullName", first)] } else { vec![("firstName", first), ("lastName", last)] };
+                let url = Url::parse_with_params(&format!("{SKRAPP}/v3/people/email"), name.into_iter().chain([("domain", domain)]))?;
+                Ok(skrapp_found(&skrapp_call(client()?.get(url), key).await?, domain))
             }
         }
     }
@@ -527,6 +536,36 @@ fn norbert_found(body: &Value, domain: &str) -> Option<Found> {
     }
     let score = body["email"]["score"].as_i64().unwrap_or(0);
     at_domain(body["email"]["email"].as_str(), domain).filter(|_| score >= 80).map(|email| Found { email, verified: score >= 100 })
+}
+
+const SKRAPP: &str = "https://api.skrapp.io/api";
+
+/// Skrapp answers a wrong key with a 403 "Not authorized", and the same 403 with `email_limit_exeeded` (sic) when the
+/// credits ran out. A 404 is nothing found, unless its code is KNF, a revoked key, and a 408 is a search that ran past
+/// Skrapp's 10 seconds, which costs nothing and counts as nothing found.
+async fn skrapp_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("X-Access-Key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or_default();
+    anyhow::ensure!(body["email_limit_exeeded"] != true, "the account is out of credits");
+    anyhow::ensure!(!(status == reqwest::StatusCode::FORBIDDEN && body["message"] == "Not authorized"), "the API key was rejected");
+    anyhow::ensure!(body["code"] != "KNF", "the API key was rejected");
+    if matches!(status.as_u16(), 404 | 408) {
+        return Ok(Value::Null);
+    }
+    anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Skrapp checks what it finds: a valid address is verified, and a catch-all one is kept for the verifier to check
+/// before sending. Invalid and unknown ones aren't kept.
+fn skrapp_found(body: &Value, domain: &str) -> Option<Found> {
+    let verified = match body["quality"]["status"].as_str()? {
+        "valid" => true,
+        "catch-all" => false,
+        _ => return None,
+    };
+    at_domain(body["email"].as_str(), domain).map(|email| Found { email, verified })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -957,6 +996,13 @@ mod tests {
         assert_eq!(norbert_found(&norbert(5), "example.com"), None);
         assert_eq!(norbert_found(&norbert(100), "other.com"), None);
         assert_eq!(norbert_found(&json!({"id": 1, "searching": true, "email": null}), "example.com"), None);
+        // Skrapp's documented answer, by quality.
+        let skrapp = |status: &str| json!({"email": "Jane.Doe@Example.com", "pattern": "{first}.{last}", "quality": {"status": status}});
+        assert_eq!(skrapp_found(&skrapp("valid"), "example.com"), Some(Found { email: "jane.doe@example.com".into(), verified: true }));
+        assert_eq!(skrapp_found(&skrapp("catch-all"), "example.com"), Some(Found { email: "jane.doe@example.com".into(), verified: false }));
+        assert_eq!(skrapp_found(&skrapp("unknown"), "example.com"), None);
+        assert_eq!(skrapp_found(&skrapp("valid"), "other.com"), None);
+        assert_eq!(skrapp_found(&serde_json::Value::Null, "example.com"), None);
         let unfinished = json!({"id": 1, "searching": true, "email": {"email": "fake@example.com", "score": 100}});
         assert_eq!(norbert_found(&unfinished, "example.com"), None);
         // Findymail's documented answer, and the empty body a 404 becomes.
