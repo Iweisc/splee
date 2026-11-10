@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::explore::{self, EMPLOYEE_RANGES, Profile, RESEARCHER, is_directory, load_project};
+use super::directory;
 use super::sdk::Call;
 use super::x;
 use super::{Ctx, Outcome};
@@ -173,7 +174,11 @@ async fn find_companies(ctx: &Ctx, project: &Project, profile: &Profile, segment
         "source_url": {"type": "string"}
     }));
     let turns = if count > 12 { 20 } else { 14 };
-    let list: CompanyList = ctx.ask(&Call::research(RESEARCHER, prompt, schema, turns)).await?;
+    let mut call = Call::research(RESEARCHER, prompt, schema, turns);
+    if directory::has_companies(ctx.db()).await? {
+        call.directory = Some(project.id);
+    }
+    let list: CompanyList = ctx.ask(&call).await?;
     ctx.log(format!("scoring fit for {} domains…", list.companies.len())).await?;
 
     let mut candidates: Vec<(String, FoundCompany)> = list

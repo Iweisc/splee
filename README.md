@@ -85,7 +85,7 @@ The quick start is for your own machine. To run Splee for a team:
 5. **Monitoring.** Point an uptime monitor at `https://<your host>/api/health`. It returns 200 when the frontend, the backend and Postgres all answer.
 6. **Backups.** Back up the database and keep `APP_SECRET` with it. Mailbox passwords in a backup can't be decrypted without the secret they were saved with.
 7. **Forgotten passwords.** There's no reset email. Run `(cd backend && ./target/release/splee reset-password person@example.com)`, which prints a new random password, signs that person out everywhere and clears their failed sign-ins. It's safe to run while the server is up. They can change the password under Account.
-8. **Company database.** Run `(cd backend && ./target/release/splee import-companies GB US)` to load every business with a website in those countries from [Overture Maps](https://docs.overturemaps.org/guides/places/), an open dataset of about 88 million places. Leave out the countries to load the whole world. It reads the files over HTTPS without saving them, so it needs no disk space beyond the database. It's safe to run while the server is up, and running it again picks up Overture's newest monthly release.
+8. **Company database.** Run `(cd backend && ./target/release/splee import-companies GB US)` to load every business with a website in those countries from [Overture Maps](https://docs.overturemaps.org/guides/places/), an open dataset of about 88 million places. Leave out the countries to load the whole world. It reads the files over HTTPS without saving them, so it needs no disk space beyond the database. It's safe to run while the server is up, and running it again picks up Overture's newest monthly release. Search it on a project's Companies page and add what you pick to a campaign.
 
 To start both on boot and restart them after a crash, adapt the example systemd units in [`deploy/systemd/`](deploy/systemd). Stopping the backend's unit also stops any `claude` processes it started. Run a single backend per database (see below), and if you change the code, point `NEXT_PUBLIC_SOURCE_URL` at your source as the AGPL requires.
 
@@ -97,7 +97,7 @@ backend/   Rust: Axum 0.8, sqlx, Postgres. Runs the API and the background worke
 SPEC.md    Endpoints, data contract, agent pipeline and workers.
 ```
 
-The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://github.com/tyrchen/claude-agent-sdk-rs). Each call runs in a temp directory without your Claude settings. Research calls can only use web search and fetch, plus the X tools when `BIRD_BIN` is set. Writing and classification calls get no tools.
+The agent uses the local `claude` CLI through [`claude-agent-sdk-rs`](https://github.com/tyrchen/claude-agent-sdk-rs). Each call runs in a temp directory without your Claude settings. Research calls can only use web search and fetch, plus the X tools when `BIRD_BIN` is set. Finding companies can also search the company database once it holds rows. Writing and classification calls get no tools.
 
 Every backend process runs the workers: the agent queue, the sender every 30 seconds, the IMAP poller every 60 seconds, the hourly campaign optimizer and the notification digests. Run one backend per database. `SENDING_ENABLED=false` only stops the sender, so a second backend would still poll mailboxes and process replies.
 

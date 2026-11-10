@@ -10,8 +10,9 @@ use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, ContentBlock, McpSer
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
-use super::{Ctx, x};
+use super::{Ctx, directory, x};
 use crate::events;
 use crate::state::AppState;
 
@@ -22,6 +23,8 @@ pub struct Call {
     pub prompt: String,
     pub schema: Value,
     pub web: bool,
+    /// Offers the company database tool, leaving out the companies this project already has.
+    pub directory: Option<Uuid>,
     pub max_turns: u32,
     pub budget_usd: f64,
     pub timeout: Duration,
@@ -35,6 +38,7 @@ impl Call {
             prompt: prompt.into(),
             schema,
             web: true,
+            directory: None,
             max_turns,
             budget_usd: 1.0,
             timeout: Duration::from_secs(6 * 60),
@@ -48,6 +52,7 @@ impl Call {
             prompt: prompt.into(),
             schema,
             web: false,
+            directory: None,
             max_turns: 4,
             budget_usd: 0.25,
             timeout: Duration::from_secs(2 * 60),
@@ -100,6 +105,11 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: Stri
         allowed.extend([x::SEARCH.to_string(), x::READ.to_string()]);
         // In the task prompt, not the system prompt: the tasks' own step lists win over system guidance.
         prompt.push_str(x::GUIDANCE);
+    }
+    if let Some(project_id) = call.directory {
+        servers.insert("directory".to_string(), directory::server(state.db.clone(), project_id));
+        allowed.push(directory::SEARCH.to_string());
+        prompt.push_str(directory::GUIDANCE);
     }
     let opts = ClaudeAgentOptions::builder()
         // `tools` only picks built-in tools. MCP tools such as the X ones just need to be allowed.
@@ -177,6 +187,10 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         "WebFetch" => format!("fetching {}…", short_url(input["url"].as_str().unwrap_or_default())),
         x::SEARCH => format!("searching X \"{}\"…", input["query"].as_str().unwrap_or_default()),
         x::READ => format!("reading X post {}…", short_url(input["post"].as_str().unwrap_or_default())),
+        directory::SEARCH => {
+            let words = ["q", "category", "city", "country"].iter().filter_map(|k| input[*k].as_str()).filter(|s| !s.trim().is_empty());
+            format!("searching the company database for \"{}\"…", words.collect::<Vec<_>>().join(" "))
+        }
         other => format!("{other}…"),
     };
     let step = ctx.step();

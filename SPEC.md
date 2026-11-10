@@ -39,6 +39,8 @@ Event kinds: `phase` (data `{step, title, status: "started"|"finished"}`), `log`
 
 `companies.employees` is a display string like `11-50`.
 
+Step 4 and `find_companies` runs also get `mcp__directory__search` when `directory_companies` has rows: an in-process MCP server named `directory` that runs the Companies page's search (`q`, `country`, `city`, `category`, `has_email`, `has_phone`, `limit` up to 50, default 25), leaving out companies the project already has, and returns one line per company with its domain, name, category, place and whether it lists an email or phone. The prompt tells Claude to use it first for local and small businesses and search the web for what it lacks. Its answers go through the same filters and dedupe as web results.
+
 ### Run inputs (`agent_runs.input`), enqueued by routes, consumed by the agent worker
 
 | kind | input |
@@ -209,6 +211,8 @@ All paths below are under `/api`.
 | method | path | body | response |
 |---|---|---|---|
 | GET | /directory/companies?q&country&city&category&has_email&has_phone&page&per_page | | `{items: DirectoryCompany[], total, capped}`, most confident first. every word in `q` must start a word in the name or category, so `dent` finds `general_dentistry`, `country` is a two-letter code (400 otherwise), `city` is matched case-insensitively and `category` is an Overture category or any of its parents, like `restaurant`. `total` stops at 10,000 and `capped` says there are more. |
+| GET | /directory/countries | | `{country_code, companies}[]`, most companies first. The server keeps the list for 10 minutes, since counting is slow over millions of rows, but not while the table is empty. |
+| POST | /projects/:id/directory/add | `{segment_id, domains: string[]}` (up to 500) | `{added, skipped}`. Adds the companies to the campaign as `new` companies, with the category in words as their description, so "Find people" picks them up like the ones the agent found. Domains already in the project, missing from the database, or whose domain, listed email or that email's domain is suppressed are skipped. 400 for a campaign of another project. |
 
 ### Runs
 

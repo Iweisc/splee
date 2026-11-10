@@ -321,6 +321,31 @@ export interface Company {
   created_at: Ts;
 }
 
+/** A business from the shared company database. `category` is Overture's snake_case, like dental_clinic. */
+export interface DirectoryCompany {
+  domain: string;
+  name: string;
+  website: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  region: string | null;
+  postcode: string | null;
+  country_code: string;
+  category: string | null;
+}
+
+export interface DirectoryPage extends Paginated<DirectoryCompany> {
+  /** `total` stopped counting at 10,000 and there are more. */
+  capped: boolean;
+}
+
+export interface DirectoryCountry {
+  country_code: string;
+  companies: number;
+}
+
 export type LeadStatus =
   | "new"
   | "queued"
