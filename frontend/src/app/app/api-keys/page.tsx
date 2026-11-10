@@ -109,7 +109,7 @@ function ConnectAssistant() {
   const cursor = JSON.stringify({ mcpServers: { splee: { url, headers: { Authorization: "Bearer <key>" } } } }, null, 2);
   return (
     <Section
-      title="Connect to Claude, ChatGPT or Cursor"
+      title="Connect Claude or Cursor"
       description="Prospect from a chat with Splee's MCP server. Search companies, start campaigns, find people and approve emails. Put one of your keys where it says <key>."
     >
       <div className="grid gap-4 text-sm">
