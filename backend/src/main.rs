@@ -10,6 +10,7 @@ mod events;
 mod hooks;
 mod mail;
 mod models;
+mod nocodb;
 mod notion;
 mod routes;
 mod state;
