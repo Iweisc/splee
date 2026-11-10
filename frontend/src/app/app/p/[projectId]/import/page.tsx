@@ -17,57 +17,78 @@ import { fetcher } from "@/hooks/use-me";
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
 
 /**
- * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's, Notion database's, Baserow
- * table's, NocoDB table's or Grist page's link and token. Sent again on import, since the server keeps none of them.
+ * The services read through a link and a token, sent as `{kind}_url` and `{kind}_token`. Adding one here adds its tab and
+ * form, and the backend reads the same fields in routes/imports.rs.
  */
-type Source =
-  | { file: File }
-  | { sheet_url: string }
-  | { airtable_url: string; airtable_token: string }
-  | { notion_url: string; notion_token: string }
-  | { baserow_url: string; baserow_token: string }
-  | { nocodb_url: string; nocodb_token: string }
-  | { grist_url: string; grist_token: string };
+const TABLE_SOURCES = {
+  airtable: {
+    label: "Airtable",
+    link: { label: "Table link", hint: "The table or view open in your browser.", placeholder: "https://airtable.com/app…/tbl…" },
+    token: { label: "Personal access token", hint: "With data.records:read, from Builder Hub. Never saved.", placeholder: "pat…" },
+    icon: Table2,
+    noun: "table",
+  },
+  notion: {
+    label: "Notion",
+    link: { label: "Database link", hint: "Every row, whatever view is open.", placeholder: "https://www.notion.so/…" },
+    token: { label: "Integration secret", hint: "Added to the database under ••• → Connections. Never saved.", placeholder: "ntn_…" },
+    icon: Database,
+    noun: "database",
+  },
+  baserow: {
+    label: "Baserow",
+    link: { label: "Table link", hint: "On baserow.io or your own server. A view's filters apply.", placeholder: "https://baserow.io/database/…/table/…" },
+    token: { label: "Database token", hint: "From Settings → Database tokens, with read access. Never saved.", placeholder: "" },
+    icon: Table2,
+    noun: "table",
+  },
+  nocodb: {
+    label: "NocoDB",
+    link: { label: "Table link", hint: "On app.nocodb.com or your own server. A view's filters apply.", placeholder: "https://app.nocodb.com/#/…" },
+    token: { label: "API token", hint: "From Account settings → Tokens. Never saved.", placeholder: "" },
+    icon: Table2,
+    noun: "table",
+  },
+  grist: {
+    label: "Grist",
+    link: { label: "Page link", hint: "The page with the table, on getgrist.com or your own server.", placeholder: "https://docs.getgrist.com/…/p/…" },
+    token: { label: "API key", hint: "From Profile settings → API. Never saved.", placeholder: "" },
+    icon: Table2,
+    noun: "table",
+  },
+} as const;
+
+type TableKind = keyof typeof TABLE_SOURCES;
+type LinkAndToken = { url: string; token: string };
+
+const NO_LINKS = Object.fromEntries(Object.keys(TABLE_SOURCES).map((k) => [k, { url: "", token: "" }])) as Record<TableKind, LinkAndToken>;
+
+/**
+ * Where the rows come from: an uploaded file, a Google Sheet's link, or a table's link and token. Sent again on import,
+ * since the server keeps none of them.
+ */
+type Source = { file: File } | { sheet_url: string } | ({ kind: TableKind } & LinkAndToken);
 
 const appendSource = (form: FormData, source: Source) => {
-  for (const [key, value] of Object.entries(source)) form.append(key, value);
+  if ("file" in source) form.append("file", source.file);
+  else if ("sheet_url" in source) form.append("sheet_url", source.sheet_url);
+  else {
+    form.append(`${source.kind}_url`, source.url);
+    form.append(`${source.kind}_token`, source.token);
+  }
 };
 
-const sourceKind = (source: Source) =>
-  "file" in source
-    ? "file"
-    : "sheet_url" in source
-      ? "sheet"
-      : "airtable_url" in source
-        ? "airtable"
-        : "notion_url" in source
-          ? "notion"
-          : "baserow_url" in source
-            ? "baserow"
-            : "nocodb_url" in source
-              ? "nocodb"
-              : "grist";
+const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : source.kind);
 
-type LinkSource = Exclude<ReturnType<typeof sourceKind>, "file">;
+type LinkSource = "sheet" | TableKind;
 
 const LINK_SOURCES: { value: LinkSource; label: string }[] = [
   { value: "sheet", label: "Google Sheet" },
-  { value: "airtable", label: "Airtable" },
-  { value: "notion", label: "Notion" },
-  { value: "baserow", label: "Baserow" },
-  { value: "nocodb", label: "NocoDB" },
-  { value: "grist", label: "Grist" },
+  ...Object.entries(TABLE_SOURCES).map(([kind, { label }]) => ({ value: kind as TableKind, label })),
 ];
 
-const CHOOSE_ANOTHER: Record<ReturnType<typeof sourceKind>, string> = {
-  file: "Choose another file",
-  sheet: "Choose another sheet",
-  airtable: "Choose another table",
-  notion: "Choose another database",
-  baserow: "Choose another table",
-  nocodb: "Choose another table",
-  grist: "Choose another table",
-};
+const chooseAnother = (source: Source) =>
+  `Choose another ${"file" in source ? "file" : "sheet_url" in source ? "sheet" : TABLE_SOURCES[source.kind].noun}`;
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -90,11 +111,8 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [result, setResult] = useState<Import | null>(null);
   const [loading, setLoading] = useState<ReturnType<typeof sourceKind> | null>(null);
   const [sheetUrl, setSheetUrl] = useState("");
-  const [airtable, setAirtable] = useState({ url: "", token: "" });
-  const [notion, setNotion] = useState({ url: "", token: "" });
-  const [baserow, setBaserow] = useState({ url: "", token: "" });
-  const [nocodb, setNocodb] = useState({ url: "", token: "" });
-  const [grist, setGrist] = useState({ url: "", token: "" });
+  // Kept per service, so switching tabs doesn't lose what was typed.
+  const [links, setLinks] = useState(NO_LINKS);
   const [linkSource, setLinkSource] = useState<LinkSource>("sheet");
 
   const choose = async (next: Source) => {
@@ -107,11 +125,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setSource(next);
       setPreview(p);
       setSheetUrl("");
-      setAirtable({ url: "", token: "" });
-      setNotion({ url: "", token: "" });
-      setBaserow({ url: "", token: "" });
-      setNocodb({ url: "", token: "" });
-      setGrist({ url: "", token: "" });
+      setLinks(NO_LINKS);
     } catch (e) {
       toastError(e);
     } finally {
@@ -184,130 +198,15 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                   </Button>
                 </form>
               )}
-              {linkSource === "airtable" && (
-                <form
-                  className="flex flex-wrap items-start gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (airtable.url.trim() && airtable.token.trim()) choose({ airtable_url: airtable.url.trim(), airtable_token: airtable.token.trim() });
-                  }}
-                >
-                  <Field label="Table link" hint="The table or view open in your browser." className="min-w-56 flex-1">
-                    <Input value={airtable.url} onChange={(e) => setAirtable({ ...airtable, url: e.target.value })} placeholder="https://airtable.com/app…/tbl…" />
-                  </Field>
-                  <Field label="Personal access token" hint="With data.records:read, from Builder Hub. Never saved." className="min-w-56 flex-1">
-                    <Input type="password" value={airtable.token} onChange={(e) => setAirtable({ ...airtable, token: e.target.value })} placeholder="pat…" />
-                  </Field>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="sm:mt-6"
-                    loading={loading === "airtable"}
-                    disabled={!airtable.url.trim() || !airtable.token.trim() || !!loading}
-                  >
-                    <Table2 className="size-4" /> Read table
-                  </Button>
-                </form>
-              )}
-              {linkSource === "notion" && (
-                <form
-                  className="flex flex-wrap items-start gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (notion.url.trim() && notion.token.trim()) choose({ notion_url: notion.url.trim(), notion_token: notion.token.trim() });
-                  }}
-                >
-                  <Field label="Database link" hint="Every row, whatever view is open." className="min-w-56 flex-1">
-                    <Input value={notion.url} onChange={(e) => setNotion({ ...notion, url: e.target.value })} placeholder="https://www.notion.so/…" />
-                  </Field>
-                  <Field label="Integration secret" hint="Added to the database under ••• → Connections. Never saved." className="min-w-56 flex-1">
-                    <Input type="password" value={notion.token} onChange={(e) => setNotion({ ...notion, token: e.target.value })} placeholder="ntn_…" />
-                  </Field>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="sm:mt-6"
-                    loading={loading === "notion"}
-                    disabled={!notion.url.trim() || !notion.token.trim() || !!loading}
-                  >
-                    <Database className="size-4" /> Read database
-                  </Button>
-                </form>
-              )}
-              {linkSource === "baserow" && (
-                <form
-                  className="flex flex-wrap items-start gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (baserow.url.trim() && baserow.token.trim()) choose({ baserow_url: baserow.url.trim(), baserow_token: baserow.token.trim() });
-                  }}
-                >
-                  <Field label="Table link" hint="On baserow.io or your own server. A view's filters apply." className="min-w-56 flex-1">
-                    <Input value={baserow.url} onChange={(e) => setBaserow({ ...baserow, url: e.target.value })} placeholder="https://baserow.io/database/…/table/…" />
-                  </Field>
-                  <Field label="Database token" hint="From Settings → Database tokens, with read access. Never saved." className="min-w-56 flex-1">
-                    <Input type="password" value={baserow.token} onChange={(e) => setBaserow({ ...baserow, token: e.target.value })} />
-                  </Field>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="sm:mt-6"
-                    loading={loading === "baserow"}
-                    disabled={!baserow.url.trim() || !baserow.token.trim() || !!loading}
-                  >
-                    <Table2 className="size-4" /> Read table
-                  </Button>
-                </form>
-              )}
-              {linkSource === "nocodb" && (
-                <form
-                  className="flex flex-wrap items-start gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (nocodb.url.trim() && nocodb.token.trim()) choose({ nocodb_url: nocodb.url.trim(), nocodb_token: nocodb.token.trim() });
-                  }}
-                >
-                  <Field label="Table link" hint="On app.nocodb.com or your own server. A view's filters apply." className="min-w-56 flex-1">
-                    <Input value={nocodb.url} onChange={(e) => setNocodb({ ...nocodb, url: e.target.value })} placeholder="https://app.nocodb.com/#/…" />
-                  </Field>
-                  <Field label="API token" hint="From Account settings → Tokens. Never saved." className="min-w-56 flex-1">
-                    <Input type="password" value={nocodb.token} onChange={(e) => setNocodb({ ...nocodb, token: e.target.value })} />
-                  </Field>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="sm:mt-6"
-                    loading={loading === "nocodb"}
-                    disabled={!nocodb.url.trim() || !nocodb.token.trim() || !!loading}
-                  >
-                    <Table2 className="size-4" /> Read table
-                  </Button>
-                </form>
-              )}
-              {linkSource === "grist" && (
-                <form
-                  className="flex flex-wrap items-start gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (grist.url.trim() && grist.token.trim()) choose({ grist_url: grist.url.trim(), grist_token: grist.token.trim() });
-                  }}
-                >
-                  <Field label="Page link" hint="The page with the table, on getgrist.com or your own server." className="min-w-56 flex-1">
-                    <Input value={grist.url} onChange={(e) => setGrist({ ...grist, url: e.target.value })} placeholder="https://docs.getgrist.com/…/p/…" />
-                  </Field>
-                  <Field label="API key" hint="From Profile settings → API. Never saved." className="min-w-56 flex-1">
-                    <Input type="password" value={grist.token} onChange={(e) => setGrist({ ...grist, token: e.target.value })} />
-                  </Field>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="sm:mt-6"
-                    loading={loading === "grist"}
-                    disabled={!grist.url.trim() || !grist.token.trim() || !!loading}
-                  >
-                    <Table2 className="size-4" /> Read table
-                  </Button>
-                </form>
+              {linkSource !== "sheet" && (
+                <TableForm
+                  kind={linkSource}
+                  value={links[linkSource]}
+                  onChange={(value) => setLinks({ ...links, [linkSource]: value })}
+                  loading={loading === linkSource}
+                  disabled={!!loading}
+                  onRead={(value) => choose({ kind: linkSource, ...value })}
+                />
               )}
             </div>
           </Card>
@@ -316,6 +215,46 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
         <PastImports projectId={projectId} />
       </PageBody>
     </>
+  );
+}
+
+/** A service's link and token, read with its button. */
+function TableForm({
+  kind,
+  value,
+  onChange,
+  loading,
+  disabled,
+  onRead,
+}: {
+  kind: TableKind;
+  value: LinkAndToken;
+  onChange: (value: LinkAndToken) => void;
+  loading: boolean;
+  disabled: boolean;
+  onRead: (value: LinkAndToken) => void;
+}) {
+  const { link, token, icon: Icon, noun } = TABLE_SOURCES[kind];
+  const ready = { url: value.url.trim(), token: value.token.trim() };
+  return (
+    <form
+      className="flex flex-wrap items-start gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (ready.url && ready.token) onRead(ready);
+      }}
+    >
+      <Field label={link.label} hint={link.hint} className="min-w-56 flex-1">
+        <Input value={value.url} onChange={(e) => onChange({ ...value, url: e.target.value })} placeholder={link.placeholder} />
+      </Field>
+      <Field label={token.label} hint={token.hint} className="min-w-56 flex-1">
+        <Input type="password" value={value.token} onChange={(e) => onChange({ ...value, token: e.target.value })} placeholder={token.placeholder || undefined} />
+      </Field>
+      {/* Level with the fields. On phones it sits under them. */}
+      <Button type="submit" variant="outline" className="sm:mt-6" loading={loading} disabled={!ready.url || !ready.token || disabled}>
+        <Icon className="size-4" /> Read {noun}
+      </Button>
+    </form>
   );
 }
 
@@ -363,7 +302,7 @@ function MappingStep({
         <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
           {/* Short on phones, so a long sheet name keeps the width. */}
           <span className="sm:hidden">Change</span>
-          <span className="max-sm:hidden">{CHOOSE_ANOTHER[sourceKind(source)]}</span>
+          <span className="max-sm:hidden">{chooseAnother(source)}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
