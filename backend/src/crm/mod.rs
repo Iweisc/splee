@@ -13,6 +13,7 @@ mod espocrm;
 mod folk;
 mod freshsales;
 mod grist;
+mod teable;
 mod hubspot;
 mod insightly;
 mod lacrm;
@@ -102,6 +103,7 @@ crms! {
     Baserow: baserow, "baserow", "Baserow";
     NocoDb: nocodb, "nocodb", "NocoDB";
     Grist: grist, "grist", "Grist";
+    Teable: teable, "teable", "Teable";
 }
 
 /// Twenty's cloud and a self-hosted Twenty share one client, which is told which it is.
@@ -143,7 +145,7 @@ impl Crm {
             Crm::Insightly => Some("API URL"),
             Crm::TwentySelf | Crm::Espo | Crm::Odoo => Some("site URL"),
             Crm::Notion => Some("database link"),
-            Crm::Airtable | Crm::Baserow | Crm::NocoDb => Some("table link"),
+            Crm::Airtable | Crm::Baserow | Crm::NocoDb | Crm::Teable => Some("table link"),
             Crm::Grist => Some("page link"),
             _ => None,
         }
