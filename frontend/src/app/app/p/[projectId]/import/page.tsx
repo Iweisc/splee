@@ -17,22 +17,33 @@ import { fetcher } from "@/hooks/use-me";
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
 
 /**
- * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's, Notion database's or Baserow
- * table's link and token. Sent again on import, since the server keeps none of them.
+ * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's, Notion database's, Baserow
+ * table's or NocoDB table's link and token. Sent again on import, since the server keeps none of them.
  */
 type Source =
   | { file: File }
   | { sheet_url: string }
   | { airtable_url: string; airtable_token: string }
   | { notion_url: string; notion_token: string }
-  | { baserow_url: string; baserow_token: string };
+  | { baserow_url: string; baserow_token: string }
+  | { nocodb_url: string; nocodb_token: string };
 
 const appendSource = (form: FormData, source: Source) => {
   for (const [key, value] of Object.entries(source)) form.append(key, value);
 };
 
 const sourceKind = (source: Source) =>
-  "file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable_url" in source ? "airtable" : "notion_url" in source ? "notion" : "baserow";
+  "file" in source
+    ? "file"
+    : "sheet_url" in source
+      ? "sheet"
+      : "airtable_url" in source
+        ? "airtable"
+        : "notion_url" in source
+          ? "notion"
+          : "baserow_url" in source
+            ? "baserow"
+            : "nocodb";
 
 type LinkSource = Exclude<ReturnType<typeof sourceKind>, "file">;
 
@@ -41,7 +52,17 @@ const LINK_SOURCES: { value: LinkSource; label: string }[] = [
   { value: "airtable", label: "Airtable" },
   { value: "notion", label: "Notion" },
   { value: "baserow", label: "Baserow" },
+  { value: "nocodb", label: "NocoDB" },
 ];
+
+const CHOOSE_ANOTHER: Record<ReturnType<typeof sourceKind>, string> = {
+  file: "Choose another file",
+  sheet: "Choose another sheet",
+  airtable: "Choose another table",
+  notion: "Choose another database",
+  baserow: "Choose another table",
+  nocodb: "Choose another table",
+};
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -67,6 +88,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [airtable, setAirtable] = useState({ url: "", token: "" });
   const [notion, setNotion] = useState({ url: "", token: "" });
   const [baserow, setBaserow] = useState({ url: "", token: "" });
+  const [nocodb, setNocodb] = useState({ url: "", token: "" });
   const [linkSource, setLinkSource] = useState<LinkSource>("sheet");
 
   const choose = async (next: Source) => {
@@ -82,6 +104,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setAirtable({ url: "", token: "" });
       setNotion({ url: "", token: "" });
       setBaserow({ url: "", token: "" });
+      setNocodb({ url: "", token: "" });
     } catch (e) {
       toastError(e);
     } finally {
@@ -98,7 +121,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -134,8 +157,14 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
             <div className="flex flex-col gap-4 p-6">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <span className="text-sm font-medium">Or import from</span>
-                {/* Four across is wider than a phone, and a scrolling row hides the last one, so phones get two rows. */}
-                <Tabs value={linkSource} onChange={setLinkSource} options={LINK_SOURCES} className="grid w-full grid-cols-2 sm:inline-flex sm:w-auto" />
+                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get Google Sheet on a row
+                    of its own and the rest two by two. */}
+                <Tabs
+                  value={linkSource}
+                  onChange={setLinkSource}
+                  options={LINK_SOURCES}
+                  className="grid w-full grid-cols-2 *:first:col-span-2 sm:inline-flex sm:w-auto"
+                />
               </div>
               {linkSource === "sheet" && (
                 <form
@@ -229,6 +258,31 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                   </Button>
                 </form>
               )}
+              {linkSource === "nocodb" && (
+                <form
+                  className="flex flex-wrap items-start gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (nocodb.url.trim() && nocodb.token.trim()) choose({ nocodb_url: nocodb.url.trim(), nocodb_token: nocodb.token.trim() });
+                  }}
+                >
+                  <Field label="Table link" hint="On app.nocodb.com or your own server. A view's filters apply." className="min-w-56 flex-1">
+                    <Input value={nocodb.url} onChange={(e) => setNocodb({ ...nocodb, url: e.target.value })} placeholder="https://app.nocodb.com/#/…" />
+                  </Field>
+                  <Field label="API token" hint="From Account settings → Tokens. Never saved." className="min-w-56 flex-1">
+                    <Input type="password" value={nocodb.token} onChange={(e) => setNocodb({ ...nocodb, token: e.target.value })} />
+                  </Field>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className="sm:mt-6"
+                    loading={loading === "nocodb"}
+                    disabled={!nocodb.url.trim() || !nocodb.token.trim() || !!loading}
+                  >
+                    <Table2 className="size-4" /> Read table
+                  </Button>
+                </form>
+              )}
             </div>
           </Card>
         )}
@@ -283,7 +337,7 @@ function MappingStep({
         <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
           {/* Short on phones, so a long sheet name keeps the width. */}
           <span className="sm:hidden">Change</span>
-          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table", notion: "Choose another database", baserow: "Choose another table" }[sourceKind(source)]}</span>
+          <span className="max-sm:hidden">{CHOOSE_ANOTHER[sourceKind(source)]}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
