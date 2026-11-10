@@ -2,7 +2,7 @@
 //! exist fail in the app instead of bouncing and hurting the mailbox's reputation. NeverBounce, MillionVerifier, Kickbox,
 //! Reoon, DeBounce and Bouncify take the key in the URL, so every error drops its URL before it's logged or shown. Hunter, Bouncer, Emailable,
 //! Clearout and EmailListVerify take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo or
-//! Anymail Finder or LeadMagic.
+//! Anymail Finder, LeadMagic or Apollo.
 
 use std::time::Duration;
 
@@ -206,6 +206,7 @@ pub enum Finder {
     Prospeo,
     Anymail,
     LeadMagic,
+    Apollo,
 }
 
 impl Finder {
@@ -216,6 +217,7 @@ impl Finder {
             "prospeo" => Some(Finder::Prospeo),
             "anymailfinder" => Some(Finder::Anymail),
             "leadmagic" => Some(Finder::LeadMagic),
+            "apollo" => Some(Finder::Apollo),
             _ => None,
         }
     }
@@ -227,6 +229,7 @@ impl Finder {
             Finder::Prospeo => "Prospeo",
             Finder::Anymail => "Anymail Finder",
             Finder::LeadMagic => "LeadMagic",
+            Finder::Apollo => "Apollo",
         }
     }
 
@@ -238,6 +241,12 @@ impl Finder {
             Finder::Prospeo => prospeo_call(client()?.get("https://api.prospeo.io/account-information"), key).await.map(|_| ()),
             Finder::Anymail => anymailfinder_call(client()?.get("https://api.anymailfinder.com/v5.1/account"), key).await.map(|_| ()),
             Finder::LeadMagic => leadmagic_call(client()?.get(format!("{LEADMAGIC}/credits")), key).await.map(|_| ()),
+            // The health check is free and answers 200 to any key, saying whether it's logged in.
+            Finder::Apollo => {
+                let health = apollo_call(client()?.get(format!("{APOLLO}/auth/health")), key).await?;
+                anyhow::ensure!(health["is_logged_in"] == true, "the API key was rejected");
+                Ok(())
+            }
         }
     }
 
@@ -277,6 +286,11 @@ impl Finder {
                 body["domain"] = json!(domain);
                 let req = client()?.post(format!("{LEADMAGIC}/people/email-finder")).json(&body);
                 Ok(leadmagic_found(&leadmagic_call(req, key).await?, domain))
+            }
+            Finder::Apollo => {
+                let name = if last.is_empty() { vec![("name", first)] } else { vec![("first_name", first), ("last_name", last)] };
+                let url = Url::parse_with_params(&format!("{APOLLO}/people/match"), name.into_iter().chain([("domain", domain)]))?;
+                Ok(apollo_found(&apollo_call(client()?.post(url).json(&json!({})), key).await?, domain))
             }
         }
     }
@@ -426,6 +440,27 @@ async fn leadmagic_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Resu
 /// costs no credit.
 fn leadmagic_found(body: &Value, domain: &str) -> Option<Found> {
     at_domain(body["email"].as_str(), domain).filter(|_| body["status"] == "valid").map(|email| Found { email, verified: true })
+}
+
+const APOLLO: &str = "https://api.apollo.io/api/v1";
+
+/// Apollo explains a failure in `error_details.message`, where `error` adds a link to its docs.
+async fn apollo_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
+    let res = req.header("x-api-key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let status = res.status();
+    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
+    let body: Value = res.json().await.unwrap_or_default();
+    let said = body["error_details"]["message"].as_str().or(body["error"].as_str());
+    anyhow::ensure!(status.is_success(), "{}", said.unwrap_or(status.as_str()));
+    Ok(body)
+}
+
+/// Apollo's match is the person it thinks this is, with their work address when it has one. Only a `verified` one is
+/// kept, and a match that found no one, or an address it hasn't unlocked (`email_not_unlocked@domain.com`), isn't at
+/// the lead's domain.
+fn apollo_found(body: &Value, domain: &str) -> Option<Found> {
+    let person = &body["person"];
+    at_domain(person["email"].as_str(), domain).filter(|_| person["email_status"] == "verified").map(|email| Found { email, verified: true })
 }
 
 async fn get(url: Url) -> anyhow::Result<Value> {
@@ -763,6 +798,13 @@ mod tests {
         assert_eq!(leadmagic_found(&found, "leadmagic.io"), Some(Found { email: "jesse@leadmagic.io".into(), verified: true }));
         assert_eq!(leadmagic_found(&found, "acme.com"), None);
         assert_eq!(leadmagic_found(&json!({"email": null, "status": null, "credits_consumed": 0}), "leadmagic.io"), None);
+        // Apollo's people match: a verified work address, a guessed one, a locked one and no match.
+        let person = |email: &str, status: &str| json!({"person": {"first_name": "Jordan", "email": email, "email_status": status}});
+        let found = Some(Found { email: "jordan.blake@northstar.io".into(), verified: true });
+        assert_eq!(apollo_found(&person("Jordan.Blake@northstar.io", "verified"), "northstar.io"), found);
+        assert_eq!(apollo_found(&person("jordan.blake@northstar.io", "guessed"), "northstar.io"), None);
+        assert_eq!(apollo_found(&person("email_not_unlocked@domain.com", "verified"), "northstar.io"), None);
+        assert_eq!(apollo_found(&json!({"person": null}), "northstar.io"), None);
         // Real responses to a bad key, from both services.
         let nb = neverbounce_ok(&json!({"status": "auth_failure", "message": "Invalid API key 'secret123'"})).unwrap_err();
         assert!(!nb.to_string().contains("secret123"));
