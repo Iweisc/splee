@@ -17,16 +17,22 @@ import { fetcher } from "@/hooks/use-me";
 type Preview = { filename: string; headers: string[]; rows: string[][]; suggested_mapping: Record<string, string> };
 
 /**
- * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's or Notion database's link and
- * token. Sent again on import, since the server keeps none of them.
+ * Where the rows come from: an uploaded file, a Google Sheet's link, or an Airtable table's, Notion database's or Baserow
+ * table's link and token. Sent again on import, since the server keeps none of them.
  */
-type Source = { file: File } | { sheet_url: string } | { airtable_url: string; airtable_token: string } | { notion_url: string; notion_token: string };
+type Source =
+  | { file: File }
+  | { sheet_url: string }
+  | { airtable_url: string; airtable_token: string }
+  | { notion_url: string; notion_token: string }
+  | { baserow_url: string; baserow_token: string };
 
 const appendSource = (form: FormData, source: Source) => {
   for (const [key, value] of Object.entries(source)) form.append(key, value);
 };
 
-const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable_url" in source ? "airtable" : "notion");
+const sourceKind = (source: Source) =>
+  "file" in source ? "file" : "sheet_url" in source ? "sheet" : "airtable_url" in source ? "airtable" : "notion_url" in source ? "notion" : "baserow";
 
 // Lead columns the backend import accepts as mapping keys.
 const FIELDS: { key: string; label: string }[] = [
@@ -51,6 +57,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   const [sheetUrl, setSheetUrl] = useState("");
   const [airtable, setAirtable] = useState({ url: "", token: "" });
   const [notion, setNotion] = useState({ url: "", token: "" });
+  const [baserow, setBaserow] = useState({ url: "", token: "" });
 
   const choose = async (next: Source) => {
     setResult(null);
@@ -64,6 +71,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
       setSheetUrl("");
       setAirtable({ url: "", token: "" });
       setNotion({ url: "", token: "" });
+      setBaserow({ url: "", token: "" });
     } catch (e) {
       toastError(e);
     } finally {
@@ -80,7 +88,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow or Hunter. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
@@ -174,6 +182,29 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                 <Database className="size-4" /> Read database
               </Button>
             </form>
+            <form
+              className="flex flex-wrap items-start gap-4 border-t border-border p-6"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (baserow.url.trim() && baserow.token.trim()) choose({ baserow_url: baserow.url.trim(), baserow_token: baserow.token.trim() });
+              }}
+            >
+              <Field label="Or a Baserow table" hint="On baserow.io or your own server. A view's filters apply." className="min-w-56 flex-1">
+                <Input value={baserow.url} onChange={(e) => setBaserow({ ...baserow, url: e.target.value })} placeholder="https://baserow.io/database/…/table/…" />
+              </Field>
+              <Field label="Database token" hint="From Settings → Database tokens, with read access. Never saved." className="min-w-56 flex-1">
+                <Input type="password" value={baserow.token} onChange={(e) => setBaserow({ ...baserow, token: e.target.value })} />
+              </Field>
+              <Button
+                type="submit"
+                variant="outline"
+                className="sm:mt-6"
+                loading={loading === "baserow"}
+                disabled={!baserow.url.trim() || !baserow.token.trim() || !!loading}
+              >
+                <Table2 className="size-4" /> Read table
+              </Button>
+            </form>
           </Card>
         )}
         {!preview && <HunterImport projectId={projectId} onImported={setResult} />}
@@ -227,7 +258,7 @@ function MappingStep({
         <Button variant="ghost" size="sm" className="shrink-0" onClick={onCancel}>
           {/* Short on phones, so a long sheet name keeps the width. */}
           <span className="sm:hidden">Change</span>
-          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table", notion: "Choose another database" }[sourceKind(source)]}</span>
+          <span className="max-sm:hidden">{{ file: "Choose another file", sheet: "Choose another sheet", airtable: "Choose another table", notion: "Choose another database", baserow: "Choose another table" }[sourceKind(source)]}</span>
         </Button>
       </div>
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
