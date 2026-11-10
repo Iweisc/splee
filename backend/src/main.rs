@@ -15,6 +15,7 @@ mod nocodb;
 mod notion;
 mod routes;
 mod state;
+mod teable;
 mod unipile;
 mod verify;
 
