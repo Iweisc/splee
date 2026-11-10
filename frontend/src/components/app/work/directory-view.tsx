@@ -15,6 +15,7 @@ import type { DirectoryCompany, DirectoryCountry, DirectoryPage, FoundPeople, Pr
 import { cn, compact, num, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { CountryLoader } from "./country-loader";
+import { HiringBadge, useHiringByDomain } from "./hiring";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
 
@@ -65,6 +66,7 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
   const { data: countries, error: countriesError, mutate: retryCountries } = useSWR<DirectoryCountry[]>("/directory/countries", fetcher);
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
   const { data: settings } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
+  const hiring = useHiringByDomain(projectId);
   const empty = countries?.length === 0;
   const key = empty
     ? null
@@ -211,7 +213,14 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
               </thead>
               <tbody>
                 {data.items.map((c) => (
-                  <Row key={c.domain} company={c} picked={picked.has(c.domain)} disabled={stale} onToggle={() => toggle(c.domain)} />
+                  <Row
+                    key={c.domain}
+                    company={c}
+                    hiring={hiring.get(c.domain.toLowerCase()) ?? []}
+                    picked={picked.has(c.domain)}
+                    disabled={stale}
+                    onToggle={() => toggle(c.domain)}
+                  />
                 ))}
               </tbody>
             </table>
@@ -223,7 +232,19 @@ function DirectorySearch({ projectId, operator }: { projectId: string; operator:
   );
 }
 
-function Row({ company: c, picked, disabled, onToggle }: { company: DirectoryCompany; picked: boolean; disabled: boolean; onToggle: () => void }) {
+function Row({
+  company: c,
+  hiring,
+  picked,
+  disabled,
+  onToggle,
+}: {
+  company: DirectoryCompany;
+  hiring: string[];
+  picked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
   const category = categoryWords(c.category);
   return (
     <Tr onClick={onToggle}>
@@ -240,6 +261,7 @@ function Row({ company: c, picked, disabled, onToggle }: { company: DirectoryCom
             </a>
             {/* The category column only shows from sm up. */}
             {category && <span className="block truncate text-xs text-muted-foreground sm:hidden">{category}</span>}
+            <HiringBadge roles={hiring} className="mt-1" />
           </span>
         </span>
       </Td>

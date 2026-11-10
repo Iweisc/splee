@@ -6,10 +6,11 @@ import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Favicon } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { Company, Paginated } from "@/lib/types";
+import type { Company, CompanyRow, Paginated } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced } from "./states";
+import { HiringBadge } from "./hiring";
 import { SearchField } from "./search-field";
 import { FitScore } from "./status";
 
@@ -36,12 +37,13 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
   const [page, setPage] = useState(1);
   const query = useDebounced(q);
   const key = `/projects/${projectId}/companies${qs({ segment_id: segmentId, q: query, page, per_page: PER_PAGE })}`;
-  const { data, error, mutate } = useSWR<Paginated<Company>>(key, fetcher, { keepPreviousData: true });
+  const { data, error, mutate } = useSWR<Paginated<CompanyRow>>(key, fetcher, { keepPreviousData: true });
 
-  const toggleExcluded = async (c: Company) => {
+  const toggleExcluded = async (c: CompanyRow) => {
     try {
       const updated = await api<Company>(`/companies/${c.id}`, { method: "PATCH", body: { status: c.status === "excluded" ? "new" : "excluded" } });
-      mutate((d) => d && { ...d, items: d.items.map((x) => (x.id === c.id ? updated : x)) }, { revalidate: false });
+      // The PATCH answers with the plain company, so the row keeps its hiring roles.
+      mutate((d) => d && { ...d, items: d.items.map((x) => (x.id === c.id ? { ...x, ...updated } : x)) }, { revalidate: false });
     } catch (e) {
       toastError(e);
     }
@@ -101,6 +103,7 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                             <span className="block truncate text-xs text-muted-foreground">{c.domain}</span>
                           </span>
                         </a>
+                        <HiringBadge roles={c.hiring} className="mt-1 pl-6" />
                       </Td>
                       <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>
                       <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap")}>{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>

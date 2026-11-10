@@ -178,6 +178,7 @@ async fn find_companies(ctx: &Ctx, project: &Project, profile: &Profile, segment
     }));
     let turns = if count > 12 { 20 } else { 14 };
     let mut call = Call::research(RESEARCHER, prompt, schema, turns);
+    call.hiring = true;
     if directory::has_companies(ctx.db()).await? {
         call.directory = Some(project.id);
     }
@@ -380,7 +381,7 @@ async fn find_people(
             profile.brief(project.domain.as_deref()),
             segment.name,
         );
-        let mut call = Call::research(RESEARCHER, prompt, schema.clone(), 14);
+        let mut call = Call { hiring: true, ..Call::research(RESEARCHER, prompt, schema.clone(), 14) };
         // These replace the X tools, which find far fewer of the people who run a company.
         if let Some(unipile) = &linkedin {
             call.servers.insert("linkedin".into(), linkedin::people_server(unipile.clone(), ctx.db().clone()));

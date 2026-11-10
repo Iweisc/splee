@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, bluesky, directory, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
+use super::{Ctx, bluesky, directory, hiring, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
 use crate::events;
 use crate::state::AppState;
 
@@ -25,6 +25,8 @@ pub struct Call {
     pub web: bool,
     /// Offers the company database tool, leaving out the companies this project already has.
     pub directory: Option<Uuid>,
+    /// Offers the tool that lists a company's open roles from its job board.
+    pub hiring: bool,
     pub max_turns: u32,
     pub budget_usd: f64,
     pub timeout: Duration,
@@ -43,6 +45,7 @@ impl Call {
             schema,
             web: true,
             directory: None,
+            hiring: false,
             max_turns,
             budget_usd: 1.0,
             timeout: Duration::from_secs(6 * 60),
@@ -59,6 +62,7 @@ impl Call {
             schema,
             web: false,
             directory: None,
+            hiring: false,
             max_turns: 4,
             budget_usd: 0.25,
             timeout: Duration::from_secs(2 * 60),
@@ -119,6 +123,11 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: Stri
         servers.insert("directory".to_string(), directory::server(state.db.clone(), project_id));
         allowed.push(directory::SEARCH.to_string());
         prompt.push_str(directory::GUIDANCE);
+    }
+    if call.hiring {
+        servers.insert("hiring".to_string(), hiring::server(state.db.clone(), Arc::new(crate::jobs::Boards::new()?)));
+        allowed.push(hiring::JOB_OPENINGS.to_string());
+        prompt.push_str(hiring::GUIDANCE);
     }
     let opts = ClaudeAgentOptions::builder()
         // `tools` only picks built-in tools. MCP tools such as the X ones just need to be allowed.
@@ -200,6 +209,7 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
             let words = ["q", "category", "city", "country"].iter().filter_map(|k| input[*k].as_str()).filter(|s| !s.trim().is_empty());
             format!("searching the company database for \"{}\"…", words.collect::<Vec<_>>().join(" "))
         }
+        hiring::JOB_OPENINGS => format!("checking open roles at {}…", input["domain"].as_str().unwrap_or_default()),
         reddit::SEARCH => match input["subreddit"].as_str().filter(|s| !s.is_empty()) {
             Some(sr) => format!("searching r/{sr} \"{}\"…", input["query"].as_str().unwrap_or_default()),
             None => format!("searching Reddit \"{}\"…", input["query"].as_str().unwrap_or_default()),

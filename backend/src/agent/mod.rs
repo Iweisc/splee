@@ -4,6 +4,7 @@
 mod bluesky;
 mod directory;
 mod explore;
+mod hiring;
 mod linkedin;
 mod mastodon;
 mod prospect;
