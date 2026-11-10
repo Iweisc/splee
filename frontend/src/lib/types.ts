@@ -611,7 +611,7 @@ export interface SocialPost {
   body: string;
   /** Why the agent picked the thread. */
   reason: string;
-  status: "draft" | "approved" | "posted" | "failed" | "skipped";
+  status: "draft" | "approved" | "posting" | "posted" | "failed" | "skipped";
   /** The handle or username it went out from. */
   account: string;
   url: string;

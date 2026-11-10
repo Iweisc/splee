@@ -23,7 +23,7 @@ const X_CHARS = 280;
 const PLATFORMS: Record<Platform, string> = { x: "X", reddit: "Reddit" };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
-  { value: "approved", label: "Approved", statuses: ["approved"] },
+  { value: "approved", label: "Approved", statuses: ["approved", "posting"] },
   { value: "posted", label: "Posted", statuses: ["posted"] },
   { value: "closed", label: "Failed or skipped", statuses: ["failed", "skipped"] },
 ];
@@ -221,6 +221,7 @@ function CharCount({ text }: { text: string }) {
 const STATUS: Record<SocialPost["status"], { label: string; tone: BadgeTone }> = {
   draft: { label: "Draft", tone: "neutral" },
   approved: { label: "Approved", tone: "blue" },
+  posting: { label: "Posting", tone: "amber" },
   posted: { label: "Posted", tone: "green" },
   failed: { label: "Failed", tone: "red" },
   skipped: { label: "Skipped", tone: "neutral" },

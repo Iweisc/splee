@@ -996,7 +996,7 @@ function RedditSection({ projectId, settings }: { projectId: string; settings: P
               <Input type="password" autoComplete="off" value={form.password} onChange={set("password")} />
             </Field>
           </div>
-          <Button type="submit" loading={busy} disabled={!form.client_id.trim() || !form.secret.trim() || !form.username.trim() || !form.password} className="self-start">
+          <Button type="submit" loading={busy} disabled={!form.client_id.trim() || !form.secret.trim() || !form.username.trim() || !form.password} className="sm:self-start">
             Connect
           </Button>
         </form>

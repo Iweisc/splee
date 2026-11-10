@@ -28,7 +28,9 @@ create table social_posts (
   title text not null default '',
   body text not null,
   reason text not null default '',
-  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'failed', 'skipped')),
+  -- posting: the poster claimed it and is sending it. A post never leaves posting on its own except to posted or failed,
+  -- so one that may have gone out is never sent twice.
+  status text not null default 'draft' check (status in ('draft', 'approved', 'posting', 'posted', 'failed', 'skipped')),
   account text not null default '',
   url text not null default '',
   error text,

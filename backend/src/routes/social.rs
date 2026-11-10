@@ -21,7 +21,7 @@ use crate::reddit::{self, Login, Reddit};
 use crate::social::{self, Failure};
 use crate::state::AppState;
 
-const STATUSES: [&str; 5] = ["draft", "approved", "posted", "failed", "skipped"];
+const STATUSES: [&str; 6] = ["draft", "approved", "posting", "posted", "failed", "skipped"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -140,7 +140,7 @@ struct UpdateBody {
 
 async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<UpdateBody>) -> AppResult<Json<SocialPost>> {
     let post: SocialPost = util_scope::load(&state.db, "social_posts", id, auth.org_id).await?;
-    if post.status == "posted" {
+    if post.status == "posted" || post.status == "posting" {
         return Err(AppError::BadRequest("This is already posted".into()));
     }
     let status = b.status.unwrap_or_else(|| post.status.clone());
@@ -160,7 +160,7 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     let updated = sqlx::query_as::<_, SocialPost>(
         "update social_posts set body = $2, title = $3, subreddit = $4, status = $5,
            error = case when $5 = status then error end, updated_at = now()
-         where id = $1 and status <> 'posted' returning *",
+         where id = $1 and status not in ('posting', 'posted') returning *",
     )
     .bind(id)
     .bind(body)

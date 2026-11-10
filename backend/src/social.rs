@@ -1,6 +1,8 @@
 //! Posts approved X and Reddit drafts from each project's connected accounts: one per account each tick, at most
 //! DAILY_POSTS a day, so a day's posts spread out instead of going in a burst. agent::social finds threads and drafts.
 
+use std::collections::HashSet;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -13,6 +15,8 @@ use crate::state::AppState;
 
 /// Posts per X or Reddit account a day. New accounts that post more than this get flagged as spam by both.
 pub const DAILY_POSTS: i64 = 15;
+/// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
+const STUCK_MINUTES: i32 = 15;
 
 #[derive(Debug)]
 pub enum Failure {
@@ -65,14 +69,29 @@ impl Accounts {
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
+    // It may have gone out, so it fails for the user to check rather than going back in the queue.
+    sqlx::query(
+        "update social_posts set status = 'failed', updated_at = now(),
+           error = 'Splee stopped while posting this, so it may have gone out. Check the account before you approve it again.'
+         where status = 'posting' and updated_at < now() - make_interval(mins => $1)",
+    )
+    .bind(STUCK_MINUTES)
+    .execute(&state.db)
+    .await?;
     let waiting = sqlx::query_as::<_, Accounts>(&format!(
         "{ACCOUNTS} join projects p on p.id = s.project_id
          where p.org_id is not null and exists (select 1 from social_posts sp where sp.project_id = s.project_id and sp.status = 'approved')"
     ))
     .fetch_all(&state.db)
     .await?;
+    // The same account can be connected to several projects, and it still posts once a tick.
+    let mut used = HashSet::new();
     for a in waiting {
         for platform in ["x", "reddit"] {
+            let account = if platform == "x" { &a.x_handle } else { &a.reddit_username };
+            if !used.insert((platform, account.to_lowercase())) {
+                continue;
+            }
             if let Err(e) = publish_next(state, &a, platform).await {
                 tracing::error!(project_id = %a.project_id, platform, error = ?e, "social posting failed");
             }
@@ -90,6 +109,9 @@ async fn publish_next(state: &AppState, a: &Accounts, platform: &str) -> anyhow:
         return Ok(());
     }
     let Some(post) = next_due(&state.db, a.project_id, platform, account).await? else { return Ok(()) };
+    if !claim(&state.db, &post, account).await? {
+        return Ok(());
+    }
     let published = match platform {
         "x" => post_x(state, a, &post).await,
         _ => post_reddit(state, a, &post).await,
@@ -107,8 +129,8 @@ async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) 
     sqlx::query_as(&format!(
         "select sp.* from social_posts sp
          where sp.project_id = $1 and sp.platform = $2 and sp.status = 'approved'
-           and (select count(*) from social_posts o where o.platform = $2 and o.account = $3 and o.status = 'posted'
-                and o.posted_at > now() - interval '1 day') < $4
+           and (select count(*) from social_posts o where o.platform = $2 and o.account = $3
+                and (o.status = 'posting' or o.status = 'posted' and o.posted_at > now() - interval '1 day')) < $4
            and not exists (select 1 from project_settings s where s.{name} = $3 and s.{failed_at} > now() - interval '1 hour')
          order by sp.updated_at limit 1"
     ))
@@ -120,12 +142,26 @@ async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) 
     .await
 }
 
+/// Marks the post as being sent, unless the user changed it since. Saved before sending, so a crash can't send it twice.
+async fn claim(db: &PgPool, post: &SocialPost, account: &str) -> sqlx::Result<bool> {
+    let claimed = sqlx::query("update social_posts set status = 'posting', account = $2, updated_at = now() where id = $1 and status = 'approved'")
+        .bind(post.id)
+        .bind(account)
+        .execute(db)
+        .await?;
+    Ok(claimed.rows_affected() == 1)
+}
+
 /// Saves how posting went. Returns how the account did, for the integrations page.
 async fn finish(db: &PgPool, post: &SocialPost, account: &str, published: Result<String, Failure>) -> sqlx::Result<anyhow::Result<()>> {
+    // Account failures, like expired cookies or a rate limit, happen before anything is posted, so the post waits again.
     let (status, url, error) = match published {
         Ok(url) => ("posted", url, None),
         Err(Failure::Post(reason)) => ("failed", String::new(), Some(reason)),
-        Err(Failure::Account(reason)) => return Ok(Err(anyhow::anyhow!(reason))),
+        Err(Failure::Account(reason)) => {
+            sqlx::query("update social_posts set status = 'approved', updated_at = now() where id = $1 and status = 'posting'").bind(post.id).execute(db).await?;
+            return Ok(Err(anyhow::anyhow!(reason)));
+        }
     };
     sqlx::query(
         "update social_posts set status = $2, url = $3, error = $4, account = $5, posted_at = case when $2 = 'posted' then now() end,
@@ -189,6 +225,10 @@ mod tests {
         // An account failure leaves the post approved for later.
         let next = approved(&db, project, "x").await;
         let due = next_due(&db, project, "x", "acme").await.unwrap().unwrap();
+        // Claimed once, so a second worker or a restart can't send it again.
+        assert!(claim(&db, &due, "acme").await.unwrap());
+        assert!(!claim(&db, &due, "acme").await.unwrap());
+        assert!(next_due(&db, project, "x", "acme").await.unwrap().is_none());
         assert!(finish(&db, &due, "acme", Err(Failure::Account("signed out".into()))).await.unwrap().is_err());
         sqlx::query("update project_settings set x_failed_at = now() where project_id = $1").bind(project).execute(&db).await.unwrap();
         assert!(next_due(&db, project, "x", "acme").await.unwrap().is_none());
