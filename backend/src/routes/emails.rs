@@ -24,15 +24,15 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Serialize, FromRow)]
-struct EmailRow {
+pub(super) struct EmailRow {
     #[serde(flatten)]
     #[sqlx(flatten)]
-    email: EmailMessage,
-    lead_name: String,
-    lead_email: Option<String>,
-    company_name: String,
-    segment_name: Option<String>,
-    project_name: String,
+    pub email: EmailMessage,
+    pub lead_name: String,
+    pub lead_email: Option<String>,
+    pub company_name: String,
+    pub segment_name: Option<String>,
+    pub project_name: String,
 }
 
 const ROW_SELECT: &str = "select e.*, l.full_name as lead_name, l.email::text as lead_email, l.company_name,
@@ -42,15 +42,15 @@ const ROW_SELECT: &str = "select e.*, l.full_name as lead_name, l.email::text as
      join projects p on p.id = e.project_id
      left join segments s on s.id = e.segment_id";
 
-#[derive(Deserialize)]
-struct ListQuery {
-    project_id: Option<Uuid>,
-    segment_id: Option<Uuid>,
-    status: Option<String>,
-    kind: Option<String>,
-    q: Option<String>,
+#[derive(Deserialize, Default)]
+pub(super) struct ListQuery {
+    pub project_id: Option<Uuid>,
+    pub segment_id: Option<Uuid>,
+    pub status: Option<String>,
+    pub kind: Option<String>,
+    pub q: Option<String>,
     /// "soonest" sorts by scheduled time, earliest first, falling back to creation time. Otherwise newest first.
-    order: Option<String>,
+    pub order: Option<String>,
 }
 
 const LIST_FILTER: &str = "where p.org_id = $1 and e.direction = 'outbound'
@@ -67,6 +67,11 @@ async fn list(
     Query(q): Query<ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<EmailRow>>> {
+    Ok(Json(page_of(&state.db, auth.org_id, q, &page).await?))
+}
+
+/// A page of the organization's outbound emails.
+pub(super) async fn page_of(db: &PgPool, org_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<EmailRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
     let status = q.status.filter(|s| !s.is_empty());
     let kind = q.kind.filter(|k| !k.is_empty());
@@ -74,13 +79,13 @@ async fn list(
         "select count(*) from email_messages e join leads l on l.id = e.lead_id
          join projects p on p.id = e.project_id {LIST_FILTER}"
     ))
-    .bind(auth.org_id)
+    .bind(org_id)
     .bind(q.project_id)
     .bind(q.segment_id)
     .bind(&status)
     .bind(&kind)
     .bind(&like)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await?;
     // An approved email without a time is due now, so its creation time puts it first.
     let order = if q.order.as_deref() == Some("soonest") {
@@ -89,7 +94,7 @@ async fn list(
         "coalesce(e.sent_at, e.scheduled_for, e.created_at) desc"
     };
     let items = sqlx::query_as::<_, EmailRow>(&format!("{ROW_SELECT} {LIST_FILTER} order by {order} limit $7 offset $8"))
-    .bind(auth.org_id)
+    .bind(org_id)
     .bind(q.project_id)
     .bind(q.segment_id)
     .bind(&status)
@@ -97,9 +102,9 @@ async fn list(
     .bind(&like)
     .bind(page.limit())
     .bind(page.offset())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
-    Ok(Json(Paginated { items, total }))
+    Ok(Paginated { items, total })
 }
 
 async fn load(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<EmailRow> {
@@ -117,11 +122,11 @@ async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
 
 const EDITABLE: &[&str] = &["draft", "approved", "scheduled", "failed", "cancelled"];
 
-#[derive(Deserialize)]
-struct UpdateBody {
-    subject: Option<String>,
-    body: Option<String>,
-    status: Option<String>,
+#[derive(Deserialize, Default)]
+pub(super) struct UpdateBody {
+    pub subject: Option<String>,
+    pub body: Option<String>,
+    pub status: Option<String>,
 }
 
 async fn update(
@@ -130,14 +135,19 @@ async fn update(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateBody>,
 ) -> AppResult<Json<EmailRow>> {
-    let row = load(&state.db, id, auth.org_id).await?;
+    Ok(Json(update_one(&state.db, auth.org_id, id, body).await?))
+}
+
+/// Edits, approves or cancels an outbound email that hasn't gone out. Any member of the organization may.
+pub(super) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: UpdateBody) -> AppResult<EmailRow> {
+    let row = load(db, id, org_id).await?;
     if row.email.direction != "outbound" || !EDITABLE.contains(&row.email.status.as_str()) {
         return Err(AppError::BadRequest("This email was already sent and can't be changed".into()));
     }
     if let Some(status) = &body.status {
         util_input::one_of("status", status, &["approved", "cancelled"])?;
     }
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     sqlx::query(
         "update email_messages set
            subject = coalesce($2, subject),
@@ -162,7 +172,7 @@ async fn update(
             .await?;
     }
     tx.commit().await?;
-    Ok(Json(load(&state.db, id, auth.org_id).await?))
+    load(db, id, org_id).await
 }
 
 #[derive(Deserialize, Default)]

@@ -32,10 +32,10 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Deserialize)]
-struct ListQuery {
-    segment_id: Option<Uuid>,
-    status: Option<String>,
-    q: Option<String>,
+pub struct ListQuery {
+    pub segment_id: Option<Uuid>,
+    pub status: Option<String>,
+    pub q: Option<String>,
 }
 
 const COMPANY_FILTER: &str = "from companies where project_id = $1
@@ -128,27 +128,32 @@ async fn list_leads(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<LeadRow>>> {
     auth.project(&state.db, id).await?;
+    Ok(Json(page_of(&state.db, id, q, &page).await?))
+}
+
+/// A page of a project's leads, newest first. The caller checks the project belongs to its organization.
+pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<LeadRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
     let status = q.status.filter(|s| !s.is_empty());
     let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {LEAD_FILTER}"))
-        .bind(id)
+        .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
-        .fetch_one(&state.db)
+        .fetch_one(db)
         .await?;
     let items = sqlx::query_as::<_, LeadRow>(&format!(
         "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc limit $5 offset $6"
     ))
-    .bind(id)
+    .bind(project_id)
     .bind(q.segment_id)
     .bind(&status)
     .bind(&like)
     .bind(page.limit())
     .bind(page.offset())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
-    Ok(Json(Paginated { items, total }))
+    Ok(Paginated { items, total })
 }
 
 /// Every lead matching the list filters, as a CSV download.

@@ -1,0 +1,560 @@
+//! Splee as a remote MCP server, so Claude Code, Cursor and other MCP clients can prospect from chat. It follows the
+//! initialize-based revisions of https://modelcontextprotocol.io/specification/2025-11-25 over Streamable HTTP, with one
+//! JSON answer per POST and no SSE stream or session. Each tool calls the matching public API v1 handler with the same key.
+
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
+use reqwest::Url;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use super::api_v1 as v1;
+use super::util_input::LEAD_STATUSES;
+use crate::auth::ApiKeyAuth;
+use crate::error::{AppError, AppResult};
+use crate::state::AppState;
+
+pub fn router() -> Router<AppState> {
+    // No stream for the server to push on and no session to end, which the spec allows by answering 405.
+    Router::new().route("/mcp", post(handle).get(not_allowed).delete(not_allowed))
+}
+
+/// Newest first. The 2026-07-28 revision drops initialize, and its clients fall back to these on the 400 below.
+const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18"];
+
+const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
+list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
+list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
+so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule.";
+
+async fn not_allowed() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
+}
+
+async fn handle(State(state): State<AppState>, headers: HeaderMap, auth: Result<ApiKeyAuth, AppError>, body: Bytes) -> Response {
+    // The key already stops a page from driving the server through someone's browser. This is the check the spec asks for anyway.
+    if let Some(origin) = headers.get(header::ORIGIN)
+        && Url::parse(&state.cfg.public_url).map(|u| u.origin().ascii_serialization()).ok().as_deref() != origin.to_str().ok()
+    {
+        return failure(StatusCode::FORBIDDEN, -32600, "This origin can't use the MCP server");
+    }
+    if let Some(version) = headers.get("mcp-protocol-version")
+        && !version.to_str().is_ok_and(|v| VERSIONS.contains(&v))
+    {
+        return failure(StatusCode::BAD_REQUEST, -32600, &format!("Unsupported protocol version. Supported: {}", VERSIONS.join(", ")));
+    }
+    let auth = match auth {
+        Ok(auth) => auth,
+        Err(AppError::Unauthorized) => {
+            let mut res = failure(StatusCode::UNAUTHORIZED, -32001, "Send a Splee API key as Authorization: Bearer splee_…");
+            res.headers_mut().insert(header::WWW_AUTHENTICATE, "Bearer".parse().expect("valid header"));
+            return res;
+        }
+        Err(e) => return e.into_response(),
+    };
+    let Ok(message) = serde_json::from_slice::<Value>(&body) else {
+        return failure(StatusCode::BAD_REQUEST, -32700, "The body isn't JSON");
+    };
+    if !message.is_object() {
+        return failure(StatusCode::BAD_REQUEST, -32600, "Send one JSON-RPC message per request");
+    }
+    // Notifications, like notifications/initialized, and responses need nothing back.
+    let (Some(id), Some(method)) = (message.get("id"), message.get("method").and_then(Value::as_str)) else {
+        return StatusCode::ACCEPTED.into_response();
+    };
+    let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+    let outcome = match method {
+        "initialize" => Ok(initialize(&params)),
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": tools() })),
+        "tools/call" => call_tool(&state, auth.org_id, &params).await,
+        _ => Err((-32601, format!("Unknown method {method}"))),
+    };
+    Json(match outcome {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+    })
+    .into_response()
+}
+
+/// A JSON-RPC error without an id, for requests refused before they're read.
+fn failure(status: StatusCode, code: i64, message: &str) -> Response {
+    (status, Json(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": code, "message": message } }))).into_response()
+}
+
+fn initialize(params: &Value) -> Value {
+    let asked = params["protocolVersion"].as_str().unwrap_or_default();
+    let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
+    json!({
+        "protocolVersion": version,
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "splee", "title": "Splee", "version": env!("CARGO_PKG_VERSION") },
+        "instructions": INSTRUCTIONS,
+    })
+}
+
+async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Value, (i64, String)> {
+    let name = params["name"].as_str().unwrap_or_default();
+    let args = Some(&params["arguments"]).filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let Some(outcome) = run(state, ApiKeyAuth { org_id }, name, args).await else {
+        return Err((-32602, format!("Unknown tool {name}")));
+    };
+    // A failed call is a result the model reads and can recover from, like a wrong id, not a protocol error.
+    let (text, is_error) = match outcome {
+        Ok(value) => (value.to_string(), false),
+        Err(e) => {
+            if let AppError::Internal(err) = &e {
+                tracing::error!(error = ?err, tool = name, "mcp tool failed");
+            }
+            (e.public_message(), true)
+        }
+    };
+    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+}
+
+const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
+const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"];
+const LEAD_FIELDS: &[&str] =
+    &["id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status"];
+const RUN_FIELDS: &[&str] = &["id", "kind", "status", "message", "error", "cost_usd", "created_at", "finished_at"];
+
+/// None for a tool that doesn't exist.
+async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) -> Option<AppResult<Value>> {
+    let st = || State(state.clone());
+    // Pages a model reads in full, so they're shorter than the API's default of 50.
+    if let Some(args) = args.as_object_mut() {
+        args.entry("per_page").or_insert(json!(20));
+        if let Some(campaign) = args.remove("campaign_id") {
+            args.insert("segment_id".into(), campaign);
+        }
+    }
+    let a = &args;
+    Some(match name {
+        "list_projects" => async { Ok(pick(value(v1::list_projects(st(), auth).await?)?, PROJECT_FIELDS)) }.await,
+        "list_campaigns" => async { value(v1::list_campaigns(st(), auth, id(a, "project_id")?).await?) }.await,
+        "create_campaign" => async {
+            let created = value(v1::create_campaign(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?)?;
+            Ok(json!({ "campaign_id": created["campaign_id"], "run_id": created["run_id"], "next": RUN_NEXT }))
+        }
+        .await,
+        "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "find_people" => async { started(value(v1::find_people(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
+        "write_emails" => async { started(value(v1::write_emails(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
+        "get_run" => async { Ok(pick(value(v1::get_run(st(), auth, id(a, "run_id")?).await?)?, RUN_FIELDS)) }.await,
+        "list_leads" => async {
+            let page = value(v1::list_leads(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
+            Ok(pick(page, LEAD_FIELDS))
+        }
+        .await,
+        "list_emails_to_approve" => async {
+            let mut a = a.clone();
+            a["status"] = json!("draft");
+            value(v1::list_emails(st(), auth, Query(parse(&a)?), Query(parse(&a)?)).await?)
+        }
+        .await,
+        "approve_email" => async { value(v1::approve_email(st(), auth, id(a, "email_id")?).await?) }.await,
+        "skip_email" => async { value(v1::skip_email(st(), auth, id(a, "email_id")?).await?) }.await,
+        "list_replies" => async { value(v1::list_inbox(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        _ => return None,
+    })
+}
+
+fn value<T: Serialize>(Json(body): Json<T>) -> AppResult<Value> {
+    serde_json::to_value(body).map_err(|e| AppError::Internal(e.into()))
+}
+
+fn parse<T: DeserializeOwned>(args: &Value) -> AppResult<T> {
+    serde_json::from_value(args.clone()).map_err(|e| AppError::BadRequest(format!("Invalid arguments: {e}")))
+}
+
+fn id(args: &Value, key: &str) -> AppResult<Path<Uuid>> {
+    // Tools name campaigns campaign_id, which `run` renamed to the API's segment_id.
+    let shown = if key == "segment_id" { "campaign_id" } else { key };
+    args[key].as_str().and_then(|s| s.trim().parse().ok()).map(Path).ok_or_else(|| AppError::BadRequest(format!("Pass {shown} as an id")))
+}
+
+fn started(created: AppResult<Value>) -> AppResult<Value> {
+    Ok(json!({ "run_id": created?["run_id"], "next": RUN_NEXT }))
+}
+
+/// Keeps only `fields` of an object, of each object in a list, or of each item in a page.
+fn pick(value: Value, fields: &[&str]) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(|v| pick(v, fields)).collect()),
+        Value::Object(mut map) if map.contains_key("items") => {
+            map["items"] = pick(map["items"].take(), fields);
+            Value::Object(map)
+        }
+        Value::Object(map) => Value::Object(map.into_iter().filter(|(k, _)| fields.contains(&k.as_str())).collect()),
+        other => other,
+    }
+}
+
+fn id_prop(description: &str) -> Value {
+    json!({ "type": "string", "format": "uuid", "description": description })
+}
+
+fn page_props(props: Value) -> Value {
+    let mut props = props;
+    props["page"] = json!({ "type": "integer", "minimum": 1, "description": "Page number, from 1" });
+    props["per_page"] = json!({ "type": "integer", "minimum": 1, "maximum": 200, "description": "Results per page, 20 by default" });
+    props
+}
+
+fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], annotations: Value) -> Value {
+    json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "inputSchema": { "type": "object", "properties": properties, "required": required },
+        "annotations": annotations,
+    })
+}
+
+fn tools() -> Vec<Value> {
+    let read = json!({ "readOnlyHint": true });
+    let adds = json!({ "readOnlyHint": false, "destructiveHint": false });
+    let project = id_prop("A project id from list_projects");
+    let campaign = id_prop("A campaign id from list_campaigns or create_campaign");
+    vec![
+        tool("list_projects", "List projects", "The organization's projects. A project is one business doing outreach.", json!({}), &[], read.clone()),
+        tool(
+            "list_campaigns",
+            "List campaigns",
+            "A project's campaigns with their funnel: companies, leads, emails sent, leads contacted, replies, bounces, hot leads and \
+             spend in micro-dollars.",
+            json!({ "project_id": project }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "create_campaign",
+            "Create campaign",
+            "Creates a campaign from a description of who to reach, like \"dental clinics in Leeds\". An agent names it and sets its \
+             targeting, which takes a minute or two. Returns campaign_id and run_id.",
+            json!({ "project_id": project, "prompt": { "type": "string", "description": "Who the campaign targets, in plain words" } }),
+            &["project_id", "prompt"],
+            adds.clone(),
+        ),
+        tool(
+            "search_companies",
+            "Search company database",
+            "Searches the company database (businesses with a website from Overture Maps), the most reliable listings first. q matches \
+             words at the start of words in the name or category. total stops counting at 10,000, and capped says there are more.",
+            page_props(json!({
+                "q": { "type": "string", "description": "Words in the name or category, like \"dental\"" },
+                "country": { "type": "string", "description": "Two-letter country code, like GB" },
+                "city": { "type": "string", "description": "City name, like Leeds" },
+                "category": { "type": "string", "description": "Exact category, like dental_clinic" },
+                "has_email": { "type": "boolean", "description": "Only companies that list an email" },
+                "has_phone": { "type": "boolean", "description": "Only companies that list a phone" },
+            })),
+            &[],
+            read.clone(),
+        ),
+        tool(
+            "add_companies",
+            "Add companies to campaign",
+            "Adds companies from search_companies to a campaign by domain, up to 500 at a time. Companies the project already has and \
+             ones on the do-not-contact list are skipped. Then call find_people.",
+            json!({
+                "campaign_id": campaign,
+                "domains": { "type": "array", "items": { "type": "string" }, "description": "Domains from search_companies" },
+            }),
+            &["campaign_id", "domains"],
+            adds.clone(),
+        ),
+        tool(
+            "find_people",
+            "Find people",
+            "Starts an agent run that finds decision makers and their emails at the campaign's new companies, or only at company_ids. \
+             Returns run_id. Poll get_run until it's done, then list_leads.",
+            json!({
+                "campaign_id": campaign,
+                "company_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Optional. Only these companies" },
+            }),
+            &["campaign_id"],
+            adds.clone(),
+        ),
+        tool(
+            "write_emails",
+            "Write emails",
+            "Starts an agent run that writes a personal first email for every lead in the campaign that has none. The emails wait as \
+             drafts for approval. Returns run_id. Poll get_run until it's done, then list_emails_to_approve.",
+            json!({
+                "campaign_id": campaign,
+                "instructions": { "type": "string", "description": "Optional. Extra guidance for this batch, like \"mention our Leeds office\"" },
+            }),
+            &["campaign_id"],
+            adds.clone(),
+        ),
+        tool(
+            "get_run",
+            "Get run status",
+            "An agent run's status: queued, running, succeeded, failed or cancelled, with its latest progress line in message and \
+             why it failed in error.",
+            json!({ "run_id": id_prop("A run_id from create_campaign, find_people or write_emails") }),
+            &["run_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_leads",
+            "List leads",
+            "A project's leads, newest first.",
+            page_props(json!({
+                "project_id": project,
+                "campaign_id": id_prop("Optional. Only this campaign's leads"),
+                "status": { "type": "string", "enum": LEAD_STATUSES, "description": "Optional. Only leads with this status" },
+                "q": { "type": "string", "description": "Optional. Matches name, email, company or title" },
+            })),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_emails_to_approve",
+            "List emails to approve",
+            "Draft emails waiting for approval, oldest first, with the full subject and body. Show them to the user before approving.",
+            page_props(json!({
+                "project_id": id_prop("Optional. Only this project"),
+                "campaign_id": id_prop("Optional. Only this campaign"),
+            })),
+            &[],
+            read.clone(),
+        ),
+        tool(
+            "approve_email",
+            "Approve email",
+            "Approves a draft so it's sent from the user's mailboxes on the project's schedule, once the campaign is sending. Only \
+             approve emails the user has agreed to send.",
+            json!({ "email_id": id_prop("An id from list_emails_to_approve") }),
+            &["email_id"],
+            json!({ "readOnlyHint": false }),
+        ),
+        tool(
+            "skip_email",
+            "Skip email",
+            "Cancels a draft so it's never sent. approve_email can still send it later.",
+            json!({ "email_id": id_prop("An id from list_emails_to_approve") }),
+            &["email_id"],
+            adds,
+        ),
+        tool(
+            "list_replies",
+            "List replies",
+            "Reply threads from the inbox, the latest first, with the lead, how the reply was classified and the last message cut to \
+             300 characters.",
+            page_props(json!({
+                "project_id": id_prop("Optional. Only this project"),
+                "filter": { "type": "string", "enum": ["all", "needs_reply", "hot", "auto_replied", "other"], "description": "all by default" },
+                "q": { "type": "string", "description": "Optional. Matches the lead's name, email or company" },
+            })),
+            &[],
+            read,
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use crate::config::Config;
+    use crate::crypto::sha256_hex;
+    use crate::state::AppState;
+
+    const KEY: &str = "splee_test_key_a";
+
+    struct Server {
+        url: String,
+        client: reqwest::Client,
+    }
+
+    impl Server {
+        async fn start(db: PgPool) -> Self {
+            let cfg = Config {
+                database_url: String::new(),
+                app_secret: String::new(),
+                public_url: "http://localhost:3346".into(),
+                bind_addr: String::new(),
+                agent_model: String::new(),
+                agent_concurrency: 0,
+                sending_enabled: false,
+                bird_bin: None,
+                open_signup: true,
+                public_agent: false,
+            };
+            let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/api/mcp", listener.local_addr().unwrap());
+            let app = Router::new().nest("/api", super::router()).with_state(state);
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            Self { url, client: reqwest::Client::new() }
+        }
+
+        async fn post(&self, key: &str, body: Value) -> (u16, Value) {
+            let res = self.client.post(&self.url).bearer_auth(key).header("accept", "application/json, text/event-stream").json(&body);
+            let res = res.send().await.unwrap();
+            let status = res.status().as_u16();
+            (status, res.json().await.unwrap_or(Value::Null))
+        }
+
+        async fn call(&self, key: &str, tool: &str, arguments: Value) -> (bool, String) {
+            let request = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": tool, "arguments": arguments } });
+            let (status, body) = self.post(key, request).await;
+            assert_eq!(status, 200, "{body}");
+            let result = &body["result"];
+            (result["isError"].as_bool().unwrap(), result["content"][0]["text"].as_str().unwrap().to_string())
+        }
+    }
+
+    /// Two organizations, each with a project and campaign. Only the first has a key, KEY.
+    async fn seed(db: &PgPool) -> [(Uuid, Uuid); 2] {
+        let mut out = vec![];
+        for name in ["Acme", "Other"] {
+            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(db).await.unwrap();
+            let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id")
+                .bind(org)
+                .bind(format!("{name} project"))
+                .fetch_one(db)
+                .await
+                .unwrap();
+            let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Dentists') returning id")
+                .bind(project)
+                .fetch_one(db)
+                .await
+                .unwrap();
+            out.push((project, segment));
+            if name == "Acme" {
+                sqlx::query("insert into api_keys (org_id, name, prefix, key_hash) values ($1, 'mcp', 'splee_test_', $2)")
+                    .bind(org)
+                    .bind(sha256_hex(KEY))
+                    .execute(db)
+                    .await
+                    .unwrap();
+            }
+        }
+        [out[0], out[1]]
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn handshake_and_tool_list(db: PgPool) {
+        seed(&db).await;
+        let server = Server::start(db).await;
+
+        let init = |version: &str| json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": version, "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } } });
+        let (status, body) = server.post(KEY, init("2025-06-18")).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["id"], 1);
+        assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
+        assert!(body["result"]["capabilities"]["tools"].is_object());
+        assert_eq!(server.post(KEY, init("2099-01-01")).await.1["result"]["protocolVersion"], "2025-11-25");
+
+        assert_eq!(server.post(KEY, json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await.0, 202);
+        assert_eq!(server.post(KEY, json!({ "jsonrpc": "2.0", "id": "p", "method": "ping" })).await.1["result"], json!({}));
+        assert_eq!(server.post(KEY, json!({ "jsonrpc": "2.0", "id": 2, "method": "nope" })).await.1["error"]["code"], -32601);
+
+        let (_, body) = server.post(KEY, json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).await;
+        let tools = body["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
+                     "list_leads", "list_emails_to_approve", "approve_email", "skip_email", "list_replies"] {
+            assert!(names.contains(&name), "{name} missing");
+        }
+        assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
+
+        // A modern client announces its version in a header, and a 400 sends it back to initialize.
+        let res = server.client.post(&server.url).bearer_auth(KEY).header("mcp-protocol-version", "2026-07-28").json(&json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 400);
+        assert_eq!(server.client.get(&server.url).bearer_auth(KEY).send().await.unwrap().status(), 405);
+        let res = server.client.post(&server.url).bearer_auth(KEY).header("origin", "https://evil.example").json(&json!({})).send().await.unwrap();
+        assert_eq!(res.status(), 403);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn tools_act_for_the_keys_organization_only(db: PgPool) {
+        let [(project, segment), (other_project, other_segment)] = seed(&db).await;
+        sqlx::query(
+            "insert into directory_companies (domain, name, website, city, country_code, category, source_id, release)
+             values ('smile.co.uk', 'Smile Dental', 'https://smile.co.uk', 'Leeds', 'GB', 'dental_clinic', 'x', 'r')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let other_email: Uuid = sqlx::query_scalar(
+            "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Bo', 'bo@x.com') returning id)
+             insert into email_messages (project_id, lead_id, segment_id, direction, kind, subject, body, status)
+             select $1, l.id, $2, 'outbound', 'initial', 'Hi', 'Hello', 'draft' from l returning id",
+        )
+        .bind(other_project)
+        .bind(other_segment)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let server = Server::start(db.clone()).await;
+
+        let (is_error, text) = server.call(KEY, "list_projects", json!({})).await;
+        assert!(!is_error);
+        assert!(text.contains("Acme project") && !text.contains("Other project"), "{text}");
+
+        let (is_error, text) = server.call(KEY, "search_companies", json!({ "q": "dental", "city": "leeds" })).await;
+        assert!(!is_error && text.contains("smile.co.uk"), "{text}");
+        let (is_error, text) = server.call(KEY, "add_companies", json!({ "campaign_id": segment, "domains": ["smile.co.uk"] })).await;
+        assert!(!is_error, "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["added"], 1);
+
+        let (is_error, text) = server.call(KEY, "create_campaign", json!({ "project_id": project, "prompt": "Dentists in Leeds" })).await;
+        assert!(!is_error, "{text}");
+        let run_id = serde_json::from_str::<Value>(&text).unwrap()["run_id"].as_str().unwrap().to_string();
+        let (_, text) = server.call(KEY, "get_run", json!({ "run_id": run_id })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["status"], "queued");
+
+        let (is_error, text) = server.call(KEY, "list_campaigns", json!({ "project_id": project })).await;
+        assert!(!is_error && text.contains("New campaign"), "{text}");
+
+        // Ids of another organization look like ids that don't exist.
+        for (tool, args) in [
+            ("list_campaigns", json!({ "project_id": other_project })),
+            ("add_companies", json!({ "campaign_id": other_segment, "domains": ["smile.co.uk"] })),
+            ("find_people", json!({ "campaign_id": other_segment })),
+            ("approve_email", json!({ "email_id": other_email })),
+        ] {
+            assert_eq!(server.call(KEY, tool, args).await, (true, "Not found".into()), "{tool}");
+        }
+        let status: String = sqlx::query_scalar("select status from email_messages where id = $1").bind(other_email).fetch_one(&db).await.unwrap();
+        assert_eq!(status, "draft");
+        let (_, text) = server.call(KEY, "list_emails_to_approve", json!({})).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["total"], 0);
+
+        let (is_error, text) = server.call(KEY, "list_campaigns", json!({})).await;
+        assert_eq!((is_error, text.as_str()), (true, "Pass project_id as an id"));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_wrong_key_is_refused(db: PgPool) {
+        seed(&db).await;
+        let server = Server::start(db).await;
+        let (status, body) = server.post("splee_wrong", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).await;
+        assert_eq!(status, 401);
+        assert!(body["error"]["message"].as_str().unwrap().contains("API key"));
+        let res = server.client.post(&server.url).json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" })).send().await.unwrap();
+        assert_eq!(res.status(), 401);
+        assert_eq!(res.headers()["www-authenticate"], "Bearer");
+    }
+}

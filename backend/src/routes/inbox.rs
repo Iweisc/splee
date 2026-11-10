@@ -32,19 +32,19 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Deserialize)]
-struct ListQuery {
-    project_id: Option<Uuid>,
-    filter: Option<String>,
-    q: Option<String>,
+pub(super) struct ListQuery {
+    pub project_id: Option<Uuid>,
+    pub filter: Option<String>,
+    pub q: Option<String>,
 }
 
 #[derive(Serialize)]
-struct InboxThread {
-    lead: LeadRow,
-    last_message: EmailMessage,
-    pending_auto_reply: bool,
-    classification: Option<String>,
-    project_name: String,
+pub(super) struct InboxThread {
+    pub lead: LeadRow,
+    pub last_message: EmailMessage,
+    pub pending_auto_reply: bool,
+    pub classification: Option<String>,
+    pub project_name: String,
 }
 
 #[derive(FromRow)]
@@ -120,34 +120,39 @@ async fn list(
     Query(q): Query<ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<InboxThread>>> {
+    Ok(Json(page_of(&state.db, auth.org_id, q, &page).await?))
+}
+
+/// A page of the organization's reply threads, the latest message first. `project_id` is matched against the org in the query.
+pub(super) async fn page_of(db: &sqlx::PgPool, org_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<InboxThread>> {
     let filter = q.filter.unwrap_or_else(|| "all".into());
     util_input::one_of("filter", &filter, &["all", "hot", "needs_reply", "auto_replied", "other"])?;
     let like = util_input::like_pattern(q.q.as_deref());
 
     let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
-        .bind(auth.org_id)
+        .bind(org_id)
         .bind(q.project_id)
         .bind(&filter)
         .bind(&like)
-        .fetch_one(&state.db)
+        .fetch_one(db)
         .await?;
     let refs = sqlx::query_as::<_, ThreadRef>(&format!("{THREADS} order by last_at desc limit $5 offset $6"))
-        .bind(auth.org_id)
+        .bind(org_id)
         .bind(q.project_id)
         .bind(&filter)
         .bind(&like)
         .bind(page.limit())
         .bind(page.offset())
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await?;
 
     let lead_ids: Vec<Uuid> = refs.iter().map(|r| r.lead_id).collect();
     let message_ids: Vec<Uuid> = refs.iter().map(|r| r.last_message_id).collect();
     let mut leads: HashMap<Uuid, LeadRow> =
-        leads::lead_rows(&state.db, &lead_ids).await?.into_iter().map(|l| (l.lead.id, l)).collect();
+        leads::lead_rows(db, &lead_ids).await?.into_iter().map(|l| (l.lead.id, l)).collect();
     let mut messages: HashMap<Uuid, EmailMessage> = sqlx::query_as::<_, EmailMessage>("select * from email_messages where id = any($1)")
         .bind(&message_ids)
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await?
         .into_iter()
         .map(|m| (m.id, m))
@@ -165,7 +170,7 @@ async fn list(
             })
         })
         .collect();
-    Ok(Json(Paginated { items, total }))
+    Ok(Paginated { items, total })
 }
 
 #[derive(Serialize)]

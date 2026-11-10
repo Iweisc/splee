@@ -34,18 +34,18 @@ const STATUSES: &[&str] = &["draft", "scaling", "working", "paused"];
 pub struct SegmentWithStats {
     #[serde(flatten)]
     #[sqlx(flatten)]
-    segment: Segment,
-    companies: i64,
-    leads: i64,
-    sent: i64,
-    contacted: i64,
-    replies: i64,
+    pub segment: Segment,
+    pub companies: i64,
+    pub leads: i64,
+    pub sent: i64,
+    pub contacted: i64,
+    pub replies: i64,
     /// Leads whose address bounced. A high share points at a bad lead list.
-    bounced: i64,
-    hot: i64,
-    spend_micros: i64,
+    pub bounced: i64,
+    pub hot: i64,
+    pub spend_micros: i64,
     #[sqlx(skip)]
-    cost_per_hot_micros: Option<i64>,
+    pub cost_per_hot_micros: Option<i64>,
 }
 
 /// Segments of a project with their funnel numbers. Pass `segment_id` to get just one.
@@ -90,8 +90,8 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     Ok(Json(with_stats(&state.db, id, None).await?))
 }
 
-#[derive(Deserialize)]
-struct SegmentBody {
+#[derive(Deserialize, Default)]
+pub(super) struct SegmentBody {
     prompt: Option<String>,
     name: Option<String>,
     description: Option<String>,
@@ -106,6 +106,10 @@ struct SegmentBody {
 }
 
 impl SegmentBody {
+    pub(super) fn from_prompt(prompt: String) -> Self {
+        Self { prompt: Some(prompt), ..Default::default() }
+    }
+
     fn validate(&self) -> AppResult<()> {
         if let Some(icon) = &self.icon {
             util_input::one_of("icon", icon, ICONS)?;
@@ -130,6 +134,12 @@ async fn create(
     Json(body): Json<SegmentBody>,
 ) -> AppResult<Json<Segment>> {
     auth.project(&state.db, id).await?;
+    Ok(Json(insert(&state.db, auth.org_id, id, body).await?.0))
+}
+
+/// Creates a campaign in a project the caller already checked. With a prompt, it starts as "New campaign" and a
+/// segment_from_prompt run fills it in, whose id comes back too.
+pub(super) async fn insert(db: &PgPool, org_id: Uuid, id: Uuid, body: SegmentBody) -> AppResult<(Segment, Option<Uuid>)> {
     body.validate()?;
     let prompt = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
     let name = match (prompt, body.name.as_deref()) {
@@ -154,19 +164,16 @@ async fn create(
     .bind(body.pain_points)
     .bind(body.angle)
     .bind(body.position)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await?;
-    if let Some(prompt) = prompt {
-        agent::enqueue(
-            &state.db,
-            kind::SEGMENT_FROM_PROMPT,
-            Some(id),
-            Some(auth.org_id),
-            json!({ "segment_id": segment.id, "prompt": prompt }),
-        )
-        .await?;
-    }
-    Ok(Json(segment))
+    let run_id = match prompt {
+        Some(prompt) => Some(
+            agent::enqueue(db, kind::SEGMENT_FROM_PROMPT, Some(id), Some(org_id), json!({ "segment_id": segment.id, "prompt": prompt }))
+                .await?,
+        ),
+        None => None,
+    };
+    Ok((segment, run_id))
 }
 
 async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SegmentWithStats>> {
@@ -218,14 +225,13 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn enqueue_for(state: &AppState, auth: &Auth, segment: &Segment, run_kind: &str, input: Value) -> AppResult<Json<Value>> {
-    let run_id = agent::enqueue(&state.db, run_kind, Some(segment.project_id), Some(auth.org_id), input).await?;
-    Ok(Json(json!({ "run_id": run_id })))
+async fn enqueue_for(db: &PgPool, org_id: Uuid, segment: &Segment, run_kind: &str, input: Value) -> AppResult<Uuid> {
+    Ok(agent::enqueue(db, run_kind, Some(segment.project_id), Some(org_id), input).await?)
 }
 
 /// Refuses a run for the whole campaign when every lead already has a first email. It would finish instantly with
 /// nothing written, and the caller would never hear why.
-pub(super) async fn ensure_unwritten_leads(db: &PgPool, segment: &Segment) -> AppResult<()> {
+async fn ensure_unwritten_leads(db: &PgPool, segment: &Segment) -> AppResult<()> {
     if agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.is_empty() {
         return Err(AppError::Conflict("Every lead in this campaign already has an email. Find or add more people first.".into()));
     }
@@ -251,12 +257,13 @@ async fn find_companies(
 ) -> AppResult<Json<Value>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     let count = body.unwrap_or_default().count.unwrap_or(25).clamp(1, 100);
-    enqueue_for(&state, &auth, &segment, kind::FIND_COMPANIES, json!({ "segment_id": id, "count": count })).await
+    let run_id = enqueue_for(&state.db, auth.org_id, &segment, kind::FIND_COMPANIES, json!({ "segment_id": id, "count": count })).await?;
+    Ok(Json(json!({ "run_id": run_id })))
 }
 
 #[derive(Deserialize, Default)]
-struct FindPeopleBody {
-    company_ids: Option<Vec<Uuid>>,
+pub(super) struct FindPeopleBody {
+    pub company_ids: Option<Vec<Uuid>>,
 }
 
 async fn find_people(
@@ -266,17 +273,22 @@ async fn find_people(
     body: Option<Json<FindPeopleBody>>,
 ) -> AppResult<Json<Value>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let mut input = json!({ "segment_id": id });
-    if let Some(ids) = body.unwrap_or_default().0.company_ids {
-        input["company_ids"] = json!(owned_ids(&state.db, "companies", &ids, segment.project_id).await?);
+    let run_id = start_find_people(&state.db, auth.org_id, &segment, body.unwrap_or_default().0).await?;
+    Ok(Json(json!({ "run_id": run_id })))
+}
+
+pub(super) async fn start_find_people(db: &PgPool, org_id: Uuid, segment: &Segment, body: FindPeopleBody) -> AppResult<Uuid> {
+    let mut input = json!({ "segment_id": segment.id });
+    if let Some(ids) = body.company_ids {
+        input["company_ids"] = json!(owned_ids(db, "companies", &ids, segment.project_id).await?);
     }
-    enqueue_for(&state, &auth, &segment, kind::FIND_PEOPLE, input).await
+    enqueue_for(db, org_id, segment, kind::FIND_PEOPLE, input).await
 }
 
 #[derive(Deserialize, Default)]
-struct WriteEmailsBody {
-    lead_ids: Option<Vec<Uuid>>,
-    instructions: Option<String>,
+pub(super) struct WriteEmailsBody {
+    pub lead_ids: Option<Vec<Uuid>>,
+    pub instructions: Option<String>,
 }
 
 async fn write_emails(
@@ -286,17 +298,22 @@ async fn write_emails(
     body: Option<Json<WriteEmailsBody>>,
 ) -> AppResult<Json<Value>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let body = body.unwrap_or_default().0;
-    let mut input = json!({ "segment_id": id });
+    let run_id = start_write_emails(&state.db, auth.org_id, &segment, body.unwrap_or_default().0).await?;
+    Ok(Json(json!({ "run_id": run_id })))
+}
+
+/// Without lead_ids, writes a first email for every lead in the campaign that has none.
+pub(super) async fn start_write_emails(db: &PgPool, org_id: Uuid, segment: &Segment, body: WriteEmailsBody) -> AppResult<Uuid> {
+    let mut input = json!({ "segment_id": segment.id });
     if let Some(ids) = body.lead_ids {
-        input["lead_ids"] = json!(owned_ids(&state.db, "leads", &ids, segment.project_id).await?);
+        input["lead_ids"] = json!(owned_ids(db, "leads", &ids, segment.project_id).await?);
     } else {
-        ensure_unwritten_leads(&state.db, &segment).await?;
+        ensure_unwritten_leads(db, segment).await?;
     }
     if let Some(instructions) = body.instructions.filter(|i| !i.trim().is_empty()) {
         input["instructions"] = json!(instructions);
     }
-    enqueue_for(&state, &auth, &segment, kind::WRITE_EMAILS, input).await
+    enqueue_for(db, org_id, segment, kind::WRITE_EMAILS, input).await
 }
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {

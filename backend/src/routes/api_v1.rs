@@ -6,16 +6,18 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::leads::{self, LeadDetail};
+use super::directory::{self, Added, SearchQuery};
+use super::emails::{self, EmailRow};
+use super::inbox::{self, InboxThread};
+use super::leads::{self, LeadDetail, LeadRow};
 use super::runs;
-use super::segments::{self, SegmentWithStats};
+use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::stats::{self, Totals};
 use super::suppressions;
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_scope;
-use crate::agent::{self, kind};
 use crate::auth::ApiKeyAuth;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
@@ -25,6 +27,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
+        .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
@@ -32,8 +35,15 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
+        .route("/v1/companies", get(search_companies))
+        .route("/v1/segments/{id}/companies", post(add_companies))
+        .route("/v1/segments/{id}/find-people", post(find_people))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
         .route("/v1/runs/{id}", get(get_run))
+        .route("/v1/emails", get(list_emails))
+        .route("/v1/emails/{id}/approve", post(approve_email))
+        .route("/v1/emails/{id}/skip", post(skip_email))
+        .route("/v1/inbox", get(list_inbox))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -50,7 +60,7 @@ async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
-async fn list_projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<Project>>> {
+pub(super) async fn list_projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<Project>>> {
     let projects = sqlx::query_as::<_, Project>("select * from projects where org_id = $1 order by created_at desc")
         .bind(auth.org_id)
         .fetch_all(&state.db)
@@ -58,34 +68,80 @@ async fn list_projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppRe
     Ok(Json(projects))
 }
 
-#[derive(Deserialize)]
-struct LeadsQuery {
-    status: Option<String>,
+/// A campaign and its funnel, without the targeting the agent works from.
+#[derive(Serialize)]
+pub(super) struct Campaign {
+    id: Uuid,
+    name: String,
+    description: String,
+    status: String,
+    companies: i64,
+    leads: i64,
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    bounced: i64,
+    hot: i64,
+    spend_micros: i64,
+    created_at: Ts,
 }
 
-async fn list_leads(
+impl From<SegmentWithStats> for Campaign {
+    fn from(s: SegmentWithStats) -> Self {
+        let SegmentWithStats { segment, companies, leads, sent, contacted, replies, bounced, hot, spend_micros, .. } = s;
+        Self {
+            id: segment.id,
+            name: segment.name,
+            description: segment.description,
+            status: segment.status,
+            companies,
+            leads,
+            sent,
+            contacted,
+            replies,
+            bounced,
+            hot,
+            spend_micros,
+            created_at: segment.created_at,
+        }
+    }
+}
+
+pub(super) async fn list_campaigns(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Campaign>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(segments::with_stats(&state.db, id, None).await?.into_iter().map(Campaign::from).collect()))
+}
+
+#[derive(Deserialize)]
+pub(super) struct CampaignBody {
+    #[serde(default)]
+    prompt: String,
+}
+
+/// Like describing a campaign in the app: the agent names it and fills in its targeting from the prompt.
+pub(super) async fn create_campaign(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
-    Query(q): Query<LeadsQuery>,
-    Query(page): Query<PageQuery>,
-) -> AppResult<Json<Paginated<Lead>>> {
+    Json(body): Json<CampaignBody>,
+) -> AppResult<Json<Value>> {
     check_project(&state.db, id, auth.org_id).await?;
-    let status = q.status.filter(|s| !s.is_empty());
-    let filter = "from leads where project_id = $1 and ($2::text is null or status = $2)";
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) {filter}"))
-        .bind(id)
-        .bind(&status)
-        .fetch_one(&state.db)
-        .await?;
-    let items = sqlx::query_as::<_, Lead>(&format!("select * {filter} order by created_at desc, id desc limit $3 offset $4"))
-        .bind(id)
-        .bind(&status)
-        .bind(page.limit())
-        .bind(page.offset())
-        .fetch_all(&state.db)
-        .await?;
-    Ok(Json(Paginated { items, total }))
+    if body.prompt.trim().is_empty() {
+        return Err(AppError::BadRequest("Describe the campaign in prompt, e.g. dental clinics in Leeds".into()));
+    }
+    let (segment, run_id) = segments::insert(&state.db, auth.org_id, id, SegmentBody::from_prompt(body.prompt)).await?;
+    Ok(Json(json!({ "campaign_id": segment.id, "run_id": run_id })))
+}
+
+pub(super) async fn list_leads(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<leads::ListQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<LeadRow>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(leads::page_of(&state.db, id, q, &page).await?))
 }
 
 #[derive(Deserialize)]
@@ -269,16 +325,198 @@ async fn add_suppressions(State(state): State<AppState>, auth: ApiKeyAuth, Json(
     Ok(Json(json!({ "added": added })))
 }
 
-/// Writes a first email for every lead in the campaign that has none, like "Write emails" in the app. Lets a CRM push
-/// leads with segment_id and then get them written. In a campaign that's sending, the new emails go straight into the queue.
-async fn write_emails(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+pub(super) async fn search_companies(
+    State(state): State<AppState>,
+    _auth: ApiKeyAuth,
+    Query(q): Query<SearchQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<directory::Page>> {
+    Ok(Json(directory::page_of(&state.db, &q, &page).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AddCompaniesBody {
+    #[serde(default)]
+    domains: Vec<String>,
+}
+
+pub(super) async fn add_companies(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddCompaniesBody>,
+) -> AppResult<Json<Added>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    segments::ensure_unwritten_leads(&state.db, &segment).await?;
-    let run_id = agent::enqueue(&state.db, kind::WRITE_EMAILS, Some(segment.project_id), Some(auth.org_id), json!({ "segment_id": id })).await?;
+    Ok(Json(directory::add_domains(&state.db, auth.org_id, segment.project_id, segment.id, &body.domains).await?))
+}
+
+pub(super) async fn find_people(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    body: Option<Json<FindPeopleBody>>,
+) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let run_id = segments::start_find_people(&state.db, auth.org_id, &segment, body.unwrap_or_default().0).await?;
     Ok(Json(json!({ "run_id": run_id })))
 }
 
-/// For waiting on a run started with write-emails: status goes queued, running, then succeeded, failed or cancelled.
-async fn get_run(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<AgentRun>> {
-    Ok(Json(runs::load(&state.db, auth.org_id, id).await?))
+/// Writes a first email for every lead in the campaign that has none, like "Write emails" in the app. Lets a CRM push
+/// leads with segment_id and then get them written. In a campaign that's sending, the new emails go straight into the queue.
+pub(super) async fn write_emails(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    body: Option<Json<WriteEmailsBody>>,
+) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let run_id = segments::start_write_emails(&state.db, auth.org_id, &segment, body.unwrap_or_default().0).await?;
+    Ok(Json(json!({ "run_id": run_id })))
+}
+
+#[derive(Serialize)]
+pub(super) struct RunStatus {
+    #[serde(flatten)]
+    run: AgentRun,
+    /// The latest progress line, or why it failed.
+    message: Option<String>,
+}
+
+/// For waiting on a run: status goes queued, running, then succeeded, failed or cancelled.
+pub(super) async fn get_run(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<RunStatus>> {
+    let run = runs::load(&state.db, auth.org_id, id).await?;
+    let message = runs::last_message(&state.db, id).await?;
+    Ok(Json(RunStatus { run, message }))
+}
+
+/// An outbound email with who it's for, without the sending details.
+#[derive(Serialize)]
+pub(super) struct Email {
+    id: Uuid,
+    project_id: Uuid,
+    segment_id: Option<Uuid>,
+    campaign: Option<String>,
+    lead_id: Uuid,
+    lead_name: String,
+    lead_email: Option<String>,
+    company_name: String,
+    kind: String,
+    step: i32,
+    subject: String,
+    body: String,
+    status: String,
+    scheduled_for: Option<Ts>,
+    created_at: Ts,
+}
+
+impl From<EmailRow> for Email {
+    fn from(r: EmailRow) -> Self {
+        let e = r.email;
+        Self {
+            id: e.id,
+            project_id: e.project_id,
+            segment_id: e.segment_id,
+            campaign: r.segment_name,
+            lead_id: e.lead_id,
+            lead_name: r.lead_name,
+            lead_email: r.lead_email,
+            company_name: r.company_name,
+            kind: e.kind,
+            step: e.step,
+            subject: e.subject,
+            body: e.body,
+            status: e.status,
+            scheduled_for: e.scheduled_for,
+            created_at: e.created_at,
+        }
+    }
+}
+
+/// Drafts waiting for approval by default, oldest first, so a reviewer goes through them in the order they were written.
+pub(super) async fn list_emails(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(mut q): Query<emails::ListQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<Email>>> {
+    q.status = q.status.filter(|s| !s.is_empty()).or(Some("draft".into()));
+    q.order = Some("soonest".into());
+    let Paginated { items, total } = emails::page_of(&state.db, auth.org_id, q, &page).await?;
+    Ok(Json(Paginated { items: items.into_iter().map(Email::from).collect(), total }))
+}
+
+/// The app's Approve button. In a campaign that isn't sending yet, the email waits in the queue until it starts.
+pub(super) async fn approve_email(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Email>> {
+    set_email_status(&state, auth, id, "approved").await
+}
+
+/// The app's Cancel button: the email never goes out.
+pub(super) async fn skip_email(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Email>> {
+    set_email_status(&state, auth, id, "cancelled").await
+}
+
+async fn set_email_status(state: &AppState, auth: ApiKeyAuth, id: Uuid, status: &str) -> AppResult<Json<Email>> {
+    let body = emails::UpdateBody { status: Some(status.into()), ..Default::default() };
+    Ok(Json(emails::update_one(&state.db, auth.org_id, id, body).await?.into()))
+}
+
+/// A reply thread: the lead and the latest message either way, cut short.
+#[derive(Serialize)]
+pub(super) struct Thread {
+    lead_id: Uuid,
+    project_id: Uuid,
+    project_name: String,
+    lead_name: String,
+    lead_email: Option<String>,
+    company_name: String,
+    lead_status: String,
+    classification: Option<String>,
+    pending_auto_reply: bool,
+    last_message: ThreadMessage,
+}
+
+#[derive(Serialize)]
+struct ThreadMessage {
+    id: Uuid,
+    direction: String,
+    subject: String,
+    snippet: String,
+    at: Ts,
+}
+
+const SNIPPET_CHARS: usize = 300;
+
+impl From<InboxThread> for Thread {
+    fn from(t: InboxThread) -> Self {
+        let (lead, m) = (t.lead.lead, t.last_message);
+        Self {
+            lead_id: lead.id,
+            project_id: lead.project_id,
+            project_name: t.project_name,
+            lead_name: lead.full_name,
+            lead_email: lead.email,
+            company_name: lead.company_name,
+            lead_status: lead.status,
+            classification: t.classification,
+            pending_auto_reply: t.pending_auto_reply,
+            last_message: ThreadMessage {
+                id: m.id,
+                direction: m.direction,
+                subject: m.subject,
+                snippet: m.body.trim().chars().take(SNIPPET_CHARS).collect(),
+                at: m.sent_at.unwrap_or(m.created_at),
+            },
+        }
+    }
+}
+
+/// The Inbox page's threads: filter is all, hot, needs_reply, auto_replied or other.
+pub(super) async fn list_inbox(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<inbox::ListQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<Thread>>> {
+    let Paginated { items, total } = inbox::page_of(&state.db, auth.org_id, q, &page).await?;
+    Ok(Json(Paginated { items: items.into_iter().map(Thread::from).collect(), total }))
 }
