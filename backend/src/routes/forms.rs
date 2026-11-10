@@ -23,8 +23,8 @@ pub fn router() -> Router<AppState> {
 
 /// The (question, answer) pairs in a submission. Tally sends `data.fields[]`, Typeform `form_response.answers[]` with the
 /// questions in `form_response.definition.fields[]`, Fillout `questions[]` and its hidden fields in `urlParameters[]`,
-/// Jotform a `rawRequest` field holding JSON, Paperform `data[]`, Formbricks `data.data`, Webflow `payload.data`, and
-/// anything else flat JSON.
+/// Jotform a `rawRequest` field holding JSON, Paperform `data[]`, Formbricks `data.data`, Netlify `ordered_human_fields[]`,
+/// alone or in `payload` as a submission-created function gets it, Webflow `payload.data`, and anything else flat JSON.
 fn answers(body: &Value) -> Vec<(String, String)> {
     if let Some(raw) = body["rawRequest"].as_str() {
         return jotform(&serde_json::from_str(raw).unwrap_or_default());
@@ -37,6 +37,11 @@ fn answers(body: &Value) -> Vec<(String, String)> {
             return Vec::new();
         }
         return formbricks(body["data"]["dataByQuestionCode"].as_object(), data);
+    }
+    // Netlify's submission also holds `site_url` and `form_name`, which would read as the lead's website and name.
+    if let Some(fields) = body["ordered_human_fields"].as_array().or(body["payload"]["ordered_human_fields"].as_array()) {
+        let title = |f: &Value| [&f["title"], &f["name"]].into_iter().filter_map(Value::as_str).find(|t| !t.is_empty()).map(str::to_string);
+        return fields.iter().filter_map(|f| Some((title(f)?, text(&f["value"])?))).collect();
     }
     if let Some(questions) = body["questions"].as_array() {
         let hidden = body["urlParameters"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -389,6 +394,21 @@ mod tests {
         let mut unfinished = formbricks.clone();
         unfinished["data"]["finished"] = json!(false);
         assert!(answers(&unfinished).is_empty());
+
+        // Netlify's outgoing webhook, and the same submission as a submission-created function gets it, in `payload`.
+        let netlify = json!({"number": 3, "title": "Ana Ruiz", "name": "Ana Ruiz", "email": "ana@delta.example", "form_name": "contact",
+            "site_url": "https://delta-site.netlify.app", "data": {"name": "Ana Ruiz", "email": "ana@delta.example", "ip": "203.0.113.9"},
+            "ordered_human_fields": [
+                {"title": "Name", "name": "name", "value": "Ana Ruiz"},
+                {"title": "Email", "name": "email", "value": "ana@delta.example"},
+                {"title": "", "name": "interests", "value": ["Outbound", "CRM"]},
+                {"title": "Message", "name": "message", "value": "Call me Tuesday"},
+            ]});
+        for body in [netlify.clone(), json!({"payload": netlify})] {
+            let (lead, rest) = lead_from(answers(&body));
+            assert_eq!((lead.full_name.as_str(), lead.email.as_str(), lead.company_domain.as_str()), ("Ana Ruiz", "ana@delta.example", ""));
+            assert_eq!(rest, [("interests".to_string(), "Outbound, CRM".to_string()), ("Message".to_string(), "Call me Tuesday".to_string())]);
+        }
 
         // Jotform's webhook, as multipart fields, with the answers in rawRequest.
         let raw = json!({"slug": "submit/2531", "q11_message": "Pricing for 12 seats", "q3_yourName": {"first": "Ana", "last": "Ruiz"},
