@@ -740,6 +740,43 @@ pub struct TextMessage {
     pub created_at: Ts,
 }
 
+/// A call to a lead: an open call step, or one someone made or logged. See calls.rs. twilio_sid and transcript_parts
+/// stay in the database.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Call {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub lead_id: Uuid,
+    pub segment_id: Option<Uuid>,
+    /// "sequence" for a call step of the project's follow-ups, "manual" for one logged without a step.
+    pub kind: String,
+    pub step: i32,
+    pub instructions: String,
+    /// Who should make it. None is anyone on the team.
+    pub owner_id: Option<Uuid>,
+    pub status: String,
+    pub due_at: Ts,
+    pub closed_at: Option<Ts>,
+    pub cancel_reason: String,
+    pub to_number: String,
+    pub called_by: Option<Uuid>,
+    pub called_at: Option<Ts>,
+    /// Twilio's word for how the lead's side ended, like completed, busy or no-answer.
+    pub call_status: String,
+    pub duration_secs: Option<i32>,
+    #[serde(skip)]
+    pub recording_sid: String,
+    pub recording_url: String,
+    pub recording_secs: Option<i32>,
+    pub outcome: Option<String>,
+    pub notes: String,
+    pub transcript: String,
+    pub transcribed_at: Option<Ts>,
+    pub summary: String,
+    pub next_step: String,
+    pub created_at: Ts,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LinkedinMessage {
     pub id: Uuid,

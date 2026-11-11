@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::analytics::{self, Analytics, AnalyticsQuery};
+use super::calls::{self, CallRow, LogBody};
 use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread};
@@ -55,6 +56,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/deals", get(list_deals).post(create_deal))
         .route("/v1/deals/{id}/move", post(move_deal))
         .route("/v1/deal-stages", get(list_stages))
+        .route("/v1/projects/{id}/calls", get(list_calls))
+        .route("/v1/leads/{id}/calls", post(log_call))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -718,4 +721,25 @@ pub(super) async fn create_deal(State(state): State<AppState>, auth: ApiKeyAuth,
 /// Moves a deal to a stage by stage_id or stage name. A won stage takes the final value, a lost one the reason.
 pub(super) async fn move_deal(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<Move>) -> AppResult<Json<Deal>> {
     Ok(Json(deals::move_to(&state, auth.org_id, id, body).await?))
+}
+
+/// Open calls and the ones made in the last 14 days, for a dialer or CRM to work from. `status` is open or done, `owner`
+/// a member's id or email, or unassigned.
+pub(super) async fn list_calls(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<calls::ListQuery>,
+) -> AppResult<Json<Vec<CallRow>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    if let Some(owner) = q.owner.as_deref().filter(|o| o.contains('@')) {
+        q.owner = ownership::resolve_owner(&state.db, auth.org_id, &json!(owner)).await?.map(|u| u.to_string());
+    }
+    Ok(Json(calls::rows(&state.db, id, None, &q).await?))
+}
+
+/// Logs a call made with the lead, from a dialer or by hand. It closes their open call step if they have one, which moves
+/// their sequence on, and the outcome updates the lead like it does in the app.
+pub(super) async fn log_call(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<LogBody>) -> AppResult<Json<Value>> {
+    Ok(Json(calls::log_for_lead(&state, auth.org_id, id, &body).await?))
 }

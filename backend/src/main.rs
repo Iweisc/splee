@@ -7,6 +7,7 @@ mod baserow;
 mod blog;
 mod bluesky;
 mod booking;
+mod calls;
 mod chat;
 mod config;
 mod crm;

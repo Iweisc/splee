@@ -83,6 +83,15 @@ struct SettingsBody {
     assign_members: Option<Vec<Uuid>>,
 }
 
+/// Each follow-up is an email or a call. A call step opens a call for the lead's owner instead of sending anything.
+fn check_follow_ups(steps: &Value) -> Result<(), &'static str> {
+    let steps = steps.as_array().ok_or("follow_ups must be a list")?;
+    if steps.iter().any(|s| !matches!(s.get("kind").map(|k| k.as_str()), None | Some(Some("email" | "call")))) {
+        return Err("Each follow-up is an email or a call");
+    }
+    Ok(())
+}
+
 /// Up to 5 texts, each SMS or WhatsApp, 1 to 30 days after the one before.
 fn check_text_steps(steps: &Value) -> Result<(), &'static str> {
     let steps = steps.as_array().ok_or("text_steps must be a list")?;
@@ -133,8 +142,8 @@ async fn update_settings(
     if !(0..=23).contains(&start) || !(1..=24).contains(&end) || start >= end {
         return bad("Send window must start before it ends, within 0-24h");
     }
-    if body.follow_ups.as_ref().is_some_and(|f| !f.is_array()) {
-        return bad("follow_ups must be a list");
+    if let Some(Err(m)) = body.follow_ups.as_ref().map(check_follow_ups) {
+        return bad(m);
     }
     if let Some(Err(m)) = body.text_steps.as_ref().map(check_text_steps) {
         return bad(m);

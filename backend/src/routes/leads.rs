@@ -16,7 +16,7 @@ use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::hiring;
-use crate::models::{Company, EmailMessage, Lead, TextMessage};
+use crate::models::{Call, Company, EmailMessage, Lead, TextMessage};
 use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
 use crate::waterfall;
@@ -309,6 +309,8 @@ pub struct LeadDetail {
     pub emails: Vec<EmailMessage>,
     /// Texts Splee wrote or sent them, oldest first. Their answers are in `emails`, with a channel.
     pub texts: Vec<TextMessage>,
+    /// Calls to them, open and made, oldest first.
+    pub calls: Vec<Call>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,
     /// Their open deal, or else the one that closed last.
@@ -344,13 +346,17 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
         .bind(lead.id)
         .fetch_all(db)
         .await?;
+    let calls = sqlx::query_as::<_, Call>("select * from calls where lead_id = $1 order by coalesce(called_at, closed_at, due_at)")
+        .bind(lead.id)
+        .fetch_all(db)
+        .await?;
     let hiring = match &lead.company_domain {
         Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
         None => vec![],
     };
     let deal = crate::deals::for_lead(db, lead.id).await?;
     let (owner_name, owner_email) = owner_of(db, &lead).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring, deal, owner_name, owner_email })
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, hiring, deal, owner_name, owner_email })
 }
 
 /// The lead owner's name and email, the name falling back to the email like everywhere else.

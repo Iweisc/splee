@@ -1417,10 +1417,10 @@ function TwilioSection({ settings }: { settings: ProjectSettings }) {
     <Section
       title={
         <span className="flex items-center gap-2">
-          <Smartphone className="size-4" /> Text messages
+          <Smartphone className="size-4" /> Texts and calls
         </span>
       }
-      description="Sends the SMS and WhatsApp steps of your sequences, and your replies to texts, from your own Twilio account. Every project in your organization shares it."
+      description="Sends the SMS and WhatsApp steps of your sequences and your replies to texts, and places your team's calls, from your own Twilio account. Every project in your organization shares it."
       actions={
         c ? (
           <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
@@ -1448,6 +1448,7 @@ function TwilioSection({ settings }: { settings: ProjectSettings }) {
             </p>
           </div>
           {c.whatsapp_from && <WhatsappTemplate connection={c} onSaved={(fresh) => mutate(fresh, { revalidate: false })} />}
+          <CallingSettings status={data} onSaved={(fresh) => mutate(fresh, { revalidate: false })} />
         </div>
       ) : (
         <form onSubmit={submit(connect)} className="flex flex-col gap-4">
@@ -1488,6 +1489,61 @@ function TwilioSection({ settings }: { settings: ProjectSettings }) {
       )}
       <LastFailure error={c?.error ?? null} at={c?.failed_at ?? null} what="send" />
     </Section>
+  );
+}
+
+/** Calls from the browser go through a TwiML App, which saving points at Splee. Calls are recorded, and transcribed when it's on. */
+function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (fresh: TwilioStatus) => void }) {
+  const c = status.connection!;
+  const [form, setForm] = useState({ twiml_app_sid: c.twiml_app_sid, voice_from: c.voice_from, transcribe: c.call_transcription });
+  const [busy, setBusy] = useState(false);
+  const changed = form.twiml_app_sid !== c.twiml_app_sid || form.voice_from !== c.voice_from || form.transcribe !== c.call_transcription;
+  const save = async (body: typeof form) => {
+    setBusy(true);
+    try {
+      onSaved(await api<TwilioStatus>("/organization/twilio/calling", { method: "PUT", body }));
+      toast.success(body.twiml_app_sid ? "Calling is on" : "Calling is off");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fallback = c.sms_from.startsWith("+") ? c.sms_from : "";
+  return (
+    <form onSubmit={submit(() => save(form))} className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <div>
+        <p className="text-sm font-medium">Calls</p>
+        <p className="mt-0.5 text-xs text-pretty text-muted-foreground">
+          Lets your team call leads from the Calls page. Create a TwiML App in Twilio under Voice, TwiML Apps, and paste its SID here. Saving
+          points its Voice URL at Splee. Calls are recorded, so tell leads at the start where the law asks you to.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="TwiML App SID">
+          <Input placeholder="AP…" autoComplete="off" value={form.twiml_app_sid} onChange={(e) => setForm({ ...form, twiml_app_sid: e.target.value.trim() })} />
+        </Field>
+        <Field label="Calls come from" hint={fallback ? `Leave empty to use ${fallback}.` : "A Twilio number that can make calls."}>
+          <Input placeholder={fallback || "+14155550100"} autoComplete="off" value={form.voice_from} onChange={(e) => setForm({ ...form, voice_from: e.target.value.trim() })} />
+        </Field>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="flex items-center gap-2.5 text-sm">
+          <Switch checked={form.transcribe} onChange={(transcribe) => setForm({ ...form, transcribe })} label="Transcribe calls" />
+          Transcribe calls, and have the agent summarize them
+        </span>
+        <span className="flex gap-2">
+          {c.twiml_app_sid && (
+            <Button type="button" variant="ghost" loading={busy} onClick={() => save({ twiml_app_sid: "", voice_from: form.voice_from, transcribe: false })}>
+              Turn off
+            </Button>
+          )}
+          <Button type="submit" variant="outline" loading={busy} disabled={!changed || !form.twiml_app_sid}>
+            Save
+          </Button>
+        </span>
+      </div>
+    </form>
   );
 }
 

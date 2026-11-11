@@ -148,6 +148,8 @@ export interface FollowUp {
   delay_days: number;
   enabled: boolean;
   instructions: string;
+  /** A call step opens a call for the lead's owner instead of sending an email. Missing means email. */
+  kind?: "email" | "call";
 }
 
 export interface Targeting {
@@ -511,7 +513,17 @@ export interface Analytics {
   /** weekday 1 (Monday) to 7, hour 0 to 23, in the project's time zone. Empty cells are left out. */
   heatmap: { weekday: number; hour: number; sent: number; replies: number }[];
   /** null leads or replies are ones Splee doesn't record for the channel. */
-  channels: { channel: "email" | "linkedin" | "sms" | "whatsapp" | "social"; sent: number; leads: number | null; replies: number | null; reply_rate: number | null }[];
+  channels: {
+    channel: "email" | "linkedin" | "sms" | "whatsapp" | "call" | "social";
+    /** For calls, the calls made. */
+    sent: number;
+    leads: number | null;
+    replies: number | null;
+    reply_rate: number | null;
+    /** Calls only: the share where someone picked up and talked, and the meetings booked on a call. */
+    connect_rate: number | null;
+    meetings: number | null;
+  }[];
 }
 
 export type ReportRange = "last_7" | "last_30" | "last_90" | "month_to_date";
@@ -947,6 +959,8 @@ export interface LeadDetail extends Lead {
   emails: EmailMessage[];
   /** Texts Splee wrote or sent them. Their answers are in emails, with a text channel. */
   texts: TextMessage[];
+  /** Calls to them, open and made, oldest first. */
+  calls: Call[];
   hiring: JobPost[];
   /** Their open deal, or else the one that closed last. */
   deal: Deal | null;
@@ -1170,6 +1184,67 @@ export interface TextStep {
   instructions: string;
 }
 
+export type CallOutcome = "connected" | "voicemail" | "no_answer" | "wrong_number" | "not_interested" | "meeting_booked";
+
+/** A call to a lead: an open call step of the sequence, or one someone made or logged. */
+export interface Call {
+  id: UUID;
+  project_id: UUID;
+  lead_id: UUID;
+  segment_id: UUID | null;
+  kind: "sequence" | "manual";
+  step: number;
+  /** What the call step says to talk about. */
+  instructions: string;
+  /** Who should make it. Null is anyone on the team. */
+  owner_id: UUID | null;
+  status: "open" | "done" | "skipped" | "cancelled";
+  due_at: Ts;
+  closed_at: Ts | null;
+  /** Why it was skipped or cancelled, like "They replied". */
+  cancel_reason: string;
+  to_number: string;
+  called_by: UUID | null;
+  called_at: Ts | null;
+  /** Twilio's word for how the lead's side ended, like completed, busy or no-answer. */
+  call_status: string;
+  duration_secs: number | null;
+  /** Twilio's URL. Play it through /api/calls/{id}/recording. */
+  recording_url: string;
+  recording_secs: number | null;
+  outcome: CallOutcome | null;
+  notes: string;
+  transcript: string;
+  transcribed_at: Ts | null;
+  summary: string;
+  next_step: string;
+  created_at: Ts;
+}
+
+/** GET /projects/{id}/calls. */
+export interface CallRow extends Call {
+  lead_name: string;
+  lead_title: string;
+  lead_company: string;
+  lead_phone: string;
+  owner_name: string | null;
+  called_by_name: string | null;
+  bucket: "overdue" | "today" | "done";
+  time_zone: string;
+  /** The time where the lead is, like "14:05". */
+  local_time: string;
+  /** Why now is outside their calling hours, 8:00 to 20:00 their time. */
+  outside_hours: string | null;
+}
+
+/** POST /calls/{id}/dial. */
+export interface DialToken {
+  token: string;
+  identity: string;
+  to: string;
+  expires_at: Ts;
+}
+
 /** GET /organization/twilio. */
 export interface TwilioStatus {
   connection: {
@@ -1181,12 +1256,19 @@ export interface TwilioStatus {
     whatsapp_template_sid: string;
     whatsapp_template_body: string;
     whatsapp_template_vars: Record<string, string>;
+    /** Calling from the browser is on once this TwiML App is set. */
+    twiml_app_sid: string;
+    /** The number calls come from. Empty uses the SMS number. */
+    voice_from: string;
+    call_transcription: boolean;
     error: string | null;
     failed_at: Ts | null;
     created_at: Ts;
   } | null;
   /** Where the number's incoming messages webhook should point. */
   inbound_url: string;
+  /** Where Splee points the TwiML App's Voice URL. */
+  voice_url: string;
 }
 
 export interface EmailRow extends EmailMessage {

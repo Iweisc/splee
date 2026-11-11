@@ -228,7 +228,7 @@ function revenueColumns(currency: string): Column<CampaignRow>[] {
   ];
 }
 
-const CHANNEL_NAMES: Record<ChannelRow["channel"], string> = { email: "Email", linkedin: "LinkedIn", sms: "SMS", whatsapp: "WhatsApp", social: "Social posts" };
+const CHANNEL_NAMES: Record<ChannelRow["channel"], string> = { email: "Email", linkedin: "LinkedIn", sms: "SMS", whatsapp: "WhatsApp", call: "Calls", social: "Social posts" };
 
 const CHANNEL_COLUMNS: Column<ChannelRow>[] = [
   { label: "Channel", value: (r) => CHANNEL_NAMES[r.channel] },
@@ -236,6 +236,8 @@ const CHANNEL_COLUMNS: Column<ChannelRow>[] = [
   { label: "Leads", value: (r) => r.leads, numeric: true, className: WIDE },
   { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDE },
   { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => rateText(r.reply_rate), numeric: true },
+  { label: "Connect rate", value: (r) => rateCell(r.connect_rate), render: (r) => rateText(r.connect_rate), numeric: true, className: WIDE },
+  { label: "Meetings", value: (r) => r.meetings, numeric: true, className: WIDE },
 ];
 
 /**
@@ -294,7 +296,7 @@ export function AnalyticsView({ data, validating, shared }: { data?: Analytics; 
             />
             <Breakdown
               title="Channels"
-              hint="LinkedIn replies only stop the sequence, so Splee doesn't count them."
+              hint="LinkedIn replies only stop the sequence, so Splee doesn't count them. For calls, sent is calls made, and connect rate is the share where someone picked up and talked."
               rows={data.channels}
               columns={CHANNEL_COLUMNS}
               file={`splee-channels-${slug}.csv`}

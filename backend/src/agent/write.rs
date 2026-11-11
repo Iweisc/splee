@@ -590,6 +590,9 @@ struct FollowUpRule {
     enabled: bool,
     #[serde(default)]
     instructions: String,
+    /// "email", or "call" for a call step, which calls.rs opens instead.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// Writes the next follow-up for each lead, threaded under the last email they got.
@@ -617,12 +620,24 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         .fetch_all(ctx.db())
         .await?;
         let (Some(first), Some(last)) = (thread.first(), thread.last()) else { continue };
-        let step = last.step + 1;
+        // A call step done or skipped since the last email moves the sequence on, and the next email counts from it.
+        let call: Option<(i32, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "select step, closed_at from calls where lead_id = $1 and kind = 'sequence' and status in ('done', 'skipped') and step > $2
+             order by step desc limit 1",
+        )
+        .bind(lead.id)
+        .bind(last.step)
+        .fetch_optional(ctx.db())
+        .await?;
+        let (step, anchor) = match call {
+            Some((step, at)) => (step + 1, Some(at)),
+            None => (last.step + 1, last.sent_at),
+        };
         // A campaign brought over from another tool has its own follow-ups, on its own schedule.
         // It only sends the steps it came with, never the project's follow-ups after them.
         let own = lead.segment_id.and_then(|id| imported.get(&(id, step)));
         let is_imported = lead.segment_id.is_some_and(|id| imported.contains_key(&(id, 0)));
-        let rule = if is_imported { None } else { rules.get(step as usize - 1).filter(|r| r.enabled) };
+        let rule = if is_imported { None } else { rules.get(step as usize - 1).filter(|r| r.enabled && r.kind.as_deref() != Some("call")) };
         if rule.is_none() && own.is_none() {
             continue;
         }
@@ -692,8 +707,8 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         }
 
         let sending = lead.segment_id.and_then(|id| segments.get(&id)).is_some_and(|s| s.status == "working" || s.status == "scaling");
-        let due = last.sent_at.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(delay_days.max(1));
-        insert_follow_up(ctx.db(), lead, &thread, &settings.sign(&body), sending, due).await?;
+        let due = anchor.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(delay_days.max(1));
+        insert_follow_up(ctx.db(), lead, &thread, step, &settings.sign(&body), sending, due).await?;
         saved += 1;
     }
     Ok(saved)
@@ -704,6 +719,7 @@ async fn insert_follow_up(
     db: &sqlx::PgPool,
     lead: &Lead,
     thread: &[EmailMessage],
+    step: i32,
     body: &str,
     sending: bool,
     due: chrono::DateTime<chrono::Utc>,
@@ -718,7 +734,7 @@ async fn insert_follow_up(
     .bind(lead.project_id)
     .bind(lead.id)
     .bind(lead.segment_id)
-    .bind(last.step + 1)
+    .bind(step)
     .bind(subject)
     .bind(body)
     .bind(if sending { "approved" } else { "draft" })
@@ -957,7 +973,7 @@ mod tests {
         let mut lead = leads[0].clone();
         lead.variant_id = Some(c.variants[1]);
         let thread = sqlx::query_as::<_, EmailMessage>("select * from email_messages where lead_id = $1").bind(lead.id).fetch_all(&db).await.unwrap();
-        insert_follow_up(&db, &lead, &thread, "Following on", true, chrono::Utc::now()).await.unwrap();
+        insert_follow_up(&db, &lead, &thread, 1, "Following on", true, chrono::Utc::now()).await.unwrap();
         let (step, subject, variant): (i32, String, Option<Uuid>) =
             sqlx::query_as("select step, subject, variant_id from email_messages where lead_id = $1 and kind = 'follow_up'")
                 .bind(lead.id)

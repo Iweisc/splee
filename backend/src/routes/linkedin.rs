@@ -165,6 +165,7 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result
     .await?;
     sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
     sqlx::query(crate::twilio::STOP_TEXTS).bind(lead.id).bind(why).execute(&mut *tx).await?;
+    sqlx::query(crate::calls::STOP_CALLS).bind(lead.id).bind(why).execute(&mut *tx).await?;
     tx.commit().await?;
     let owner = crate::ownership::claim(db, lead.id).await;
     Ok(Lead { owner_id: updated.owner_id.or(owner), ..updated })
