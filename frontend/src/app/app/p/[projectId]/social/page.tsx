@@ -31,6 +31,9 @@ const PLATFORMS: Record<Platform, string> = {
   dev: "DEV",
   discourse: "Discourse",
   lemmy: "Lemmy",
+  nostr: "Nostr",
+  tumblr: "Tumblr",
+  hashnode: "Hashnode",
 };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
@@ -42,7 +45,7 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
   approved: {
     title: "Nothing waiting to post",
-    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each, 10 on Lemmy, 5 on LinkedIn, Stack Exchange and each Discourse forum, and 2 on DEV.",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy and Tumblr take 10, LinkedIn, Stack Exchange and each Discourse forum 5, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
   },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
@@ -54,14 +57,17 @@ function isConnected(s: ProjectSettings, forums: DiscourseForum[], p: Platform) 
   if (p === "discourse") return forums.length > 0;
   return s[`${p}_connected`];
 }
-/** Like social::daily_cap on the backend. Discourse's is per forum. */
-const dailyCap = (p: Platform) => (p === "linkedin" || p === "stackexchange" || p === "discourse" ? 5 : p === "lemmy" ? 10 : p === "dev" ? 2 : 15);
+/** Original posts a day, like social::daily_cap on the backend. Discourse's is per forum. */
+const dailyCap = (p: Platform) =>
+  p === "linkedin" || p === "stackexchange" || p === "discourse" ? 5 : p === "lemmy" || p === "tumblr" ? 10 : p === "dev" || p === "hashnode" ? 2 : 15;
 /** YouTube only takes comments and Stack Exchange answers, like social::takes_posts on the backend. */
 const takesPosts = (p: Platform) => p !== "youtube" && p !== "stackexchange";
 /** Stack Exchange and Discourse turn down short ones, like social::min_length on the backend. */
 const minLength = (p: Platform) => (p === "stackexchange" ? 30 : p === "discourse" ? 20 : 1);
-/** Like dev::TITLE_CHARS, lemmy::TITLE_CHARS and discourse's title limits on the backend. */
-const DEV_TITLE_CHARS = 128;
+/** Like dev::TITLE_CHARS, hashnode::TITLE_CHARS, lemmy::TITLE_CHARS and discourse's title limits on the backend. */
+const ARTICLE_TITLE_CHARS: Partial<Record<Platform, number>> = { dev: 128, hashnode: 250 };
+/** Like dev::MAX_TAGS, hashnode::MAX_TAGS and tumblr::MAX_TAGS on the backend. */
+const MAX_TAGS: Partial<Record<Platform, number>> = { dev: 4, hashnode: 5, tumblr: 10 };
 const LEMMY_TITLE_CHARS = 200;
 const TOPIC_TITLE_CHARS = [15, 255] as const;
 /** Discourse forums only take new topics once a category is picked for them. */
@@ -71,20 +77,22 @@ const forumHost = (f: DiscourseForum) => f.url.replace(/^https:\/\//, "");
 function titleReady(p: Platform, title: string, community: string, forum: DiscourseForum | undefined) {
   const n = [...title.trim()].length;
   if (p === "reddit" || p === "lemmy") return n > 0 && n <= (p === "lemmy" ? LEMMY_TITLE_CHARS : 300) && !!community.trim();
-  if (p === "dev") return n > 0;
+  if (p === "dev" || p === "hashnode") return n > 0 && n <= ARTICLE_TITLE_CHARS[p]!;
   if (p === "discourse") return !!forum?.category_id && n >= TOPIC_TITLE_CHARS[0] && n <= TOPIC_TITLE_CHARS[1];
   return true;
 }
-/** Tags as typed, like "webdev, productivity". The backend keeps letters and digits and the first 4. */
+/** Tags as typed, like "webdev, productivity". The backend keeps them the way each platform takes them, up to its limit. */
 const tagList = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
 
-/** The most a reply or post can hold, like social::max_length on the backend. Reddit's, YouTube's, Stack Exchange's and DEV's
- *  limits are far above any reply, so they get no counter. */
+/** The most a reply or post can hold, like social::max_length on the backend. Reddit's, YouTube's, Stack Exchange's, DEV's and
+ *  Hashnode's limits are far above any reply, so they get no counter. */
 function maxLength(p: Platform, reply: boolean, mastodonChars: number): number | null {
   if (p === "x") return 280;
   if (p === "bluesky") return 300;
   if (p === "mastodon") return mastodonChars;
   if (p === "threads") return 500;
+  if (p === "nostr") return 5000;
+  if (p === "tumblr") return 4096;
   if (p === "linkedin") return reply ? 1250 : 3000;
   return null;
 }
@@ -114,7 +122,10 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
   });
 
   const connected = settings && forums ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, p)) : [];
-  const posting = connected.filter((p) => takesPosts(p) && (p !== "discourse" || topicForums(forums ?? []).length > 0));
+  // Discourse takes topics only on forums with a category, and Hashnode articles only once a publication is picked.
+  const posting = connected.filter(
+    (p) => takesPosts(p) && (p !== "discourse" || topicForums(forums ?? []).length > 0) && (p !== "hashnode" || !!settings?.hashnode_publication_id),
+  );
   const start = async () => {
     setStarting(true);
     try {
@@ -135,7 +146,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Discourse forums and LinkedIn, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and DEV articles. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -167,7 +178,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
               }
             >
               Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV,
-              Lemmy or a Discourse forum, or LinkedIn sending, on the integrations page.
+              Lemmy, Nostr, Tumblr, Hashnode or a Discourse forum, or LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
@@ -244,7 +255,7 @@ function Composer({
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
-  const dev = on === "dev";
+  const dev = on === "dev" || on === "hashnode";
   const lemmy = on === "lemmy";
   const discourse = on === "discourse";
   const forum = forums.find((f) => f.id === forumId) ?? forums[0];
@@ -319,7 +330,8 @@ function Composer({
             <TopicTitle title={title} setTitle={setTitle} />
           </div>
         )}
-        {dev && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+        {dev && <ArticleFields platform={on} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+        {on === "tumblr" && <TagsField platform={on} tags={tags} setTags={setTags} />}
         <Textarea
           aria-label={dev ? "Article" : discourse ? "Topic" : "Post"}
           rows={dev ? 6 : 3}
@@ -355,17 +367,41 @@ function Composer({
   );
 }
 
-/** A DEV article's title and tags. */
-function ArticleFields({ title, tags, setTitle, setTags }: { title: string; tags: string; setTitle: (s: string) => void; setTags: (s: string) => void }) {
+/** A DEV or Hashnode article's title and tags. */
+function ArticleFields({
+  platform,
+  title,
+  tags,
+  setTitle,
+  setTags,
+}: {
+  platform: Platform;
+  title: string;
+  tags: string;
+  setTitle: (s: string) => void;
+  setTags: (s: string) => void;
+}) {
   return (
     <div className="flex flex-col gap-3 sm:flex-row">
       <Field label="Title" className="flex-1">
-        <Input autoComplete="off" maxLength={DEV_TITLE_CHARS} value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Input autoComplete="off" maxLength={ARTICLE_TITLE_CHARS[platform]} value={title} onChange={(e) => setTitle(e.target.value)} />
       </Field>
-      <Field label="Up to 4 tags" className="sm:w-64">
-        <Input autoComplete="off" placeholder="webdev, productivity" value={tags} onChange={(e) => setTags(e.target.value)} />
-      </Field>
+      <TagsField platform={platform} tags={tags} setTags={setTags} className="sm:w-64" />
     </div>
+  );
+}
+
+/** Tags for a DEV or Hashnode article or a Tumblr post, which is how people find posts on Tumblr. */
+function TagsField({ platform, tags, setTags, className }: { platform: Platform; tags: string; setTags: (s: string) => void; className?: string }) {
+  return (
+    <Field label={`Up to ${MAX_TAGS[platform]} tags`} className={className}>
+      <Input
+        autoComplete="off"
+        placeholder={platform === "tumblr" ? "small business, marketing" : platform === "hashnode" ? "devops, startup" : "webdev, productivity"}
+        value={tags}
+        onChange={(e) => setTags(e.target.value)}
+      />
+    </Field>
   );
 }
 
@@ -425,6 +461,9 @@ function replyingTo(p: SocialPost): string {
   if (p.platform === "stackexchange") return "Answering this question";
   if (p.platform === "discourse") return "Replying to this topic";
   if (p.platform === "lemmy") return p.in_reply_to?.includes("/comment/") ? "Replying to this comment" : "Commenting on this post";
+  if (p.platform === "nostr") return "Replying to this note";
+  if (p.platform === "tumblr") return "Reblogging this post with your comment";
+  if (p.platform === "hashnode") return "Commenting on this article";
   if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
   return "Replying to this thread";
 }
@@ -451,7 +490,8 @@ function PostCard({
   const redditPost = p.platform === "reddit" && !reply;
   const lemmyPost = p.platform === "lemmy" && !reply;
   const topic = p.platform === "discourse" && !reply;
-  const article = p.platform === "dev";
+  const article = p.platform === "dev" || (p.platform === "hashnode" && !reply);
+  const tumblrPost = p.platform === "tumblr" && !reply;
   const posted = p.status === "posted";
   const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit || tagList(tags).join(",") !== p.tags.join(",");
   const max = maxLength(p.platform, reply, mastodonChars);
@@ -460,9 +500,10 @@ function PostCard({
   const tooShort = n < minLength(p.platform);
   const unfit =
     (max !== null && n > max) || tooShort || (!reply && !titleReady(p.platform, title, subreddit, forum)) || (p.platform === "discourse" && !forum);
-  // LinkedIn, YouTube and Lemmy call a reply a comment, Stack Exchange an answer, DEV a post an article, and Discourse a topic.
+  // LinkedIn, YouTube, Lemmy, Hashnode and Tumblr call a reply a comment, Stack Exchange an answer, DEV and Hashnode a post an
+  // article, Discourse a topic, and Nostr a post a note.
   const kind = reply
-    ? p.platform === "linkedin" || p.platform === "youtube" || p.platform === "lemmy"
+    ? p.platform === "linkedin" || p.platform === "youtube" || p.platform === "lemmy" || p.platform === "hashnode" || p.platform === "tumblr"
       ? "comment"
       : p.platform === "stackexchange"
         ? "answer"
@@ -471,7 +512,9 @@ function PostCard({
       ? "article"
       : topic
         ? "topic"
-        : "post";
+        : p.platform === "nostr"
+          ? "note"
+          : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
@@ -560,7 +603,8 @@ function PostCard({
             )}
             {lemmyPost && <CommunityFields community={subreddit} title={title} setCommunity={setSubreddit} setTitle={setTitle} />}
             {topic && <TopicTitle title={title} setTitle={setTitle} />}
-            {article && <ArticleFields title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+            {article && <ArticleFields platform={p.platform} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+            {tumblrPost && <TagsField platform={p.platform} tags={tags} setTags={setTags} />}
             <div className="flex flex-col gap-1">
               <MicroLabel>Your {kind}</MicroLabel>
               {/* Grows with the text, so a long reply can be read without scrolling inside the box. */}

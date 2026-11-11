@@ -1,7 +1,7 @@
 //! Email delivery: SMTP sending, IMAP reply polling, follow-ups, DNS checks.
 
 pub mod dns;
-mod imap;
+pub(crate) mod imap;
 mod inbound;
 mod notify;
 pub mod oauth;

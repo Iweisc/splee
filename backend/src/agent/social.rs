@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, discourse, lemmy, linkedin, mastodon, reddit, stackexchange, threads, x, youtube};
+use super::{Ctx, Outcome, bluesky, discourse, hashnode, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
 use crate::discourse::{Topic, forum_url};
 use crate::hooks::{self, Alert};
@@ -90,8 +90,8 @@ fn schema() -> Value {
             "posts": {"type": "array", "items": {"type": "object", "properties": {
                 "platform": {"type": "string", "enum": PLATFORMS.iter().filter(|p| takes_posts(p)).collect::<Vec<_>>()},
                 "subreddit": {"type": "string", "description": "Reddit only, without r/. Empty for the others."},
-                "title": {"type": "string", "description": "Reddit, DEV, Discourse and Lemmy only. Empty for the others."},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV only, up to 4. Empty for the others."},
+                "title": {"type": "string", "description": "Reddit, DEV, Hashnode, Discourse and Lemmy only. Empty for the others."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV, Hashnode and Tumblr only. Empty for the others."},
                 "forum": {"type": "string", "description": "Discourse only, the forum's address as listed. Empty for the others."},
                 "community": {"type": "string", "description": "Lemmy only, as name@instance. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
@@ -113,6 +113,10 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| crate::threads::post_url(link))
         .or_else(|| Video::parse(link).map(|v| v.url()))
         .or_else(|| Question::parse(link).map(|q| q.url()))
+        .or_else(|| crate::tumblr::PostRef::parse(link).map(|p| p.url()))
+        .or_else(|| crate::nostr::note_id(link).map(|id| crate::nostr::link(&id)))
+        // Before Discourse and Lemmy, since an article on its own domain can have a path that looks like theirs.
+        .or_else(|| crate::hashnode::post_id(link).and_then(|id| crate::hashnode::post_link(link, &id)))
         .or_else(|| Topic::parse(link).map(|t| t.url()))
         .or_else(|| crate::lemmy::Link::parse(link).map(|l| l.url()))
 }
@@ -130,8 +134,8 @@ fn names(platforms: &[&str]) -> String {
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
-    const CONNECT: &str =
-        "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy or LinkedIn on the integrations page first";
+    const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, \
+                           Hashnode or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -266,6 +270,50 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             Err(e) => unavailable("lemmy", Alert::Lemmy, e).await?,
         }
     }
+    if !accounts.nostr_key_enc.is_empty() {
+        match accounts.nostr(secret) {
+            Ok(n) => {
+                call.servers.insert("nostr".into(), nostr::server(Arc::new(n), seen.clone()));
+                call.server_tools.extend([nostr::SEARCH.to_string(), nostr::READ.to_string()]);
+                platforms.push("nostr");
+                tools.push(format!(
+                    "On Nostr you post as {}. Search notes with mcp__nostr__search and read a note and its replies with mcp__nostr__read.",
+                    accounts.nostr_npub
+                ));
+            }
+            Err(e) => unavailable("nostr", Alert::Nostr, e).await?,
+        }
+    }
+    if !accounts.tumblr_username.is_empty() {
+        match accounts.tumblr(&ctx.state).await {
+            Ok(t) => {
+                call.servers.insert("tumblr".into(), tumblr::server(Arc::new(t), seen.clone()));
+                call.server_tools.extend([tumblr::SEARCH.to_string(), tumblr::READ.to_string()]);
+                platforms.push("tumblr");
+                tools.push(format!(
+                    "On Tumblr you post as the blog {}. Search posts by tag with mcp__tumblr__search and read a post with mcp__tumblr__read. \
+                     Tumblr has no replies for apps, so a reply goes out as a reblog of the post with your text as its comment.",
+                    accounts.tumblr_blog
+                ));
+            }
+            Err(e) => unavailable("tumblr", Alert::Tumblr, e).await?,
+        }
+    }
+    if !accounts.hashnode_token_enc.is_empty() {
+        match accounts.hashnode(secret) {
+            Ok(h) => {
+                call.servers.insert("hashnode".into(), hashnode::server(Arc::new(h), seen.clone()));
+                call.server_tools.extend([hashnode::SEARCH.to_string(), hashnode::READ.to_string()]);
+                platforms.push("hashnode");
+                tools.push(format!(
+                    "On Hashnode you write as @{}. Search recent articles by tag with mcp__hashnode__search and read an article and its \
+                     comments with mcp__hashnode__read.",
+                    accounts.hashnode_username
+                ));
+            }
+            Err(e) => unavailable("hashnode", Alert::Hashnode, e).await?,
+        }
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -331,9 +379,11 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
     let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p)).collect();
-    // Discourse only takes new topics on forums with a category picked for them.
+    // Discourse only takes new topics on forums with a category picked for them, and Hashnode articles need a publication.
     let topics = accounts.forums.iter().any(|f| f.category_id.is_some());
-    let posting: Vec<&str> = platforms.iter().copied().filter(|p| takes_posts(p) && (*p != "discourse" || topics)).collect();
+    let articles = !accounts.hashnode_publication_id.is_empty();
+    let posting: Vec<&str> =
+        platforms.iter().copied().filter(|p| takes_posts(p) && (*p != "discourse" || topics) && (*p != "hashnode" || articles)).collect();
     let (find, post_on) = (names(&replying), names(&posting));
     let task = match (replying.is_empty(), posting.is_empty()) {
         (true, _) => format!("Draft a few original posts on {post_on} that people who could buy from {name} would want to read."),
@@ -448,6 +498,18 @@ fn rules(platform: &str, company: &str, a: &Accounts) -> String {
              {company} where a community bans self-promotion. A post needs `community`, as name@instance, where such posts are \
              welcome, and a title of at most 200 characters."
         ),
+        "nostr" => "Nostr: replies and notes are plain text, at most 5,000 characters, but keep them under 500 like any short post. \
+                    No Markdown and no hashtags."
+            .into(),
+        "tumblr" => format!(
+            "Tumblr: a reply is a reblog with your text as its comment, so it shows on the blog too: only answer posts worth sharing \
+             with the blog's followers, and write the comment so it reads well on its own. Keep it under 1,000 characters. An original \
+             post is plain text with up to 10 `tags`, which is how people find posts there. Don't mention {company} in a reblog."
+        ),
+        "hashnode" => "Hashnode: comments are Markdown, under 1,500 characters, and answer the article's point. An original article is \
+                       Markdown with a title of at most 250 characters and up to 5 `tags` like devops or startup, a full article of 600 \
+                       to 1500 words that teaches something specific."
+            .into(),
         "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
                   lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
                   something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
@@ -517,6 +579,10 @@ async fn save(
                 _ => continue,
             },
             "dev" if titles(1, crate::dev::TITLE_CHARS) => (String::new(), title, crate::dev::tags(&p.tags), None),
+            "hashnode" if titles(1, crate::hashnode::TITLE_CHARS) && !a.hashnode_publication_id.is_empty() => {
+                (String::new(), title, crate::hashnode::tags(&p.tags), None)
+            }
+            "tumblr" => (String::new(), "", crate::tumblr::tags(&p.tags), None),
             "lemmy" => match crate::lemmy::community(&p.community, a.lemmy_host()) {
                 Some(community) if titles(1, crate::lemmy::TITLE_CHARS) => (community, title, Vec::new(), None),
                 _ => continue,
@@ -525,7 +591,7 @@ async fn save(
                 Some(f) if titles(crate::discourse::MIN_TITLE_CHARS, crate::discourse::TITLE_CHARS) => (String::new(), title, Vec::new(), Some(f.id)),
                 _ => continue,
             },
-            "dev" => continue,
+            "dev" | "hashnode" => continue,
             _ => (String::new(), "", Vec::new(), None),
         };
         sqlx::query(
@@ -565,6 +631,10 @@ mod tests {
             ("https://stackoverflow.com/questions/79724206/firebase-auth", "https://stackoverflow.com/questions/79724206"),
             ("https://forum.acme.com/t/warming-up/42/3", "https://forum.acme.com/t/42"),
             ("https://lemmy.world/comment/7", "https://lemmy.world/comment/7"),
+            ("https://acme.tumblr.com/post/7712345/warming-up", "https://www.tumblr.com/acme/7712345"),
+            ("nostr:note1xlr5mlm2alkq3hxyw0s8f3tm6t2gssqq0ld70cjkhptje28uu56qwxgm3j", "https://njump.me/note1xlr5mlm2alkq3hxyw0s8f3tm6t2gssqq0ld70cjkhptje28uu56qwxgm3j"),
+            // Its path looks like a Lemmy post's, and the id makes it Hashnode's.
+            ("https://bo.dev/post/5?ref=feed&hashnode=66f0c1a2b3c4d5e6f7a8b9c0#c1", "https://bo.dev/post/5?hashnode=66f0c1a2b3c4d5e6f7a8b9c0"),
         ] {
             assert_eq!(canonical(link).as_deref(), Some(canonical_link), "{link}");
         }
@@ -596,6 +666,10 @@ mod tests {
             ("https://stackoverflow.com/questions/8".to_string(), thread("stackexchange", false, 3)),
             ("https://forum.acme.com/t/42".to_string(), thread("discourse", false, 3)),
             ("https://lemmy.world/post/5".to_string(), Thread { subreddit: "sales@lemmy.world".into(), ..thread("lemmy", false, 1) }),
+            (crate::nostr::link(&"ab".repeat(32)), thread("nostr", false, 1)),
+            ("https://www.tumblr.com/bo/42".to_string(), thread("tumblr", false, 1)),
+            ("https://www.tumblr.com/bo/43".to_string(), thread("tumblr", true, 1)),
+            ("https://bo.dev/warming-up?hashnode=66f0c1a2b3c4d5e6f7a8b9c0".to_string(), thread("hashnode", false, 2)),
         ]);
         let reply = |url: &str, body: &str| Reply { thread_url: url.into(), reason: "Asks for it".into(), body: body.into() };
         let post = |platform: &str, subreddit: &str, title: &str| Post {
@@ -625,6 +699,11 @@ mod tests {
                 reply("https://stackoverflow.com/q/8", "Use a pool."),
                 reply("https://forum.acme.com/t/warming-up/42", "Warm it up over four weeks, 20 a day."),
                 reply("https://lemmy.world/post/5", "Same here"),
+                reply(&crate::nostr::link(&"ab".repeat(32)), "Same here"),
+                reply("https://bo.tumblr.com/post/42/how-do-you-find-leads", "Same here"),
+                // A post that can't be reblogged.
+                reply("https://www.tumblr.com/bo/43", "Same here"),
+                reply("https://bo.dev/warming-up?hashnode=66f0c1a2b3c4d5e6f7a8b9c0", "Same here"),
             ],
             // YouTube and Stack Exchange only take replies, and a DEV article needs a title.
             posts: vec![
@@ -642,10 +721,15 @@ mod tests {
                 Post { forum: "other.example".into(), body: long.into(), ..post("discourse", "", "How we warm up domains") },
                 Post { community: "!Sales@lemmy.world".into(), ..post("lemmy", "", "What works for you?") },
                 post("lemmy", "", "What works for you?"),
+                post("nostr", "", ""),
+                post("tumblr", "", ""),
+                // A Hashnode article needs a title.
+                post("hashnode", "", "How we warm up domains"),
+                post("hashnode", "", ""),
             ],
         };
 
-        sqlx::query("insert into project_settings (project_id, mastodon_max_chars, lemmy_url) values ($1, 500, 'https://lemmy.world')")
+        sqlx::query("insert into project_settings (project_id, mastodon_max_chars, lemmy_url, hashnode_publication_id) values ($1, 500, 'https://lemmy.world', 'pub1')")
             .bind(project)
             .execute(&db)
             .await
@@ -659,27 +743,40 @@ mod tests {
         .await
         .unwrap();
         let accounts = social::accounts(&db, project).await.unwrap().unwrap();
-        let platforms = ["x", "reddit", "bluesky", "youtube", "stackexchange", "dev", "discourse", "lemmy"];
-        assert_eq!(save(&db, project, run, &platforms, &accounts, drafts(), &seen).await.unwrap(), (5, 5));
+        let platforms = ["x", "reddit", "bluesky", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode"];
+        assert_eq!(save(&db, project, run, &platforms, &accounts, drafts(), &seen).await.unwrap(), (8, 8));
         let rows: Vec<(String, Option<String>, String, String, String)> =
             sqlx::query_as("select platform, in_reply_to, context, subreddit, title from social_posts order by in_reply_to nulls last, platform")
                 .fetch_all(&db)
                 .await
                 .unwrap();
+        let asked = "How do you find leads?".to_string();
+        let nostr = crate::nostr::link(&"ab".repeat(32));
         assert_eq!(rows, [
-            ("discourse".into(), Some("https://forum.acme.com/t/42".into()), "How do you find leads?".into(), String::new(), String::new()),
-            ("lemmy".into(), Some("https://lemmy.world/post/5".into()), "How do you find leads?".into(), "sales@lemmy.world".into(), String::new()),
-            ("stackexchange".into(), Some("https://stackoverflow.com/questions/7".into()), "How do you find leads?".into(), String::new(), String::new()),
-            ("reddit".into(), Some("https://www.reddit.com/comments/open1/".into()), "How do you find leads?".into(), "sales".into(), String::new()),
-            ("youtube".into(), Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()), "How do you find leads?".into(), String::new(), String::new()),
+            ("hashnode".into(), Some("https://bo.dev/warming-up?hashnode=66f0c1a2b3c4d5e6f7a8b9c0".into()), asked.clone(), String::new(), String::new()),
+            ("discourse".into(), Some("https://forum.acme.com/t/42".into()), asked.clone(), String::new(), String::new()),
+            ("lemmy".into(), Some("https://lemmy.world/post/5".into()), asked.clone(), "sales@lemmy.world".into(), String::new()),
+            ("nostr".into(), Some(nostr), asked.clone(), String::new(), String::new()),
+            ("stackexchange".into(), Some("https://stackoverflow.com/questions/7".into()), asked.clone(), String::new(), String::new()),
+            ("reddit".into(), Some("https://www.reddit.com/comments/open1/".into()), asked.clone(), "sales".into(), String::new()),
+            ("tumblr".into(), Some("https://www.tumblr.com/bo/42".into()), asked.clone(), String::new(), String::new()),
+            ("youtube".into(), Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()), asked.clone(), String::new(), String::new()),
             ("dev".into(), None, String::new(), String::new(), "Warming up a domain".into()),
             ("discourse".into(), None, String::new(), String::new(), "How we warm up domains".into()),
+            ("hashnode".into(), None, String::new(), String::new(), "How we warm up domains".into()),
             ("lemmy".into(), None, String::new(), "sales@lemmy.world".into(), "What works for you?".into()),
+            ("nostr".into(), None, String::new(), String::new(), String::new()),
             ("reddit".into(), None, String::new(), "sales".into(), "What works for you?".into()),
+            ("tumblr".into(), None, String::new(), String::new(), String::new()),
             ("x".into(), None, String::new(), String::new(), String::new()),
         ]);
-        let tags: Vec<String> = sqlx::query_scalar("select tags from social_posts where platform = 'dev'").fetch_one(&db).await.unwrap();
-        assert_eq!(tags, ["coldemail", "sales"]);
+        let tags: Vec<(String, Vec<String>)> =
+            sqlx::query_as("select platform, tags from social_posts where platform in ('dev', 'hashnode', 'tumblr') and in_reply_to is null order by platform")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        let tags: Vec<(&str, Vec<&str>)> = tags.iter().map(|(p, t)| (p.as_str(), t.iter().map(String::as_str).collect())).collect();
+        assert_eq!(tags, [("dev", vec!["coldemail", "sales"]), ("hashnode", vec!["cold-email", "sales"]), ("tumblr", vec!["Cold Email", "sales"])]);
         // Both Discourse rows point at the forum, which the poster needs.
         let forums: i64 = sqlx::query_scalar("select count(*) from social_posts where platform = 'discourse' and forum_id is not null").fetch_one(&db).await.unwrap();
         assert_eq!(forums, 2);

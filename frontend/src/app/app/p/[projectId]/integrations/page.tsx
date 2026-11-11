@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AtSign,
@@ -17,7 +17,9 @@ import {
   MessageSquareText,
   MessagesSquare,
   Newspaper,
+  PenLine,
   RefreshCw,
+  Repeat2,
   Send,
   Spool,
   Trash2,
@@ -26,6 +28,7 @@ import {
   UserSearch,
   UsersRound,
   Webhook,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
@@ -38,8 +41,8 @@ import { useAction } from "@/components/app/settings/use-action";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Badge, Host } from "@/components/ui/misc";
-import { Field, Input, Select, Switch } from "@/components/ui/form";
-import { fetcher } from "@/hooks/use-me";
+import { Field, Input, Select, Switch, Textarea } from "@/components/ui/form";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
 import {
@@ -484,7 +487,7 @@ type Crm = { name: string; record: string; field: string; hint: string; account?
 function useConnection(projectId: string, path: string) {
   const { mutate } = useSWRConfig();
   const [busy, setBusy] = useState(false);
-  const call = async (body: Record<string, string> | undefined, done: string) => {
+  const call = async (body: Record<string, string | string[]> | undefined, done: string) => {
     setBusy(true);
     try {
       const fresh = await api<ProjectSettings>(`/projects/${projectId}/integrations/${path}`, { method: body ? "PUT" : "DELETE", body });
@@ -1563,6 +1566,217 @@ function LemmySection({ projectId, settings }: { projectId: string; settings: Pr
   );
 }
 
+const hostOfRelay = (r: string) => r.replace(/^wss:\/\//, "");
+
+/** "a", "a and b", "a, b and c". */
+const listOf = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+/** The secret key is write-only. Connecting reads the npub from it and checks that each relay is wss:// at a public address. */
+function NostrSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [form, setForm] = useState({ key: "", relays: "" });
+  const { busy, call } = useConnection(projectId, "nostr");
+  const connect = async () => {
+    if (await call({ key: form.key, relays: [form.relays] }, "Connected to Nostr")) setForm({ key: "", relays: "" });
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Nostr? Approved notes will wait until you connect it again.")) call(undefined, "Nostr disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Zap className="size-4" /> Nostr
+        </span>
+      }
+      description="Searches Nostr for notes where your buyers ask for help, and posts the notes and replies you approve on the Social page with your key."
+      actions={
+        settings.nostr_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.nostr_connected ? (
+        <div className="flex flex-col gap-1.5 text-sm text-pretty">
+          <p>Posting as</p>
+          <p className="rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs break-all">{settings.nostr_npub}</p>
+          <p>Notes go to {listOf(settings.nostr_relays.map(hostOfRelay))}, up to 15 a day, one every ten minutes.</p>
+        </div>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            Splee signs each note with your secret key and sends it to your relays. Use a key you made for the company, not your own.
+          </p>
+          <Field label="Secret key">
+            <Input type="password" autoComplete="off" placeholder="nsec1…" value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value.trim() })} />
+          </Field>
+          <Field label="Relays" hint="One per line. Leave it empty for relay.damus.io, nos.lol and relay.nostr.band.">
+            <Textarea
+              rows={3}
+              autoComplete="off"
+              placeholder="wss://relay.damus.io"
+              value={form.relays}
+              onChange={(e) => setForm({ ...form, relays: e.target.value })}
+              className="min-h-0"
+            />
+          </Field>
+          <Button type="submit" loading={busy} disabled={!form.key} className="sm:self-start">
+            Connect
+          </Button>
+        </form>
+      )}
+      <LastFailure error={settings.nostr_error} at={settings.nostr_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** Connects by signing in to Tumblr, which only shows when the server has a Tumblr app. Tumblr sends the browser back here
+ *  with how it went. */
+function TumblrSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const { me } = useMe();
+  const { pending, run } = useAction();
+  const { busy, call } = useConnection(projectId, "tumblr");
+  const { mutate } = useSWRConfig();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("tumblr") === "connected";
+    const failed = params.get("tumblr_error");
+    if (!connected && !failed) return;
+    // Cleared first, so a reload doesn't show it again.
+    window.history.replaceState(null, "", window.location.pathname);
+    if (failed) toast.error(failed);
+    if (connected) {
+      toast.success("Connected to Tumblr");
+      mutate(`/projects/${projectId}/settings`);
+    }
+  }, [mutate, projectId]);
+
+  if (!me?.tumblr_sign_in && !settings.tumblr_connected) return null;
+  const signIn = () =>
+    run("tumblr", async () => {
+      const { url } = await api<{ url: string }>(`/projects/${projectId}/integrations/tumblr/oauth`, { method: "POST" });
+      window.location.assign(url);
+    });
+  const disconnect = () => {
+    if (confirm("Disconnect Tumblr? Approved posts and reblogs will wait until you connect it again.")) call(undefined, "Tumblr disconnected");
+  };
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <Repeat2 className="size-4" /> Tumblr
+        </span>
+      }
+      description="Searches Tumblr tags for posts where your buyers ask for help, and posts what you approve on the Social page from your blog."
+      actions={
+        settings.tumblr_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      <p className="text-sm text-pretty text-muted-foreground">
+        Tumblr has no replies for apps, so Splee answers a post by reblogging it to your blog with your comment on top.
+      </p>
+      {settings.tumblr_connected ? (
+        <div className="mt-4 flex flex-col gap-3">
+          <Field label="Post as" hint={`Signed in as ${settings.tumblr_username}. Up to 10 posts and reblogs a day, one every ten minutes.`}>
+            <Select value={settings.tumblr_blog} disabled={busy} onChange={(e) => call({ blog: e.target.value }, `Posting as ${e.target.value}`)} className="sm:w-72">
+              {settings.tumblr_blogs.map((b) => (
+                <option key={b.name} value={b.name}>
+                  {b.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      ) : (
+        <Button onClick={signIn} loading={pending === "tumblr"} className="mt-4">
+          Connect Tumblr
+        </Button>
+      )}
+      <LastFailure error={settings.tumblr_error} at={settings.tumblr_failed_at} what="post" />
+    </Section>
+  );
+}
+
+/** The token is write-only. Connecting checks it with Hashnode and reads back the username and publications. */
+function HashnodeSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const [token, setToken] = useState("");
+  const { busy, call } = useConnection(projectId, "hashnode");
+  const publication = useConnection(projectId, "hashnode/publication");
+  const connect = async () => {
+    if (await call({ token }, "Connected to Hashnode")) setToken("");
+  };
+  const disconnect = () => {
+    if (confirm("Disconnect Hashnode? Approved articles and comments will wait until you connect it again.")) call(undefined, "Hashnode disconnected");
+  };
+  const publications = settings.hashnode_publications;
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <PenLine className="size-4" /> Hashnode
+        </span>
+      }
+      description="Searches recent Hashnode articles by tag, comments on the ones you approve on the Social page, and publishes your articles."
+      actions={
+        settings.hashnode_connected ? (
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        ) : undefined
+      }
+    >
+      {settings.hashnode_connected ? (
+        <div className="flex flex-col gap-3 text-sm text-pretty">
+          <p>Writing as @{settings.hashnode_username}, up to 2 articles and 10 comments a day, one every ten minutes.</p>
+          {publications.length > 0 ? (
+            <Field label="Publish articles in">
+              <Select
+                value={settings.hashnode_publication_id}
+                disabled={publication.busy}
+                onChange={(e) => publication.call({ publication_id: e.target.value }, "Publication saved")}
+                className="sm:w-72"
+              >
+                {publications.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title || p.url}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : (
+            <p className="text-muted-foreground">The account has no blog yet, so only comments go out. Start one on Hashnode, then connect again.</p>
+          )}
+        </div>
+      ) : (
+        <form onSubmit={submit(connect)} className="flex flex-col gap-4">
+          <p className="text-sm text-pretty text-muted-foreground">
+            In{" "}
+            <a href="https://hashnode.com/settings/developer" target="_blank" rel="noreferrer" className="font-medium text-foreground underline underline-offset-4">
+              Hashnode&apos;s developer settings
+            </a>
+            , generate a personal access token.
+          </p>
+          <Field label="Access token">
+            <div className="flex gap-2">
+              <Input aria-label="Access token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value.trim())} />
+              <Button type="submit" loading={busy} disabled={!token}>
+                Connect
+              </Button>
+            </div>
+          </Field>
+        </form>
+      )}
+      <LastFailure error={settings.hashnode_error} at={settings.hashnode_failed_at} what="post" />
+    </Section>
+  );
+}
+
 /** For a leaked secret. The new one replaces the old one right away, so the receiver has to be updated too. */
 function ReplaceSecretButton({ projectId, onReplaced }: { projectId: string; onReplaced: (secret: string) => void }) {
   const { mutate } = useSWRConfig();
@@ -1655,6 +1869,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <DevSection projectId={projectId} settings={s} />
           <DiscourseSection projectId={projectId} />
           <LemmySection projectId={projectId} settings={s} />
+          <NostrSection projectId={projectId} settings={s} />
+          <TumblrSection projectId={projectId} settings={s} />
+          <HashnodeSection projectId={projectId} settings={s} />
 
           <Section
             title={

@@ -41,6 +41,8 @@ pub struct Me {
     operator: bool,
     /// "google" and "microsoft" when the server has their apps, so the Mailboxes page offers to connect by signing in.
     mailbox_sign_in: Vec<&'static str>,
+    /// The server has a Tumblr app, so the integrations page offers to connect Tumblr.
+    tumblr_sign_in: bool,
 }
 
 #[derive(Serialize, FromRow)]
@@ -67,7 +69,8 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
     let operator = state.cfg.is_operator(&user.email);
     let mailbox_sign_in = crate::mail::oauth::configured(&state.cfg);
-    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in })
+    let tumblr_sign_in = state.cfg.tumblr.is_some();
+    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in, tumblr_sign_in })
 }
 
 #[derive(Deserialize)]

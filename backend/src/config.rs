@@ -32,6 +32,8 @@ pub struct Config {
     pub microsoft: Option<OAuthApp>,
     /// The Splee Slack app. None hides Add to Slack.
     pub slack: Option<SlackApp>,
+    /// The Tumblr app projects sign in with to post on Tumblr. None hides Tumblr on the integrations page.
+    pub tumblr: Option<OAuthApp>,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -45,7 +47,7 @@ pub struct SlackApp {
     pub api_url: String,
 }
 
-/// An OAuth app registered with Google or Microsoft. See mail::oauth.
+/// An OAuth app registered with Google, Microsoft or Tumblr. See mail::oauth and tumblr.
 #[derive(Clone, Debug)]
 pub struct OAuthApp {
     pub client_id: String,
@@ -98,6 +100,7 @@ impl Config {
                 OAuthApp::from_env("MICROSOFT", format!("{base}/authorize"), format!("{base}/token"))
             },
             slack: SlackApp::from_env(),
+            tumblr: OAuthApp::from_env("TUMBLR", crate::tumblr::AUTHORIZE_URL.into(), crate::tumblr::TOKEN_URL.into()),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -150,6 +153,7 @@ mod tests {
             google: None,
             microsoft: None,
             slack: None,
+            tumblr: None,
         }
     }
 

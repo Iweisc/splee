@@ -1,7 +1,8 @@
-//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy and LinkedIn, comments
-//! for YouTube, answers for Stack Exchange and articles for DEV, that a social run drafted or the user wrote, which
-//! crate::social posts once approved, and connecting the accounts they go out from. LinkedIn goes out through the project's
-//! Unipile connection, see routes::linkedin.
+//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy, Nostr and LinkedIn,
+//! reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles for DEV, and comments
+//! and articles for Hashnode, that a social run drafted or the user wrote, which crate::social posts once approved, and
+//! connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see routes::linkedin,
+//! and Tumblr connects by signing in, see routes::tumblr.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, patch, post, put};
@@ -20,15 +21,18 @@ use crate::crypto;
 use crate::dev::{self, Dev};
 use crate::discourse::{self, Discourse};
 use crate::error::{AppError, AppResult};
+use crate::hashnode::{self, Hashnode};
 use crate::lemmy::{self, Lemmy};
 use crate::models::{DiscourseForum, ProjectSettings, SocialPost};
 use crate::mastodon::{self, Mastodon};
+use crate::nostr;
 use crate::reddit::{self, Login, Reddit};
 use crate::social::{self, Failure, PLATFORMS, length, max_length, min_length, takes_posts};
 use crate::stackexchange::{self, StackExchange};
 use crate::state::AppState;
 use crate::threads::Threads;
 use crate::youtube::{self, YouTube};
+use crate::{hooks, tumblr};
 
 const STATUSES: [&str; 6] = ["draft", "approved", "posting", "posted", "failed", "skipped"];
 /// Plenty for the few communities a company's buyers gather in, and it bounds a social run's searches.
@@ -48,6 +52,9 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/stackexchange", put(connect_stackexchange).delete(disconnect_stackexchange))
         .route("/projects/{id}/integrations/dev", put(connect_dev).delete(disconnect_dev))
         .route("/projects/{id}/integrations/lemmy", put(connect_lemmy).delete(disconnect_lemmy))
+        .route("/projects/{id}/integrations/nostr", put(connect_nostr).delete(disconnect_nostr))
+        .route("/projects/{id}/integrations/hashnode", put(connect_hashnode).delete(disconnect_hashnode))
+        .route("/projects/{id}/integrations/hashnode/publication", put(pick_publication))
         .route("/projects/{id}/discourse-forums", get(list_forums).post(add_forum))
         .route("/discourse-forums/{id}", delete(remove_forum))
 }
@@ -76,8 +83,8 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Q
 }
 
 /// What a post needs before it can go out: text within the platform's limits, a subreddit and title for a new Reddit post, a
-/// community and title for a new Lemmy post, a title for a DEV article and a Discourse topic, and something to answer for
-/// YouTube and Stack Exchange. `subreddit` is the Lemmy community for Lemmy.
+/// community and title for a new Lemmy post, a title for a DEV or Hashnode article and a Discourse topic, and something to
+/// answer for YouTube and Stack Exchange. `subreddit` is the Lemmy community for Lemmy.
 fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, mastodon_chars: usize) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::BadRequest("Write something first".into()));
@@ -88,9 +95,11 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
     }
     let what = match (platform, reply) {
         ("stackexchange", _) => "Answers",
-        ("dev", _) => "Articles",
+        ("dev" | "hashnode", false) => "Articles",
         ("discourse", false) => "Topics",
-        ("linkedin" | "youtube" | "lemmy", true) => "Comments",
+        ("nostr", _) => "Notes",
+        ("tumblr", true) => "Reblog comments",
+        ("linkedin" | "youtube" | "lemmy" | "hashnode", true) => "Comments",
         (_, true) => "Replies",
         _ => "Posts",
     };
@@ -115,12 +124,13 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
     if platform == "discourse" && !reply && !(discourse::MIN_TITLE_CHARS..=discourse::TITLE_CHARS).contains(&title.trim().chars().count()) {
         return Err(AppError::BadRequest(format!("Discourse titles are {} to {} characters", discourse::MIN_TITLE_CHARS, discourse::TITLE_CHARS)));
     }
-    if platform == "dev" {
+    if let ("dev", _) | ("hashnode", false) = (platform, reply) {
+        let max = if platform == "dev" { dev::TITLE_CHARS } else { hashnode::TITLE_CHARS };
         if title.trim().is_empty() {
-            return Err(AppError::BadRequest("A DEV article needs a title".into()));
+            return Err(AppError::BadRequest(format!("A {} article needs a title", social::name(platform))));
         }
-        if title.chars().count() > dev::TITLE_CHARS {
-            return Err(AppError::BadRequest(format!("DEV titles are at most {} characters", dev::TITLE_CHARS)));
+        if title.chars().count() > max {
+            return Err(AppError::BadRequest(format!("{} titles are at most {max} characters", social::name(platform))));
         }
     }
     if title.chars().count() > 300 {
@@ -129,9 +139,19 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
     Ok(())
 }
 
-/// Reddit, Lemmy and Discourse original posts and DEV articles have a title.
+/// Reddit, Lemmy and Discourse original posts and DEV and Hashnode articles have a title.
 fn titled(platform: &str, reply: bool) -> bool {
-    matches!(platform, "reddit" | "dev" | "lemmy" | "discourse") && !reply
+    matches!(platform, "reddit" | "dev" | "lemmy" | "discourse" | "hashnode") && !reply
+}
+
+/// DEV and Hashnode articles and Tumblr posts have tags, kept as each platform takes them.
+fn tags(platform: &str, reply: bool, raw: &[String]) -> Option<Vec<String>> {
+    match (platform, reply) {
+        ("dev", _) => Some(dev::tags(raw)),
+        ("hashnode", false) => Some(hashnode::tags(raw)),
+        ("tumblr", false) => Some(tumblr::tags(raw)),
+        _ => None,
+    }
 }
 
 /// The project's Mastodon instance's post limit, for `check`.
@@ -176,10 +196,15 @@ async fn require_forum(state: &AppState, project_id: Uuid, forum_id: Option<Uuid
     }
 }
 
-/// Approving a post for an account that isn't connected would leave it waiting with no word on why.
-async fn require_account(state: &AppState, project_id: Uuid, platform: &str) -> AppResult<()> {
-    let connected = social::accounts(&state.db, project_id).await?.is_some_and(|a| a.connected().contains(&platform));
+/// Approving a post for an account that isn't connected, or a Hashnode article with no publication to go in, would leave it
+/// waiting with no word on why.
+async fn require_account(state: &AppState, project_id: Uuid, platform: &str, reply: bool) -> AppResult<()> {
+    let accounts = social::accounts(&state.db, project_id).await?;
+    let connected = accounts.as_ref().is_some_and(|a| a.connected().contains(&platform));
     match (connected, platform) {
+        (true, "hashnode") if !reply && accounts.is_some_and(|a| a.hashnode_publication_id.is_empty()) => {
+            Err(AppError::BadRequest("Pick a Hashnode publication for articles on the integrations page first".into()))
+        }
         (true, _) => Ok(()),
         (false, "linkedin") => Err(AppError::BadRequest("Connect LinkedIn sending on the integrations page first".into())),
         (false, p) => Err(AppError::BadRequest(format!("Connect {} on the integrations page first", social::name(p)))),
@@ -210,14 +235,14 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     util_input::one_of("status", status, &["draft", "approved"])?;
     let subreddit = community_input(&state, id, &b.platform, &b.subreddit).await?;
     let title = if titled(&b.platform, false) { b.title.trim() } else { "" };
-    let tags = if b.platform == "dev" { dev::tags(&b.tags) } else { Vec::new() };
+    let tags = tags(&b.platform, false, &b.tags).unwrap_or_default();
     let forum_id = if b.platform == "discourse" { b.forum_id } else { None };
     check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
     if b.platform == "discourse" {
         require_forum(&state, id, forum_id, false).await?;
     }
     if status == "approved" {
-        require_account(&state, id, &b.platform).await?;
+        require_account(&state, id, &b.platform, false).await?;
     }
     let post = sqlx::query_as::<_, SocialPost>(
         "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id) values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -261,13 +286,13 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
         _ => post.subreddit,
     };
     let title = if titled(&post.platform, reply) { b.title.map(|t| t.trim().to_string()).unwrap_or(post.title) } else { post.title };
-    let tags = if post.platform == "dev" { b.tags.map(|t| dev::tags(&t)).unwrap_or(post.tags) } else { post.tags };
+    let tags = b.tags.and_then(|raw| tags(&post.platform, reply, &raw)).unwrap_or(post.tags);
     if status == "approved" {
         check(&post.platform, reply, &subreddit, &title, &body, mastodon_chars(&state, post.project_id).await?)?;
         if post.platform == "discourse" {
             require_forum(&state, post.project_id, post.forum_id, reply).await?;
         }
-        require_account(&state, post.project_id, &post.platform).await?;
+        require_account(&state, post.project_id, &post.platform, reply).await?;
     }
     let updated = sqlx::query_as::<_, SocialPost>(
         "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6,
@@ -300,7 +325,8 @@ async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     auth.project(&state.db, id).await?;
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
         return Err(AppError::BadRequest(
-            "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy or LinkedIn sending on the integrations page first"
+            "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, Hashnode or LinkedIn \
+             sending on the integrations page first"
                 .into(),
         ));
     }
@@ -703,6 +729,117 @@ async fn set_lemmy(state: &AppState, id: Uuid, url: &str, username: &str, passwo
     Ok(Json(settings))
 }
 
+#[derive(Deserialize)]
+struct NostrBody {
+    key: String,
+    /// Empty for the defaults.
+    #[serde(default)]
+    relays: Vec<String>,
+}
+
+/// Saves the key once it reads as one, with its npub and the relays, each of which has to be wss:// at a public address.
+/// Nothing is posted to check it, since a key can't be wrong the way a password can.
+async fn connect_nostr(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<NostrBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    if b.key.trim().starts_with("npub") {
+        return Err(AppError::BadRequest("That's the public key. Paste the secret key, which starts with nsec".into()));
+    }
+    let key = nostr::secret_key(&b.key).ok_or_else(|| AppError::BadRequest("Paste the secret key, an nsec or 64 hex characters".into()))?;
+    let relays = nostr::relay_list(&b.relays).map_err(AppError::BadRequest)?;
+    for relay in &relays {
+        let url = reqwest::Url::parse(relay).map_err(|e| AppError::BadRequest(e.to_string()))?;
+        hooks::public_addrs(&url).await.map_err(|e| AppError::BadRequest(format!("Can't use {relay} ({e:#})")))?;
+    }
+    let pubkey = nostr::pubkey(&key);
+    let enc = crypto::encrypt(&state.cfg.app_secret, &hex::encode(key.to_bytes()));
+    set_nostr(&state, id, &enc, &pubkey, &nostr::npub(&pubkey), &relays).await
+}
+
+async fn disconnect_nostr(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_nostr(&state, id, "", "", "", &[]).await
+}
+
+async fn set_nostr(state: &AppState, id: Uuid, key: &str, pubkey: &str, npub: &str, relays: &[String]) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set nostr_key_enc = $2, nostr_pubkey = $3, nostr_npub = $4, nostr_relays = $5, nostr_error = null, nostr_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(key)
+    .bind(pubkey)
+    .bind(npub)
+    .bind(relays)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct HashnodeBody {
+    token: String,
+}
+
+/// Saves the token once Hashnode accepts it, with the account's username and publications. Articles go in the first one until
+/// another is picked, and an account without one only comments.
+async fn connect_hashnode(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<HashnodeBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    let token = b.token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("Paste the access token".into()));
+    }
+    let refused = |e: Failure| AppError::BadRequest(e.message());
+    let account = Hashnode::new(token).map_err(refused)?.me().await.map_err(refused)?;
+    let first = account.publications.first().and_then(|p| p["id"].as_str()).unwrap_or_default().to_string();
+    let enc = crypto::encrypt(&state.cfg.app_secret, token);
+    set_hashnode(&state, id, &enc, &account.username, json!(account.publications), &first).await
+}
+
+async fn disconnect_hashnode(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    load_or_create(&state.db, id).await?;
+    set_hashnode(&state, id, "", "", json!([]), "").await
+}
+
+async fn set_hashnode(state: &AppState, id: Uuid, token: &str, username: &str, publications: Value, publication: &str) -> AppResult<Json<ProjectSettings>> {
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set hashnode_token_enc = $2, hashnode_username = $3, hashnode_publications = $4, hashnode_publication_id = $5,
+           hashnode_error = null, hashnode_failed_at = null
+         where project_id = $1 returning *",
+    )
+    .bind(id)
+    .bind(token)
+    .bind(username)
+    .bind(publications)
+    .bind(publication)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+struct PublicationBody {
+    publication_id: String,
+}
+
+/// Picks which of the account's publications articles go in.
+async fn pick_publication(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<PublicationBody>) -> AppResult<Json<ProjectSettings>> {
+    auth.project(&state.db, id).await?;
+    let settings = sqlx::query_as::<_, ProjectSettings>(
+        "update project_settings set hashnode_publication_id = $2
+         where project_id = $1 and hashnode_publications @> jsonb_build_array(jsonb_build_object('id', $2::text)) returning *",
+    )
+    .bind(id)
+    .bind(b.publication_id.trim())
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::BadRequest("That isn't one of the account's publications".into()))?;
+    Ok(Json(settings))
+}
+
 async fn list_forums(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<DiscourseForum>>> {
     auth.project(&state.db, id).await?;
     let forums = sqlx::query_as("select * from discourse_forums where project_id = $1 order by created_at").bind(id).fetch_all(&state.db).await?;
@@ -783,7 +920,100 @@ async fn remove_forum(State(state): State<AppState>, auth: Auth, Path(id): Path<
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use sqlx::PgPool;
+
     use super::*;
+    use crate::crypto::sha256_hex;
+
+    #[test]
+    fn hashnode_articles_need_a_title_and_tags_follow_each_platform() {
+        let body = "Warm the domain up over four weeks.";
+        assert!(check("hashnode", false, "", "How we warm up", body, 500).is_ok());
+        assert!(matches!(check("hashnode", false, "", "", body, 500), Err(AppError::BadRequest(m)) if m == "A Hashnode article needs a title"));
+        assert!(matches!(check("hashnode", false, "", &"a".repeat(251), body, 500), Err(AppError::BadRequest(m)) if m == "Hashnode titles are at most 250 characters"));
+        assert!(check("hashnode", true, "", "", "Same here", 500).is_ok());
+        let long = check("tumblr", true, "", "", &"a".repeat(4_097), 500);
+        assert!(matches!(long, Err(AppError::BadRequest(m)) if m == "Reblog comments on Tumblr are at most 4096 characters"));
+        let raw = ["#Cold Email".to_string(), "sales".to_string()];
+        assert_eq!(tags("tumblr", false, &raw), Some(vec!["Cold Email".to_string(), "sales".to_string()]));
+        assert_eq!(tags("hashnode", false, &raw), Some(vec!["cold-email".to_string(), "sales".to_string()]));
+        assert_eq!((tags("tumblr", true, &raw), tags("nostr", false, &raw)), (None, None));
+    }
+
+    /// Ana's project in Acme, and another org's project with a Hashnode draft.
+    async fn server(db: &PgPool) -> (String, Uuid, Uuid, Uuid) {
+        let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('ana@acme.test', 'Ana', 'x') returning id").fetch_one(db).await.unwrap();
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(db).await.unwrap();
+        sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(db).await.unwrap();
+        sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
+            .bind(sha256_hex("session-acme"))
+            .bind(user)
+            .bind(org)
+            .execute(db)
+            .await
+            .unwrap();
+        let ours: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(db).await.unwrap();
+        let other: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(db).await.unwrap();
+        let theirs: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Other') returning id").bind(other).fetch_one(db).await.unwrap();
+        let draft: Uuid = sqlx::query_scalar("insert into social_posts (project_id, platform, title, body) values ($1, 'hashnode', 'Hi there', 'Hi') returning id")
+            .bind(theirs)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let fake = crate::mail::oauth::tests::FakeProvider::start().await;
+        let state = AppState { db: db.clone(), cfg: Arc::new(crate::mail::oauth::tests::config(&fake)), events: tokio::sync::broadcast::channel(1).0 };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api", listener.local_addr().unwrap());
+        let app = Router::new().nest("/api", crate::routes::router()).with_state(state);
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (base, ours, theirs, draft)
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn nostr_takes_public_wss_relays_and_other_orgs_projects_are_refused(db: PgPool) {
+        let (base, ours, theirs, draft) = server(&db).await;
+        let client = reqwest::Client::new();
+        let put = |project: Uuid, body: Value| {
+            client.put(format!("{base}/projects/{project}/integrations/nostr")).header("cookie", "splee_session=session-acme").json(&body).send()
+        };
+        let nsec = "nsec1kls4zc52a54x40m3tzqfea8nca3ww9s08z6d5448snvsg5vselhsjv8uxn";
+        // Addresses as IPs, so nothing is looked up.
+        let res = put(ours, json!({ "key": nsec, "relays": ["wss://203.0.113.7", "1.1.1.1"] })).await.unwrap();
+        assert_eq!(res.status(), 400, "203.0.113.0/24 is for documentation, not a public relay");
+        let res = put(ours, json!({ "key": nsec, "relays": ["wss://10.0.0.5"] })).await.unwrap();
+        assert!(res.text().await.unwrap().contains("not a public address"));
+        let res = put(ours, json!({ "key": "npub1mlcawle2vuw97dscxundkg6phev0atsa5t0vakzrys8hk5pt5evssm7a0a" })).await.unwrap();
+        assert!(res.text().await.unwrap().contains("That's the public key"));
+
+        let res = put(ours, json!({ "key": nsec, "relays": ["1.1.1.1\nwss://8.8.8.8"] })).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let settings: Value = res.json().await.unwrap();
+        assert_eq!((settings["nostr_connected"].clone(), settings["nostr_relays"].clone()), (json!(true), json!(["wss://1.1.1.1", "wss://8.8.8.8"])));
+        assert_eq!(settings["nostr_npub"], "npub1mlcawle2vuw97dscxundkg6phev0atsa5t0vakzrys8hk5pt5evssm7a0a");
+        assert!(settings.get("nostr_key_enc").is_none(), "the key stays on the server");
+        let saved: String = sqlx::query_scalar("select nostr_key_enc from project_settings where project_id = $1").bind(ours).fetch_one(&db).await.unwrap();
+        assert_eq!(crypto::decrypt("test-secret", &saved).unwrap(), "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef");
+
+        // Another org's project and its drafts are out of reach.
+        assert_eq!(put(theirs, json!({ "key": nsec })).await.unwrap().status(), 404);
+        let hashnode = client.put(format!("{base}/projects/{theirs}/integrations/hashnode")).header("cookie", "splee_session=session-acme").json(&json!({ "token": "x" }));
+        assert_eq!(hashnode.send().await.unwrap().status(), 404);
+        let approve = client.patch(format!("{base}/social/{draft}")).header("cookie", "splee_session=session-acme").json(&json!({ "status": "approved" }));
+        assert_eq!(approve.send().await.unwrap().status(), 404);
+
+        // An approved Hashnode article needs a publication, and a Nostr note just the key.
+        let create = |body: Value| client.post(format!("{base}/projects/{ours}/social")).header("cookie", "splee_session=session-acme").json(&body).send();
+        sqlx::query("update project_settings set hashnode_token_enc = 'x', hashnode_username = 'acme' where project_id = $1").bind(ours).execute(&db).await.unwrap();
+        let article = create(json!({ "platform": "hashnode", "title": "How we warm up", "body": "Four weeks", "status": "approved" })).await.unwrap();
+        assert!(article.text().await.unwrap().contains("Pick a Hashnode publication"));
+        assert_eq!(create(json!({ "platform": "nostr", "body": "Four weeks", "status": "approved" })).await.unwrap().status(), 200);
+        let tumblr = create(json!({ "platform": "tumblr", "body": "Four weeks", "status": "approved" })).await.unwrap();
+        assert!(tumblr.text().await.unwrap().contains("Connect Tumblr"));
+    }
 
     #[test]
     fn youtube_takes_comments_only_and_threads_stops_at_500_characters() {

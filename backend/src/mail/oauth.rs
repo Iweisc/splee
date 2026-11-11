@@ -123,16 +123,11 @@ pub fn authorize_url(cfg: &Config, provider: Provider, state: &str, verifier: &s
     Ok(url.into())
 }
 
-/// The state sent to the provider: the nonce and an HMAC binding it to the user and org.
-pub fn sign_state(secret: &str, nonce: &str, user_id: Uuid, org_id: Uuid) -> String {
-    crypto::sign_state(secret, "mailbox-oauth", nonce, user_id, org_id)
-}
+/// What a sign-in is for, so a state made for one can't finish another.
+pub const MAILBOX: &str = "mailbox-oauth";
+pub const TUMBLR: &str = "tumblr-oauth";
 
-pub use crypto::state_nonce;
-
-pub fn verify_state(secret: &str, state: &str, user_id: Uuid, org_id: Uuid) -> bool {
-    crypto::verify_state(secret, "mailbox-oauth", state, user_id, org_id)
-}
+pub use crypto::{sign_state, state_nonce, verify_state};
 
 /// The SASL XOAUTH2 initial response, before base64. lettre builds the same one for SMTP itself.
 pub fn xoauth2(user: &str, access_token: &str) -> String {
@@ -169,8 +164,8 @@ impl Tokens {
     }
 }
 
-async fn token_request(provider: Provider, app: &OAuthApp, form: &[(&str, &str)]) -> Result<Tokens, TokenError> {
-    let label = provider.label();
+/// `label` names the provider in errors.
+pub(crate) async fn token_request(label: &'static str, app: &OAuthApp, form: &[(&str, &str)]) -> Result<Tokens, TokenError> {
     let unavailable = |e: String| TokenError::Unavailable(label, e);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().map_err(|e| unavailable(e.to_string()))?;
     let mut form = form.to_vec();
@@ -198,7 +193,7 @@ pub async fn exchange_code(cfg: &Config, provider: Provider, code: &str, verifie
     let app = provider.app(cfg).ok_or(TokenError::Refused(provider.label(), "sign-in isn't set up on this Splee".into()))?;
     let redirect = redirect_uri(cfg);
     let form = [("grant_type", "authorization_code"), ("code", code), ("redirect_uri", &redirect), ("code_verifier", verifier)];
-    token_request(provider, app, &form).await
+    token_request(provider.label(), app, &form).await
 }
 
 /// The signed-in account, from the ID token. It came straight from the token endpoint over TLS, so its signature isn't
@@ -255,7 +250,7 @@ pub async fn access_token(state: &AppState, mb: &Mailbox) -> anyhow::Result<Stri
     if provider == Provider::Microsoft {
         form.push(("scope", provider.scope()));
     }
-    match token_request(provider, app, &form).await {
+    match token_request(provider.label(), app, &form).await {
         Ok(tokens) => {
             // Microsoft sends a new refresh token with each access token. The old one keeps working for a while.
             sqlx::query(
@@ -386,6 +381,7 @@ pub(crate) mod tests {
             google: Some(fake.app()),
             microsoft: Some(fake.app()),
             slack: None,
+            tumblr: None,
         }
     }
 
@@ -435,14 +431,15 @@ pub(crate) mod tests {
     #[test]
     fn the_state_is_bound_to_the_user_and_org() {
         let (user, org) = (Uuid::new_v4(), Uuid::new_v4());
-        let state = sign_state("secret", "abc", user, org);
+        let state = sign_state("secret", MAILBOX, "abc", user, org);
         assert_eq!(state_nonce(&state), Some("abc"));
-        assert!(verify_state("secret", &state, user, org));
-        assert!(!verify_state("secret", &state, user, Uuid::new_v4()));
-        assert!(!verify_state("secret", &state, Uuid::new_v4(), org));
-        assert!(!verify_state("other secret", &state, user, org));
-        assert!(!verify_state("secret", &state.replace("abc", "abd"), user, org));
-        assert!(!verify_state("secret", "abc", user, org));
+        assert!(verify_state("secret", MAILBOX, &state, user, org));
+        assert!(!verify_state("secret", MAILBOX, &state, user, Uuid::new_v4()));
+        assert!(!verify_state("secret", MAILBOX, &state, Uuid::new_v4(), org));
+        assert!(!verify_state("other secret", MAILBOX, &state, user, org));
+        assert!(!verify_state("secret", MAILBOX, &state.replace("abc", "abd"), user, org));
+        assert!(!verify_state("secret", MAILBOX, "abc", user, org));
+        assert!(!verify_state("secret", TUMBLR, &state, user, org), "a mailbox state can't finish a Tumblr sign-in");
     }
 
     #[test]

@@ -12,31 +12,41 @@ use crate::bluesky::{self, Bluesky};
 use crate::crypto::{decrypt, encrypt};
 use crate::dev::Dev;
 use crate::discourse::{self, Discourse, Topic};
+use crate::hashnode::Hashnode;
 use crate::hooks::{self, Alert};
 use crate::lemmy::{self, Lemmy};
 use crate::mastodon::Mastodon;
 use crate::models::{DiscourseForum, SocialPost};
+use crate::nostr::{self, Nostr};
 use crate::reddit::{Login, Reddit, Target};
 use crate::stackexchange::{self, Question, StackExchange};
 use crate::state::AppState;
 use crate::threads::{self, Threads};
+use crate::tumblr::{self, Tumblr};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 11] = ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy"];
+pub const PLATFORMS: [&str; 14] =
+    ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode"];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
 
 /// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most. A
-/// Stack Exchange answer and a DEV article take far longer to read and judge than a reply, so they get fewer, and so does each
-/// Discourse forum and Lemmy, whose communities are small enough that a company replying often stands out.
-pub fn daily_cap(platform: &str) -> i64 {
-    match platform {
-        "linkedin" | "stackexchange" | "discourse" => 5,
-        "lemmy" => 10,
-        "dev" => 2,
+/// Stack Exchange answer and a DEV or Hashnode article take far longer to read and judge than a reply, so they get fewer, and
+/// so does each Discourse forum, Lemmy and Tumblr, whose communities are small enough that a company replying often stands out.
+/// Hashnode's articles and comments each have their own cap.
+pub fn daily_cap(platform: &str, reply: bool) -> i64 {
+    match (platform, reply) {
+        ("linkedin" | "stackexchange" | "discourse", _) => 5,
+        ("lemmy" | "tumblr", _) | ("hashnode", true) => 10,
+        ("dev" | "hashnode", _) => 2,
         _ => 15,
     }
+}
+
+/// Whether replies and original posts count against the daily cap apart.
+fn split_cap(platform: &str) -> bool {
+    daily_cap(platform, true) != daily_cap(platform, false)
 }
 
 pub fn name(platform: &str) -> &'static str {
@@ -51,6 +61,9 @@ pub fn name(platform: &str) -> &'static str {
         "dev" => "DEV",
         "discourse" => "Discourse",
         "lemmy" => "Lemmy",
+        "nostr" => "Nostr",
+        "tumblr" => "Tumblr",
+        "hashnode" => "Hashnode",
         _ => "LinkedIn",
     }
 }
@@ -76,6 +89,8 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("stackexchange", _) => stackexchange::CHARS,
         ("discourse", _) => discourse::CHARS,
         ("lemmy", _) => lemmy::CHARS,
+        ("nostr", _) => nostr::CHARS,
+        ("tumblr", _) => tumblr::CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -152,6 +167,14 @@ pub struct Accounts {
     pub lemmy_password_enc: String,
     pub lemmy_jwt_enc: String,
     pub lemmy_handle: String,
+    pub nostr_key_enc: String,
+    pub nostr_npub: String,
+    pub nostr_relays: Vec<String>,
+    pub tumblr_username: String,
+    pub tumblr_blog: String,
+    pub hashnode_token_enc: String,
+    pub hashnode_username: String,
+    pub hashnode_publication_id: String,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
@@ -165,8 +188,9 @@ const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.
                                s.mastodon_handle, s.mastodon_max_chars, s.threads_token_enc, s.threads_user_id, s.threads_username,
                                s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.stackexchange_key,
                                s.stackexchange_token_enc, s.stackexchange_site, s.stackexchange_account, s.dev_key_enc, s.dev_username,
-                               s.lemmy_url, s.lemmy_username, s.lemmy_password_enc, s.lemmy_jwt_enc, s.lemmy_handle, s.unipile_dsn,
-                               s.unipile_token_enc, s.unipile_account_id
+                               s.lemmy_url, s.lemmy_username, s.lemmy_password_enc, s.lemmy_jwt_enc, s.lemmy_handle, s.nostr_key_enc,
+                               s.nostr_npub, s.nostr_relays, s.tumblr_username, s.tumblr_blog, s.hashnode_token_enc, s.hashnode_username,
+                               s.hashnode_publication_id, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
@@ -190,6 +214,9 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "stackexchange" => ("stackexchange_account", "stackexchange_failed_at"),
         "dev" => ("dev_username", "dev_failed_at"),
         "lemmy" => ("lemmy_handle", "lemmy_failed_at"),
+        "nostr" => ("nostr_npub", "nostr_failed_at"),
+        "tumblr" => ("tumblr_username", "tumblr_failed_at"),
+        "hashnode" => ("hashnode_username", "hashnode_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -206,6 +233,9 @@ fn alert(platform: &str) -> Alert {
         "dev" => Alert::Dev,
         "discourse" => Alert::Discourse,
         "lemmy" => Alert::Lemmy,
+        "nostr" => Alert::Nostr,
+        "tumblr" => Alert::Tumblr,
+        "hashnode" => Alert::Hashnode,
         _ => Alert::Unipile,
     }
 }
@@ -224,6 +254,10 @@ impl Accounts {
             "stackexchange" => (&self.stackexchange_account, &self.stackexchange_token_enc),
             "dev" => (&self.dev_username, &self.dev_key_enc),
             "lemmy" => (&self.lemmy_handle, &self.lemmy_password_enc),
+            "nostr" => (&self.nostr_npub, &self.nostr_key_enc),
+            // Its refresh token changes each time it's used, so the username, set only while connected, stands in for it.
+            "tumblr" => (&self.tumblr_username, &self.tumblr_username),
+            "hashnode" => (&self.hashnode_username, &self.hashnode_token_enc),
             "discourse" => ("", ""),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
@@ -326,6 +360,23 @@ impl Accounts {
         }
     }
 
+    pub fn nostr(&self, secret: &str) -> Result<Nostr, Failure> {
+        let key = decrypt(secret, &self.nostr_key_enc).ok().and_then(|k| nostr::secret_key(&k));
+        let key = key.ok_or_else(|| Failure::Account("Couldn't read the saved Nostr key. Connect Nostr again".into()))?;
+        Ok(Nostr::new(key, self.nostr_relays.clone()))
+    }
+
+    /// Renews the access token first when it's about to run out.
+    pub async fn tumblr(&self, state: &AppState) -> Result<Tumblr, Failure> {
+        let token = tumblr::access_token(&state.db, &state.cfg, self.project_id).await?;
+        Tumblr::new(tumblr::app(&state.cfg)?, &token, &self.tumblr_blog)
+    }
+
+    pub fn hashnode(&self, secret: &str) -> Result<Hashnode, Failure> {
+        let token = decrypt(secret, &self.hashnode_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Hashnode token. Connect Hashnode again".into()))?;
+        Hashnode::new(&token)
+    }
+
     pub fn unipile(&self, secret: &str) -> Result<Unipile, Failure> {
         let token = decrypt(secret, &self.unipile_token_enc).map_err(|_| Failure::Account("Couldn't read the saved Unipile token. Connect Unipile again".into()))?;
         Unipile::new(&self.unipile_dsn, &token, &self.unipile_account_id).map_err(|e| Failure::Account(e.to_string()))
@@ -408,6 +459,9 @@ async fn publish_next(
         "stackexchange" => post_stackexchange(state, a, &post).await,
         "dev" => post_dev(state, a, &post).await,
         "lemmy" => post_lemmy(state, a, &post).await,
+        "nostr" => post_nostr(state, a, &post).await,
+        "tumblr" => post_tumblr(state, a, &post).await,
+        "hashnode" => post_hashnode(state, a, &post).await,
         "discourse" => match forum {
             Some(forum) => post_discourse(state, forum, &post).await,
             None => Err(Failure::Post("The forum isn't connected anymore".into())),
@@ -421,7 +475,8 @@ async fn publish_next(
 
 /// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap,
 /// had a failure in the last hour or, on Stack Exchange and Discourse, is waiting out the wait the API asked for. A Discourse
-/// forum is its own account, which only posts what's for that forum.
+/// forum is its own account, which only posts what's for that forum. On Hashnode, articles wait at their cap while comments
+/// still go out, and the other way around.
 async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) -> sqlx::Result<Option<SocialPost>> {
     let held = match platform {
         "discourse" => "and sp.forum_id in (select f.id from discourse_forums f where f.project_id = $1 and f.account = $3)
@@ -441,14 +496,18 @@ async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) 
         "select sp.* from social_posts sp
          where sp.project_id = $1 and sp.platform = $2 and sp.status = 'approved'
            and (select count(*) from social_posts o where o.platform = $2 and o.account = $3
-                and (o.status = 'posting' or o.status = 'posted' and o.posted_at > now() - interval '1 day')) < $4
+                and (not $6 or (o.in_reply_to is null) = (sp.in_reply_to is null))
+                and (o.status = 'posting' or o.status = 'posted' and o.posted_at > now() - interval '1 day'))
+               < case when sp.in_reply_to is null then $4 else $5 end
            {held}
          order by sp.updated_at limit 1"
     ))
     .bind(project_id)
     .bind(platform)
     .bind(account)
-    .bind(daily_cap(platform))
+    .bind(daily_cap(platform, false))
+    .bind(daily_cap(platform, true))
+    .bind(split_cap(platform))
     .fetch_optional(db)
     .await
 }
@@ -560,6 +619,31 @@ async fn post_lemmy(state: &AppState, a: &Accounts, post: &SocialPost) -> Result
     };
     a.keep_lemmy_jwt(&state.db, &state.cfg.app_secret, &lemmy).await;
     posted
+}
+
+async fn post_nostr(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let nostr = a.nostr(&state.cfg.app_secret)?;
+    match post.in_reply_to.as_deref() {
+        Some(link) => nostr.reply(link, &post.body).await,
+        None => nostr.post(&post.body).await,
+    }
+}
+
+async fn post_tumblr(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let tumblr = a.tumblr(state).await?;
+    match post.in_reply_to.as_deref() {
+        Some(link) => tumblr.reblog(&tumblr::PostRef::parse(link).ok_or_else(|| Failure::Post("That isn't a link to a Tumblr post".into()))?, &post.body).await,
+        None => tumblr.create(&post.body, &post.tags).await,
+    }
+}
+
+async fn post_hashnode(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let hashnode = a.hashnode(&state.cfg.app_secret)?;
+    match post.in_reply_to.as_deref() {
+        Some(link) => hashnode.comment(link, &post.body).await,
+        None if a.hashnode_publication_id.is_empty() => Err(Failure::Account("Pick a Hashnode publication for articles first".into())),
+        None => hashnode.publish(&a.hashnode_publication_id, &post.title, &post.body, &post.tags).await,
+    }
 }
 
 async fn post_discourse(state: &AppState, forum: &DiscourseForum, post: &SocialPost) -> Result<String, Failure> {
@@ -778,6 +862,53 @@ mod tests {
         assert!(next_due(&db, project, "lemmy", "ana@lemmy.world").await.unwrap().is_none());
     }
 
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn nostr_stops_at_fifteen_tumblr_at_ten_and_hashnode_counts_articles_and_comments_apart(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        sqlx::query(
+            "insert into project_settings (project_id, nostr_key_enc, nostr_npub, tumblr_refresh_enc, tumblr_username, hashnode_token_enc, hashnode_username)
+             values ($1, 'x', 'npub1acme', 'x', 'acme', 'x', 'acme')",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let a = accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(a.connected(), ["nostr", "tumblr", "hashnode"]);
+        let posted = "insert into social_posts (project_id, platform, body, status, account, posted_at, in_reply_to)
+                      select $1, $2, 'Hi', 'posted', $3, now(), case when $5 then 'https://bo.dev/' || n end from generate_series(1, $4) n";
+        for (platform, account, cap) in [("nostr", "npub1acme", 15), ("tumblr", "acme", 10)] {
+            approved(&db, project, platform).await;
+            sqlx::query(posted).bind(project).bind(platform).bind(account).bind(cap - 1).bind(false).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, account).await.unwrap().is_some(), "{platform}");
+            sqlx::query(posted).bind(project).bind(platform).bind(account).bind(1).bind(false).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, account).await.unwrap().is_none(), "{platform}");
+        }
+
+        // Two articles a day hold the next article, while comments still go out until ten.
+        let article = approved(&db, project, "hashnode").await;
+        let comment: Uuid = sqlx::query_scalar(
+            "insert into social_posts (project_id, platform, body, status, in_reply_to) values ($1, 'hashnode', 'Hi', 'approved', 'https://bo.dev/x?hashnode=1')
+             returning id",
+        )
+        .bind(project)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(next_due(&db, project, "hashnode", "acme").await.unwrap().map(|p| p.id), Some(article));
+        sqlx::query(posted).bind(project).bind("hashnode").bind("acme").bind(2).bind(false).execute(&db).await.unwrap();
+        assert_eq!(next_due(&db, project, "hashnode", "acme").await.unwrap().map(|p| p.id), Some(comment));
+        sqlx::query(posted).bind(project).bind("hashnode").bind("acme").bind(10).bind(true).execute(&db).await.unwrap();
+        assert!(next_due(&db, project, "hashnode", "acme").await.unwrap().is_none());
+        sqlx::query("delete from social_posts where platform = 'hashnode' and status = 'posted' and in_reply_to is null").execute(&db).await.unwrap();
+        assert_eq!(next_due(&db, project, "hashnode", "acme").await.unwrap().map(|p| p.id), Some(article));
+        // A Tumblr failure is recorded on the account by its username.
+        hooks::record(&db, project, Alert::Tumblr, "acme", &Err(anyhow::anyhow!("signed out"))).await;
+        let failed: Option<String> = sqlx::query_scalar("select tumblr_error from project_settings where project_id = $1").bind(project).fetch_one(&db).await.unwrap();
+        assert_eq!(failed.as_deref(), Some("signed out"));
+    }
+
     #[test]
     fn each_platform_has_its_own_limit() {
         assert!(fits("x", true, &"a".repeat(280), 500) && !fits("x", true, &"a".repeat(281), 500));
@@ -792,5 +923,7 @@ mod tests {
         assert!(!fits("reddit", true, "", 500));
         assert!(fits("discourse", true, &"a".repeat(20), 500) && !fits("discourse", true, &"a".repeat(19), 500));
         assert!(fits("lemmy", false, &"a".repeat(10_000), 500) && !fits("lemmy", true, &"a".repeat(10_001), 500));
+        assert!(fits("nostr", true, &"a".repeat(5_000), 500) && !fits("nostr", false, &"a".repeat(5_001), 500));
+        assert!(fits("tumblr", true, &"a".repeat(4_096), 500) && !fits("tumblr", false, &"a".repeat(4_097), 500));
     }
 }

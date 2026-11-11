@@ -22,7 +22,7 @@ pub type ImapSession = Session<Box<dyn Stream>>;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-fn tls_connector() -> anyhow::Result<TlsConnector> {
+pub(crate) fn tls_connector() -> anyhow::Result<TlsConnector> {
     let mut roots = RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
         let _ = roots.add(cert);
