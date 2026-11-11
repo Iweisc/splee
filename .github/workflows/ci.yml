@@ -40,6 +40,8 @@ jobs:
           DATABASE_URL: postgres://splee:splee@localhost:5432/postgres
       # Splee patches the vendored Claude SDK, and its own tests cover those patches.
       - run: cargo test -p claude-agent-sdk-rs --lib
+      # The website chat script's pure functions. No packages needed.
+      - run: node --test src/chat/widget.test.mjs
 
   frontend:
     runs-on: ubuntu-latest

@@ -34,6 +34,8 @@ pub struct Call {
     /// research call gets otherwise.
     pub servers: HashMap<String, McpServerConfig>,
     pub server_tools: Vec<String>,
+    /// AGENT_MODEL unless set.
+    pub model: Option<String>,
 }
 
 impl Call {
@@ -51,6 +53,7 @@ impl Call {
             timeout: Duration::from_secs(6 * 60),
             servers: HashMap::new(),
             server_tools: vec![],
+            model: None,
         }
     }
 
@@ -68,6 +71,7 @@ impl Call {
             timeout: Duration::from_secs(2 * 60),
             servers: HashMap::new(),
             server_tools: vec![],
+            model: None,
         }
     }
 }
@@ -108,6 +112,17 @@ pub async fn ask<T: DeserializeOwned>(state: &AppState, run: Option<&Ctx>, call:
     Err(anyhow!("Claude did not return a usable answer ({problem})"))
 }
 
+/// One attempt and no retry, for callers that pay per message and cap their spend: the answer, if it parsed as `T`, and
+/// what the call cost either way.
+pub async fn ask_once<T: DeserializeOwned>(state: &AppState, call: &Call) -> anyhow::Result<(Option<T>, f64)> {
+    let attempt = once(state, None, call, call.prompt.clone()).await?;
+    let parsed = attempt.output.and_then(|value| serde_json::from_value(value).ok());
+    if parsed.is_none() {
+        tracing::warn!(error = ?attempt.error, "claude returned no usable answer");
+    }
+    Ok((parsed, attempt.cost))
+}
+
 async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: String) -> anyhow::Result<Attempt> {
     let tools: Vec<String> = if call.web { WEB_TOOLS.iter().map(|t| t.to_string()).collect() } else { vec![] };
     let mut allowed = tools.clone();
@@ -137,7 +152,7 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: Stri
         // Never load the host user's ~/.claude settings, CLAUDE.md or plugins.
         .setting_sources(vec![])
         .cwd(std::env::temp_dir())
-        .model(state.cfg.agent_model.clone())
+        .model(call.model.clone().unwrap_or_else(|| state.cfg.agent_model.clone()))
         .system_prompt(call.system.clone())
         .max_turns(call.max_turns)
         .max_budget_usd(call.budget_usd)

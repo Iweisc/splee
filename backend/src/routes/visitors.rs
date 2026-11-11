@@ -44,7 +44,7 @@ const MAX_DOMAINS: usize = 20;
 const MAX_PATHS: usize = 20;
 const MAX_ADD: usize = 500;
 
-async fn project_by_key(db: &PgPool, key: &str) -> sqlx::Result<Option<Site>> {
+pub(super) async fn project_by_key(db: &PgPool, key: &str) -> sqlx::Result<Option<Site>> {
     let row: Option<(Uuid, Vec<String>)> = sqlx::query_as(
         "select s.project_id, s.domains from visitor_sites s join projects p on p.id = s.project_id where s.site_key = $1 and p.org_id is not null",
     )
@@ -68,7 +68,7 @@ fn asks_not_to_track(headers: &HeaderMap) -> bool {
 }
 
 /// The host of the page that sent the request: the Origin header's, or the Referer's when a browser leaves Origin out.
-fn sending_host(headers: &HeaderMap) -> Option<String> {
+pub(super) fn sending_host(headers: &HeaderMap) -> Option<String> {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty() && *v != "null");
     let url = reqwest::Url::parse(header("origin").or(header("referer"))?).ok()?;
     url.host_str().map(str::to_lowercase)
@@ -116,7 +116,7 @@ const SITE: &str = "select s.site_key, s.domains, s.intent_paths, s.last_hit_at,
      from visitor_sites s where s.project_id = $1";
 
 /// Made on first look, allowing the project's own domain.
-async fn load_site(db: &PgPool, project_id: Uuid, project_domain: Option<&str>) -> sqlx::Result<VisitorSite> {
+pub(super) async fn load_site(db: &PgPool, project_id: Uuid, project_domain: Option<&str>) -> sqlx::Result<VisitorSite> {
     let domains: Vec<String> = project_domain.and_then(util_input::domain).into_iter().collect();
     sqlx::query("insert into visitor_sites (project_id, domains) values ($1, $2) on conflict (project_id) do nothing")
         .bind(project_id)
@@ -138,7 +138,7 @@ struct SiteBody {
 }
 
 /// A page as typed: a path or a whole link, stored as the path alone. None when it isn't one.
-fn intent_path(raw: &str) -> Option<String> {
+pub(super) fn intent_path(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let path = match raw.split_once("://") {
         Some((_, rest)) => rest.find('/').map_or("/", |i| &rest[i..]),
