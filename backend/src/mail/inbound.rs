@@ -178,7 +178,7 @@ fn field_values(fields: &str, name: &str) -> Vec<String> {
 }
 
 /// The reply without the quoted thread under it.
-fn strip_quoted(body: &str) -> String {
+pub(crate) fn strip_quoted(body: &str) -> String {
     let mut kept = vec![];
     for line in body.lines() {
         let t = line.trim();

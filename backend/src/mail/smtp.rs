@@ -51,6 +51,8 @@ pub struct Outgoing<'a> {
     pub unsubscribe_url: Option<&'a str>,
     /// The token of a warmup email, sent as X-Splee-Warmup. See warmup::find_token.
     pub warmup: Option<&'a str>,
+    /// An HTML version of `body`, for Splee's own emails like the client reports. Outreach stays plain text.
+    pub html: Option<&'a str>,
 }
 
 fn bracket(id: &str) -> String {
@@ -71,8 +73,7 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
         .from(from)
         .to(to)
         .subject(email.subject)
-        .message_id(Some(bracket(email.message_id)))
-        .header(ContentType::TEXT_PLAIN);
+        .message_id(Some(bracket(email.message_id)));
     if let Some(parent) = email.in_reply_to {
         builder = builder.in_reply_to(bracket(parent));
     }
@@ -87,7 +88,10 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
     if let Some(token) = email.warmup {
         builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str(super::warmup::HEADER), token.to_string()));
     }
-    Ok(builder.body(email.body.to_string())?)
+    Ok(match email.html {
+        Some(html) => builder.multipart(MultiPart::alternative_plain_html(email.body.to_string(), html.to_string()))?,
+        None => builder.header(ContentType::TEXT_PLAIN).body(email.body.to_string())?,
+    })
 }
 
 /// A calendar invite: the text, the event as a text/calendar part that Gmail, Outlook and Apple Mail put in the calendar

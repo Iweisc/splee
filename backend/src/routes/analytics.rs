@@ -39,17 +39,17 @@ pub struct AnalyticsQuery {
 
 #[derive(Serialize)]
 pub struct Analytics {
-    from: NaiveDate,
-    to: NaiveDate,
-    previous_from: NaiveDate,
-    previous_to: NaiveDate,
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
+    pub(crate) previous_from: NaiveDate,
+    pub(crate) previous_to: NaiveDate,
     timezone: String,
     /// "day", or "week" for ranges over 90 days. Weeks start on Monday.
     interval: &'static str,
-    totals: Totals,
-    previous: Totals,
+    pub(crate) totals: Totals,
+    pub(crate) previous: Totals,
     series: Vec<Point>,
-    campaigns: Vec<CampaignRow>,
+    pub(crate) campaigns: Vec<CampaignRow>,
     mailboxes: Vec<MailboxRow>,
     steps: Vec<StepRow>,
     /// Weekday (1 for Monday to 7 for Sunday) and hour of the emails sent, in the project's time zone. Empty cells are left out.
@@ -61,16 +61,16 @@ pub struct Analytics {
 #[derive(Serialize, Default)]
 pub struct Totals {
     /// First emails and follow-ups. Replies typed in the inbox only count in email cost.
-    sent: i64,
+    pub(crate) sent: i64,
     contacted: i64,
     delivered: i64,
-    replies: i64,
-    reply_rate: Option<f64>,
+    pub(crate) replies: i64,
+    pub(crate) reply_rate: Option<f64>,
     /// Leads who replied and are now Hot or Meeting booked.
-    hot: i64,
+    pub(crate) hot: i64,
     hot_rate: Option<f64>,
-    meetings: i64,
-    deals_won: i64,
+    pub(crate) meetings: i64,
+    pub(crate) deals_won: i64,
     /// One entry per currency the won deals are priced in, the organization's own first.
     won_value: Vec<Money>,
     unsubscribes: i64,
@@ -80,7 +80,7 @@ pub struct Totals {
     /// don't belong to a mailbox.
     claude_cost_micros: i64,
     email_cost_micros: i64,
-    spend_micros: i64,
+    pub(crate) spend_micros: i64,
     cost_per_hot_micros: Option<i64>,
     cost_per_meeting_micros: Option<i64>,
 }
@@ -102,16 +102,16 @@ struct Point {
 }
 
 #[derive(Serialize)]
-struct CampaignRow {
+pub(crate) struct CampaignRow {
     /// Null for emails and leads outside any campaign.
-    segment_id: Option<Uuid>,
-    name: String,
-    sent: i64,
+    pub(crate) segment_id: Option<Uuid>,
+    pub(crate) name: String,
+    pub(crate) sent: i64,
     contacted: i64,
-    replies: i64,
+    pub(crate) replies: i64,
     reply_rate: Option<f64>,
-    hot: i64,
-    meetings: i64,
+    pub(crate) hot: i64,
+    pub(crate) meetings: i64,
     deals_won: i64,
     bounced: i64,
     bounce_rate: Option<f64>,

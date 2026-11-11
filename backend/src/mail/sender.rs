@@ -411,6 +411,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             references: if in_reply_to.is_some() { &references } else { &[] },
             unsubscribe_url: Some(&one_click),
             warmup: None,
+            html: None,
         },
     );
     let message = match built {

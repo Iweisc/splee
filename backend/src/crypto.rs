@@ -25,6 +25,14 @@ pub fn keyed_hash(secret: &str, purpose: &str, input: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// Whether `sig` is keyed_hash's output for `input`, compared in constant time.
+pub fn verify_keyed_hash(secret: &str, purpose: &str, input: &str, sig: &str) -> bool {
+    let Ok(sig) = hex::decode(sig) else { return false };
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(format!("{purpose}.{input}").as_bytes());
+    mac.verify_slice(&sig).is_ok()
+}
+
 fn cipher(secret: &str) -> Aes256Gcm {
     let key = Sha256::digest(secret.as_bytes());
     Aes256Gcm::new_from_slice(&key).expect("sha256 output is 32 bytes")
