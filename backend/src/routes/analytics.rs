@@ -1,0 +1,899 @@
+//! The Analytics page: what's working across campaigns, mailboxes, sequence steps, send times and channels in a date
+//! range, next to the period before it. The v1 API and the MCP tool get_analytics serve the same numbers.
+//!
+//! Everything counts on the day it happened, in the project's time zone: an email when it was sent, a reply when the lead's
+//! first reply arrived, a meeting when the lead was booked. A reply, bounce, meeting, unsubscribe or won deal is credited
+//! to the last first email or follow-up the lead got before it, which decides its campaign, mailbox, step and send hour.
+
+use axum::extract::{Path, Query, State};
+use axum::routing::get;
+use axum::{Json, Router};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono_tz::Tz;
+use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, PgPool};
+use uuid::Uuid;
+
+use crate::auth::Auth;
+use crate::error::{AppError, AppResult};
+use crate::models::bouncing;
+use crate::state::AppState;
+
+pub fn router() -> Router<AppState> {
+    Router::new().route("/projects/{id}/analytics", get(project_analytics))
+}
+
+const DEFAULT_DAYS: i64 = 30;
+const MAX_DAYS: i64 = 365;
+/// Longer ranges are charted by week, so a year stays readable.
+const DAILY_UP_TO: i64 = 90;
+
+#[derive(Deserialize, Default)]
+pub struct AnalyticsQuery {
+    /// First and last day of the range, inclusive, in the project's time zone. The last 30 days by default.
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub segment_id: Option<Uuid>,
+    pub mailbox_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+pub struct Analytics {
+    from: NaiveDate,
+    to: NaiveDate,
+    previous_from: NaiveDate,
+    previous_to: NaiveDate,
+    timezone: String,
+    /// "day", or "week" for ranges over 90 days. Weeks start on Monday.
+    interval: &'static str,
+    totals: Totals,
+    previous: Totals,
+    series: Vec<Point>,
+    campaigns: Vec<CampaignRow>,
+    mailboxes: Vec<MailboxRow>,
+    steps: Vec<StepRow>,
+    /// Weekday (1 for Monday to 7 for Sunday) and hour of the emails sent, in the project's time zone. Empty cells are left out.
+    heatmap: Vec<SlotRow>,
+    channels: Vec<ChannelRow>,
+}
+
+/// Rates are by lead, out of the leads emailed in the range, like the overview's. Null when nobody was emailed.
+#[derive(Serialize, Default)]
+pub struct Totals {
+    /// First emails and follow-ups. Replies typed in the inbox only count in email cost.
+    sent: i64,
+    contacted: i64,
+    delivered: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+    /// Leads who replied and are now Hot or Meeting booked.
+    hot: i64,
+    hot_rate: Option<f64>,
+    meetings: i64,
+    deals_won: i64,
+    /// One entry per currency the won deals are priced in, the organization's own first.
+    won_value: Vec<Money>,
+    unsubscribes: i64,
+    bounced: i64,
+    bounce_rate: Option<f64>,
+    /// What Claude Code reported for the agent runs started in the range. A mailbox filter leaves it out, since runs
+    /// don't belong to a mailbox.
+    claude_cost_micros: i64,
+    email_cost_micros: i64,
+    spend_micros: i64,
+    cost_per_hot_micros: Option<i64>,
+    cost_per_meeting_micros: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct Money {
+    currency: String,
+    value_cents: i64,
+}
+
+#[derive(Serialize)]
+struct Point {
+    /// The day, or the Monday that starts the week.
+    date: String,
+    sent: i64,
+    replies: i64,
+    hot: i64,
+    meetings: i64,
+}
+
+#[derive(Serialize)]
+struct CampaignRow {
+    /// Null for emails and leads outside any campaign.
+    segment_id: Option<Uuid>,
+    name: String,
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+    hot: i64,
+    meetings: i64,
+    deals_won: i64,
+    bounced: i64,
+    bounce_rate: Option<f64>,
+    spend_micros: i64,
+    cost_per_hot_micros: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct MailboxRow {
+    mailbox_id: Option<Uuid>,
+    email: String,
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+    hot: i64,
+    bounced: i64,
+    bounce_rate: Option<f64>,
+    /// Over 5% of at least 20 leads bounced, where providers start sending the mailbox's mail to spam.
+    bouncing: bool,
+}
+
+/// Step 0 is the first email, step n follow-up n. The rate is out of the step's emails, like the Follow-ups page's.
+#[derive(Serialize)]
+struct StepRow {
+    step: i32,
+    sent: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct SlotRow {
+    weekday: i32,
+    hour: i32,
+    sent: i64,
+    replies: i64,
+}
+
+/// sent is emails, LinkedIn steps, texts or posts. Null leads or replies are ones Splee doesn't record for the channel:
+/// LinkedIn replies only stop the sequence, and posts have no lead.
+#[derive(Serialize)]
+struct ChannelRow {
+    channel: &'static str,
+    sent: i64,
+    leads: Option<i64>,
+    replies: Option<i64>,
+    reply_rate: Option<f64>,
+}
+
+#[derive(FromRow, Default)]
+struct Counts {
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    email_replies: i64,
+    hot: i64,
+    meetings: i64,
+    bounced: i64,
+    unsubscribes: i64,
+    won: i64,
+    won_cents: i64,
+    email_cost_micros: i64,
+}
+
+#[derive(FromRow)]
+struct Row {
+    breakdown: String,
+    /// The range itself, or the period before it.
+    cur: bool,
+    bucket: Option<String>,
+    segment_id: Option<Uuid>,
+    mailbox_id: Option<Uuid>,
+    step: Option<i32>,
+    weekday: Option<i32>,
+    hour: Option<i32>,
+    currency: Option<String>,
+    #[sqlx(flatten)]
+    n: Counts,
+}
+
+/// Both periods in one pass, grouped every way the page breaks them down. $2 starts the previous period, $3 the range,
+/// and $4 is the range's last day. A lead's first reply and first bounce are found over all time, so only the first ever
+/// counts, in whichever period it arrived.
+const FACTS: &str = "with w as (
+   select $2::date::timestamp at time zone $5 as lo, $3::date::timestamp at time zone $5 as mid,
+     ($4::date + 1)::timestamp at time zone $5 as hi
+ ), firsts as (
+   select lead_id,
+     min(created_at) filter (where classification is distinct from 'bounce') as replied_at,
+     (array_agg(channel order by created_at) filter (where classification is distinct from 'bounce'))[1] as reply_channel,
+     min(created_at) filter (where classification = 'bounce') as bounced_at
+   from email_messages where project_id = $1 and direction = 'inbound' group by lead_id
+ ), outcomes as (
+   select lead_id, 'reply' as what, replied_at as at, reply_channel as channel, null::text as currency, 0::bigint as cents
+   from firsts where replied_at is not null
+   union all select lead_id, 'bounce', bounced_at, null, null, 0 from firsts where bounced_at is not null
+   union all select id, 'meeting', status_changed_at, null, null, 0 from leads where project_id = $1 and status = 'meeting_booked'
+   union all select id, 'unsubscribe', status_changed_at, null, null, 0 from leads where project_id = $1 and status = 'unsubscribed'
+   union all select lead_id, 'won', closed_at, null, currency, value_cents from deals where project_id = $1 and status = 'won'
+ ), facts as (
+   select 'sent' as what, e.sent_at as at, e.lead_id, e.segment_id, e.mailbox_id, e.kind in ('initial', 'follow_up') as outreach,
+     e.step, e.sent_at, e.cost_micros, false as hot, null as channel, null as currency, 0::bigint as cents
+   from email_messages e, w
+   where e.project_id = $1 and e.status = 'sent' and e.direction = 'outbound' and e.sent_at >= w.lo and e.sent_at < w.hi
+   union all
+   select o.what, o.at, o.lead_id, coalesce(c.segment_id, l.segment_id), c.mailbox_id, c.step is not null, c.step, c.sent_at, 0,
+     l.status in ('hot', 'meeting_booked'), o.channel, o.currency, o.cents
+   from outcomes o cross join w join leads l on l.id = o.lead_id
+   left join lateral (
+     select e.segment_id, e.mailbox_id, e.step, e.sent_at from email_messages e
+     where e.lead_id = o.lead_id and e.direction = 'outbound' and e.status = 'sent' and e.kind in ('initial', 'follow_up')
+       and e.sent_at <= o.at
+     order by e.sent_at desc limit 1
+   ) c on true
+   where o.at >= w.lo and o.at < w.hi
+ ), scoped as (
+   select f.*, f.at >= w.mid as cur, to_char(date_trunc($8, f.at at time zone $5), 'YYYY-MM-DD') as bucket,
+     case when f.outreach then f.step end as out_step,
+     extract(isodow from case when f.outreach then f.sent_at at time zone $5 end)::int as weekday,
+     extract(hour from case when f.outreach then f.sent_at at time zone $5 end)::int as hour
+   from facts f, w
+   where ($6::uuid is null or f.segment_id = $6) and ($7::uuid is null or f.mailbox_id = $7)
+ )
+ select case when grouping(bucket) = 0 then 'series' when grouping(segment_id) = 0 then 'campaign'
+          when grouping(mailbox_id) = 0 then 'mailbox' when grouping(out_step) = 0 then 'step'
+          when grouping(weekday) = 0 then 'slot' when grouping(currency) = 0 then 'currency' else 'total' end as breakdown,
+   cur, bucket, segment_id, mailbox_id, out_step as step, weekday, hour, currency,
+   count(*) filter (where what = 'sent' and outreach) as sent,
+   count(distinct lead_id) filter (where what = 'sent' and outreach) as contacted,
+   count(*) filter (where what = 'reply') as replies,
+   count(*) filter (where what = 'reply' and channel = 'email') as email_replies,
+   count(*) filter (where what = 'reply' and hot) as hot,
+   count(*) filter (where what = 'meeting') as meetings,
+   count(*) filter (where what = 'bounce') as bounced,
+   count(*) filter (where what = 'unsubscribe') as unsubscribes,
+   count(*) filter (where what = 'won') as won,
+   coalesce(sum(cents) filter (where what = 'won'), 0)::bigint as won_cents,
+   coalesce(sum(cost_micros), 0)::bigint as email_cost_micros
+ from scoped
+ group by grouping sets ((cur), (cur, bucket), (cur, segment_id), (cur, mailbox_id), (cur, out_step), (cur, weekday, hour), (cur, currency))";
+
+fn rate(part: i64, whole: i64) -> Option<f64> {
+    (whole > 0).then(|| part as f64 / whole as f64)
+}
+
+fn per(spend: i64, n: i64) -> Option<i64> {
+    (n > 0).then(|| spend / n)
+}
+
+struct Project {
+    org_id: Option<Uuid>,
+    timezone: String,
+    currency: String,
+}
+
+/// The project's numbers for `q`. The caller checks the project belongs to the organization.
+pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<Analytics> {
+    let (org_id, timezone, currency): (Option<Uuid>, String, String) = sqlx::query_as(
+        "select p.org_id, coalesce(ps.timezone, 'UTC'), coalesce(o.currency, 'USD') from projects p
+         left join project_settings ps on ps.project_id = p.id left join organizations o on o.id = p.org_id where p.id = $1",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?;
+    // Postgres would refuse a zone it doesn't know, and the Schedule page only saves known ones, so this is for old rows.
+    let tz: Tz = timezone.parse().unwrap_or(Tz::UTC);
+    let project = Project { org_id, timezone: tz.name().to_string(), currency };
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    let to = q.to.unwrap_or(today);
+    let from = q.from.unwrap_or(to - Duration::days(DEFAULT_DAYS - 1));
+    if from > to {
+        return Err(AppError::BadRequest("The range has to start on or before the day it ends".into()));
+    }
+    let days = (to - from).num_days() + 1;
+    if days > MAX_DAYS {
+        return Err(AppError::BadRequest(format!("Pick a range of at most {MAX_DAYS} days")));
+    }
+    let weekly = days > DAILY_UP_TO;
+    let (previous_from, previous_to) = (from - Duration::days(days), from - Duration::days(1));
+
+    let rows = sqlx::query_as::<_, Row>(FACTS)
+        .bind(id)
+        .bind(previous_from)
+        .bind(from)
+        .bind(to)
+        .bind(&project.timezone)
+        .bind(q.segment_id)
+        .bind(q.mailbox_id)
+        .bind(if weekly { "week" } else { "day" })
+        .fetch_all(db)
+        .await?;
+    let claude = claude_costs(db, id, previous_from, from, to, &project.timezone).await?;
+    // Agent runs belong to a campaign or the whole project, never a mailbox.
+    let claude_for = |cur: bool, segment: Option<Uuid>| -> i64 {
+        if q.mailbox_id.is_some() {
+            return 0;
+        }
+        claude.iter().filter(|c| c.cur == cur && (segment.is_none() || c.segment_id == segment)).map(|c| c.micros).sum()
+    };
+
+    let mut totals = [Totals::default(), Totals::default()];
+    let mut won_value: [Vec<Money>; 2] = [vec![], vec![]];
+    let (mut series, mut campaigns, mut mailboxes, mut steps, mut heatmap) = (vec![], vec![], vec![], vec![], vec![]);
+    let mut email_replies = 0;
+    for row in rows {
+        let n = row.n;
+        match row.breakdown.as_str() {
+            "total" => {
+                if row.cur {
+                    email_replies = n.email_replies;
+                }
+                totals[usize::from(row.cur)] = Totals::from_counts(&n, claude_for(row.cur, q.segment_id));
+            }
+            "currency" => {
+                if let Some(currency) = row.currency {
+                    won_value[usize::from(row.cur)].push(Money { currency, value_cents: n.won_cents });
+                }
+            }
+            _ if !row.cur => {}
+            "series" => series.push((row.bucket.unwrap_or_default(), n)),
+            "campaign" => campaigns.push((row.segment_id, n)),
+            "mailbox" => mailboxes.push((row.mailbox_id, n)),
+            "step" => {
+                if let Some(step) = row.step.filter(|_| n.sent > 0 || n.replies > 0) {
+                    steps.push(StepRow { step, sent: n.sent, replies: n.replies, reply_rate: rate(n.replies, n.sent) });
+                }
+            }
+            "slot" => {
+                if let (Some(weekday), Some(hour)) = (row.weekday, row.hour)
+                    && (n.sent > 0 || n.replies > 0)
+                {
+                    heatmap.push(SlotRow { weekday, hour, sent: n.sent, replies: n.replies });
+                }
+            }
+            _ => {}
+        }
+    }
+    for (t, mut won) in totals.iter_mut().zip(won_value) {
+        won.sort_by(|a, b| (a.currency != project.currency).cmp(&(b.currency != project.currency)).then(a.currency.cmp(&b.currency)));
+        t.won_value = won;
+    }
+    let [previous, totals] = totals;
+    let email = ChannelRow {
+        channel: "email",
+        sent: totals.sent,
+        leads: Some(totals.contacted),
+        replies: Some(email_replies),
+        reply_rate: rate(email_replies, totals.contacted),
+    };
+    steps.sort_by_key(|s| s.step);
+    heatmap.sort_by_key(|s| (s.weekday, s.hour));
+
+    Ok(Analytics {
+        series: fill(series, from, to, weekly),
+        campaigns: campaign_rows(db, id, campaigns, |segment| claude_for(true, segment)).await?,
+        mailboxes: mailbox_rows(db, project.org_id, mailboxes).await?,
+        channels: channels(db, id, q, from, to, &project.timezone, email).await?,
+        from,
+        to,
+        previous_from,
+        previous_to,
+        timezone: project.timezone,
+        interval: if weekly { "week" } else { "day" },
+        totals,
+        previous,
+        steps,
+        heatmap,
+    })
+}
+
+impl Totals {
+    fn from_counts(n: &Counts, claude_cost_micros: i64) -> Self {
+        let spend_micros = claude_cost_micros + n.email_cost_micros;
+        Self {
+            sent: n.sent,
+            contacted: n.contacted,
+            delivered: (n.sent - n.bounced).max(0),
+            replies: n.replies,
+            reply_rate: rate(n.replies, n.contacted),
+            hot: n.hot,
+            hot_rate: rate(n.hot, n.contacted),
+            meetings: n.meetings,
+            deals_won: n.won,
+            won_value: vec![],
+            unsubscribes: n.unsubscribes,
+            bounced: n.bounced,
+            bounce_rate: rate(n.bounced, n.contacted),
+            claude_cost_micros,
+            email_cost_micros: n.email_cost_micros,
+            spend_micros,
+            cost_per_hot_micros: per(spend_micros, n.hot),
+            cost_per_meeting_micros: per(spend_micros, n.meetings),
+        }
+    }
+}
+
+/// Every day or week of the range, empty ones included.
+fn fill(rows: Vec<(String, Counts)>, from: NaiveDate, to: NaiveDate, weekly: bool) -> Vec<Point> {
+    let mut by_date: std::collections::HashMap<String, Counts> = rows.into_iter().collect();
+    let (mut date, step) = if weekly {
+        (from - Duration::days(from.weekday().num_days_from_monday().into()), Duration::days(7))
+    } else {
+        (from, Duration::days(1))
+    };
+    let mut points = vec![];
+    while date <= to {
+        let key = date.format("%Y-%m-%d").to_string();
+        let n = by_date.remove(&key).unwrap_or_default();
+        points.push(Point { date: key, sent: n.sent, replies: n.replies, hot: n.hot, meetings: n.meetings });
+        date += step;
+    }
+    points
+}
+
+struct ClaudeCost {
+    cur: bool,
+    segment_id: Option<Uuid>,
+    micros: i64,
+}
+
+/// Agent run cost per campaign and period. Runs that research the whole project, like explore, have no campaign.
+async fn claude_costs(db: &PgPool, id: Uuid, previous_from: NaiveDate, from: NaiveDate, to: NaiveDate, tz: &str) -> sqlx::Result<Vec<ClaudeCost>> {
+    let rows: Vec<(bool, Option<String>, i64)> = sqlx::query_as(
+        "select r.created_at >= $3::date::timestamp at time zone $5, r.input->>'segment_id', (sum(r.cost_usd) * 1000000)::bigint
+         from agent_runs r
+         where r.project_id = $1 and r.created_at >= $2::date::timestamp at time zone $5 and r.created_at < ($4::date + 1)::timestamp at time zone $5
+         group by 1, 2",
+    )
+    .bind(id)
+    .bind(previous_from)
+    .bind(from)
+    .bind(to)
+    .bind(tz)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(cur, segment, micros)| ClaudeCost { cur, segment_id: segment.and_then(|s| s.parse().ok()), micros }).collect())
+}
+
+async fn campaign_rows(
+    db: &PgPool,
+    id: Uuid,
+    rows: Vec<(Option<Uuid>, Counts)>,
+    claude: impl Fn(Option<Uuid>) -> i64,
+) -> sqlx::Result<Vec<CampaignRow>> {
+    let names: Vec<(Uuid, String)> = sqlx::query_as("select id, name from segments where project_id = $1").bind(id).fetch_all(db).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(segment_id, n)| {
+            // The project-wide runs, like explore, aren't any one campaign's, so the no-campaign row leaves them out.
+            let spend_micros = n.email_cost_micros + segment_id.map_or(0, |s| claude(Some(s)));
+            let name = segment_id.and_then(|s| names.iter().find(|(id, _)| *id == s)).map_or("No campaign", |(_, name)| name.as_str());
+            CampaignRow {
+                segment_id,
+                name: name.to_string(),
+                sent: n.sent,
+                contacted: n.contacted,
+                replies: n.replies,
+                reply_rate: rate(n.replies, n.contacted),
+                hot: n.hot,
+                meetings: n.meetings,
+                deals_won: n.won,
+                bounced: n.bounced,
+                bounce_rate: rate(n.bounced, n.contacted),
+                spend_micros,
+                cost_per_hot_micros: per(spend_micros, n.hot),
+            }
+        })
+        .collect())
+}
+
+async fn mailbox_rows(db: &PgPool, org_id: Option<Uuid>, rows: Vec<(Option<Uuid>, Counts)>) -> sqlx::Result<Vec<MailboxRow>> {
+    let emails: Vec<(Uuid, String)> =
+        sqlx::query_as("select id, email::text from mailboxes where org_id = $1").bind(org_id).fetch_all(db).await?;
+    Ok(rows
+        .into_iter()
+        // Meetings and deals of leads never emailed have no mailbox, which says nothing about sending.
+        .filter(|(mailbox_id, n)| mailbox_id.is_some() || n.sent > 0)
+        .map(|(mailbox_id, n)| MailboxRow {
+            mailbox_id,
+            email: mailbox_id.and_then(|m| emails.iter().find(|(id, _)| *id == m)).map_or("Removed mailbox", |(_, e)| e.as_str()).to_string(),
+            sent: n.sent,
+            contacted: n.contacted,
+            replies: n.replies,
+            reply_rate: rate(n.replies, n.contacted),
+            hot: n.hot,
+            bounced: n.bounced,
+            bounce_rate: rate(n.bounced, n.contacted),
+            bouncing: bouncing(n.contacted, n.bounced),
+        })
+        .collect())
+}
+
+#[derive(FromRow)]
+struct ChannelCounts {
+    linkedin: i64,
+    linkedin_leads: i64,
+    sms: i64,
+    sms_leads: i64,
+    sms_replies: i64,
+    whatsapp: i64,
+    whatsapp_leads: i64,
+    whatsapp_replies: i64,
+    posts: i64,
+}
+
+/// `email` from the totals, then LinkedIn steps sent, texts and social posts. A mailbox filter keeps only email, and a
+/// campaign filter drops social posts, which belong to the whole project.
+async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to: NaiveDate, tz: &str, email: ChannelRow) -> sqlx::Result<Vec<ChannelRow>> {
+    if q.mailbox_id.is_some() {
+        return Ok(vec![email]);
+    }
+    let c = sqlx::query_as::<_, ChannelCounts>(
+        "with w as (select $2::date::timestamp at time zone $4 as lo, ($3::date + 1)::timestamp at time zone $4 as hi),
+         linkedin as (
+           select count(*) as linkedin, count(distinct m.lead_id) as linkedin_leads from linkedin_messages m join leads l on l.id = m.lead_id, w
+           where m.project_id = $1 and m.status = 'done' and m.done_at >= w.lo and m.done_at < w.hi and ($5::uuid is null or l.segment_id = $5)
+         ), texts as (
+           select count(*) filter (where t.channel = 'sms') as sms, count(distinct t.lead_id) filter (where t.channel = 'sms') as sms_leads,
+             count(*) filter (where t.channel = 'whatsapp') as whatsapp,
+             count(distinct t.lead_id) filter (where t.channel = 'whatsapp') as whatsapp_leads
+           from text_messages t, w
+           where t.project_id = $1 and t.status in ('sent', 'delivered') and t.sent_at >= w.lo and t.sent_at < w.hi
+             and ($5::uuid is null or t.segment_id = $5)
+         ), first_replies as (
+           -- Like the email row, a lead counts once, for the channel and range of their first reply.
+           select r.lead_id, min(r.created_at) as at, (array_agg(r.channel order by r.created_at))[1] as channel
+           from email_messages r
+           where r.project_id = $1 and r.direction = 'inbound' and r.classification is distinct from 'bounce'
+           group by r.lead_id
+         ), text_replies as (
+           select count(*) filter (where f.channel = 'sms') as sms_replies, count(*) filter (where f.channel = 'whatsapp') as whatsapp_replies
+           from first_replies f join leads l on l.id = f.lead_id, w
+           where f.at >= w.lo and f.at < w.hi and ($5::uuid is null or l.segment_id = $5)
+         )
+         select linkedin.*, texts.*, text_replies.*,
+           (select count(*) from social_posts p, w where p.project_id = $1 and p.status = 'posted' and p.posted_at >= w.lo and p.posted_at < w.hi) as posts
+         from linkedin, texts, text_replies",
+    )
+    .bind(id)
+    .bind(from)
+    .bind(to)
+    .bind(tz)
+    .bind(q.segment_id)
+    .fetch_one(db)
+    .await?;
+    let texts = |channel, sent, leads, replies| ChannelRow { channel, sent, leads: Some(leads), replies: Some(replies), reply_rate: rate(replies, leads) };
+    let mut rows = vec![
+        email,
+        ChannelRow { channel: "linkedin", sent: c.linkedin, leads: Some(c.linkedin_leads), replies: None, reply_rate: None },
+        texts("sms", c.sms, c.sms_leads, c.sms_replies),
+        texts("whatsapp", c.whatsapp, c.whatsapp_leads, c.whatsapp_replies),
+    ];
+    if q.segment_id.is_none() {
+        rows.push(ChannelRow { channel: "social", sent: c.posts, leads: None, replies: None, reply_rate: None });
+    }
+    Ok(rows)
+}
+
+async fn project_analytics(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<AnalyticsQuery>,
+) -> AppResult<Json<Analytics>> {
+    auth.project(&state.db, id).await?;
+    Ok(Json(analytics(&state.db, id, &q).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Json;
+    use axum::extract::{Path, Query, State};
+    use chrono::NaiveDate;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{Analytics, AnalyticsQuery, analytics};
+    use crate::auth::{ApiKeyAuth, Auth};
+    use crate::error::AppError;
+    use crate::models::Ts;
+
+    struct Seeded {
+        org: Uuid,
+        project: Uuid,
+        alpha: Uuid,
+        second_mailbox: Uuid,
+    }
+
+    /// October 2026 in New York, which is UTC-4 then. Every number the tests check can be worked out from this by hand.
+    async fn seed(db: &PgPool) -> Seeded {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, timezone) values ($1, 'America/New_York')").bind(project).execute(db).await.unwrap();
+        let segment = |name: &'static str| sqlx::query_scalar::<_, Uuid>("insert into segments (project_id, name) values ($1, $2) returning id").bind(project).bind(name);
+        let (alpha, beta) = (segment("Alpha").fetch_one(db).await.unwrap(), segment("Beta").fetch_one(db).await.unwrap());
+        let mailbox = |email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, $2, 'smtp.test', '', '') returning id")
+                .bind(org)
+                .bind(email)
+        };
+        let (m1, m2) = (mailbox("a@acme.test").fetch_one(db).await.unwrap(), mailbox("b@acme.test").fetch_one(db).await.unwrap());
+        let lead = |segment: Uuid, status: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, segment_id, status) values ($1, $2, $3) returning id").bind(project).bind(segment).bind(status)
+        };
+        let l1 = lead(alpha, "hot").fetch_one(db).await.unwrap();
+        let l2 = lead(alpha, "meeting_booked").fetch_one(db).await.unwrap();
+        let l3 = lead(beta, "bounced").fetch_one(db).await.unwrap();
+        let l4 = lead(beta, "unsubscribed").fetch_one(db).await.unwrap();
+        let l5 = lead(alpha, "replied").fetch_one(db).await.unwrap();
+        let l6 = lead(beta, "contacted").fetch_one(db).await.unwrap();
+        for (lead, at) in [(l2, "2026-10-12 15:00Z"), (l4, "2026-10-08 12:00Z")] {
+            sqlx::query("update leads set status_changed_at = $2::timestamptz where id = $1").bind(lead).bind(at).execute(db).await.unwrap();
+        }
+
+        // (lead, mailbox, kind, step, classification, channel, at). Outbound kinds are sent for 1,000 micros, a manual reply for 300.
+        let emails = [
+            // Monday 09:00 in New York. The first gets a question back, the second a hot reply to its follow-up on Thursday.
+            (l1, Some(m1), "initial", 0, None, "email", "2026-10-05 13:00Z"),
+            (l1, None, "inbound", 0, Some("question"), "email", "2026-10-06 14:00Z"),
+            (l1, Some(m1), "manual_reply", 0, None, "email", "2026-10-06 15:00Z"),
+            (l2, Some(m1), "initial", 0, None, "email", "2026-10-05 13:00Z"),
+            (l2, Some(m1), "follow_up", 1, None, "email", "2026-10-08 13:00Z"),
+            (l2, None, "inbound", 0, Some("hot"), "email", "2026-10-09 14:00Z"),
+            // Tuesday 03:30 UTC is still Monday 23:30 in New York.
+            (l3, Some(m2), "initial", 0, None, "email", "2026-10-06 03:30Z"),
+            (l3, None, "inbound", 0, Some("bounce"), "email", "2026-10-06 04:00Z"),
+            (l4, Some(m2), "initial", 0, None, "email", "2026-10-07 13:00Z"),
+            // The previous period. L6's email went out on September 30 in New York, though it was October 1 in UTC.
+            (l5, Some(m1), "initial", 0, None, "email", "2026-09-20 13:00Z"),
+            (l5, None, "inbound", 0, Some("question"), "email", "2026-09-22 13:00Z"),
+            (l6, Some(m2), "initial", 0, None, "email", "2026-10-01 03:00Z"),
+            // L5 answers a text in October too, which isn't their first reply, so it counts nowhere.
+            (l5, None, "inbound", 0, Some("question"), "sms", "2026-10-11 13:00Z"),
+            // A draft never counts.
+            (l6, Some(m2), "follow_up", 1, None, "email", "2026-10-04 13:00Z"),
+        ];
+        for (i, (lead, mailbox, kind, step, classification, channel, at)) in emails.into_iter().enumerate() {
+            let inbound = kind == "inbound";
+            let status = if inbound { "received" } else if i == 13 { "draft" } else { "sent" };
+            let segment = if [l1, l2, l5].contains(&lead) { alpha } else { beta };
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, step, status, classification, channel,
+                   sent_at, created_at, cost_micros)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, case when $8 = 'sent' then $11::timestamptz end, $11::timestamptz, $12)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(segment)
+            .bind(mailbox)
+            .bind(if inbound { "inbound" } else { "outbound" })
+            .bind(kind)
+            .bind(step)
+            .bind(status)
+            .bind(classification)
+            .bind(channel)
+            .bind(at)
+            .bind(match kind {
+                "inbound" => 0i64,
+                "manual_reply" => 300,
+                _ => 1000,
+            })
+            .execute(db)
+            .await
+            .unwrap();
+        }
+
+        let stage: Uuid = sqlx::query_scalar("insert into deal_stages (org_id, name, kind, position) values ($1, 'Won', 'won', 0) returning id")
+            .bind(org)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        for (lead, cents, currency, at) in [(l2, 120_000i64, "USD", "2026-10-20 12:00Z"), (l1, 5_000, "EUR", "2026-10-22 12:00Z")] {
+            sqlx::query(
+                "insert into deals (org_id, project_id, lead_id, stage_id, status, value_cents, currency, closed_at) values ($1, $2, $3, $4, 'won', $5, $6, $7::timestamptz)",
+            )
+            .bind(org)
+            .bind(project)
+            .bind(lead)
+            .bind(stage)
+            .bind(cents)
+            .bind(currency)
+            .bind(at)
+            .execute(db)
+            .await
+            .unwrap();
+        }
+        // Alpha's writer run and a project-wide explore in October, and a run in September.
+        for (kind, segment, usd, at) in
+            [("write_emails", Some(alpha), 0.5, "2026-10-03 12:00Z"), ("explore", None, 1.0, "2026-10-04 12:00Z"), ("explore", None, 2.0, "2026-09-10 12:00Z")]
+        {
+            let input = segment.map_or(serde_json::json!({}), |s: Uuid| serde_json::json!({ "segment_id": s }));
+            sqlx::query("insert into agent_runs (kind, project_id, org_id, input, status, cost_usd, created_at) values ($1, $2, $3, $4, 'succeeded', $5, $6::timestamptz)")
+                .bind(kind)
+                .bind(project)
+                .bind(org)
+                .bind(input)
+                .bind(usd)
+                .bind(at)
+                .execute(db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("insert into linkedin_messages (lead_id, project_id, step, kind, body, status, done_at) values ($1, $2, 0, 'connect', 'Hi', 'done', '2026-10-10 12:00Z')")
+            .bind(l1)
+            .bind(project)
+            .execute(db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into text_messages (project_id, lead_id, segment_id, channel, kind, to_number, status, sent_at) values ($1, $2, $3, 'sms', 'sequence', '+15550100', 'delivered', '2026-10-10 13:00Z')",
+        )
+        .bind(project)
+        .bind(l5)
+        .bind(alpha)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query("insert into social_posts (project_id, platform, body, status, posted_at) values ($1, 'x', 'Hello', 'posted', '2026-10-15 12:00Z')")
+            .bind(project)
+            .execute(db)
+            .await
+            .unwrap();
+        Seeded { org, project, alpha, second_mailbox: m2 }
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    fn october() -> AnalyticsQuery {
+        AnalyticsQuery { from: Some(day("2026-10-01")), to: Some(day("2026-10-31")), ..Default::default() }
+    }
+
+    async fn json(db: &PgPool, project: Uuid, q: AnalyticsQuery) -> serde_json::Value {
+        serde_json::to_value(analytics(db, project, &q).await.unwrap()).unwrap()
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn totals_steps_and_the_period_before(db: PgPool) {
+        let s = seed(&db).await;
+        let a = json(&db, s.project, october()).await;
+        let t = &a["totals"];
+        let pick = |v: &serde_json::Value, keys: &[&str]| keys.iter().map(|k| v[*k].clone()).collect::<Vec<_>>();
+        assert_eq!(
+            pick(t, &["sent", "contacted", "delivered", "bounced", "replies", "hot", "meetings", "deals_won", "unsubscribes"]),
+            [5, 4, 4, 1, 2, 2, 1, 2, 1].map(serde_json::Value::from)
+        );
+        assert_eq!(pick(t, &["reply_rate", "hot_rate", "bounce_rate"]), [0.5, 0.5, 0.25].map(serde_json::Value::from));
+        // The organization's currency first.
+        assert_eq!(t["won_value"], serde_json::json!([{ "currency": "USD", "value_cents": 120000 }, { "currency": "EUR", "value_cents": 5000 }]));
+        assert_eq!(
+            pick(t, &["claude_cost_micros", "email_cost_micros", "spend_micros", "cost_per_hot_micros", "cost_per_meeting_micros"]),
+            [1_500_000, 5_300, 1_505_300, 752_650, 1_505_300].map(serde_json::Value::from)
+        );
+        assert_eq!((a["previous_from"].as_str(), a["previous_to"].as_str()), (Some("2026-08-31"), Some("2026-09-30")));
+        let p = &a["previous"];
+        assert_eq!(pick(p, &["sent", "contacted", "replies", "claude_cost_micros", "email_cost_micros"]), [2, 2, 1, 2_000_000, 2_000].map(serde_json::Value::from));
+
+        // The hot reply came after the follow-up, so it counts there.
+        assert_eq!(
+            a["steps"],
+            serde_json::json!([{ "step": 0, "sent": 4, "replies": 1, "reply_rate": 0.25 }, { "step": 1, "sent": 1, "replies": 1, "reply_rate": 1.0 }])
+        );
+        let campaigns: Vec<_> = a["campaigns"].as_array().unwrap().iter().map(|c| pick(c, &["name", "sent", "replies", "bounced", "spend_micros"])).collect();
+        assert!(campaigns.contains(&["Alpha".into(), 3.into(), 2.into(), 0.into(), 503_300.into()].to_vec()));
+        assert!(campaigns.contains(&["Beta".into(), 2.into(), 0.into(), 1.into(), 2_000.into()].to_vec()));
+        let mailboxes: Vec<_> = a["mailboxes"].as_array().unwrap().iter().map(|m| pick(m, &["email", "sent", "contacted", "replies", "bounce_rate"])).collect();
+        assert!(mailboxes.contains(&["a@acme.test".into(), 3.into(), 2.into(), 2.into(), 0.0.into()].to_vec()));
+        assert!(mailboxes.contains(&["b@acme.test".into(), 2.into(), 2.into(), 0.into(), 0.5.into()].to_vec()));
+        assert_eq!(a["mailboxes"].as_array().unwrap().len(), 2);
+
+        let channels: Vec<_> = a["channels"].as_array().unwrap().iter().map(|c| pick(c, &["channel", "sent", "leads", "replies"])).collect();
+        assert_eq!(
+            channels,
+            [("email", 5, Some(4), Some(2)), ("linkedin", 1, Some(1), None), ("sms", 1, Some(1), Some(0)), ("whatsapp", 0, Some(0), Some(0)), ("social", 1, None, None)]
+                .map(|(c, sent, leads, replies)| vec![serde_json::Value::from(c), sent.into(), leads.into(), replies.into()])
+        );
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn days_hours_and_weeks_use_the_project_time_zone(db: PgPool) {
+        let s = seed(&db).await;
+        let a = json(&db, s.project, october()).await;
+        // Monday 09:00 twice, one answered. Monday 23:30, which was Tuesday in UTC. Wednesday and Thursday 09:00.
+        let cells: Vec<_> = a["heatmap"].as_array().unwrap().iter().map(|c| [&c["weekday"], &c["hour"], &c["sent"], &c["replies"]].map(|v| v.as_i64().unwrap())).collect();
+        assert_eq!(cells, [[1, 9, 2, 1], [1, 23, 1, 0], [3, 9, 1, 0], [4, 9, 1, 1]]);
+
+        let series = a["series"].as_array().unwrap();
+        assert_eq!((a["interval"].as_str(), series.len()), (Some("day"), 31));
+        let on = |date: &str| {
+            let p = series.iter().find(|p| p["date"] == date).unwrap();
+            [&p["sent"], &p["replies"], &p["hot"], &p["meetings"]].map(|v| v.as_i64().unwrap())
+        };
+        assert_eq!(on("2026-10-05"), [3, 0, 0, 0]);
+        assert_eq!(on("2026-10-06"), [0, 1, 1, 0]);
+        assert_eq!(on("2026-10-09"), [0, 1, 1, 0]);
+        assert_eq!(on("2026-10-12"), [0, 0, 0, 1]);
+        assert_eq!(on("2026-10-01"), [0, 0, 0, 0]);
+
+        // Past 90 days the series goes by week, from the Monday on or before the first day.
+        let long = json(&db, s.project, AnalyticsQuery { from: Some(day("2026-07-01")), to: Some(day("2026-10-31")), ..Default::default() }).await;
+        let weeks = long["series"].as_array().unwrap();
+        assert_eq!((long["interval"].as_str(), weeks[0]["date"].as_str(), weeks.len()), (Some("week"), Some("2026-06-29"), 18));
+        let week = weeks.iter().find(|p| p["date"] == "2026-10-05").unwrap();
+        assert_eq!((week["sent"].as_i64(), week["replies"].as_i64()), (Some(5), Some(2)));
+        // L6's September 30 email is in the week of the 28th.
+        assert_eq!(weeks.iter().find(|p| p["date"] == "2026-09-28").unwrap()["sent"], 1);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn filters_by_campaign_and_mailbox(db: PgPool) {
+        let s = seed(&db).await;
+        let alpha = json(&db, s.project, AnalyticsQuery { segment_id: Some(s.alpha), ..october() }).await;
+        let t = &alpha["totals"];
+        assert_eq!([&t["sent"], &t["replies"], &t["bounced"], &t["claude_cost_micros"], &t["email_cost_micros"]].map(|v| v.as_i64().unwrap()), [3, 2, 0, 500_000, 3_300]);
+        assert_eq!(alpha["campaigns"].as_array().unwrap().len(), 1);
+        assert!(alpha["channels"].as_array().unwrap().iter().all(|c| c["channel"] != "social"));
+
+        // Runs don't belong to a mailbox, and the other channels don't go through one.
+        let second = json(&db, s.project, AnalyticsQuery { mailbox_id: Some(s.second_mailbox), ..october() }).await;
+        let t = &second["totals"];
+        assert_eq!(
+            [&t["sent"], &t["contacted"], &t["replies"], &t["bounced"], &t["unsubscribes"], &t["claude_cost_micros"], &t["email_cost_micros"]].map(|v| v.as_i64().unwrap()),
+            [2, 2, 0, 1, 1, 0, 2_000]
+        );
+        assert_eq!(second["channels"].as_array().unwrap().len(), 1);
+        assert_eq!(second["steps"], serde_json::json!([{ "step": 0, "sent": 2, "replies": 0, "reply_rate": 0.0 }]));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn ranges_are_checked_and_stay_in_the_organization(db: PgPool) {
+        let s = seed(&db).await;
+        let state = crate::autopilot::tests::state(db.clone());
+        let range = |from: &str, to: &str| AnalyticsQuery { from: Some(day(from)), to: Some(day(to)), ..Default::default() };
+        assert!(matches!(analytics(&db, s.project, &range("2026-10-02", "2026-10-01")).await, Err(AppError::BadRequest(_))));
+        assert!(matches!(analytics(&db, s.project, &range("2025-10-31", "2026-10-31")).await, Err(AppError::BadRequest(_))));
+        let year = analytics(&db, s.project, &range("2025-11-01", "2026-10-31")).await.unwrap();
+        assert_eq!(serde_json::to_value(&year).unwrap()["totals"]["sent"], 7);
+
+        // The last 30 days by default, ending today in the project's time zone.
+        let Json(recent): Json<Analytics> = super::project_analytics(
+            State(state.clone()),
+            Auth { user_id: Uuid::new_v4(), org_id: s.org, role: "owner".into(), token_hash: String::new() },
+            Path(s.project),
+            Query(AnalyticsQuery::default()),
+        )
+        .await
+        .unwrap();
+        let recent = serde_json::to_value(recent).unwrap();
+        assert_eq!(recent["series"].as_array().unwrap().len(), 30);
+
+        // Another organization's project looks like one that doesn't exist.
+        let other: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(&db).await.unwrap();
+        let session = Auth { user_id: Uuid::new_v4(), org_id: other, role: "owner".into(), token_hash: String::new() };
+        let refused = super::project_analytics(State(state.clone()), session, Path(s.project), Query(october())).await;
+        assert!(matches!(refused, Err(AppError::NotFound)));
+        let refused = super::super::api_v1::project_analytics(State(state), ApiKeyAuth { org_id: other }, Path(s.project), Query(october())).await;
+        assert!(matches!(refused, Err(AppError::NotFound)));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_status_change_records_when(db: PgPool) {
+        let s = seed(&db).await;
+        let lead: Uuid = sqlx::query_scalar("select id from leads where project_id = $1 and status = 'hot'").bind(s.project).fetch_one(&db).await.unwrap();
+        let at = || sqlx::query_scalar::<_, Option<Ts>>("select status_changed_at from leads where id = $1").bind(lead).fetch_one(&db);
+        let before = at().await.unwrap().unwrap();
+        // Setting the same status, or another column, leaves the time alone.
+        sqlx::query("update leads set status = 'hot', notes = 'x' where id = $1").bind(lead).execute(&db).await.unwrap();
+        assert_eq!(at().await.unwrap(), Some(before));
+        sqlx::query("update leads set status = 'meeting_booked' where id = $1").bind(lead).execute(&db).await.unwrap();
+        assert!(at().await.unwrap().unwrap() > before);
+    }
+}

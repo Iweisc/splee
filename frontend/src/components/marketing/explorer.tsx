@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api } from "@/lib/api";
+import { downloadCsv, toCsv } from "@/lib/csv";
 import { cn, plural } from "@/lib/utils";
 import type { AgentRun, ExplorerCompany } from "@/lib/types";
 import { flag } from "./flag";
@@ -22,19 +23,11 @@ function location(c: ExplorerCompany) {
   return c.city || c.country_code.toUpperCase();
 }
 
-function toCsv(rows: ExplorerCompany[]): string {
-  const header = ["name", "domain", "city", "country_code", "employees", "description", "fit_reason"] as const;
-  const cell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-  return [header.join(","), ...rows.map((r) => header.map((h) => cell(r[h] ?? "")).join(","))].join("\n");
-}
+const CSV_COLUMNS = ["name", "domain", "city", "country_code", "employees", "description", "fit_reason"] as const;
 
-function downloadCsv(rows: ExplorerCompany[], query: string) {
-  const url = URL.createObjectURL(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `splee-${query.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40) || "companies"}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+function exportCsv(rows: ExplorerCompany[], query: string) {
+  const csv = toCsv([...CSV_COLUMNS], rows.map((r) => CSV_COLUMNS.map((c) => r[c])));
+  downloadCsv(`splee-${query.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40) || "companies"}.csv`, csv);
 }
 
 function statusLine(query: string, data: ExplorerResult | null): string {
@@ -130,7 +123,7 @@ export function Explorer({ defaultCountry = "", placeholder = "e.g. wholesale co
               <span className={running ? "text-brand-600" : "text-muted-foreground"}>{running ? "›" : "✓"}</span> {statusLine(submitted, data)}
               {running && <span className="ml-0.5 inline-block h-3.5 w-[7px] translate-y-0.5 animate-blink bg-foreground" />}
             </p>
-            <Button variant="outline" size="sm" disabled={results.length === 0} onClick={() => downloadCsv(results, submitted)} aria-label="Export CSV" className="shrink-0">
+            <Button variant="outline" size="sm" disabled={results.length === 0} onClick={() => exportCsv(results, submitted)} aria-label="Export CSV" className="shrink-0">
               <Download className="size-3.5" />
               <span className="max-sm:hidden">Export CSV</span>
             </Button>

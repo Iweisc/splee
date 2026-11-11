@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread};
@@ -36,6 +37,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/stats", get(project_stats))
+        .route("/v1/projects/{id}/analytics", get(project_analytics))
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
         .route("/v1/companies", get(search_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
@@ -304,6 +306,18 @@ async fn project_stats(State(state): State<AppState>, auth: ApiKeyAuth, Path(id)
         campaigns: segments::with_stats(&state.db, id, None).await?,
         steps: stats::steps(&state.db, id).await?,
     }))
+}
+
+/// The Analytics page's numbers for a date range: totals against the period before, a daily or weekly series, and
+/// breakdowns by campaign, mailbox, step, send time and channel.
+pub(super) async fn project_analytics(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<AnalyticsQuery>,
+) -> AppResult<Json<Analytics>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(analytics::analytics(&state.db, id, &q).await?))
 }
 
 #[derive(Deserialize)]

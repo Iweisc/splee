@@ -5,6 +5,7 @@ import {
   Bot,
   Building2,
   CalendarCheck,
+  ChartLine,
   CalendarClock,
   CircleUser,
   FileText,
@@ -44,6 +45,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
     title: "Outreach",
     items: [
       { label: "Overview", href: (p) => `/app/p/${p}`, icon: BarChart3 }, // D1
+      { label: "Analytics", href: (p) => `/app/p/${p}/analytics`, icon: ChartLine },
       { label: "Campaigns", href: (p) => `/app/p/${p}/segments`, icon: Layers }, // D1 (+ /segments/[segId], /new)
       { label: "Companies", href: (p) => `/app/p/${p}/companies`, icon: Building2 },
       { label: "Leads", href: (p) => `/app/p/${p}/leads`, icon: Users }, // D1

@@ -42,7 +42,8 @@ const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email 
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
 so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule. Hot replies open \
-deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost.";
+deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. get_analytics says which campaigns, \
+mailboxes, follow-ups and send times get replies.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -272,6 +273,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "approve_email" => async { value(v1::approve_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "skip_email" => async { value(v1::skip_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "list_replies" => async { value(v1::list_inbox(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "get_analytics" => async { value(v1::project_analytics(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "list_deals" => async {
             let stages = value(v1::list_stages(st(), auth.clone()).await?)?;
             let page = value(v1::list_deals(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?)?;
@@ -418,6 +420,24 @@ fn tools() -> Vec<Value> {
             }),
             &["campaign_id"],
             adds.clone(),
+        ),
+        tool(
+            "get_analytics",
+            "Get analytics",
+            "What's working in a project over a date range, 30 days by default and at most 365: totals with reply, hot and \
+             bounce rates by lead, meetings, deals won, unsubscribes and spend split into claude_cost_micros and email_cost_micros \
+             (micro-dollars), the same totals for the period before in previous, a daily series (weekly past 90 days), and \
+             breakdowns by campaign, mailbox (bouncing flags over 5% bounced), sequence step, weekday and hour of send in the \
+             project's time zone, and channel. Replies, bounces and meetings count for the last email the lead got before them.",
+            json!({
+                "project_id": project,
+                "from": { "type": "string", "format": "date", "description": "Optional. First day, as YYYY-MM-DD in the project's time zone" },
+                "to": { "type": "string", "format": "date", "description": "Optional. Last day, as YYYY-MM-DD. Today by default" },
+                "campaign_id": id_prop("Optional. Only this campaign"),
+                "mailbox_id": id_prop("Optional. Only emails from this mailbox"),
+            }),
+            &["project_id"],
+            read.clone(),
         ),
         tool(
             "get_run",
@@ -648,7 +668,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals", "create_deal",
-                     "move_deal"] {
+                     "move_deal", "get_analytics"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
