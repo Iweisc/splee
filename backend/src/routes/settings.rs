@@ -345,6 +345,9 @@ async fn connect_crm(
     let crm = crm(&name)?;
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
+    if crm.signs_in() {
+        return Err(AppError::BadRequest(format!("Connect {} by signing in", crm.label())));
+    }
     let token = body.token.trim();
     if token.is_empty() {
         return Err(AppError::BadRequest(format!("Paste your {} token", crm.label())));
@@ -367,6 +370,10 @@ async fn disconnect_crm(State(state): State<AppState>, auth: Auth, Path((id, nam
     let crm = crm(&name)?;
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
+    if crm.signs_in() {
+        crate::crm::signin::disconnect(&state.db, &state.cfg, id, crm).await?;
+        return Ok(Json(load_or_create(&state.db, id).await?));
+    }
     set_crm_token(&state.db, id, crm, "").await
 }
 

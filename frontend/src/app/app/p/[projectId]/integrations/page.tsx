@@ -55,6 +55,8 @@ import {
   type DiscourseForum,
   type Endpoint,
   type ProjectSettings,
+  type SignInCrm,
+  signsIn,
   type SocialChannel,
   type SlackStatus,
   type VisitorSite,
@@ -339,6 +341,24 @@ const CRMS = {
     field: "Service key",
     hint: "In HubSpot: Settings → Integrations → Service Keys → Create, with the crm.objects.contacts.read and crm.objects.contacts.write scopes. An older private app's token works too.",
   },
+  salesforce: {
+    name: "Salesforce",
+    record: "leads",
+    signIn: true,
+    hint: "A lead whose email is already in Salesforce updates that contact or lead instead. Their reply goes in a task.",
+  },
+  zoho: {
+    name: "Zoho CRM",
+    record: "leads",
+    signIn: true,
+    hint: "Hot and booked leads go to the Leads module, matched by email, in whichever Zoho data centre your account is in.",
+  },
+  dynamics: {
+    name: "Dynamics 365 Sales",
+    record: "leads",
+    signIn: true,
+    hint: "A lead whose email is already in Dynamics 365 gets updated instead. Their reply goes in a note on the lead.",
+  },
   pipedrive: {
     name: "Pipedrive",
     record: "people",
@@ -491,8 +511,10 @@ const CRMS = {
   },
 } as const satisfies Record<CrmName, Crm>;
 
-/** `account` is what a CRM needs besides the token to find the account, sent alongside it. */
-type Crm = { name: string; record: string; field: string; hint: string; account?: { label: string; placeholder: string } };
+/** `account` is what a CRM needs besides the token to find the account, sent alongside it. A CRM with `signIn` connects by
+ *  signing in instead. */
+type Crm = TokenCrm | { name: string; record: string; hint: string; signIn: true };
+type TokenCrm = { name: string; record: string; hint: string; field: string; account?: { label: string; placeholder: string } };
 
 /** Connects (PUT, with the secret) or disconnects (DELETE) an integration whose secret is write-only, then shows the saved settings. */
 function useConnection(projectId: string, path: string) {
@@ -521,14 +543,38 @@ const submit = (run: () => void) => (e: React.FormEvent) => {
   run();
 };
 
-/** Every CRM the project syncs to, each disconnected on its own, and a form to connect another. Tokens are write-only, and
- *  connecting checks the token with the CRM first. */
+/** Sends the browser to the CRM's sign-in page. It comes back to this page with how it went, which CrmSection shows. */
+async function signInToCrm(projectId: string, crm: SignInCrm, body: { sandbox?: boolean; org_url?: string }) {
+  const { url } = await api<{ url: string }>(`/projects/${projectId}/integrations/${crm}/oauth`, { method: "POST", body });
+  window.location.assign(url);
+}
+
+/** Every CRM the project syncs to, each tested and disconnected on its own, and a form to connect another. Tokens are
+ *  write-only, and connecting checks the token with the CRM first. A CRM that signs in is only offered when the server has
+ *  an app for it. */
 function CrmSection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
+  const { me } = useMe();
+  const { mutate } = useSWRConfig();
   const connected = CRM_NAMES.filter((crm) => settings[`${crm}_connected`]);
-  const open = CRM_NAMES.filter((crm) => !settings[`${crm}_connected`]);
+  const open = CRM_NAMES.filter((crm) => !settings[`${crm}_connected`] && (!signsIn(crm) || me?.crm_sign_in.includes(crm)));
   const [picked, setPicked] = useState<CrmName>(open[0] ?? "hubspot");
   // Once the picked CRM connects it leaves the list, so the form moves on to the next one.
   const crm = open.includes(picked) ? picked : open[0];
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const done = params.get("crm");
+    const failed = params.get("crm_error");
+    if (!done && !failed) return;
+    // Cleared first, so a reload doesn't show it again.
+    window.history.replaceState(null, "", window.location.pathname);
+    if (failed) toast.error(failed);
+    if (done && done in CRMS) {
+      toast.success(`Connected to ${CRMS[done as CrmName].name}`);
+      mutate(`/projects/${projectId}/settings`);
+    }
+  }, [mutate, projectId]);
+
   return (
     <Section
       title={
@@ -553,20 +599,65 @@ function CrmSection({ projectId, settings }: { projectId: string; settings: Proj
 function ConnectedCrm({ projectId, settings, crm }: { projectId: string; settings: ProjectSettings; crm: CrmName }) {
   const { name, record } = CRMS[crm];
   const { busy, call } = useConnection(projectId, crm);
+  const status = useConnection(projectId, `${crm}/status`);
+  const { pending, run } = useAction();
+  const { mutate } = useSWRConfig();
+  const key = `/projects/${projectId}/settings`;
+  const site = signsIn(crm) ? settings[`${crm}_site`] : "";
+  const reconnect = signsIn(crm) && settings[`${crm}_needs_reconnect`];
   const disconnect = () => {
     if (confirm(`Disconnect ${name}? New hot leads and meetings won't be added to it.`)) call(undefined, `${name} disconnected`);
   };
+  // A failed test is saved like a failed sync, so the settings are read again either way.
+  const test = () =>
+    run("test", async () => {
+      try {
+        await mutate(key, await api<ProjectSettings>(`/projects/${projectId}/integrations/${crm}/test`, { method: "POST" }), { revalidate: false });
+      } catch (e) {
+        await mutate(key);
+        throw e;
+      }
+    }, `${name} is working`);
+  const signInAgain = () =>
+    run("reconnect", () => signInToCrm(projectId, crm as SignInCrm, { sandbox: settings.salesforce_sandbox, org_url: `https://${settings.dynamics_site}` }));
   return (
     <li className="px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-40 flex-1">
           <p className="text-sm font-medium">{name}</p>
-          <p className="text-xs text-muted-foreground">Adds leads as {record}.</p>
+          <p className="text-xs break-all text-muted-foreground">{site ? `Signed in to ${site}` : `Adds leads as ${record}.`}</p>
         </div>
-        <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
-          Disconnect
-        </Button>
+        <div className="flex gap-2">
+          {reconnect ? (
+            <Button size="sm" onClick={signInAgain} loading={pending === "reconnect"}>
+              Reconnect
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={test} loading={pending === "test"}>
+              Test
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy}>
+            Disconnect
+          </Button>
+        </div>
       </div>
+      {crm === "salesforce" && (
+        <Field label="Status for booked leads" hint="From your org's Lead Status picklist." className="mt-3 sm:w-80">
+          <Select
+            value={settings.salesforce_booked_status}
+            disabled={status.busy}
+            onChange={(e) => status.call({ status: e.target.value }, e.target.value ? `Booked leads become ${e.target.value}` : "Booked leads keep their status")}
+          >
+            <option value="">Leave it as it is</option>
+            {settings.salesforce_statuses.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
       <LastFailure error={settings[`${crm}_error`]} at={settings[`${crm}_failed_at`]} what="sync" />
     </li>
   );
@@ -574,22 +665,31 @@ function ConnectedCrm({ projectId, settings, crm }: { projectId: string; setting
 
 /** Keyed by the CRM, so picking another one starts with empty fields. */
 function CrmForm({ projectId, crm, label, pick, open }: { projectId: string; crm: CrmName; label: string; pick: (crm: CrmName) => void; open: CrmName[] }) {
-  const { name, field, hint, account }: Crm = CRMS[crm];
+  const c: Crm = CRMS[crm];
+  const picker = (
+    <Field label={label} className="sm:w-72">
+      <Select value={crm} onChange={(e) => pick(e.target.value as CrmName)}>
+        {open.map((c) => (
+          <option key={c} value={c}>
+            {CRMS[c].name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+  if ("signIn" in c) return <SignInCrmForm projectId={projectId} crm={crm as SignInCrm} picker={picker} />;
+  return <TokenCrmForm projectId={projectId} crm={crm} crmInfo={c} picker={picker} />;
+}
+
+function TokenCrmForm({ projectId, crm, crmInfo, picker }: { projectId: string; crm: CrmName; crmInfo: TokenCrm; picker: React.ReactNode }) {
+  const { name, field, hint, account } = crmInfo;
   const [token, setToken] = useState("");
   const [accountId, setAccountId] = useState("");
   const { busy, call } = useConnection(projectId, crm);
   const connect = () => call({ token, account: accountId }, `Connected to ${name}`);
   return (
     <form onSubmit={submit(connect)} className="flex flex-col gap-4">
-      <Field label={label} className="sm:w-72">
-        <Select value={crm} onChange={(e) => pick(e.target.value as CrmName)}>
-          {open.map((c) => (
-            <option key={c} value={c}>
-              {CRMS[c].name}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      {picker}
       <div className="flex flex-col gap-4 sm:flex-row">
         {account && (
           <Field label={account.label} className="sm:w-72">
@@ -605,6 +705,39 @@ function CrmForm({ projectId, crm, label, pick, open }: { projectId: string; crm
             </Button>
           </div>
         </Field>
+      </div>
+    </form>
+  );
+}
+
+function SignInCrmForm({ projectId, crm, picker }: { projectId: string; crm: SignInCrm; picker: React.ReactNode }) {
+  const { name, hint } = CRMS[crm];
+  const [orgUrl, setOrgUrl] = useState("");
+  const [sandbox, setSandbox] = useState(false);
+  const { pending, run } = useAction();
+  const signIn = () => run("sign-in", () => signInToCrm(projectId, crm, { sandbox, org_url: orgUrl }));
+  return (
+    <form onSubmit={submit(signIn)} className="flex flex-col gap-4">
+      {picker}
+      {crm === "dynamics" && (
+        <Field label="Org URL" hint="The address Dynamics 365 opens at." className="sm:w-96">
+          <Input placeholder="https://acme.crm.dynamics.com" autoComplete="off" value={orgUrl} onChange={(e) => setOrgUrl(e.target.value.trim())} />
+        </Field>
+      )}
+      {crm === "salesforce" && (
+        <div className="flex items-center gap-3">
+          <Switch checked={sandbox} onChange={setSandbox} label="Sandbox org" />
+          <span>
+            <span className="block text-sm">Sandbox org</span>
+            <span className="block text-xs text-muted-foreground">Signs in at test.salesforce.com</span>
+          </span>
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        <Button type="submit" loading={pending === "sign-in"} disabled={crm === "dynamics" && !orgUrl} className="self-start">
+          Sign in to {name}
+        </Button>
+        <p className="text-xs text-pretty text-muted-foreground">{hint}</p>
       </div>
     </form>
   );

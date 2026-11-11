@@ -43,6 +43,8 @@ pub struct Me {
     mailbox_sign_in: Vec<&'static str>,
     /// The server has a Tumblr app, so the integrations page offers to connect Tumblr.
     tumblr_sign_in: bool,
+    /// The CRMs that sign in which the server has an app for, so the integrations page offers them.
+    crm_sign_in: Vec<&'static str>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -70,7 +72,8 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     let operator = state.cfg.is_operator(&user.email);
     let mailbox_sign_in = crate::mail::oauth::configured(&state.cfg);
     let tumblr_sign_in = state.cfg.tumblr.is_some();
-    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in, tumblr_sign_in })
+    let crm_sign_in = crate::crm::signin::configured(&state.cfg);
+    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in, tumblr_sign_in, crm_sign_in })
 }
 
 #[derive(Deserialize)]

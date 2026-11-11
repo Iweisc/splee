@@ -6,13 +6,17 @@ import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import { CRM_NAMES, type ProjectSettings } from "@/lib/types";
+import { CRM_NAMES, SIGN_IN_CRMS, type ProjectSettings } from "@/lib/types";
 import { toastError } from "./use-action";
 
 // The backend sets the CRM, verifier and Unipile connections and their failures itself, so these come from the latest fetch even
 // under an unsaved draft.
 const FROM_SERVER: (keyof ProjectSettings)[] = [
   ...CRM_NAMES.flatMap((crm) => [`${crm}_connected`, `${crm}_error`, `${crm}_failed_at`] as const),
+  ...SIGN_IN_CRMS.flatMap((crm) => [`${crm}_site`, `${crm}_needs_reconnect`] as const),
+  "salesforce_sandbox",
+  "salesforce_statuses",
+  "salesforce_booked_status",
   "verifier",
   "verifier_error",
   "verifier_failed_at",

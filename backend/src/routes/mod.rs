@@ -38,6 +38,7 @@ pub mod inbox;
 pub mod mailboxes;
 mod mailbox_oauth;
 mod tumblr;
+mod crm_oauth;
 mod bots;
 pub mod settings;
 pub mod materials;
@@ -91,6 +92,7 @@ pub fn router() -> Router<AppState> {
         .merge(mailbox_oauth::router())
         .merge(deliverability::router())
         .merge(tumblr::router())
+        .merge(crm_oauth::router())
         .merge(bots::router())
         .merge(sending_domains::router())
         .merge(settings::router())
