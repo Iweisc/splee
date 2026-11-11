@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
-import { CalendarCheck, Clock, Layers, MailWarning, Pause, Play, Plus, TriangleAlert } from "lucide-react";
+import { CalendarCheck, Clock, Flame, Layers, MailWarning, Pause, Play, Plus, TriangleAlert } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -13,6 +13,7 @@ import { LeadModal } from "@/components/app/work/lead-modal";
 import { DailyChart } from "@/components/app/work/daily-chart";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
+import { ReasonList } from "@/components/app/work/score";
 import { SetupChecklist } from "@/components/app/work/setup-checklist";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { ProjectStatusBadge } from "@/components/app/work/status";
@@ -20,7 +21,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Address, Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
 import { api, ApiError } from "@/lib/api";
 import { bouncing, wholePercent } from "@/lib/mailbox";
-import type { Lead, Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
+import type { Lead, LeadRow, Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
 import { dayTime, money, num, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -74,6 +75,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
           <div className="flex flex-col gap-4">
             {!sending && <SetupChecklist projectId={projectId} settings={settings} />}
             <AutopilotCard projectId={projectId} />
+            <Hottest projectId={projectId} />
             <UpcomingCalls projectId={projectId} />
             <CompanyProfile project={project} />
           </div>
@@ -304,6 +306,50 @@ function Campaigns({ projectId }: { projectId: string }) {
       ) : (
         <CampaignsTable projectId={projectId} segments={data.segments} />
       )}
+    </Card>
+  );
+}
+
+/** What they did. A lead keeps its four strongest reasons, which can all be fit ones, and then those show instead. */
+const whyHot = (l: LeadRow) => {
+  const intent = l.score_reasons.filter((r) => r.kind === "intent");
+  return intent.length ? intent : l.score_reasons;
+};
+
+/** The five leads with the most intent, with what they did. Hidden until a lead has some. */
+function Hottest({ projectId }: { projectId: string }) {
+  const { data, mutate } = useSWR<LeadRow[]>(`/projects/${projectId}/leads/hottest`, fetcher);
+  const [open, setOpen] = useState<string | null>(null);
+  if (!data?.length) return null;
+  return (
+    <Card className="overflow-hidden">
+      <MicroLabel className="px-5 pt-4 pb-2">Hottest right now</MicroLabel>
+      <ul>
+        {data.map((l) => (
+          <li key={l.id} className="border-t border-border first:border-t-0">
+            <button onClick={() => setOpen(l.id)} className="flex w-full items-start gap-3 px-5 py-2.5 text-left hover:bg-accent">
+              <Flame className="mt-0.5 size-4 shrink-0 text-amber-600" />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline justify-between gap-3">
+                  <span className="truncate text-sm font-medium">{l.full_name || l.email}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={`Intent ${l.score_intent} of 50, score ${l.score} of 100`}>
+                    {l.score_intent}/50
+                  </span>
+                </span>
+                {l.company_name && <span className="block truncate text-xs text-muted-foreground">{l.company_name}</span>}
+                <ReasonList reasons={whyHot(l)} className="mt-1.5 flex-col gap-1 text-xs" />
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <LeadModal
+        leadId={open}
+        onClose={() => {
+          setOpen(null);
+          mutate();
+        }}
+      />
     </Card>
   );
 }

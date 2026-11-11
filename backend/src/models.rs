@@ -383,6 +383,17 @@ pub struct Company {
     pub source_url: String,
     pub status: String,
     pub created_at: Ts,
+    /// Its best lead's score, or its own while it has none. See score.rs.
+    #[sqlx(default)]
+    pub score: i16,
+    #[sqlx(default)]
+    pub score_fit: i16,
+    #[sqlx(default)]
+    pub score_intent: i16,
+    #[sqlx(default)]
+    pub score_reasons: sqlx::types::Json<Vec<crate::score::Reason>>,
+    #[sqlx(default)]
+    pub scored_at: Option<Ts>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -425,6 +436,17 @@ pub struct Lead {
     pub email_search_lookups: i32,
     pub email_search_credits: Option<i32>,
     pub email_searched_at: Option<Ts>,
+    /// 0-100, fit plus intent, from score.rs. Reasons are the strongest first.
+    #[sqlx(default)]
+    pub score: i16,
+    #[sqlx(default)]
+    pub score_fit: i16,
+    #[sqlx(default)]
+    pub score_intent: i16,
+    #[sqlx(default)]
+    pub score_reasons: sqlx::types::Json<Vec<crate::score::Reason>>,
+    #[sqlx(default)]
+    pub scored_at: Option<Ts>,
 }
 
 /// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.

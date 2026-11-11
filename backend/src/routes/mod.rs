@@ -20,6 +20,7 @@ pub mod linkedin;
 pub(crate) mod calendar;
 mod deals;
 mod saved_replies;
+mod scores;
 mod slack;
 mod sending_domains;
 mod texts;
@@ -74,6 +75,7 @@ pub fn router() -> Router<AppState> {
         .merge(leads::router())
         .merge(hiring::router())
         .merge(tech::router())
+        .merge(scores::router())
         .merge(visitors::router())
         .merge(emails::router())
         .merge(inbox::router())

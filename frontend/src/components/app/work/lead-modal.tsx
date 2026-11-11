@@ -14,6 +14,7 @@ import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { LeadDeal } from "./deal-dialog";
+import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
 
@@ -183,6 +184,15 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           </Detail>
         )}
       </dl>
+
+      <div>
+        <MicroLabel className="mb-2">Score</MicroLabel>
+        <div className="mb-2 flex items-center gap-3" title={`Fit ${lead.score_fit} of 50, intent ${lead.score_intent} of 50`}>
+          <span className="text-lg font-semibold tabular-nums">{lead.score}</span>
+          <ScoreBar fit={lead.score_fit} intent={lead.score_intent} className="w-24" />
+        </div>
+        <ScoreReasons item={lead} />
+      </div>
 
       <div className="text-sm">
         <MicroLabel className="mb-2">Deal</MicroLabel>

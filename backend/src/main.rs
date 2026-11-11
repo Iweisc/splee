@@ -34,6 +34,7 @@ mod phone;
 mod porkbun;
 mod reddit;
 mod routes;
+mod score;
 mod slack;
 mod social;
 mod stackexchange;
@@ -111,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
     directory_queue::spawn_worker(state.db.clone());
     hiring::spawn_worker(state.db.clone());
     tech::spawn_worker(state.db.clone());
+    score::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
 
     let app = Router::new()

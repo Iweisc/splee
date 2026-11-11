@@ -226,8 +226,12 @@ async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Val
 
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"];
-const LEAD_FIELDS: &[&str] =
-    &["id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status"];
+const LEAD_FIELDS: &[&str] = &[
+    "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
+    "score_fit", "score_intent", "score_reasons",
+];
+const COMPANY_FIELDS: &[&str] =
+    &["id", "name", "domain", "segment_id", "country_code", "employees", "status", "score", "score_fit", "score_intent", "score_reasons", "hiring", "tech"];
 const RUN_FIELDS: &[&str] = &["id", "kind", "status", "message", "error", "cost_usd", "created_at", "finished_at"];
 const DEAL_FIELDS: &[&str] = &[
     "id", "project_name", "lead_id", "lead_name", "company_name", "stage", "status", "value", "currency", "close_date", "owner_name", "lost_reason",
@@ -262,6 +266,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "list_leads" => async {
             let page = value(v1::list_leads(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
             Ok(pick(page, LEAD_FIELDS))
+        }
+        .await,
+        "list_companies" => async {
+            let page = value(v1::list_companies(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
+            Ok(pick(page, COMPANY_FIELDS))
         }
         .await,
         "list_emails_to_approve" => async {
@@ -326,6 +335,14 @@ fn page_props(props: Value) -> Value {
     props["page"] = json!({ "type": "integer", "minimum": 1, "description": "Page number, from 1" });
     props["per_page"] = json!({ "type": "integer", "minimum": 1, "maximum": 200, "description": "Results per page, 20 by default" });
     props
+}
+
+fn score_prop() -> Value {
+    json!({ "type": "integer", "minimum": 0, "maximum": 100, "description": "Optional. Only scores of at least this" })
+}
+
+fn sort_prop() -> Value {
+    json!({ "type": "string", "enum": ["score", "newest"], "description": "Optional. score puts the highest first" })
 }
 
 fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], annotations: Value) -> Value {
@@ -451,12 +468,30 @@ fn tools() -> Vec<Value> {
         tool(
             "list_leads",
             "List leads",
-            "A project's leads, newest first.",
+            "A project's leads, newest first, or the likeliest buyers first with sort \"score\". Each has a 0-100 score, its fit \
+             and intent parts (0-50 each) and the reasons behind it.",
             page_props(json!({
                 "project_id": project,
                 "campaign_id": id_prop("Optional. Only this campaign's leads"),
                 "status": { "type": "string", "enum": LEAD_STATUSES, "description": "Optional. Only leads with this status" },
                 "q": { "type": "string", "description": "Optional. Matches name, email, company or title" },
+                "min_score": score_prop(),
+                "sort": sort_prop(),
+            })),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_companies",
+            "List companies",
+            "A project's own companies, best fit first, or the likeliest buyers first with sort \"score\". A company's score is its \
+             best lead's, or its own while it has no leads. search_companies searches the company database instead.",
+            page_props(json!({
+                "project_id": project,
+                "campaign_id": id_prop("Optional. Only this campaign's companies"),
+                "q": { "type": "string", "description": "Optional. Matches name or domain" },
+                "min_score": score_prop(),
+                "sort": sort_prop(),
             })),
             &["project_id"],
             read.clone(),
@@ -667,8 +702,8 @@ mod tests {
         let tools = body["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
-                     "list_leads", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals", "create_deal",
-                     "move_deal", "get_analytics"] {
+                     "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
+                     "create_deal", "move_deal", "get_analytics"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -683,6 +718,75 @@ mod tests {
         assert_eq!(server.client.get(&server.url).bearer_auth(KEY).send().await.unwrap().status(), 405);
         let res = server.client.post(&server.url).bearer_auth(KEY).header("origin", "https://evil.example").json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 403);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn leads_and_companies_filter_and_sort_by_score(db: PgPool) {
+        let [(project, segment), (other_project, _)] = seed(&db).await;
+        let reasons = json!([{ "text": "Hiring 2 SDRs", "kind": "intent" }]);
+        for (p, name, score, age) in [(project, "Ana", 40, 3), (project, "Bo", 90, 2), (project, "Cy", 10, 1), (other_project, "Di", 95, 0)] {
+            sqlx::query(
+                "insert into leads (project_id, full_name, email, score, score_fit, score_intent, score_reasons, created_at)
+                 values ($1, $2, $2 || '@x.com', $3, $3 / 2, $3 - $3 / 2, $4, now() - make_interval(days => $5))",
+            )
+            .bind(p)
+            .bind(name)
+            .bind(score as i16)
+            .bind(&reasons)
+            .bind(age)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        for (domain, score) in [("low.com", 5), ("high.com", 80)] {
+            sqlx::query("insert into companies (project_id, segment_id, domain, score) values ($1, $2, $3, $4)")
+                .bind(project)
+                .bind(segment)
+                .bind(domain)
+                .bind(score as i16)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let server = Server::start(db.clone()).await;
+        let names = |text: &str, key: &str| -> Vec<String> {
+            let page: Value = serde_json::from_str(text).unwrap();
+            page["items"].as_array().unwrap().iter().map(|l| l[key].as_str().unwrap().to_string()).collect()
+        };
+
+        let (is_error, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "sort": "score", "min_score": 20 })).await;
+        assert!(!is_error, "{text}");
+        assert_eq!(names(&text, "full_name"), ["Bo", "Ana"]);
+        let first: Value = serde_json::from_str::<Value>(&text).unwrap()["items"][0].clone();
+        assert_eq!((first["score"].clone(), first["score_fit"].clone(), first["score_reasons"].clone()), (json!(90), json!(45), reasons.clone()));
+        let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project })).await;
+        assert_eq!(names(&text, "full_name"), ["Cy", "Bo", "Ana"], "newest first by default");
+        let (is_error, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "min_score": 101 })).await;
+        assert!(is_error && text.contains("0 to 100"), "{text}");
+        let (is_error, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "sort": "vibes" })).await;
+        assert!(is_error && text.contains("Sort by score"), "{text}");
+
+        let (is_error, text) = server.call(KEY, "list_companies", json!({ "project_id": project, "sort": "score" })).await;
+        assert!(!is_error, "{text}");
+        assert_eq!(names(&text, "domain"), ["high.com", "low.com"]);
+        let (_, text) = server.call(KEY, "list_companies", json!({ "project_id": project, "min_score": 50 })).await;
+        assert_eq!(names(&text, "domain"), ["high.com"]);
+
+        // The REST API takes the same filters, and another organization's project is not found.
+        let api = server.url.replace("/mcp", "/v1");
+        let get = |path: String| server.client.get(format!("{api}{path}")).bearer_auth(KEY).send();
+        let res = get(format!("/projects/{project}/leads?min_score=50&sort=score")).await.unwrap();
+        let page: Value = res.json().await.unwrap();
+        assert_eq!((page["total"].clone(), page["items"][0]["full_name"].clone()), (json!(1), json!("Bo")));
+        let res = get(format!("/projects/{project}/companies?sort=score&min_score=1")).await.unwrap();
+        assert_eq!(res.json::<Value>().await.unwrap()["total"], 2);
+        for path in [format!("/projects/{other_project}/leads?sort=score"), format!("/projects/{other_project}/companies")] {
+            assert_eq!(get(path).await.unwrap().status(), 404);
+        }
+        let (is_error, _) = server.call(KEY, "list_leads", json!({ "project_id": other_project, "sort": "score" })).await;
+        assert!(is_error);
     }
 
     #[sqlx::test]

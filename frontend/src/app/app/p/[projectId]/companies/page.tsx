@@ -2,16 +2,18 @@
 
 import { use, useState } from "react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { CompaniesTable } from "@/components/app/work/companies-table";
 import { DirectoryView } from "@/components/app/work/directory-view";
 import { HiringSignals } from "@/components/app/work/hiring";
 import { TechSignals } from "@/components/app/work/tech";
 import { VisitorsView } from "@/components/app/work/visitors";
 import { Tabs } from "@/components/ui/misc";
 
-const TABS = ["database", "hiring", "tech", "visitors"] as const;
+const TABS = ["yours", "database", "hiring", "tech", "visitors"] as const;
 type Tab = (typeof TABS)[number];
 
 const DESCRIPTIONS: Record<Tab, string> = {
+  yours: "Every company in your campaigns, scored by how well it fits your targeting and what it did lately. Open a score to see why.",
   database: "Businesses with their own website, from Overture Maps' open data. Add them to a campaign and the agent finds their decision makers.",
   hiring: "Your companies that are hiring for the roles you watch. A job post makes a warm opener, and the agent uses it in their emails.",
   tech: "The tools your companies' websites show they use. The ones you look for come first, and the agent can open their emails with them.",
@@ -22,7 +24,7 @@ export default function CompaniesPage({ params, searchParams }: PageProps<"/app/
   const { projectId } = use(params);
   // ?tab=visitors is where hot-visitor alerts link to.
   const { tab: linked } = use(searchParams);
-  const [tab, setTab] = useState<Tab>(TABS.find((t) => t === linked) ?? "database");
+  const [tab, setTab] = useState<Tab>(TABS.find((t) => t === linked) ?? "yours");
   return (
     <>
       <PageHeader title="Companies" description={DESCRIPTIONS[tab]} />
@@ -33,27 +35,30 @@ export default function CompaniesPage({ params, searchParams }: PageProps<"/app/
             value={tab}
             onChange={setTab}
             options={[
-              {
-                value: "database",
-                // Four tabs don't fit a phone with the full name.
-                label: (
-                  <>
-                    <span className="sm:hidden">Database</span>
-                    <span className="max-sm:hidden">Company database</span>
-                  </>
-                ),
-              },
+              // Five tabs don't fit a phone with their full names.
+              { value: "yours", label: <ShortLabel short="Yours" full="Your companies" /> },
+              { value: "database", label: <ShortLabel short="Database" full="Company database" /> },
               { value: "hiring", label: "Hiring" },
-              { value: "tech", label: "Tech stack" },
+              { value: "tech", label: <ShortLabel short="Tech" full="Tech stack" /> },
               { value: "visitors", label: "Visitors" },
             ]}
           />
         </div>
+        {tab === "yours" && <CompaniesTable projectId={projectId} />}
         {tab === "database" && <DirectoryView projectId={projectId} />}
         {tab === "hiring" && <HiringSignals projectId={projectId} />}
         {tab === "tech" && <TechSignals projectId={projectId} />}
         {tab === "visitors" && <VisitorsView projectId={projectId} />}
       </PageBody>
+    </>
+  );
+}
+
+function ShortLabel({ short, full }: { short: string; full: string }) {
+  return (
+    <>
+      <span className="sm:hidden">{short}</span>
+      <span className="max-sm:hidden">{full}</span>
     </>
   );
 }

@@ -39,7 +39,16 @@ const LEAD = `{
   "status": "contacted",
   "notes": "",
   "last_contacted_at": "2026-11-03T09:14:00Z",
-  "created_at": "2026-11-02T16:40:00Z"
+  "created_at": "2026-11-02T16:40:00Z",
+  "score": 78,
+  "score_fit": 43,
+  "score_intent": 35,
+  "score_reasons": [
+    { "text": "Hiring 2 SDRs", "kind": "intent" },
+    { "text": "Read /pricing yesterday", "kind": "intent" },
+    { "text": "Uses a competitor: Outreach", "kind": "against" }
+  ],
+  "scored_at": "2026-11-11T08:20:00Z"
 }`;
 
 const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PATCH: "amber" };
@@ -132,6 +141,39 @@ function endpoints(projectId: string): Endpoint[] {
       response: `{ "added": 2, "skipped": 0 }`,
     },
     {
+      method: "GET",
+      path: `/projects/${projectId}/companies?sort=score&min_score=50`,
+      summary:
+        "The project's own companies, best research fit first, with their hiring roles and tools. A company's score is its best lead's, or its own while it has no leads.",
+      params: [
+        ["segment_id", "optional campaign id"],
+        ["q", "optional text in the name or domain"],
+        ["min_score", "optional, only scores of at least this, 0 to 100"],
+        ["sort", "optional, score for the highest first, or newest"],
+        ["page", "1-based page number"],
+        ["per_page", "1 to 200, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "e810…",
+      "domain": "northwind.studio",
+      "name": "Northwind Studio",
+      "employees": "11-50",
+      "country_code": "US",
+      "status": "people_found",
+      "score": 78,
+      "score_fit": 43,
+      "score_intent": 35,
+      "score_reasons": [{ "text": "Hiring 2 SDRs", "kind": "intent" }],
+      "hiring": ["SDR"],
+      "tech": ["HubSpot", "Stripe"]
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
       method: "POST",
       path: "/segments/5d0a…/find-people",
       summary:
@@ -142,11 +184,14 @@ function endpoints(projectId: string): Endpoint[] {
     {
       method: "GET",
       path: `/projects/${projectId}/leads?status=hot&page=1`,
-      summary: "Leads of a project, newest first, with their campaign and the status of the last email to them.",
+      summary:
+        "Leads of a project, newest first, with their campaign and the status of the last email to them. score is 0-100: score_fit (0-50) is how well the company matches your targeting and score_intent (0-50) what it did lately, with the reasons strongest first.",
       params: [
         ["status", "optional lead status: new, contacted, replied, hot, meeting_booked, …"],
         ["segment_id", "optional campaign id"],
         ["q", "optional text in the name, email, company or title"],
+        ["min_score", "optional, only scores of at least this, 0 to 100"],
+        ["sort", "optional, score for the highest first, or newest"],
         ["page", "1-based page number"],
         ["per_page", "1 to 200, default 50"],
       ],

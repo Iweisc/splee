@@ -595,7 +595,31 @@ export interface SegmentWithStats extends Segment {
   cost_per_hot_micros: number | null;
 }
 
-export interface Company {
+/** Why a lead or company scores what it does, the strongest first. "against" is what holds it down. */
+export interface ScoreReason {
+  text: string;
+  kind: "fit" | "intent" | "against";
+}
+
+/** A 0-100 score: fit (0-50, how well the company matches the targeting) plus intent (0-50, what it did lately). */
+export interface Scored {
+  score: number;
+  score_fit: number;
+  score_intent: number;
+  score_reasons: ScoreReason[];
+  /** Null until the score worker first reaches it, a few minutes after it's added. */
+  scored_at: Ts | null;
+}
+
+/** One input to the score, which the project can turn off. */
+export interface ScoreSignal {
+  key: string;
+  label: string;
+  part: "fit" | "intent";
+  on: boolean;
+}
+
+export interface Company extends Scored {
   id: UUID;
   project_id: UUID;
   segment_id: UUID | null;
@@ -673,7 +697,7 @@ export type LeadStatus =
   | "unsubscribed"
   | "do_not_contact";
 
-export interface Lead {
+export interface Lead extends Scored {
   id: UUID;
   project_id: UUID;
   segment_id: UUID | null;

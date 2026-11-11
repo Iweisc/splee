@@ -13,7 +13,7 @@ import { Field, Select } from "@/components/ui/form";
 import { Skeleton, Tabs } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import { fetcher } from "@/hooks/use-me";
-import type { CompanyProfile, ProjectDetail, Targeting, TechPick } from "@/lib/types";
+import type { CompanyProfile, ProjectDetail, ScoreSignal, Targeting, TechPick } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Same buckets the agent writes into companies.employees.
@@ -70,6 +70,8 @@ export default function TargetingPage() {
             <HiringRoles roles={s.targeting.hiring_roles} onChange={(v) => set("hiring_roles", v)} />
 
             <TechPicks />
+
+            <ScoreSignals />
 
             <ResearchProfile />
           </>
@@ -165,6 +167,65 @@ function TechPicks() {
             ))}
           </Select>
           <p className="text-xs text-muted-foreground">Competitor means your product can replace it.</p>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** Saved on every change like the tech picks, since the signals are their own setting on the server. */
+function ScoreSignals() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const key = `/projects/${projectId}/score/signals`;
+  const { data, error, mutate } = useSWR<ScoreSignal[]>(key, fetcher);
+
+  const flip = async (signal: ScoreSignal) => {
+    if (!data) return;
+    const next = data.map((s) => (s.key === signal.key ? { ...s, on: !s.on } : s));
+    mutate(next, { revalidate: false });
+    try {
+      const body = Object.fromEntries(next.map((s) => [s.key, s.on]));
+      mutate(await api<ScoreSignal[]>(key, { method: "PUT", body }), { revalidate: false });
+    } catch (e) {
+      mutate(data, { revalidate: false });
+      toastError(e);
+    }
+  };
+
+  return (
+    <Section
+      title="Lead score"
+      description="Every lead gets a score from 0 to 100, so the likeliest buyers come first. Fit is how well the company matches your targeting, and intent is what it did lately, which fades over the following days. Turn off a signal you don't trust, and scores update within minutes."
+    >
+      {error ? (
+        <LoadError error={error} what="the score signals" retry={() => mutate()} />
+      ) : !data ? (
+        <Skeleton className="h-20 w-full" />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {(["fit", "intent"] as const).map((part) => (
+            <div key={part}>
+              <MicroLabel className="mb-2">{part === "fit" ? "Fit, up to 50" : "Intent, up to 50"}</MicroLabel>
+              <div className="flex flex-wrap gap-2">
+                {data
+                  .filter((s) => s.part === part)
+                  .map((s) => (
+                    <button
+                      key={s.key}
+                      type="button"
+                      aria-pressed={s.on}
+                      onClick={() => flip(s)}
+                      className={cn(
+                        "rounded-lg border px-3 py-1.5 text-sm transition-colors",
+                        s.on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card text-muted-foreground line-through hover:bg-accent",
+                      )}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </Section>

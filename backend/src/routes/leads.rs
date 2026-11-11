@@ -41,12 +41,35 @@ pub struct ListQuery {
     pub q: Option<String>,
     /// "missing" keeps only leads without an email.
     pub email: Option<String>,
+    pub min_score: Option<i16>,
+    /// "score" puts the highest scores first, "newest" (leads' default) the newest.
+    pub sort: Option<String>,
+}
+
+impl ListQuery {
+    fn min_score(&self) -> AppResult<Option<i16>> {
+        match self.min_score {
+            Some(n) if !(0..=100).contains(&n) => Err(AppError::BadRequest("min_score goes from 0 to 100".into())),
+            n => Ok(n),
+        }
+    }
+
+    /// The order by, `default` without a sort. The tiebreaks keep pages stable.
+    fn order(&self, alias: &str, default: &'static str) -> AppResult<String> {
+        Ok(match self.sort.as_deref().filter(|s| !s.is_empty()) {
+            None => default.replace("{a}", alias),
+            Some("score") => format!("{alias}.score desc, {alias}.score_intent desc, {alias}.created_at desc, {alias}.id desc"),
+            Some("newest") => format!("{alias}.created_at desc, {alias}.id desc"),
+            Some(_) => return Err(AppError::BadRequest("Sort by score or newest".into())),
+        })
+    }
 }
 
 const COMPANY_FILTER: &str = "from companies c where project_id = $1
        and ($2::uuid is null or segment_id = $2)
        and ($3::text is null or status = $3)
-       and ($4::text is null or name ilike $4 or domain::text ilike $4)";
+       and ($4::text is null or name ilike $4 or domain::text ilike $4)
+       and ($5::int2 is null or score >= $5)";
 
 #[derive(Serialize, FromRow)]
 pub struct CompanyRow {
@@ -67,30 +90,39 @@ async fn list_companies(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<CompanyRow>>> {
     auth.project(&state.db, id).await?;
+    Ok(Json(companies_page(&state.db, id, q, &page).await?))
+}
+
+/// A page of a project's companies, best fit first unless sorted. The caller checks the project belongs to its organization.
+pub async fn companies_page(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<CompanyRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
+    let min_score = q.min_score()?;
+    let order = q.order("c", "{a}.fit_score desc, {a}.created_at desc, {a}.id desc")?;
     let status = q.status.filter(|s| !s.is_empty());
     let total: i64 = sqlx::query_scalar(&format!("select count(*) {COMPANY_FILTER}"))
-        .bind(id)
+        .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
-        .fetch_one(&state.db)
+        .bind(min_score)
+        .fetch_one(db)
         .await?;
     let items = sqlx::query_as::<_, CompanyRow>(&format!(
         "select c.*, array(select j.role from job_openings j where j.project_id = c.project_id and j.domain = c.domain and j.closed_at is null
                            group by j.role order by max(j.first_seen) desc, j.role) as hiring,
                 coalesce((select t.techs from tech_scans t where t.domain = c.domain), '{{}}') as tech
-         {COMPANY_FILTER} order by fit_score desc, created_at desc limit $5 offset $6"
+         {COMPANY_FILTER} order by {order} limit $6 offset $7"
     ))
-    .bind(id)
+    .bind(project_id)
     .bind(q.segment_id)
     .bind(&status)
     .bind(&like)
+    .bind(min_score)
     .bind(page.limit())
     .bind(page.offset())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
-    Ok(Json(Paginated { items, total }))
+    Ok(Paginated { items, total })
 }
 
 #[derive(Deserialize)]
@@ -142,7 +174,8 @@ const LEAD_FILTER: &str = "where l.project_id = $1
        and ($3::text is null or l.status = $3)
        and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4
             or l.company_name ilike $4 or l.title ilike $4)
-       and (not $5 or l.email is null)";
+       and (not $5 or l.email is null)
+       and ($6::int2 is null or l.score >= $6)";
 
 async fn list_leads(
     State(state): State<AppState>,
@@ -155,9 +188,13 @@ async fn list_leads(
     Ok(Json(page_of(&state.db, id, q, &page).await?))
 }
 
-/// A page of a project's leads, newest first. The caller checks the project belongs to its organization.
+const NEWEST: &str = "{a}.created_at desc, {a}.id desc";
+
+/// A page of a project's leads, newest first unless sorted. The caller checks the project belongs to its organization.
 pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<LeadRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
+    let min_score = q.min_score()?;
+    let order = q.order("l", NEWEST)?;
     let status = q.status.filter(|s| !s.is_empty());
     let missing = q.email.as_deref() == Some("missing");
     let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {LEAD_FILTER}"))
@@ -166,20 +203,20 @@ pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQue
         .bind(&status)
         .bind(&like)
         .bind(missing)
+        .bind(min_score)
         .fetch_one(db)
         .await?;
-    let items = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc limit $6 offset $7"
-    ))
-    .bind(project_id)
-    .bind(q.segment_id)
-    .bind(&status)
-    .bind(&like)
-    .bind(missing)
-    .bind(page.limit())
-    .bind(page.offset())
-    .fetch_all(db)
-    .await?;
+    let items = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by {order} limit $7 offset $8"))
+        .bind(project_id)
+        .bind(q.segment_id)
+        .bind(&status)
+        .bind(&like)
+        .bind(missing)
+        .bind(min_score)
+        .bind(page.limit())
+        .bind(page.offset())
+        .fetch_all(db)
+        .await?;
     Ok(Paginated { items, total })
 }
 
@@ -187,19 +224,23 @@ pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQue
 async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<ListQuery>) -> AppResult<Response> {
     let project = auth.project(&state.db, id).await?;
     let like = util_input::like_pattern(q.q.as_deref());
+    let min_score = q.min_score()?;
+    let order = q.order("l", NEWEST)?;
     let status = q.status.filter(|s| !s.is_empty());
-    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by l.created_at desc, l.id desc"))
+    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by {order}"))
         .bind(id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
         .bind(q.email.as_deref() == Some("missing"))
+        .bind(min_score)
         .fetch_all(&state.db)
         .await?;
 
     let header = [
         "full_name", "first_name", "last_name", "title", "email", "email_status", "phone", "company_name", "company_domain",
         "linkedin_url", "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
+        "score", "score_fit", "score_intent", "score_reasons",
     ];
     let records = rows.iter().map(|r| {
         let l = &r.lead;
@@ -223,6 +264,10 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
             l.last_contacted_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
             l.created_at.to_rfc3339(),
             l.notes.clone(),
+            l.score.to_string(),
+            l.score_fit.to_string(),
+            l.score_intent.to_string(),
+            l.score_reasons.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("; "),
         ]
     });
     let slug: String = project.domain.as_deref().unwrap_or(&project.name).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect();
@@ -244,8 +289,16 @@ pub struct LeadDetail {
     pub deal: Option<crate::deals::Deal>,
 }
 
-/// Lead with its company and every email in both directions, oldest first. The caller checks org access.
-pub async fn detail(db: &PgPool, lead: Lead) -> AppResult<LeadDetail> {
+/// Lead with its company and every email in both directions, oldest first, scored again first so the score shown is
+/// current. The caller checks org access.
+pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
+    match crate::score::refresh_lead(db, lead.id).await {
+        Ok(Some(s)) => {
+            (lead.score, lead.score_fit, lead.score_intent, lead.score_reasons) = (s.score, s.fit, s.intent, sqlx::types::Json(s.reasons));
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(lead_id = %lead.id, error = ?e, "could not score a lead"),
+    }
     let segment_name: Option<String> = sqlx::query_scalar("select name from segments where id = $1")
         .bind(lead.segment_id)
         .fetch_optional(db)
@@ -496,12 +549,14 @@ async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<U
         return Err(AppError::BadRequest("Connect an email finder or verifier under Integrations first".into()));
     }
     let ids: Vec<Uuid> = if body.all {
+        let min_score = body.filter.min_score()?;
         sqlx::query_scalar(&format!("select l.id from leads l {LEAD_FILTER}"))
             .bind(id)
             .bind(body.filter.segment_id)
             .bind(body.filter.status.filter(|s| !s.is_empty()))
             .bind(util_input::like_pattern(body.filter.q.as_deref()))
             .bind(true)
+            .bind(min_score)
             .fetch_all(&state.db)
             .await?
     } else {
