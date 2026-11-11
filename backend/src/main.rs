@@ -5,6 +5,7 @@ mod auth;
 mod autopilot;
 mod baserow;
 mod bluesky;
+mod booking;
 mod config;
 mod crm;
 mod crypto;

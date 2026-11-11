@@ -125,7 +125,14 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
         || body["type"] == "booking.rescheduled"
         || body["action"] == "Meeting.rescheduled"
         || (body["type"] == "Updated" && body["meetingIdChili"].is_string());
-    for lead in &leads {
+    mark_booked(&state, &leads, at, rescheduled).await?;
+    Ok(Json(json!({ "matched": leads.len() })))
+}
+
+/// Moves leads who booked a call to Meeting booked at `at`, or to the new time when `rescheduled`, and tells chat, the
+/// webhook and the CRMs. The webhooks above and Splee's own booking pages (crate::booking) both come through here.
+pub(crate) async fn mark_booked(state: &AppState, leads: &[Lead], at: Option<Ts>, rescheduled: bool) -> AppResult<()> {
+    for lead in leads {
         // Set before the move below, so its alerts carry the time. Only the request that changes the time gets the lead
         // back, if the tool retries.
         let retimed: Option<Lead> = match at {
@@ -143,7 +150,7 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
             && lead.meeting_at.is_some()
             && let Some(retimed) = retimed
         {
-            hooks::announce_rescheduled(&state, &retimed, lead.meeting_at);
+            hooks::announce_rescheduled(state, &retimed, lead.meeting_at);
             continue;
         }
         // Otherwise a reschedule only moves the time. Its lead was marked when the call was first booked.
@@ -156,13 +163,12 @@ async fn booked(State(state): State<AppState>, Path(token): Path<String>, Json(b
             .fetch_optional(&state.db)
             .await?;
         if let Some(moved) = moved {
-            hooks::status_changed(&state, &lead.status, &moved).await;
+            hooks::status_changed(state, &lead.status, &moved).await;
         }
     }
-    Ok(Json(json!({ "matched": leads.len() })))
+    Ok(())
 }
 
-/// A cancelled call puts a booked lead back to Hot, since they were keen enough to book, and drops the stale time.
 async fn cancel(state: &AppState, project_id: Uuid, emails: &[String]) -> AppResult<Json<Value>> {
     let leads: Vec<Lead> =
         sqlx::query_as("select * from leads where project_id = $1 and lower(email::text) = any($2) and status = 'meeting_booked'")
@@ -170,7 +176,14 @@ async fn cancel(state: &AppState, project_id: Uuid, emails: &[String]) -> AppRes
             .bind(emails)
             .fetch_all(&state.db)
             .await?;
-    for lead in &leads {
+    Ok(Json(json!({ "matched": mark_cancelled(state, &leads).await? })))
+}
+
+/// A cancelled call puts a booked lead back to Hot, since they were keen enough to book, and drops the stale time.
+/// Returns how many of `leads` were booked.
+pub(crate) async fn mark_cancelled(state: &AppState, leads: &[Lead]) -> AppResult<usize> {
+    let booked: Vec<&Lead> = leads.iter().filter(|l| l.status == "meeting_booked").collect();
+    for lead in &booked {
         // The status check makes a retried or doubled cancellation alert once.
         let moved: Option<Lead> =
             sqlx::query_as("update leads set status = 'hot', meeting_at = null where id = $1 and status = 'meeting_booked' returning *")
@@ -181,7 +194,7 @@ async fn cancel(state: &AppState, project_id: Uuid, emails: &[String]) -> AppRes
             hooks::announce_cancelled(state, &moved, lead.meeting_at);
         }
     }
-    Ok(Json(json!({ "matched": leads.len() })))
+    Ok(booked.len())
 }
 
 #[cfg(test)]

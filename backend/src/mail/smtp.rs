@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::Mailbox as Address;
+use lettre::message::{Attachment, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
@@ -56,12 +57,16 @@ fn bracket(id: &str) -> String {
     format!("<{}>", id.trim_matches(['<', '>']))
 }
 
-pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
+fn addresses(mb: &Mailbox, to_name: &str, to_email: &str) -> anyhow::Result<(Address, Address)> {
     let from_name = (!mb.from_name.trim().is_empty()).then(|| mb.from_name.trim().to_string());
     let from = Address::new(from_name, mb.email.parse().context("invalid mailbox address")?);
-    let to_name = (!email.to_name.trim().is_empty()).then(|| email.to_name.trim().to_string());
-    let to = Address::new(to_name, email.to_email.parse().with_context(|| format!("invalid recipient {}", email.to_email))?);
+    let to_name = (!to_name.trim().is_empty()).then(|| to_name.trim().to_string());
+    let to = Address::new(to_name, to_email.parse().with_context(|| format!("invalid recipient {to_email}"))?);
+    Ok((from, to))
+}
 
+pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
+    let (from, to) = addresses(mb, email.to_name, email.to_email)?;
     let mut builder = Message::builder()
         .from(from)
         .to(to)
@@ -83,6 +88,24 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
         builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str(super::warmup::HEADER), token.to_string()));
     }
     Ok(builder.body(email.body.to_string())?)
+}
+
+/// A calendar invite: the text, the event as a text/calendar part that Gmail, Outlook and Apple Mail put in the calendar
+/// (`method` is the iTIP method, REQUEST or CANCEL), and the same event as invite.ics for clients that only show attachments.
+pub fn build_invite(mb: &Mailbox, to_name: &str, to_email: &str, subject: &str, body: &str, ics: &str, method: &str) -> anyhow::Result<Message> {
+    let (from, to) = addresses(mb, to_name, to_email)?;
+    let calendar = ContentType::parse(&format!("text/calendar; charset=utf-8; method={method}"))?;
+    let text = MultiPart::alternative()
+        .singlepart(SinglePart::plain(body.to_string()))
+        .singlepart(SinglePart::builder().header(calendar).body(ics.to_string()));
+    let file = Attachment::new("invite.ics".into()).body(ics.to_string(), ContentType::parse("application/ics")?);
+    let message = Message::builder()
+        .from(from)
+        .to(to)
+        .subject(subject)
+        .message_id(Some(bracket(&super::sender::new_message_id(&mb.email))))
+        .multipart(MultiPart::mixed().multipart(text).singlepart(file))?;
+    Ok(message)
 }
 
 /// The server says this recipient can't get mail: a 550, 551 or 553 that, when it carries an enhanced status code

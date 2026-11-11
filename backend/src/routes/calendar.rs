@@ -87,18 +87,18 @@ fn ics(project: &str, reminders: &[Reminder], link: impl Fn(Uuid) -> String) -> 
     lines.iter().map(|l| fold(l) + "\r\n").collect()
 }
 
-fn stamp(at: Ts) -> String {
+pub(crate) fn stamp(at: Ts) -> String {
     at.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
 /// Escapes an iCalendar TEXT value (RFC 5545 3.3.11).
-fn text(s: &str) -> String {
+pub(crate) fn text(s: &str) -> String {
     s.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace("\r\n", "\\n").replace(['\r', '\n'], "\\n")
 }
 
 /// Splits a content line into lines of at most 75 bytes, each continuation starting with a space (RFC 5545 3.1).
 /// It never splits inside a UTF-8 character.
-fn fold(line: &str) -> String {
+pub(crate) fn fold(line: &str) -> String {
     let mut out = String::with_capacity(line.len() + line.len() / 70 * 3);
     let mut used = 0;
     for c in line.chars() {

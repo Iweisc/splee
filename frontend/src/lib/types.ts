@@ -998,6 +998,76 @@ export interface Mailbox {
   needs_reconnect: boolean;
 }
 
+/** Monday first: null for a day off, else [start, end] in minutes after midnight. */
+export type WorkingHours = ([number, number] | null)[];
+
+/** A call booked on a booking page. */
+export interface Booking {
+  id: UUID;
+  page_id: UUID;
+  starts_at: Ts;
+  ends_at: Ts;
+  name: string;
+  email: string;
+  note: string;
+  /** The guest's time zone, which their emails use. */
+  timezone: string;
+  sequence: number;
+  cancelled_at: Ts | null;
+  created_at: Ts;
+}
+
+/** GET /booking-pages: a mailbox's booking page at /book/{slug}. */
+export interface BookingPage {
+  id: UUID;
+  org_id: UUID;
+  mailbox_id: UUID;
+  slug: string;
+  name: string;
+  duration_minutes: 15 | 30 | 45 | 60;
+  timezone: string;
+  hours: WorkingHours;
+  buffer_minutes: number;
+  notice_minutes: number;
+  days_ahead: number;
+  /** A video link or where to meet. */
+  location: string;
+  /** Why the calendar couldn't be read the last time, or empty. */
+  calendar_error: string;
+  created_at: Ts;
+  url: string;
+  mailbox_email: string;
+  host: string;
+  /** The saved calendar address's host, like calendar.google.com, or empty for none. The address itself stays secret. */
+  calendar_host: string;
+  upcoming: Booking[];
+}
+
+/** PATCH /booking-pages/{id}. `calendar_url` "" removes the calendar, left out keeps it. */
+export type BookingPageInput = Partial<
+  Pick<BookingPage, "slug" | "name" | "duration_minutes" | "timezone" | "hours" | "buffer_minutes" | "notice_minutes" | "days_ahead" | "location">
+> & { calendar_url?: string };
+
+/** GET /book/{slug}: what a visitor sees. `location` says "Video call" for a link, which only the invite holds. */
+export interface PublicBookingPage {
+  slug: string;
+  name: string;
+  host: string;
+  duration_minutes: number;
+  location: string;
+  slots: Ts[];
+}
+
+/** GET /booking/{token}: a booking behind the link in its emails. */
+export interface ManagedBooking {
+  page: PublicBookingPage;
+  name: string;
+  starts_at: Ts;
+  ends_at: Ts;
+  cancelled: boolean;
+  started: boolean;
+}
+
 /** GET /mailboxes/warmup: one of the org's mailboxes with warmup on, over the last 14 days. */
 export interface WarmupHealth {
   mailbox_id: UUID;

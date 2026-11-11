@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Building2,
+  CalendarCheck,
   CalendarClock,
   CircleUser,
   FileText,
@@ -77,6 +78,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
 export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
   { label: "Domains", href: "/app/sending-domains", icon: Globe },
   { label: "Mailboxes", href: "/app/domains", icon: Server }, // D2
+  { label: "Booking pages", href: "/app/booking-pages", icon: CalendarCheck },
   { label: "Do-not-contact", href: "/app/dedup", icon: ShieldBan }, // D2
   { label: "Team", href: "/app/organization", icon: Users }, // D2
   { label: "Notifications", href: "/app/notifications", icon: Bell }, // D2
