@@ -687,6 +687,33 @@ export interface TechCompany {
   scanned_at: Ts | null;
 }
 
+/** A company that visited the project's site in the period. Keep in sync with Visitor in backend/src/routes/visitors.rs. */
+export interface Visitor {
+  domain: string;
+  name: string;
+  /** Set when it's one of the project's companies. */
+  company_id: UUID | null;
+  /** The campaign it, or one of its leads, is in. */
+  campaign: string | null;
+  leads: number;
+  views: number;
+  visits: number;
+  last_visit: Ts;
+  /** The most read pages, at most three. */
+  top_paths: string[];
+  /** A utm_source or referring site of its first visit, empty for a direct one. */
+  source: string;
+}
+
+/** The website visitors install card. */
+export interface VisitorSite {
+  site_key: string;
+  domains: string[];
+  intent_paths: string[];
+  last_hit_at: Ts | null;
+  last_hit_path: string | null;
+}
+
 export interface JobPost {
   domain: string;
   title: string;

@@ -95,16 +95,21 @@ async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Js
     if segment.project_id != id {
         return Err(AppError::BadRequest("That campaign isn't part of this project".into()));
     }
-    let moved = move_to_campaign(&state.db, id, segment.id, &body.company_ids).await?;
+    Ok(Json(add_to_campaign(&state.db, auth.org_id, &segment, &body.company_ids).await?))
+}
+
+/// The caller checks that the campaign belongs to the organization. The Visitors tab adds its companies through this too.
+pub(super) async fn add_to_campaign(db: &PgPool, org_id: Uuid, segment: &Segment, company_ids: &[Uuid]) -> AppResult<Value> {
+    let moved = move_to_campaign(db, segment.project_id, segment.id, company_ids).await?;
     if moved.is_empty() {
         return Err(AppError::Conflict("These companies already have leads".into()));
     }
     let ids: Vec<Uuid> = moved.iter().map(|m| m.0).collect();
-    match start_find_people(&state.db, auth.org_id, &segment, FindPeopleBody { company_ids: Some(ids.clone()) }).await {
-        Ok(run_id) => Ok(Json(json!({ "run_id": run_id, "added": ids.len() }))),
+    match start_find_people(db, org_id, segment, FindPeopleBody { company_ids: Some(ids.clone()) }).await {
+        Ok(run_id) => Ok(json!({ "run_id": run_id, "added": ids.len() })),
         Err(e) => {
             // The run didn't start, so the companies go back where they were.
-            put_back(&state.db, &moved).await?;
+            put_back(db, &moved).await?;
             Err(e)
         }
     }

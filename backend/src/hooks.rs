@@ -738,7 +738,7 @@ fn sign(secret: &str, timestamp: &str, body: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn is_public(ip: IpAddr) -> bool {
+pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();

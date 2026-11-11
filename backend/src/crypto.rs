@@ -17,6 +17,14 @@ pub fn sha256_hex(input: &str) -> String {
     hex::encode(Sha256::digest(input.as_bytes()))
 }
 
+/// A hex HMAC-SHA256 of `input` keyed with APP_SECRET and `purpose`, for values that are matched but must never be stored,
+/// like a website visitor's IP. Unlike a plain hash, nobody without the secret can test guesses against it.
+pub fn keyed_hash(secret: &str, purpose: &str, input: &str) -> String {
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(format!("{purpose}.{input}").as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
 fn cipher(secret: &str) -> Aes256Gcm {
     let key = Sha256::digest(secret.as_bytes());
     Aes256Gcm::new_from_slice(&key).expect("sha256 output is 32 bytes")

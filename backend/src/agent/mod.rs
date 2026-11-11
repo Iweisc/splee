@@ -176,8 +176,10 @@ pub fn spawn_workers(state: AppState) {
 /// Deletes signed-out demos and explorer runs a week after they start, and support chats a week after their last message.
 /// All of them keep the visitor's IP. Only the tab that started a demo holds its claim token, in sessionStorage, so a week
 /// leaves plenty of time to sign up. The chat widget starts a new conversation when its stored one is gone.
-/// Expired sign-in sessions go too: sign-in already ignores them, and nothing else removes them.
-async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
+/// Expired sign-in sessions go too: sign-in already ignores them, and nothing else removes them. So do website visitors'
+/// page views after 180 days (visitors.rs).
+pub(crate) async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
+    crate::visitors::expire(db).await?;
     sqlx::query("delete from sessions where expires_at < now()").execute(db).await?;
     sqlx::query("delete from projects where org_id is null and created_at < now() - interval '7 days'").execute(db).await?;
     sqlx::query("delete from agent_runs where kind = 'explorer' and project_id is null and created_at < now() - interval '7 days'").execute(db).await?;

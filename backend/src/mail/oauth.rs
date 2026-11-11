@@ -382,6 +382,7 @@ pub(crate) mod tests {
             microsoft: Some(fake.app()),
             slack: None,
             tumblr: None,
+            ipinfo_token: None,
         }
     }
 

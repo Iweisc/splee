@@ -753,6 +753,7 @@ mod tests {
             google: None,
             microsoft: None,
             tumblr: None,
+            ipinfo_token: None,
             slack: Some(SlackApp { client_id: "123.456".into(), client_secret: "shh".into(), signing_secret: "signing".into(), api_url: fake_url.into() }),
         }
     }

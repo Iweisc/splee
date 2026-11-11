@@ -14,6 +14,7 @@ mod extension;
 mod forms;
 mod hiring;
 mod tech;
+mod visitors;
 pub mod linkedin;
 mod calendar;
 mod saved_replies;
@@ -69,6 +70,7 @@ pub fn router() -> Router<AppState> {
         .merge(leads::router())
         .merge(hiring::router())
         .merge(tech::router())
+        .merge(visitors::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

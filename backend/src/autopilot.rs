@@ -413,6 +413,7 @@ pub(crate) mod tests {
             microsoft: None,
             slack: None,
             tumblr: None,
+            ipinfo_token: None,
         };
         AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
     }
