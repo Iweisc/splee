@@ -10,7 +10,7 @@ use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread};
-use super::leads::{self, LeadDetail, LeadRow};
+use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::stats::{self, Totals};
@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
+        .route("/v1/projects/{id}/companies", get(list_companies))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/projects/{id}/replies", get(replies))
@@ -158,6 +159,18 @@ pub(super) async fn list_leads(
 ) -> AppResult<Json<Paginated<LeadRow>>> {
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(leads::page_of(&state.db, id, q, &page).await?))
+}
+
+/// The project's own companies with their scores. GET /v1/companies searches the company database instead.
+pub(super) async fn list_companies(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<leads::ListQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<CompanyRow>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(leads::companies_page(&state.db, id, q, &page).await?))
 }
 
 #[derive(Deserialize)]

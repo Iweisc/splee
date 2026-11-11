@@ -186,6 +186,7 @@ async fn update_settings(
            max_words = coalesce($17, max_words),
            channels = coalesce($18, channels),
            targeting = coalesce($19, targeting),
+           score_inputs_at = case when $19 is distinct from targeting and $19 is not null then now() else score_inputs_at end,
            webhook_events = coalesce($20, webhook_events),
            chat_weekly_report = coalesce($21, chat_weekly_report),
            bcc_error = case when $22::text <> bcc_email then null else bcc_error end,

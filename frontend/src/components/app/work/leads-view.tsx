@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { Download, MailSearch, Search, Trash2, Upload, Users, X } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { fetcher } from "@/hooks/use-me";
 import { EmailSearchBadge, EmailSearchStrip } from "./email-search";
 import { HiringBadge } from "./hiring";
 import { LeadModal } from "./lead-modal";
+import { ScoreButton, ScoreFilter, ScoreHeader, ScoreReasons } from "./score";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
 import { LEAD_STATUS, LeadStatusBadge } from "./status";
@@ -21,8 +22,12 @@ import { LEAD_STATUS, LeadStatusBadge } from "./status";
 /** Leads table with filters. Pass `segmentId` to pin it to one campaign (hides the campaign filter). */
 // Columns that only show once there is room for them.
 const COMPANY = "hidden sm:table-cell";
+// A phone shows the status under the score instead, so the name keeps room for its Hiring badge.
+const STATUS = COMPANY;
 const CONTACTED = "hidden md:table-cell";
 const WIDE = "hidden xl:table-cell";
+// The campaign waits for 2xl, since at 1280px its name was cut to a few letters and its width wrapped the Hiring roles.
+const CAMPAIGN = "hidden 2xl:table-cell";
 // The text columns split whatever width the status and date leave, by their percentages, so they only cut text off
 // when the screen is short of room. max-w-0 keeps long text from widening the table. Status and date are 1% wide so
 // they shrink to their content: a column with no width at all would take the spare room instead.
@@ -33,14 +38,19 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const [segment, setSegment] = useState("");
   const [status, setStatus] = useState("");
   const [email, setEmail] = useState("");
+  const [minScore, setMinScore] = useState("");
+  // "score" or the newest first.
+  const [sort, setSort] = useState("");
   const [page, setPage] = useState(1);
   const [openLead, setOpenLead] = useState<string | null>(null);
+  // The lead whose score reasons show under its row.
+  const [whyLead, setWhyLead] = useState<string | null>(null);
   // The leads ticked on this page. Changing a filter or the page clears it, so nothing off-screen is ever acted on.
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const query = useDebounced(q);
 
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
-  const filters = { segment_id: segmentId ?? segment, status, q: query, email };
+  const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, sort };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
 
@@ -84,13 +94,14 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
     setPicked(new Set());
   };
   useLastPageGuard(data?.total, page, turnPage);
-  const filtered = !!(query || segment || status || email);
+  const filtered = !!(query || segment || status || email || minScore);
 
-  const filter = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    set(e.target.value);
+  const setFilter = (set: (v: string) => void) => (value: string) => {
+    set(value);
     setPage(1);
     setPicked(new Set());
   };
+  const filter = (set: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setFilter(set)(e.target.value);
   const toggle = (id: string) =>
     setPicked((p) => {
       const next = new Set(p);
@@ -155,6 +166,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
               <option value="">Any email</option>
               <option value="missing">No email</option>
             </Select>
+            <ScoreFilter value={minScore} onChange={setFilter(setMinScore)} className="h-9 w-auto flex-auto" />
             {email === "missing" && !!data?.total && (
               <Button variant="outline" size="sm" onClick={findAll} loading={finding} className="h-9 flex-auto">
                 <MailSearch className="size-3.5" /> Find {plural(data.total, "email")}
@@ -215,47 +227,66 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   <Th>Name</Th>
                   <Th className={COMPANY}>Company</Th>
                   <Th className={WIDE}>Email</Th>
-                  {!segmentId && <Th className={WIDE}>Campaign</Th>}
-                  <Th className="w-[1%]">Status</Th>
+                  {!segmentId && <Th className={CAMPAIGN}>Campaign</Th>}
+                  <Th className="w-[1%] max-sm:px-2">
+                    <ScoreHeader sorted={sort === "score"} onSort={() => setFilter(setSort)(sort ? "" : "score")} />
+                  </Th>
+                  <Th className={cn(STATUS, "w-[1%]")}>Status</Th>
                   <Th className={cn(CONTACTED, "w-[1%] text-right whitespace-nowrap")}>Last contacted</Th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((l) => (
-                  <Tr key={l.id} onClick={() => setOpenLead(l.id)}>
-                    {/* The whole cell ignores row clicks, so a near miss on the box doesn't open the lead. */}
-                    <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={picked.has(l.id)}
-                        onChange={() => toggle(l.id)}
-                        aria-label={`Select ${l.full_name || l.email || "lead"}`}
-                        className="block accent-black"
-                      />
-                    </Td>
-                    <Td className={cn(FILL, "w-[30%]")}>
-                      {/* Its click bubbles to the row, which opens the lead. */}
-                      <button className="block text-left font-medium">{l.full_name || "—"}</button>
-                      <p className="truncate text-xs text-muted-foreground">{l.title}</p>
-                      {/* The email column, where the result sits on wide screens, is hidden below xl. */}
-                      <EmailSearchBadge lead={l} className="mt-1 xl:hidden" />
-                      {/* The company column, where the badge sits from sm up, is hidden on phones. */}
-                      <HiringBadge roles={l.hiring} className="mt-1 sm:hidden" />
-                    </Td>
-                    <Td className={cn(COMPANY, FILL, "w-[25%]")}>
-                      <p className="truncate">{l.company_name}</p>
-                      <HiringBadge roles={l.hiring} className="mt-1" />
-                    </Td>
-                    <Td className={cn(WIDE, FILL, "w-[25%] text-muted-foreground")}>
-                      {(l.email || !l.email_search) && <p className="truncate">{l.email ?? "—"}</p>}
-                      <EmailSearchBadge lead={l} className={l.email ? "mt-1" : undefined} />
-                    </Td>
-                    {!segmentId && <Td className={cn(WIDE, FILL, "w-[20%] truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
-                    <Td>
-                      <LeadStatusBadge status={l.status} />
-                    </Td>
-                    <Td className={cn(CONTACTED, "text-right whitespace-nowrap text-muted-foreground")}>{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
-                  </Tr>
+                  <Fragment key={l.id}>
+                    <Tr onClick={() => setOpenLead(l.id)} className={cn(whyLead === l.id && "bg-accent/60")}>
+                      {/* The whole cell ignores row clicks, so a near miss on the box doesn't open the lead. */}
+                      <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={picked.has(l.id)}
+                          onChange={() => toggle(l.id)}
+                          aria-label={`Select ${l.full_name || l.email || "lead"}`}
+                          className="block accent-black"
+                        />
+                      </Td>
+                      <Td className={cn(FILL, "w-[30%]")}>
+                        {/* Its click bubbles to the row, which opens the lead. */}
+                        <button className="block text-left font-medium">{l.full_name || "—"}</button>
+                        <p className="truncate text-xs text-muted-foreground">{l.title}</p>
+                        {/* The email column, where the result sits on wide screens, is hidden below xl. */}
+                        <EmailSearchBadge lead={l} className="mt-1 xl:hidden" />
+                        {/* The company column, where the badge sits from sm up, is hidden on phones. */}
+                        <HiringBadge roles={l.hiring} className="mt-1 sm:hidden" />
+                      </Td>
+                      <Td className={cn(COMPANY, FILL, "w-[30%]")}>
+                        <p className="truncate">{l.company_name}</p>
+                        <HiringBadge roles={l.hiring} className="mt-1" />
+                      </Td>
+                      <Td className={cn(WIDE, FILL, "w-[25%] text-muted-foreground")}>
+                        {(l.email || !l.email_search) && <p className="truncate">{l.email ?? "—"}</p>}
+                        <EmailSearchBadge lead={l} className={l.email ? "mt-1" : undefined} />
+                      </Td>
+                      {!segmentId && <Td className={cn(CAMPAIGN, FILL, "w-[20%] truncate text-muted-foreground")}>{l.segment_name ?? "—"}</Td>}
+                      <Td className="max-sm:px-2">
+                        <ScoreButton item={l} open={whyLead === l.id} onToggle={() => setWhyLead(whyLead === l.id ? null : l.id)} />
+                        <div className="mt-1 sm:hidden">
+                          <LeadStatusBadge status={l.status} />
+                        </div>
+                      </Td>
+                      <Td className={STATUS}>
+                        <LeadStatusBadge status={l.status} />
+                      </Td>
+                      <Td className={cn(CONTACTED, "text-right whitespace-nowrap text-muted-foreground")}>{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
+                    </Tr>
+                    {whyLead === l.id && (
+                      // Spans every column, hidden ones included, so it's the table's full width at any size.
+                      <tr className="bg-accent/60">
+                        <td colSpan={8} className="px-4 pt-1 pb-3">
+                          <ScoreReasons item={l} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

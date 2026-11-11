@@ -284,22 +284,23 @@ async fn linkedin_account(ctx: &Ctx, project: &Project) -> anyhow::Result<Option
 pub async fn find_people_for_top_segment(ctx: &Ctx, project_id: Uuid, cap: usize) -> anyhow::Result<()> {
     let segment = explore::top_segment(ctx, project_id).await?;
     let (project, profile) = load_project(ctx, project_id).await?;
-    let companies = best_companies(ctx, &segment, cap).await?;
+    let companies = best_companies(ctx.db(), segment.id, cap).await?;
     let saved = find_people(ctx, &project, &profile, &segment, companies, 2, cap).await?;
     anyhow::ensure!(saved > 0, "no reachable decision makers found at these companies");
     Ok(())
 }
 
-/// Companies of the segment that haven't been searched for people yet, best fit first. Small shops often
-/// have one findable person, so take one company per wanted lead. The search stops early once `cap` is reached.
-async fn best_companies(ctx: &Ctx, segment: &Segment, cap: usize) -> anyhow::Result<Vec<Company>> {
+/// Companies of the segment that haven't been searched for people yet, the highest lead score first (score.rs), then the
+/// agent's own fit. Small shops often have one findable person, so take one company per wanted lead. The search stops
+/// early once `cap` is reached.
+async fn best_companies(db: &sqlx::PgPool, segment_id: Uuid, cap: usize) -> anyhow::Result<Vec<Company>> {
     let limit = cap.max(3) as i64;
     Ok(sqlx::query_as::<_, Company>(
-        "select * from companies where segment_id = $1 and status = 'new' order by fit_score desc, created_at limit $2",
+        "select * from companies where segment_id = $1 and status = 'new' order by score desc, fit_score desc, created_at limit $2",
     )
-    .bind(segment.id)
+    .bind(segment_id)
     .bind(limit)
-    .fetch_all(ctx.db())
+    .fetch_all(db)
     .await?)
 }
 
@@ -524,7 +525,7 @@ pub async fn find_people_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let max_per = input.max_per_company.unwrap_or(2).clamp(1, 5);
     let (companies, cap) = match input.company_ids {
         Some(ids) => {
-            let companies = sqlx::query_as::<_, Company>("select * from companies where project_id = $1 and id = any($2) order by fit_score desc")
+            let companies = sqlx::query_as::<_, Company>("select * from companies where project_id = $1 and id = any($2) order by score desc, fit_score desc")
                 .bind(project.id)
                 .bind(&ids)
                 .fetch_all(ctx.db())
@@ -532,7 +533,7 @@ pub async fn find_people_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             let cap = companies.len() * max_per;
             (companies, cap)
         }
-        None => (best_companies(ctx, &segment, 20).await?, 20),
+        None => (best_companies(ctx.db(), segment.id, 20).await?, 20),
     };
     anyhow::ensure!(!companies.is_empty(), "there are no new companies in this campaign to search");
     let saved = find_people(ctx, &project, &profile, &segment, companies, max_per, cap).await?;
@@ -591,4 +592,32 @@ pub async fn explorer_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         .collect();
     ctx.log(format!("found {} companies…", results.len())).await?;
     Ok(Outcome { message: format!("Found {} companies", results.len()), output: json!({"results": results}) })
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn autopilot_works_the_highest_scoring_companies_first(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects default values returning id").fetch_one(&db).await.unwrap();
+        let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'C') returning id").bind(project).fetch_one(&db).await.unwrap();
+        for (domain, score, fit, status) in [("warm.com", 70, 40, "new"), ("best-fit.com", 20, 95, "new"), ("hot.com", 90, 10, "new"), ("done.com", 99, 99, "people_found")] {
+            sqlx::query("insert into companies (project_id, segment_id, domain, score, fit_score, status) values ($1, $2, $3, $4, $5, $6)")
+                .bind(project)
+                .bind(segment)
+                .bind(domain)
+                .bind(score as i16)
+                .bind(fit)
+                .bind(status)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let picked: Vec<String> = super::best_companies(&db, segment, 3).await.unwrap().into_iter().map(|c| c.domain).collect();
+        assert_eq!(picked, ["hot.com", "warm.com", "best-fit.com"]);
+    }
 }

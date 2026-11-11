@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::directory::{self, Search};
+use crate::directory::{self, Listing, Search};
+use crate::score::{self, CompanyFacts};
 
 pub const SEARCH: &str = "mcp__directory__search";
 
@@ -18,11 +19,13 @@ of business and a country or city, and try a few wordings and cities. Then searc
 online-only companies, or to check a fit you can't tell from the listing. For companies from the database, use their website as \
 source_url.";
 
-const DESCRIPTION: &str = "Search the company database: businesses with their own website, the most reliable listings first. Every word \
+const DESCRIPTION: &str = "Search the company database: businesses with their own website, the best matches for this project's targeting first. Every word \
 in `q` has to start a word in the business's name or category, so `dent` finds dental_clinic and general_dentistry. Companies already \
 in this project are left out.";
 
 const MAX_LIMIT: i64 = 50;
+/// Listings ranked for each one shown, the most reliable first, so a better match a little further down still makes the list.
+const POOL: i64 = 4;
 
 pub fn server(db: PgPool, project_id: Uuid) -> McpServerConfig {
     let schema = json!({
@@ -66,7 +69,10 @@ async fn run(db: &PgPool, project_id: Uuid, args: &Value) -> Result<String, Stri
     )?;
     search.skip_project = Some(project_id);
     let limit = args["limit"].as_i64().unwrap_or(25).clamp(1, MAX_LIMIT);
-    let found = directory::search(db, &search, limit, 0).await.map_err(|e| format!("The company database failed: {e}"))?;
+    let failed = |e: sqlx::Error| format!("The company database failed: {e}");
+    let pool = directory::search(db, &search, limit * POOL, 0).await.map_err(failed)?;
+    let more = pool.len() as i64 > limit;
+    let found = best(db, project_id, pool, limit).await.map_err(failed)?;
     if found.is_empty() {
         return Ok("No companies matched. Try fewer words, a parent category or a bigger city.".into());
     }
@@ -79,10 +85,26 @@ async fn run(db: &PgPool, project_id: Uuid, args: &Value) -> Result<String, Stri
             format!("- {} · {} · {} · {place}{contact}", c.domain, c.name, c.category.as_deref().unwrap_or("uncategorized"))
         })
         .collect();
-    if found.len() as i64 == limit {
+    if more {
         lines.push(format!("These are the first {limit}. Narrow the search, or search another city, for more."));
     }
     Ok(lines.join("\n"))
+}
+
+/// The `limit` listings with the highest score (score.rs) for the project, the more reliable first on a tie.
+async fn best(db: &PgPool, project_id: Uuid, pool: Vec<Listing>, limit: i64) -> sqlx::Result<Vec<Listing>> {
+    let facts = pool
+        .iter()
+        .map(|c| {
+            let text = format!("{} {}", c.name, c.category.as_deref().unwrap_or_default().replace('_', " ")).to_lowercase();
+            let techs = (!c.tech.is_empty()).then(|| c.tech.clone());
+            (c.domain.to_lowercase(), CompanyFacts { country_code: c.country_code.clone(), text, techs, ..Default::default() })
+        })
+        .collect();
+    let scores = score::rank(db, project_id, facts).await?;
+    let mut ranked: Vec<(i16, Listing)> = scores.into_iter().map(|(_, s)| s.score).zip(pool).collect();
+    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    Ok(ranked.into_iter().take(limit as usize).map(|(_, c)| c).collect())
 }
 
 /// Offering the tool with nothing behind it would only waste the model's turns.
@@ -131,5 +153,33 @@ mod tests {
         let none = super::run(&db, project, &json!({"q": "dent", "has_phone": true})).await.unwrap();
         assert!(none.starts_with("No companies matched"));
         assert!(super::run(&db, project, &json!({"country": "Britain"})).await.is_err());
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_best_scoring_listings_come_first(db: PgPool) {
+        // The most reliable listing is in the wrong country, and the least reliable one visited the project's pricing page.
+        for (domain, country, confidence) in [("paris.fr", "FR", 0.9), ("leeds.co.uk", "GB", 0.8), ("visitor.co.uk", "GB", 0.5)] {
+            sqlx::query(
+                "insert into directory_companies (domain, name, website, country_code, category, confidence, source_id, release)
+                 values ($1, 'Dental', 'https://' || $1, $2, 'dental_clinic', $3, 'x', 'r')",
+            )
+            .bind(domain)
+            .bind(country)
+            .bind(confidence as f32)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('T') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id) values ($1) returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, targeting) values ($1, '{\"countries\": [\"GB\"]}')").bind(project).execute(&db).await.unwrap();
+        sqlx::query("insert into visitor_hits (project_id, ip_hash, domain, path) values ($1, 'h', 'visitor.co.uk', '/pricing')").bind(project).execute(&db).await.unwrap();
+
+        let found = super::run(&db, project, &json!({"q": "dental", "limit": 2})).await.unwrap();
+        let domains: Vec<&str> = found.lines().filter_map(|l| l.strip_prefix("- ")?.split(' ').next()).collect();
+        assert_eq!(domains, ["visitor.co.uk", "leeds.co.uk"]);
+        assert!(found.ends_with("for more."), "{found}");
     }
 }

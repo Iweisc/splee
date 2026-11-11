@@ -145,6 +145,10 @@ fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     if let Some(line) = signals.tech.get(&domain) {
         brief["tech"] = json!(line);
     }
+    let reasons = crate::score::opener_reasons(&lead.score_reasons);
+    if !reasons.is_empty() {
+        brief["why_now"] = json!(reasons);
+    }
     brief
 }
 
@@ -360,6 +364,9 @@ fn initial_prompt(
          with, it usually makes the best first observation: name the role in plain words and tie it to what we do. Never paste the link.\n\
          - A lead's \"tech\" names tools their company uses that matter to our offer, like \"Uses HubSpot\". When no job post fits, it can \
          make the first observation: name the tool plainly and tie it to what we do. Never say how we know.\n\
+         - A lead's \"why_now\" holds the two strongest reasons the lead ranks high, as the user sees them on the lead. The first \
+         sentence may build on one that's about their company, like a hire or their size. Never mention a visit to our website, a page \
+         they read, their reply or a deal.\n\
          - Then one or two sentences that tie that observation to a concrete problem and how we solve it.\n\
          - End with one short question as the call to action: {cta}.{booking}\n\
          - At most {max_words} words. Tone: {tone}. {language}\n\
@@ -892,5 +899,21 @@ mod tests {
         let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
         assert_eq!(lead_brief(&leads[0], &signals)["tech"], "Uses HubSpot and Intercom");
         assert!(lead_brief(&leads[1], &signals).get("tech").is_none());
+    }
+
+    #[test]
+    fn briefs_carry_the_two_strongest_reasons_for_the_lead() {
+        let mut lead = crate::twilio::tests::test_lead();
+        let reason = |text: &str, kind: &str| crate::score::Reason { text: text.into(), kind: kind.into() };
+        lead.score_reasons = sqlx::types::Json(vec![
+            reason("Hiring 2 SDRs", "intent"),
+            reason("51-200 employees", "fit"),
+            reason("Based in GB", "fit"),
+            reason("Uses a competitor: Outreach", "against"),
+        ]);
+        let brief = lead_brief(&lead, &Default::default());
+        assert_eq!(brief["why_now"], serde_json::json!(["Hiring 2 SDRs", "51-200 employees"]));
+        lead.score_reasons = sqlx::types::Json(vec![reason("Uses a competitor: Outreach", "against")]);
+        assert!(lead_brief(&lead, &Default::default()).get("why_now").is_none());
     }
 }

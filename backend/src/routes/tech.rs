@@ -67,6 +67,7 @@ async fn set_picks(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    crate::score::touch(&state.db, id).await?;
     Ok(Json(picks))
 }
 

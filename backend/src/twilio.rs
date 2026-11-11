@@ -718,7 +718,7 @@ pub(crate) mod fake {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -809,7 +809,7 @@ mod tests {
         assert_eq!((sent[1]["ContentSid"].as_str(), sent[1]["ContentVariables"].as_str(), sent[1].get("Body")), (fake::TEMPLATE, "{\"1\":\"Sam\"}", None));
     }
 
-    fn test_lead() -> Lead {
+    pub(crate) fn test_lead() -> Lead {
         Lead {
             id: Uuid::nil(),
             project_id: Uuid::nil(),
@@ -844,6 +844,11 @@ mod tests {
             email_search_lookups: 0,
             email_search_credits: None,
             email_searched_at: None,
+            score: 0,
+            score_fit: 0,
+            score_intent: 0,
+            score_reasons: sqlx::types::Json(vec![]),
+            scored_at: None,
         }
     }
 }
