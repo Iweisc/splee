@@ -11,6 +11,7 @@ import { CompaniesTable } from "@/components/app/work/companies-table";
 import { EmailsView } from "@/components/app/work/emails-view";
 import { LeadsView } from "@/components/app/work/leads-view";
 import { AbTestCard } from "@/components/app/work/ab-test";
+import { ImportedSequence } from "@/components/app/work/imported-sequence";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
@@ -109,6 +110,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
         {/* Keyed on the content so the form picks up fields the agent fills in after "Describe it". Hidden rather than
             unmounted on the other tabs, so a look at the leads doesn't throw away unsaved edits. */}
         <div hidden={tab !== "details"} className="flex flex-col gap-4">
+          <ImportedSequence segmentId={segId} />
           <AbTestCard segmentId={segId} />
           <SegmentEditor key={editorKey(segment)} segment={segment} />
         </div>

@@ -11,7 +11,7 @@ use super::explore::{self, Profile, load_project};
 use super::sdk::Call;
 use super::{Ctx, Outcome};
 use crate::{hiring, tech};
-use crate::models::{EmailMessage, Lead, Project, Segment, Variant};
+use crate::models::{EmailMessage, Lead, Project, Segment, SegmentStep, Variant};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
 that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
@@ -154,7 +154,12 @@ fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
 
 fn has_placeholder(text: &str) -> bool {
     let t = text.to_lowercase();
-    t.contains("{{") || t.contains("[name") || t.contains("[first") || t.contains("[company") || t.contains("{first") || t.contains("{company")
+    t.contains("{{") || t.contains("[name") || t.contains("[first") || t.contains("[company") || has_field(&t)
+}
+
+/// A field in single braces, like {last_name} or {sender_name}, that a template left unfilled.
+fn has_field(text: &str) -> bool {
+    text.split('{').skip(1).any(|rest| rest.split_once('}').is_some_and(|(inner, _)| !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_')))
 }
 
 #[derive(Deserialize)]
@@ -250,19 +255,29 @@ async fn write_initial(ctx: &Ctx, project_id: Uuid, leads: &[Lead], instructions
     let mut leads = leads.to_vec();
     crate::ab_test::assign(ctx.db(), &mut leads).await?;
     let variants = variants_by_id(ctx, project_id).await?;
+    let imported = imported_steps(ctx, project_id).await?;
 
     // Each variant of a campaign gets its own prompt. A campaign without variants is one group, as before.
     let mut groups: HashMap<(Option<Uuid>, Option<Uuid>), Vec<Lead>> = HashMap::new();
+    let mut filled = 0;
     for lead in leads {
+        let own = lead.segment_id.and_then(|id| imported.get(&(id, 0)));
+        if let Some((subject, body)) = own.and_then(|s| Some((fill(&s.subject, &lead, &settings)?, fill(&s.body, &lead, &settings)?))) {
+            save_initial(ctx, &lead, lead.segment_id.and_then(|id| segments.get(&id)), subject.trim(), &settings.sign(&body)).await?;
+            filled += 1;
+            continue;
+        }
         groups.entry((lead.segment_id, lead.variant_id)).or_default().push(lead);
     }
     let campaigns = groups.into_iter().map(|((segment_id, variant_id), group)| {
         let segment = segment_id.and_then(|id| segments.get(&id));
         let variant = variant_id.and_then(|id| variants.get(&id));
-        let prompt = initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions);
+        let own = segment_id.and_then(|id| imported.get(&(id, 0)));
+        // The campaign's own email goes last, so it wins over the default subject, opening and length in the rules.
+        let prompt = initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions) + &own.map(own_email_rule).unwrap_or_default();
         write_campaign(ctx, segment, variant, prompt, group, &settings)
     });
-    let saved: usize = stream::iter(campaigns).buffer_unordered(CAMPAIGN_AGENTS).try_collect::<Vec<_>>().await?.into_iter().sum();
+    let saved: usize = filled + stream::iter(campaigns).buffer_unordered(CAMPAIGN_AGENTS).try_collect::<Vec<_>>().await?.into_iter().sum::<usize>();
     ctx.log(format!("wrote {saved} personal emails…")).await?;
     Ok(saved)
 }
@@ -318,6 +333,18 @@ fn company_batches(leads: Vec<Lead>) -> Vec<Vec<Lead>> {
 async fn segments_by_id(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<Uuid, Segment>> {
     let rows = sqlx::query_as::<_, Segment>("select * from segments where project_id = $1").bind(project_id).fetch_all(ctx.db()).await?;
     Ok(rows.into_iter().map(|s| (s.id, s)).collect())
+}
+
+/// The emails of campaigns brought over from another tool, by campaign and position (0 is the first email).
+async fn imported_steps(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<(Uuid, i32), SegmentStep>> {
+    let rows: Vec<(Uuid, i32, i32, String, String)> = sqlx::query_as(
+        "select t.segment_id, t.position, t.delay_days, t.subject, t.body from segment_steps t join segments s on s.id = t.segment_id
+         where s.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(ctx.db())
+    .await?;
+    Ok(rows.into_iter().map(|(segment, position, delay_days, subject, body)| ((segment, position), SegmentStep { position, delay_days, subject, body })).collect())
 }
 
 async fn variants_by_id(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<Uuid, Variant>> {
@@ -383,6 +410,47 @@ fn initial_prompt(
         language = s.language_rule(),
         extra_block = if extra.is_empty() { String::new() } else { format!("- Also: {extra}\n") },
         variant_block = variant.map(variant_rule).unwrap_or_default(),
+    )
+}
+
+/// An imported email with the lead's fields filled in, exactly as the user wrote it. None when it still has a field Splee can't
+/// fill, like {{pain}} or spintax, or the lead lacks one it uses, so the writer fills those in instead of a lead seeing braces.
+fn fill(text: &str, lead: &Lead, settings: &WriterSettings) -> Option<String> {
+    let fields = [
+        ("{first_name}", lead.first_name.as_str()),
+        ("{last_name}", &lead.last_name),
+        ("{full_name}", &lead.full_name),
+        ("{company}", &lead.company_name),
+        ("{title}", &lead.title),
+        ("{city}", &lead.city),
+        ("{sender_name}", &settings.sender_name),
+    ];
+    fill_fields(text, &fields)
+}
+
+fn fill_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
+    let mut out = text.to_string();
+    for &(field, value) in fields {
+        if out.contains(field) {
+            let value = value.trim();
+            if value.is_empty() {
+                return None;
+            }
+            out = out.replace(field, value);
+        }
+    }
+    (!out.contains('{') && !out.contains('}')).then_some(out)
+}
+
+/// A campaign brought over from another tool keeps the emails the user wrote there.
+fn own_email_rule(step: &SegmentStep) -> String {
+    let subject = step.subject.trim();
+    let subject = if subject.is_empty() { String::new() } else { format!("Subject: {subject}\n") };
+    format!(
+        "- The user wrote this campaign's emails themselves, before Splee. Send this one as written, with {{first_name}}, {{company}} and \
+         the other fields in single braces filled in from the lead, and anything in double braces replaced by what it asks for, written \
+         for the lead. Where this differs from the rules above, follow this.\n{subject}{}\n",
+        step.body.trim()
     )
 }
 
@@ -532,6 +600,7 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
     let rules: Vec<FollowUpRule> = serde_json::from_value(settings.follow_ups.clone()).unwrap_or_default();
     let segments = segments_by_id(ctx, project_id).await?;
     let variants = variants_by_id(ctx, project_id).await?;
+    let imported = imported_steps(ctx, project_id).await?;
     let leads = sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and id = any($2) and status = 'contacted'")
         .bind(project_id)
         .bind(lead_ids)
@@ -549,7 +618,15 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         .await?;
         let (Some(first), Some(last)) = (thread.first(), thread.last()) else { continue };
         let step = last.step + 1;
-        let Some(rule) = rules.get(step as usize - 1).filter(|r| r.enabled) else { continue };
+        // A campaign brought over from another tool has its own follow-ups, on its own schedule.
+        // It only sends the steps it came with, never the project's follow-ups after them.
+        let own = lead.segment_id.and_then(|id| imported.get(&(id, step)));
+        let is_imported = lead.segment_id.is_some_and(|id| imported.contains_key(&(id, 0)));
+        let rule = if is_imported { None } else { rules.get(step as usize - 1).filter(|r| r.enabled) };
+        if rule.is_none() && own.is_none() {
+            continue;
+        }
+        let delay_days = own.map_or_else(|| rule.map_or(3, |r| r.delay_days), |s| s.delay_days as i64);
         let existing: Option<(Uuid, String)> =
             sqlx::query_as("select id, status from email_messages where lead_id = $1 and kind = 'follow_up' and step = $2")
                 .bind(lead.id)
@@ -575,13 +652,14 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
              About us:\n{brief}\n\n\
              Rules: it is sent as a reply in the same thread, so no subject and no \"just following up\" or guilt-tripping. Start with a \
              greeting and their first name, in the language of the earlier emails. Add one new angle, fact or offer that the earlier emails didn't use, then one short question. At most \
-             {max_words} words. Tone: {tone}. {language} No sign-off.{extra}",
+             {max_words} words. Tone: {tone}. {language} No sign-off.{extra}{own}",
             sender = settings.sender(&profile),
             brief = profile.brief(project.domain.as_deref()),
             tone = settings.tone,
             language = settings.language_rule(),
             extra = {
-                let extra = [settings.email_instructions.trim(), rule.instructions.trim(), instructions.trim(), angle.as_deref().unwrap_or_default()]
+                let rule = rule.map_or("", |r| r.instructions.trim());
+                let extra = [settings.email_instructions.trim(), rule, instructions.trim(), angle.as_deref().unwrap_or_default()]
                     .iter()
                     .filter(|t| !t.is_empty())
                     .cloned()
@@ -589,16 +667,23 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
                     .join(" ");
                 if extra.is_empty() { String::new() } else { format!(" Also: {extra}") }
             },
+            own = own.map(|s| format!("\n{}", own_email_rule(s))).unwrap_or_default(),
         );
-        ctx.log(format!("writing follow-up {step} to {}…", lead.first_name)).await?;
-        let drafts = ask_drafts(ctx, prompt, std::slice::from_ref(lead), false).await?;
-        let Some(d) = drafts.get(&lead.id) else { continue };
+        let body = match own.and_then(|s| fill(&s.body, lead, &settings)) {
+            Some(body) => body,
+            None => {
+                ctx.log(format!("writing follow-up {step} to {}…", lead.first_name)).await?;
+                let mut drafts = ask_drafts(ctx, prompt, std::slice::from_ref(lead), false).await?;
+                let Some(d) = drafts.remove(&lead.id) else { continue };
+                d.body
+            }
+        };
 
         if let Some(id) = to_rewrite {
             // The sender may have sent it while the agent was writing. Leave sent emails alone.
             sqlx::query("update email_messages set body = $2 where id = $1 and status = any($3)")
                 .bind(id)
-                .bind(settings.sign(&d.body))
+                .bind(settings.sign(&body))
                 .bind(&UNSENT[..])
                 .execute(ctx.db())
                 .await?;
@@ -607,8 +692,8 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         }
 
         let sending = lead.segment_id.and_then(|id| segments.get(&id)).is_some_and(|s| s.status == "working" || s.status == "scaling");
-        let due = last.sent_at.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(rule.delay_days.max(1));
-        insert_follow_up(ctx.db(), lead, &thread, &settings.sign(&d.body), sending, due).await?;
+        let due = last.sent_at.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(delay_days.max(1));
+        insert_follow_up(ctx.db(), lead, &thread, &settings.sign(&body), sending, due).await?;
         saved += 1;
     }
     Ok(saved)
@@ -795,7 +880,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{Ctx, company_signals, insert_follow_up, lead_brief, save_initial, variant_rule};
+    use super::{Ctx, company_signals, insert_follow_up, lead_brief, own_email_rule, save_initial, variant_rule};
     use crate::ab_test::{self, tests::{add_leads, seed}};
     use crate::models::{AgentRun, EmailMessage, Lead, Variant};
 
@@ -823,6 +908,27 @@ mod tests {
         assert!(rule.contains("\"Cost\": Lead with what they spend on agencies.") && rule.contains("including the subject"), "{rule}");
         v.instructions = "  ".into();
         assert_eq!(variant_rule(&v), "");
+    }
+
+    #[test]
+    fn an_imported_email_goes_out_as_written_when_every_field_fills() {
+        let fields = [("{first_name}", "Ana"), ("{company}", "Delta"), ("{city}", ""), ("{sender_name}", "Maya")];
+        assert_eq!(super::fill_fields("Hi {first_name},\n\nHow does {company} plan visits?\n{sender_name}", &fields).as_deref(),
+            Some("Hi Ana,\n\nHow does Delta plan visits?\nMaya"));
+        // A field Splee can't fill, or one the lead lacks, goes to the writer instead.
+        assert_eq!(super::fill_fields("Hi {first_name}, {{pain}}", &fields), None);
+        assert_eq!(super::fill_fields("Hi {first_name} at {city}", &fields), None);
+        // And what the writer sends back is dropped if it kept one.
+        assert!(super::has_placeholder("Hi Ana, from {sender_name}") && super::has_placeholder("{Last_Name}") && !super::has_placeholder("Hi Ana { not a field }"));
+    }
+
+    #[test]
+    fn a_campaign_brought_over_keeps_its_own_email() {
+        let step = crate::models::SegmentStep { position: 0, delay_days: 0, subject: "{company} x Fieldnote".into(), body: "Hi {first_name},\n\n{{icebreaker}}".into() };
+        let rule = own_email_rule(&step);
+        assert!(rule.contains("Send this one as written") && rule.ends_with("Subject: {company} x Fieldnote\nHi {first_name},\n\n{{icebreaker}}\n"), "{rule}");
+        let follow_up = crate::models::SegmentStep { subject: String::new(), ..step };
+        assert!(!own_email_rule(&follow_up).contains("Subject:"));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

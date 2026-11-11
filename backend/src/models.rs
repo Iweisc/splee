@@ -754,6 +754,30 @@ pub struct Import {
     pub created_at: Ts,
 }
 
+/// Campaigns being brought over from another outreach tool (outreach/). The key is never sent back.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct OutreachImport {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub tool: String,
+    pub status: String,
+    pub campaigns: Value,
+    pub include_blocklist: bool,
+    pub blocklist_added: i32,
+    pub error: String,
+    pub created_at: Ts,
+    pub finished_at: Option<Ts>,
+}
+
+/// One email of a campaign brought over from another tool.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SegmentStep {
+    pub position: i32,
+    pub delay_days: i32,
+    pub subject: String,
+    pub body: String,
+}
+
 /// A reply or post for a social platform, drafted by a social run or written by the user, posted once approved.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SocialPost {

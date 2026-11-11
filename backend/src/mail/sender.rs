@@ -653,8 +653,9 @@ async fn queue_linkedin<'e, E: sqlx::PgExecutor<'e>>(db: E, lead: Uuid) -> sqlx:
     Ok(())
 }
 
-/// Leads whose next follow-up is due within 12 hours get one written by the agent.
-async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
+/// Leads whose next follow-up is due within 12 hours get one written by the agent. A campaign brought over from another tool
+/// follows its own steps and their delays and stops after its last one. Other campaigns follow the project's follow-ups.
+pub(crate) async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
     let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
         "select l.project_id, p.org_id, l.id
          from leads l
@@ -664,11 +665,14 @@ async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
          join lateral (select e.step, e.sent_at from email_messages e
                        where e.lead_id = l.id and e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status = 'sent'
                        order by e.step desc limit 1) last on true
+         left join segment_steps own on own.segment_id = l.segment_id and own.position = last.step + 1
          where p.org_id is not null and not ps.paused and l.status = 'contacted'
            and coalesce(s.status, 'working') <> 'paused'
-           and jsonb_typeof(ps.follow_ups) = 'array' and jsonb_array_length(ps.follow_ups) > last.step
-           and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)
-           and last.sent_at + make_interval(days => greatest(1, coalesce((ps.follow_ups -> last.step ->> 'delay_days')::int, 3)))
+           and (own.segment_id is not null
+                or (not exists (select 1 from segment_steps x where x.segment_id = l.segment_id)
+                    and jsonb_typeof(ps.follow_ups) = 'array' and jsonb_array_length(ps.follow_ups) > last.step
+                    and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)))
+           and last.sent_at + make_interval(days => greatest(1, coalesce(own.delay_days, (ps.follow_ups -> last.step ->> 'delay_days')::int, 3)))
                <= now() + interval '12 hours'
            and not exists (select 1 from email_messages f where f.lead_id = l.id and f.kind = 'follow_up' and f.step = last.step + 1)
            and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')

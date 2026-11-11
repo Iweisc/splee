@@ -1252,6 +1252,50 @@ export interface Import {
   created_at: Ts;
 }
 
+export type OutreachTool = "instantly" | "smartlead" | "lemlist";
+
+/** A campaign in another outreach tool. `leads` is null when the tool wouldn't say. */
+export interface OutreachCampaign {
+  id: string;
+  name: string;
+  status: string;
+  leads: number | null;
+}
+
+/** A campaign being brought over, with what the import did to it so far. */
+export interface OutreachImportCampaign {
+  id: string;
+  name: string;
+  leads: number | null;
+  status: "queued" | "running" | "done" | "failed";
+  segment_id: UUID | null;
+  steps: number;
+  added: number;
+  duplicates: number;
+  suppressed: number;
+  invalid: number;
+  error: string;
+}
+
+export interface OutreachImport {
+  id: UUID;
+  project_id: UUID;
+  tool: OutreachTool;
+  status: "queued" | "running" | "done" | "failed";
+  campaigns: OutreachImportCampaign[];
+  include_blocklist: boolean;
+  blocklist_added: number;
+  error: string;
+  created_at: Ts;
+  finished_at: Ts | null;
+}
+
+/** The emails of a campaign brought over from another tool. */
+export interface SegmentSteps {
+  imported_from: string | null;
+  steps: { position: number; delay_days: number; subject: string; body: string }[];
+}
+
 export type RunKind =
   | "explore"
   | "research_company"

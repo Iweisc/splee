@@ -4,6 +4,7 @@ import { use, useState } from "react";
 import { CircleCheck, Database, FileUp, Search, Sheet, Table2, Upload } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { OutreachForm, OutreachImports } from "@/components/app/import/outreach-import";
 import { CampaignField } from "@/components/app/settings/campaign-field";
 import { ListSkeleton, LoadError, MicroLabel, Td, Th, toastError, Tr } from "@/components/app/work/states";
 import { Button, LinkButton } from "@/components/ui/button";
@@ -87,11 +88,12 @@ const appendSource = (form: FormData, source: Source) => {
 
 const sourceKind = (source: Source) => ("file" in source ? "file" : "sheet_url" in source ? "sheet" : source.kind);
 
-type LinkSource = "sheet" | TableKind;
+type LinkSource = "sheet" | TableKind | "outreach";
 
 const LINK_SOURCES: { value: LinkSource; label: string }[] = [
   { value: "sheet", label: "Google Sheet" },
   ...Object.entries(TABLE_SOURCES).map(([kind, { label }]) => ({ value: kind as TableKind, label })),
+  { value: "outreach", label: "Another outreach tool" },
 ];
 
 const chooseAnother = (source: Source) =>
@@ -122,6 +124,7 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
   // Kept per service, so switching tabs doesn't lose what was typed.
   const [links, setLinks] = useState(NO_LINKS);
   const [linkSource, setLinkSource] = useState<LinkSource>("sheet");
+  const [startedId, setStartedId] = useState<string | null>(null);
 
   const choose = async (next: Source) => {
     setResult(null);
@@ -150,10 +153,11 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
     <>
       <PageHeader
         title="Import leads"
-        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB, Grist, Teable or Hunter. Suppressed, duplicate and invalid emails are skipped."
+        description="From a CSV or Excel file, a Google Sheet, Airtable, Notion, Baserow, NocoDB, Grist, Teable, Hunter, or your campaigns in Instantly, Smartlead or lemlist. Suppressed, duplicate and invalid emails are skipped."
       />
       <PageBody className="flex flex-col gap-4">
         {result && <ImportResult result={result} />}
+        <OutreachImports projectId={projectId} startedId={startedId} />
         {source && preview ? (
           <MappingStep
             projectId={projectId}
@@ -186,13 +190,14 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
             <div className="flex flex-col gap-4 p-6">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <span className="text-sm font-medium">Or import from</span>
-                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get them two by two. With
-                    an odd number, Google Sheet takes a row of its own so the last one isn't left alone with a gap beside it. */}
+                {/* All in a row is wider than a phone, and a scrolling row hides the last ones, so phones get them two by two.
+                    "Another outreach tool" is too long for half a phone, so it takes the last row, and with an even number of the
+                    others Google Sheet takes the first, so none is left alone with a gap beside it. */}
                 <Tabs
                   value={linkSource}
                   onChange={setLinkSource}
                   options={LINK_SOURCES}
-                  className={cn("grid w-full grid-cols-2 sm:inline-flex sm:w-auto", LINK_SOURCES.length % 2 === 1 && "*:first:col-span-2")}
+                  className={cn("grid w-full grid-cols-2 sm:inline-flex sm:w-auto", "*:last:col-span-2", LINK_SOURCES.length % 2 === 0 && "*:first:col-span-2")}
                 />
               </div>
               {linkSource === "sheet" && (
@@ -212,7 +217,8 @@ export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/imp
                   </Button>
                 </form>
               )}
-              {linkSource !== "sheet" && (
+              {linkSource === "outreach" && <OutreachForm projectId={projectId} onStarted={setStartedId} />}
+              {linkSource !== "sheet" && linkSource !== "outreach" && (
                 <TableForm
                   kind={linkSource}
                   value={links[linkSource]}
