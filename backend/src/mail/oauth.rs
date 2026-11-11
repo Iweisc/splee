@@ -401,6 +401,7 @@ pub(crate) mod tests {
             graph_api_url: String::new(),
             crm_api_url: String::new(),
             payments_api_url: String::new(),
+            webflow_api_url: String::new(),
             ipinfo_token: None,
         }
     }

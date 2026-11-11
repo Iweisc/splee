@@ -1,5 +1,6 @@
 //! Posts approved social drafts from each project's connected accounts: one per account each tick, at most the platform's
-//! daily cap, so a day's posts spread out instead of going in a burst. agent::social finds threads and drafts.
+//! daily cap, so a day's posts spread out instead of going in a burst. agent::social finds threads and drafts. Articles for the
+//! company's own blogs go out through crate::blog.
 
 use std::collections::HashSet;
 
@@ -18,7 +19,7 @@ use crate::hooks::{self, Alert};
 use crate::lemmy::{self, Lemmy};
 use crate::mastodon::Mastodon;
 use crate::meta::{self, Graph, Published};
-use crate::models::{DiscourseForum, SocialChannel, SocialPost};
+use crate::models::{Blog, DiscourseForum, SocialChannel, SocialPost};
 use crate::nostr::{self, Nostr};
 use crate::reddit::{Login, Reddit, Target};
 use crate::stackexchange::{self, Question, StackExchange};
@@ -29,9 +30,9 @@ use crate::tumblr::{self, Tumblr};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 18] = [
+pub const PLATFORMS: [&str; 19] = [
     "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode", "discord",
-    "telegram", "facebook", "instagram",
+    "telegram", "facebook", "instagram", "blog",
 ];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
@@ -74,6 +75,7 @@ pub fn name(platform: &str) -> &'static str {
         "telegram" => "Telegram",
         "facebook" => "Facebook",
         "instagram" => "Instagram",
+        "blog" => "your blog",
         _ => "LinkedIn",
     }
 }
@@ -83,9 +85,9 @@ pub fn takes_posts(platform: &str) -> bool {
     !matches!(platform, "youtube" | "stackexchange")
 }
 
-/// Forem's API can't write comments, so DEV only gets articles.
+/// Forem's API can't write comments, so DEV only gets articles, and so does the company's own blog.
 pub fn takes_replies(platform: &str) -> bool {
-    platform != "dev"
+    !matches!(platform, "dev" | "blog")
 }
 
 /// The most a reply or post can hold, as `length` counts it. Mastodon's limit is the instance's, read on connect.
@@ -212,6 +214,9 @@ pub struct Accounts {
     /// `load_forums` too.
     #[sqlx(skip)]
     pub channels: Vec<SocialChannel>,
+    /// The company's own blogs, see crate::blog. Loaded with `load_forums` too.
+    #[sqlx(skip)]
+    pub blogs: Vec<Blog>,
 }
 
 pub(crate) const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
@@ -302,18 +307,24 @@ impl Accounts {
             "discord" => (&self.discord_bot_id, &self.discord_token_enc),
             "telegram" => (&self.telegram_bot_id, &self.telegram_token_enc),
             "facebook" | "instagram" => (&self.meta_user_id, &self.meta_user_id),
-            "discourse" => ("", ""),
+            "discourse" | "blog" => ("", ""),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
     }
 
     pub fn connected(&self) -> Vec<&'static str> {
-        PLATFORMS.into_iter().filter(|p| if *p == "discourse" { !self.forums.is_empty() } else { !self.account(p).1.is_empty() }).collect()
+        let connected = |p: &str| match p {
+            "discourse" => !self.forums.is_empty(),
+            "blog" => self.blogs.iter().any(|b| !b.paused),
+            p => !self.account(p).1.is_empty(),
+        };
+        PLATFORMS.into_iter().filter(|p| connected(p)).collect()
     }
 
     pub async fn load_forums(&mut self, db: &PgPool) -> sqlx::Result<()> {
         self.forums = sqlx::query_as("select * from discourse_forums where project_id = $1 order by created_at").bind(self.project_id).fetch_all(db).await?;
         self.channels = crate::social_channels::list(db, self.project_id).await?;
+        self.blogs = sqlx::query_as("select * from blogs where project_id = $1 order by created_at").bind(self.project_id).fetch_all(db).await?;
         Ok(())
     }
 
@@ -451,11 +462,12 @@ impl DiscourseForum {
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    // It may have gone out, so it fails for the user to check rather than going back in the queue.
+    // It may have gone out, so it fails for the user to check rather than going back in the queue. A blog article can be
+    // looked up by its slug, so crate::blog tries it again instead.
     sqlx::query(
         "update social_posts set status = 'failed', updated_at = now(),
            error = 'Splee stopped while posting this, so it may have gone out. Check the account before you approve it again.'
-         where status = 'posting' and updated_at < now() - make_interval(mins => $1)",
+         where status = 'posting' and platform <> 'blog' and updated_at < now() - make_interval(mins => $1)",
     )
     .bind(STUCK_MINUTES)
     .execute(&state.db)
@@ -470,7 +482,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     let mut used = HashSet::new();
     for mut a in waiting {
         a.load_forums(&state.db).await?;
-        for platform in a.connected() {
+        for platform in a.connected().into_iter().filter(|p| *p != "blog") {
             let accounts = match platform {
                 "discourse" => a.forums.iter().map(|f| (f.account.as_str(), f.key_enc.as_str(), Some(f))).collect(),
                 // Each Page and Instagram account has its own daily cap, while a failure holds them all, since they share a sign-in.
@@ -484,7 +496,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    crate::blog::tick(state).await
 }
 
 /// `used` holds the accounts that already posted this tick. An account only counts once it claims a post, so a project with
@@ -594,7 +606,7 @@ async fn claim(db: &PgPool, post: &SocialPost, account: &str) -> sqlx::Result<bo
 }
 
 /// Saves how posting went. Returns how the account did, for the integrations page.
-async fn finish(db: &PgPool, post: &SocialPost, account: &str, published: Result<String, Failure>) -> sqlx::Result<anyhow::Result<()>> {
+pub(crate) async fn finish(db: &PgPool, post: &SocialPost, account: &str, published: Result<String, Failure>) -> sqlx::Result<anyhow::Result<()>> {
     // Account failures, like expired cookies or a rate limit, happen before anything is posted, so the post waits again.
     let (status, url, error) = match published {
         Ok(url) => ("posted", url, None),

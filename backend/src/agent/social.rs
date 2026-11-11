@@ -1,6 +1,6 @@
 //! Social runs: find recent threads on the project's connected platforms where its buyers talk about the problem it solves,
-//! and draft replies to them plus a few original posts, for the user to review on the Social page. crate::social posts the
-//! approved ones.
+//! and draft replies to them plus a few original posts and articles for the company's own blogs, for the user to review on
+//! the Social page. crate::social and crate::blog post the approved ones.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -81,6 +81,10 @@ struct Post {
     link: String,
     #[serde(default)]
     image_url: String,
+    #[serde(default)]
+    blog: String,
+    #[serde(default)]
+    excerpt: String,
     reason: String,
     body: String,
 }
@@ -97,16 +101,18 @@ fn schema() -> Value {
             "posts": {"type": "array", "items": {"type": "object", "properties": {
                 "platform": {"type": "string", "enum": PLATFORMS.iter().filter(|p| takes_posts(p)).collect::<Vec<_>>()},
                 "subreddit": {"type": "string", "description": "Reddit only, without r/. Empty for the others."},
-                "title": {"type": "string", "description": "Reddit, DEV, Hashnode, Discourse and Lemmy only. Empty for the others."},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV, Hashnode and Tumblr only. Empty for the others."},
+                "title": {"type": "string", "description": "Reddit, DEV, Hashnode, Discourse, Lemmy and blog only. Empty for the others."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV, Hashnode, Tumblr and blog only. Empty for the others."},
                 "forum": {"type": "string", "description": "Discourse only, the forum's address as listed. Empty for the others."},
                 "community": {"type": "string", "description": "Lemmy only, as name@instance. Empty for the others."},
                 "channel": {"type": "string", "description": "Discord, Telegram, Facebook and Instagram only, the channel's, Page's or account's id as listed. Empty for the others."},
                 "link": {"type": "string", "description": "Facebook only, an https link the post shares, or empty. Empty for the others."},
                 "image_url": {"type": "string", "description": "Instagram only, the https link of the JPEG picture the post shows. Empty for the others."},
+                "blog": {"type": "string", "description": "Blog only, the blog's id as listed. Empty for the others."},
+                "excerpt": {"type": "string", "description": "Blog only, one or two sentences under 300 characters that sum the article up. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
                 "body": {"type": "string"}
-            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "channel", "link", "image_url", "reason", "body"]}}
+            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "channel", "link", "image_url", "blog", "excerpt", "reason", "body"]}}
         },
         "required": ["replies", "posts"]
     })
@@ -148,7 +154,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
     const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, \
-                           Hashnode, Discord, Telegram, Facebook, Instagram or LinkedIn on the integrations page first";
+                           Hashnode, Discord, Telegram, Facebook, Instagram, your blog or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -267,6 +273,18 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     if !accounts.dev_key_enc.is_empty() {
         platforms.push("dev");
         tools.push(format!("On DEV you publish articles as @{}.", accounts.dev_username));
+    }
+    // Blogs have no tools either. Each takes its weekly cap of articles, less what it already has this week.
+    let room = crate::blog::room(ctx.db(), project_id).await?;
+    let open: Vec<String> = accounts
+        .blogs
+        .iter()
+        .filter_map(|b| room.iter().find(|(id, _)| *id == b.id).filter(|(_, n)| *n > 0).map(|(_, n)| (b, n)))
+        .map(|(b, n)| format!("- {}: {} ({}, on {}), up to {n} more this week", b.id, b.name, b.url.trim_start_matches("https://"), crate::blog::name(&b.kind)))
+        .collect();
+    if !open.is_empty() {
+        platforms.push("blog");
+        tools.push(format!("On {}'s own blogs you publish articles:\n{}", profile.name, open.join("\n")));
     }
     if !accounts.lemmy_password_enc.is_empty() {
         match accounts.lemmy(secret).await {
@@ -520,11 +538,19 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             list(answered)
         ));
     }
-    steps.push(match posting.as_slice() {
-        [] => format!("Don't draft original posts. Only replies go out on {find}."),
-        [_] => format!("Draft 2 or 3 original posts on {post_on}."),
-        _ => format!("Draft 2 or 3 original posts in all, each on the one of {post_on} where its readers are."),
-    });
+    // Blog articles come on top of the other posts, one per blog with room this week.
+    let blogs = posting.contains(&"blog");
+    let others: Vec<&str> = posting.iter().copied().filter(|p| *p != "blog").collect();
+    let others_on = names(&others);
+    match others.as_slice() {
+        [] if blogs => {}
+        [] => steps.push(format!("Don't draft original posts. Only replies go out on {find}.")),
+        [_] => steps.push(format!("Draft 2 or 3 original posts on {others_on}.")),
+        _ => steps.push(format!("Draft 2 or 3 original posts in all, each on the one of {others_on} where its readers are.")),
+    }
+    if blogs {
+        steps.push("Draft one article for each listed blog, on a problem its readers look for answers to.".into());
+    }
     if !posting.is_empty() {
         sections.push(format!(
             "Rules for original posts:\n\
@@ -640,6 +666,13 @@ fn rules(platform: &str, company: &str, a: &Accounts) -> String {
              it, like one on {company}'s website you looked at. Leave Instagram posts out when you found no picture. A caption may end \
              with up to 5 hashtags."
         ),
+        "blog" => format!(
+            "Blog: articles on {company}'s own blogs, where it speaks as itself, so it may say what it does where that helps the reader, \
+             without turning into an ad. An article needs `blog`, the id of a listed blog, a title of at most 200 characters, up to 5 \
+             `tags` like cold email or deliverability, and an `excerpt`. Write a full article in Markdown of 800 to 2000 words that \
+             teaches the buyers something specific, like a how-to, a checklist or a lesson learned, with headings from ##. Don't start it \
+             with the title, since the blog shows it above the article."
+        ),
         "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
                   lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
                   something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
@@ -669,6 +702,7 @@ async fn save(
 ) -> sqlx::Result<(usize, usize)> {
     let mastodon_chars = a.mastodon_chars();
     let forum = |url: &str| a.forums.iter().find(|f| f.url == url);
+    let mut room: HashMap<Uuid, i64> = crate::blog::room(db, project_id).await?.into_iter().collect();
     let oldest = Utc::now() - chrono::Duration::days(MAX_AGE_DAYS);
     let mut replies = 0;
     for r in drafts.replies {
@@ -713,6 +747,8 @@ async fn save(
         let titles = |min: usize, max: usize| (min..=max).contains(&title.chars().count());
         let link = if p.platform == "facebook" && crate::meta::public_link(p.link.trim()) { p.link.trim() } else { "" };
         let image_url = if p.platform == "instagram" { p.image_url.trim() } else { "" };
+        let excerpt: String = if p.platform == "blog" { p.excerpt.trim().chars().take(crate::blog::EXCERPT_CHARS).collect() } else { String::new() };
+        let blog_id = Uuid::parse_str(p.blog.trim()).ok().filter(|_| p.platform == "blog");
         let (sr, title, tags, forum_id, channel_id) = match p.platform.as_str() {
             "reddit" => match subreddit(&p.subreddit) {
                 Some(sr) if titles(1, 300) => (sr, title, Vec::new(), None, None),
@@ -740,12 +776,27 @@ async fn save(
                 Some(c) => (String::new(), "", Vec::new(), None, Some(c.id)),
                 None => continue,
             },
+            "blog" => match blog_id.and_then(|id| room.get_mut(&id)).filter(|n| **n > 0) {
+                Some(n) if titles(1, crate::blog::TITLE_CHARS) => {
+                    *n -= 1;
+                    (String::new(), title, crate::blog::tags(&p.tags), None, None)
+                }
+                _ => continue,
+            },
             "dev" | "hashnode" => continue,
             _ => (String::new(), "", Vec::new(), None, None),
         };
+        let mut tx = db.begin().await?;
+        // Another run may have taken the blog's last article of the week since room was read.
+        if let Some(id) = blog_id
+            && !crate::blog::take_room(&mut tx, id, project_id).await?
+        {
+            continue;
+        }
         sqlx::query(
-            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id, channel_id, link, image_url)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id, channel_id, link, image_url, blog_id,
+               excerpt)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(project_id)
         .bind(run_id)
@@ -759,8 +810,11 @@ async fn save(
         .bind(channel_id)
         .bind(link)
         .bind(image_url)
-        .execute(db)
+        .bind(blog_id)
+        .bind(excerpt)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         posts += 1;
     }
     Ok((replies, posts))
@@ -837,6 +891,8 @@ mod tests {
             channel: channel.into(),
             link: String::new(),
             image_url: String::new(),
+            blog: String::new(),
+            excerpt: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
@@ -896,6 +952,8 @@ mod tests {
             channel: String::new(),
             link: String::new(),
             image_url: String::new(),
+            blog: String::new(),
+            excerpt: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
@@ -999,5 +1057,50 @@ mod tests {
         assert_eq!(forums, 2);
         // A second run doesn't draft for the same thread again.
         assert_eq!(save(&db, project, run, &platforms, &accounts, drafts(), &seen).await.unwrap().0, 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn each_blog_gets_articles_up_to_its_weekly_cap_and_a_paused_one_none(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let run: Uuid = sqlx::query_scalar("insert into agent_runs (kind, project_id) values ('social', $1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1)").bind(project).execute(&db).await.unwrap();
+        let blog = |account: &str, paused: bool| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into blogs (project_id, kind, url, secret_enc, account, paused) values ($1, 'wordpress', 'https://' || $2, 'x', $2, $3) returning id",
+            )
+            .bind(project)
+            .bind(account.to_string())
+            .bind(paused)
+            .fetch_one(&db)
+        };
+        let (open, paused) = (blog("acme.test/blog", false).await.unwrap(), blog("old.acme.test", true).await.unwrap());
+        // One article this week already, so one more fits under the cap of 2.
+        sqlx::query("insert into social_posts (project_id, platform, blog_id, title, body) values ($1, 'blog', $2, 'Earlier', 'Hi')").bind(project).bind(open).execute(&db).await.unwrap();
+        let accounts = social::accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(accounts.connected(), ["blog"]);
+        let article = |blog: Uuid, title: &str| Post {
+            platform: "blog".into(),
+            subreddit: String::new(),
+            title: title.into(),
+            tags: vec!["#Cold Email".into()],
+            forum: String::new(),
+            community: String::new(),
+            channel: String::new(),
+            link: String::new(),
+            image_url: String::new(),
+            blog: blog.to_string(),
+            excerpt: "Four weeks, step by step.".into(),
+            reason: "Buyers search for it".into(),
+            body: "## Day one\n\nSend 20.".into(),
+        };
+        let drafts = Drafts {
+            replies: Vec::new(),
+            posts: vec![article(open, ""), article(open, "How we warm up"), article(open, "Another one"), article(paused, "How we warm up")],
+        };
+        assert_eq!(save(&db, project, run, &["blog"], &accounts, drafts, &HashMap::new()).await.unwrap(), (0, 1));
+        let saved: (Option<Uuid>, String, Vec<String>, String) =
+            sqlx::query_as("select blog_id, title, tags, excerpt from social_posts where run_id = $1").bind(run).fetch_one(&db).await.unwrap();
+        assert_eq!(saved, (Some(open), "How we warm up".into(), vec!["Cold Email".to_string()], "Four weeks, step by step.".into()));
     }
 }

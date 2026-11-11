@@ -230,6 +230,8 @@ pub enum Alert {
     Dev,
     /// Matched on discourse_forums.key_enc.
     Discourse,
+    /// Matched on blogs.secret_enc.
+    Blog,
     /// Matched on lemmy_password_enc.
     Lemmy,
     /// Matched on nostr_key_enc.
@@ -257,6 +259,7 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Webhook => return record_row(db, "webhook_endpoints", "url", project_id, url, result).await,
         Alert::Chat => return record_row(db, "chat_channels", "url", project_id, url, result).await,
         Alert::Discourse => return record_row(db, "discourse_forums", "key_enc", project_id, url, result).await,
+        Alert::Blog => return record_row(db, "blogs", "secret_enc", project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
         Alert::Finder => ("finder", "finder_key_enc".to_string()),

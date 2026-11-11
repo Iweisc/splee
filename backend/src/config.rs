@@ -59,6 +59,8 @@ pub struct Config {
     /// Stripe's, Paddle's and Lemon Squeezy's APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that
     /// answers for each under /stripe, /paddle and /lemonsqueezy.
     pub payments_api_url: String,
+    /// Webflow's Data API v2, empty for Webflow itself. Only tests and sandboxes point it elsewhere, at a fake.
+    pub webflow_api_url: String,
     /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
     pub ipinfo_token: Option<String>,
 }
@@ -152,6 +154,7 @@ impl Config {
             graph_api_url,
             crm_api_url: env::var("CRM_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             payments_api_url: env::var("PAYMENTS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            webflow_api_url: env::var("WEBFLOW_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         };
         cfg.check_app_secret()?;
@@ -216,6 +219,7 @@ mod tests {
             graph_api_url: String::new(),
             crm_api_url: String::new(),
             payments_api_url: String::new(),
+            webflow_api_url: String::new(),
             ipinfo_token: None,
         }
     }

@@ -1,7 +1,7 @@
 //! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy, Nostr, Discord,
 //! Telegram, Facebook Pages, Instagram and LinkedIn, reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles
-//! for DEV, and comments and articles for Hashnode, that a social run drafted or the user wrote, which crate::social posts once
-//! approved, and connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see
+//! for DEV and the company's own blogs, and comments and articles for Hashnode, that a social run drafted or the user wrote,
+//! which crate::social posts once approved, and connecting the accounts they go out from. Blogs connect in routes::blogs. LinkedIn goes out through the project's Unipile connection, see
 //! routes::linkedin, Tumblr connects by signing in, see routes::tumblr, Facebook and Instagram too, see routes::meta, and the
 //! Discord and Telegram bots in routes::bots.
 
@@ -17,6 +17,7 @@ use super::{util_input, util_scope};
 use crate::agent::x::{self, Cookies};
 use crate::agent::{self, kind};
 use crate::auth::Auth;
+use crate::blog;
 use crate::bluesky::{self, Bluesky};
 use crate::crypto;
 use crate::dev::{self, Dev};
@@ -24,7 +25,7 @@ use crate::discourse::{self, Discourse};
 use crate::error::{AppError, AppResult};
 use crate::hashnode::{self, Hashnode};
 use crate::lemmy::{self, Lemmy};
-use crate::models::{DiscourseForum, ProjectSettings, SocialChannel, SocialPost};
+use crate::models::{Blog, DiscourseForum, ProjectSettings, SocialChannel, SocialPost};
 use crate::mastodon::{self, Mastodon};
 use crate::nostr;
 use crate::reddit::{self, Login, Reddit};
@@ -96,7 +97,7 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
     }
     let what = match (platform, reply) {
         ("stackexchange", _) => "Answers",
-        ("dev" | "hashnode", false) => "Articles",
+        ("dev" | "hashnode" | "blog", false) => "Articles",
         ("discourse", false) => "Topics",
         ("nostr", _) => "Notes",
         ("discord" | "telegram", _) => "Messages",
@@ -127,13 +128,17 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
     if platform == "discourse" && !reply && !(discourse::MIN_TITLE_CHARS..=discourse::TITLE_CHARS).contains(&title.trim().chars().count()) {
         return Err(AppError::BadRequest(format!("Discourse titles are {} to {} characters", discourse::MIN_TITLE_CHARS, discourse::TITLE_CHARS)));
     }
-    if let ("dev", _) | ("hashnode", false) = (platform, reply) {
-        let max = if platform == "dev" { dev::TITLE_CHARS } else { hashnode::TITLE_CHARS };
+    if let ("dev" | "blog", _) | ("hashnode", false) = (platform, reply) {
+        let (max, needs, titles) = match platform {
+            "dev" => (dev::TITLE_CHARS, "A DEV article needs a title", "DEV titles"),
+            "hashnode" => (hashnode::TITLE_CHARS, "A Hashnode article needs a title", "Hashnode titles"),
+            _ => (blog::TITLE_CHARS, "An article needs a title", "Blog titles"),
+        };
         if title.trim().is_empty() {
-            return Err(AppError::BadRequest(format!("A {} article needs a title", social::name(platform))));
+            return Err(AppError::BadRequest(needs.into()));
         }
         if title.chars().count() > max {
-            return Err(AppError::BadRequest(format!("{} titles are at most {max} characters", social::name(platform))));
+            return Err(AppError::BadRequest(format!("{titles} are at most {max} characters")));
         }
     }
     if title.chars().count() > 300 {
@@ -158,15 +163,16 @@ fn has_channel(platform: &str) -> bool {
     matches!(platform, "discord" | "telegram" | "facebook" | "instagram")
 }
 
-/// Reddit, Lemmy and Discourse original posts and DEV and Hashnode articles have a title.
+/// Reddit, Lemmy and Discourse original posts and DEV, Hashnode and blog articles have a title.
 fn titled(platform: &str, reply: bool) -> bool {
-    matches!(platform, "reddit" | "dev" | "lemmy" | "discourse" | "hashnode") && !reply
+    matches!(platform, "reddit" | "dev" | "lemmy" | "discourse" | "hashnode" | "blog") && !reply
 }
 
-/// DEV and Hashnode articles and Tumblr posts have tags, kept as each platform takes them.
+/// DEV, Hashnode and blog articles and Tumblr posts have tags, kept as each platform takes them.
 fn tags(platform: &str, reply: bool, raw: &[String]) -> Option<Vec<String>> {
     match (platform, reply) {
         ("dev", _) => Some(dev::tags(raw)),
+        ("blog", _) => Some(blog::tags(raw)),
         ("hashnode", false) => Some(hashnode::tags(raw)),
         ("tumblr", false) => Some(tumblr::tags(raw)),
         _ => None,
@@ -213,6 +219,27 @@ async fn require_forum(state: &AppState, project_id: Uuid, forum_id: Option<Uuid
         Some(f) if !reply && f.category_id.is_none() => Err(AppError::BadRequest(format!("Pick a category for new topics on {} first", f.url))),
         Some(_) => Ok(()),
     }
+}
+
+/// A blog article goes to one of the project's blogs, and one that's approved to a blog that isn't paused.
+async fn require_blog(state: &AppState, project_id: Uuid, blog_id: Option<Uuid>, approving: bool) -> AppResult<()> {
+    let blog: Option<Blog> = match blog_id {
+        Some(id) => sqlx::query_as("select * from blogs where id = $1 and project_id = $2").bind(id).bind(project_id).fetch_optional(&state.db).await?,
+        None => None,
+    };
+    match blog {
+        None => Err(AppError::BadRequest("Connect the blog on the integrations page first".into())),
+        Some(b) if b.paused && approving => Err(AppError::BadRequest(format!("{} turned Splee down. Connect it again on the integrations page first", blog::name(&b.kind)))),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Ghost turns down longer excerpts.
+fn check_excerpt(excerpt: &str) -> AppResult<()> {
+    if excerpt.chars().count() > blog::EXCERPT_CHARS {
+        return Err(AppError::BadRequest(format!("Excerpts are at most {} characters", blog::EXCERPT_CHARS)));
+    }
+    Ok(())
 }
 
 /// A Discord or Telegram post goes to a picked channel the bot can post in, and a Facebook or Instagram one to a picked Page or
@@ -277,6 +304,10 @@ struct CreateBody {
     /// Instagram only, required.
     #[serde(default)]
     image_url: String,
+    /// Blog articles only: the blog, and an optional excerpt.
+    blog_id: Option<Uuid>,
+    #[serde(default)]
+    excerpt: String,
     /// "draft" (the default) or "approved".
     status: Option<String>,
 }
@@ -294,20 +325,26 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     let channel_id = if has_channel(&b.platform) { b.channel_id } else { None };
     let link = if b.platform == "facebook" { b.link.trim() } else { "" };
     let image_url = if b.platform == "instagram" { b.image_url.trim() } else { "" };
+    let (blog_id, excerpt) = if b.platform == "blog" { (b.blog_id, b.excerpt.trim()) } else { (None, "") };
     check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
     check_media(&b.platform, false, link, image_url)?;
+    check_excerpt(excerpt)?;
     if b.platform == "discourse" {
         require_forum(&state, id, forum_id, false).await?;
+    }
+    if b.platform == "blog" {
+        require_blog(&state, id, blog_id, status == "approved").await?;
     }
     if has_channel(&b.platform) {
         require_channel(&state, id, &b.platform, channel_id, false).await?;
     }
-    if status == "approved" {
+    // require_blog checked a blog's article already.
+    if status == "approved" && b.platform != "blog" {
         require_account(&state, id, &b.platform, false).await?;
     }
     let post = sqlx::query_as::<_, SocialPost>(
-        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id, channel_id, link, image_url)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning *",
+        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id, channel_id, link, image_url, blog_id, excerpt)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning *",
     )
     .bind(id)
     .bind(&b.platform)
@@ -320,6 +357,8 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(channel_id)
     .bind(link)
     .bind(image_url)
+    .bind(blog_id)
+    .bind(excerpt)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(post))
@@ -333,6 +372,7 @@ struct UpdateBody {
     tags: Option<Vec<String>>,
     link: Option<String>,
     image_url: Option<String>,
+    excerpt: Option<String>,
     status: Option<String>,
 }
 
@@ -361,6 +401,11 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
         ("instagram", Some(l), false) => l.trim().to_string(),
         _ => post.image_url,
     };
+    let excerpt = match (post.platform.as_str(), b.excerpt) {
+        ("blog", Some(e)) => e.trim().to_string(),
+        _ => post.excerpt,
+    };
+    check_excerpt(&excerpt)?;
     if status == "approved" {
         check(&post.platform, reply, &subreddit, &title, &body, mastodon_chars(&state, post.project_id).await?)?;
         check_media(&post.platform, reply, &link, &image_url)?;
@@ -370,10 +415,14 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
         if has_channel(&post.platform) {
             require_channel(&state, post.project_id, &post.platform, post.channel_id, reply).await?;
         }
-        require_account(&state, post.project_id, &post.platform, reply).await?;
+        if post.platform == "blog" {
+            require_blog(&state, post.project_id, post.blog_id, true).await?;
+        } else {
+            require_account(&state, post.project_id, &post.platform, reply).await?;
+        }
     }
     let updated = sqlx::query_as::<_, SocialPost>(
-        "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6, link = $7, image_url = $8,
+        "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6, link = $7, image_url = $8, excerpt = $9,
            error = case when $6 = status then error end, updated_at = now(),
            container_id = case when body = $2 and image_url = $8 then container_id else '' end
          where id = $1 and status not in ('posting', 'posted') returning *",
@@ -386,6 +435,7 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(&status)
     .bind(link)
     .bind(image_url)
+    .bind(excerpt)
     .fetch_optional(&state.db)
     .await?
     // The poster took it in the meantime.
@@ -407,7 +457,7 @@ async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
         return Err(AppError::BadRequest(
             "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, Hashnode, Discord, \
-             Telegram, Facebook, Instagram or LinkedIn sending on the integrations page first"
+             Telegram, Facebook, Instagram, your blog or LinkedIn sending on the integrations page first"
                 .into(),
         ));
     }

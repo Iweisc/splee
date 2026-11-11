@@ -622,6 +622,50 @@ export interface DiscourseForum {
   created_at: Ts;
 }
 
+/** One of the company's own blogs, which approved articles go out on. Its secret is write-only, through POST /projects/:id/blogs. */
+export interface Blog {
+  id: UUID;
+  project_id: UUID;
+  kind: "wordpress" | "ghost" | "webflow";
+  /** The WordPress site, Ghost's admin address, or the Webflow site's public address. */
+  url: string;
+  /** The site's title. */
+  name: string;
+  /** WordPress only: who the application password belongs to. */
+  username: string;
+  account: string;
+  /** Webflow only: the site, the CMS collection articles go in, and the collection's field for each part. */
+  site_id: string;
+  collection_id: string;
+  collection_name: string;
+  collection_slug: string;
+  title_field: string;
+  body_field: string;
+  tags_field: string;
+  excerpt_field: string;
+  /** False saves articles as drafts on the blog. */
+  publish: boolean;
+  weekly_cap: number;
+  /** The blog turned the credentials down, and nothing goes out until it's connected again. */
+  paused: boolean;
+  error: string | null;
+  failed_at: Ts | null;
+  created_at: Ts;
+}
+
+/** What POST /projects/:id/blogs/test read. Webflow lists the token's sites with their collections and fields instead. */
+export interface BlogTest {
+  name: string;
+  user: string;
+  url: string;
+  sites: {
+    id: string;
+    name: string;
+    url: string;
+    collections: { id: string; name: string; slug: string; fields: { slug: string; name: string; type: string; required: boolean }[] }[];
+  }[];
+}
+
 export interface SavedReply {
   id: UUID;
   project_id: UUID;
@@ -1626,16 +1670,17 @@ export interface SocialPost {
     | "discord"
     | "telegram"
     | "facebook"
-    | "instagram";
+    | "instagram"
+    | "blog";
   /** The link of the post or comment it answers, null for an original post. On Tumblr it's reblogged with the reply as its comment. */
   in_reply_to: string | null;
   /** The text it answers. */
   context: string;
   /** Where a Reddit post goes, or the subreddit of the thread it answers. The same for a Lemmy community, as name@instance. */
   subreddit: string;
-  /** Reddit, Lemmy and Discourse posts and DEV and Hashnode articles only. */
+  /** Reddit, Lemmy and Discourse posts and DEV, Hashnode and blog articles only. */
   title: string;
-  /** DEV articles, at most 4, Hashnode articles, at most 5, and Tumblr posts, at most 10. */
+  /** DEV articles, at most 4, Hashnode and blog articles, at most 5, and Tumblr posts, at most 10. */
   tags: string[];
   body: string;
   /** Why the agent picked the thread. */
@@ -1656,6 +1701,11 @@ export interface SocialPost {
   link: string;
   /** An Instagram post's picture. */
   image_url: string;
+  /** Blog articles only: the blog it goes to, null once that blog is removed, and its excerpt. */
+  blog_id: UUID | null;
+  excerpt: string;
+  /** The article went in as a draft on the blog, for the user to publish there. */
+  saved_as_draft: boolean;
 }
 
 /** A Discord text channel or a Telegram group or channel the project's bot can see, or a Facebook Page or Instagram account the
