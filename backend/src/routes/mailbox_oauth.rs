@@ -196,8 +196,8 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     sqlx::query_scalar(
         "insert into mailboxes (org_id, email, provider, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc, imap_host, imap_port,
            imap_username, imap_password_enc, oauth_refresh_token_enc, oauth_access_token_enc, oauth_expires_at, ramp_up, warmup, warmup_daily_cap,
-           total_daily_limit, hold_until_warm)
-         values ($1, $2, $3, $4, $5, $6, $2, '', $7, $8, $2, '', $9, $10, $11, true, true, 40, 80, true)
+           total_daily_limit, hold_until_warm, owner_id)
+         values ($1, $2, $3, $4, $5, $6, $2, '', $7, $8, $2, '', $9, $10, $11, true, true, 40, 80, true, $12)
          on conflict (org_id, email) do update set
            provider = excluded.provider, smtp_host = excluded.smtp_host, smtp_port = excluded.smtp_port, smtp_security = excluded.smtp_security,
            smtp_username = excluded.smtp_username, smtp_password_enc = '', imap_username = excluded.imap_username, imap_password_enc = '',
@@ -207,6 +207,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
            imap_uid_validity = case when mailboxes.imap_host <> excluded.imap_host then null else mailboxes.imap_uid_validity end,
            oauth_refresh_token_enc = excluded.oauth_refresh_token_enc, oauth_access_token_enc = excluded.oauth_access_token_enc,
            oauth_expires_at = excluded.oauth_expires_at, needs_reconnect = false, recheck_at = null,
+           owner_id = coalesce(mailboxes.owner_id, excluded.owner_id),
            status = case when mailboxes.status = 'error' then 'active' else mailboxes.status end,
            last_error = case when mailboxes.status = 'paused' then mailboxes.last_error else '' end
          returning id",
@@ -222,6 +223,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     .bind(crypto::encrypt(secret, refresh))
     .bind(crypto::encrypt(secret, &tokens.access_token))
     .bind(tokens.expires_at())
+    .bind(auth.user_id)
     .fetch_one(&state.db)
     .await
     .map_err(|e| internal(&e))

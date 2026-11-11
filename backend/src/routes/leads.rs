@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,6 +17,7 @@ use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::hiring;
 use crate::models::{Company, EmailMessage, Lead, TextMessage};
+use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
 use crate::waterfall;
 
@@ -29,9 +30,11 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/leads/move", post(move_leads))
         .route("/projects/{id}/leads/delete", post(delete_leads))
         .route("/projects/{id}/leads/status", post(set_status))
+        .route("/projects/{id}/leads/assign", post(assign_leads))
         .route("/projects/{id}/leads/find-emails", get(email_progress).post(find_emails))
         .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
+        .route("/leads/{id}/owner", put(set_owner))
 }
 
 #[derive(Deserialize)]
@@ -44,6 +47,8 @@ pub struct ListQuery {
     pub min_score: Option<i16>,
     /// "score" puts the highest scores first, "newest" (leads' default) the newest.
     pub sort: Option<String>,
+    /// Leads only: mine, unassigned or a member's id. See ownership::OwnerFilter.
+    pub owner: Option<String>,
 }
 
 impl ListQuery {
@@ -155,6 +160,9 @@ pub struct LeadRow {
     pub last_email_status: Option<String>,
     /// The watched roles that open posts at the lead's company match, newest first, each once.
     pub hiring: Vec<String>,
+    /// The owner's name, or their email when they have none.
+    pub owner_name: Option<String>,
+    pub owner_email: Option<String>,
 }
 
 /// Select list for LeadRow. Callers append `where` on `l` (leads) and `s` (segments).
@@ -162,20 +170,28 @@ pub const LEAD_ROW_SELECT: &str = "select l.*, s.name as segment_name,
        (select e.status from email_messages e where e.lead_id = l.id and e.direction = 'outbound'
          order by e.created_at desc limit 1) as last_email_status,
        array(select j.role from job_openings j where j.project_id = l.project_id and j.domain = l.company_domain and j.closed_at is null
-             group by j.role order by max(j.first_seen) desc, j.role) as hiring
-     from leads l left join segments s on s.id = l.segment_id";
+             group by j.role order by max(j.first_seen) desc, j.role) as hiring,
+       coalesce(nullif(o.name, ''), o.email::text) as owner_name, o.email::text as owner_email
+     from leads l left join segments s on s.id = l.segment_id left join users o on o.id = l.owner_id";
 
 pub async fn lead_rows(db: &PgPool, ids: &[Uuid]) -> AppResult<Vec<LeadRow>> {
     Ok(sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} where l.id = any($1)")).bind(ids).fetch_all(db).await?)
 }
 
-const LEAD_FILTER: &str = "where l.project_id = $1
-       and ($2::uuid is null or l.segment_id = $2)
-       and ($3::text is null or l.status = $3)
-       and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4
-            or l.company_name ilike $4 or l.title ilike $4)
-       and (not $5 or l.email is null)
-       and ($6::int2 is null or l.score >= $6)";
+/// The Leads page's filters as $1 to $8, the last two an OwnerFilter.
+fn lead_filter() -> String {
+    format!(
+        "where l.project_id = $1
+           and ($2::uuid is null or l.segment_id = $2)
+           and ($3::text is null or l.status = $3)
+           and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4
+                or l.company_name ilike $4 or l.title ilike $4)
+           and (not $5 or l.email is null)
+           and ($6::int2 is null or l.score >= $6)
+           and {}",
+        ownership::sql("l", 7, 8)
+    )
+}
 
 async fn list_leads(
     State(state): State<AppState>,
@@ -185,34 +201,40 @@ async fn list_leads(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<LeadRow>>> {
     auth.project(&state.db, id).await?;
-    Ok(Json(page_of(&state.db, id, q, &page).await?))
+    Ok(Json(page_of(&state.db, id, Some(auth.user_id), q, &page).await?))
 }
 
 const NEWEST: &str = "{a}.created_at desc, {a}.id desc";
 
-/// A page of a project's leads, newest first unless sorted. The caller checks the project belongs to its organization.
-pub async fn page_of(db: &PgPool, project_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<LeadRow>> {
+/// A page of a project's leads, newest first unless sorted. The caller checks the project belongs to its organization. `me` is
+/// who "mine" means, None for an API key.
+pub async fn page_of(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<LeadRow>> {
     let like = util_input::like_pattern(q.q.as_deref());
     let min_score = q.min_score()?;
     let order = q.order("l", NEWEST)?;
+    let owner = OwnerFilter::parse(q.owner.as_deref(), me)?;
     let status = q.status.filter(|s| !s.is_empty());
     let missing = q.email.as_deref() == Some("missing");
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {LEAD_FILTER}"))
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {}", lead_filter()))
         .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
         .bind(missing)
         .bind(min_score)
+        .bind(owner.mode())
+        .bind(owner.user())
         .fetch_one(db)
         .await?;
-    let items = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by {order} limit $7 offset $8"))
+    let items = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {} order by {order} limit $9 offset $10", lead_filter()))
         .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
         .bind(missing)
         .bind(min_score)
+        .bind(owner.mode())
+        .bind(owner.user())
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(db)
@@ -226,21 +248,24 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
     let like = util_input::like_pattern(q.q.as_deref());
     let min_score = q.min_score()?;
     let order = q.order("l", NEWEST)?;
+    let owner = OwnerFilter::parse(q.owner.as_deref(), Some(auth.user_id))?;
     let status = q.status.filter(|s| !s.is_empty());
-    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {LEAD_FILTER} order by {order}"))
+    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {} order by {order}", lead_filter()))
         .bind(id)
         .bind(q.segment_id)
         .bind(&status)
         .bind(&like)
         .bind(q.email.as_deref() == Some("missing"))
         .bind(min_score)
+        .bind(owner.mode())
+        .bind(owner.user())
         .fetch_all(&state.db)
         .await?;
 
     let header = [
         "full_name", "first_name", "last_name", "title", "email", "email_status", "phone", "company_name", "company_domain",
         "linkedin_url", "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
-        "score", "score_fit", "score_intent", "score_reasons",
+        "score", "score_fit", "score_intent", "score_reasons", "owner_email",
     ];
     let records = rows.iter().map(|r| {
         let l = &r.lead;
@@ -268,6 +293,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
             l.score_fit.to_string(),
             l.score_intent.to_string(),
             l.score_reasons.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("; "),
+            r.owner_email.clone().unwrap_or_default(),
         ]
     });
     let slug: String = project.domain.as_deref().unwrap_or(&project.name).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect();
@@ -287,6 +313,9 @@ pub struct LeadDetail {
     pub hiring: Vec<hiring::Post>,
     /// Their open deal, or else the one that closed last.
     pub deal: Option<crate::deals::Deal>,
+    /// The owner's name, or their email when they have none.
+    pub owner_name: Option<String>,
+    pub owner_email: Option<String>,
 }
 
 /// Lead with its company and every email in both directions, oldest first, scored again first so the score shown is
@@ -320,7 +349,17 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
         None => vec![],
     };
     let deal = crate::deals::for_lead(db, lead.id).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring, deal })
+    let (owner_name, owner_email) = owner_of(db, &lead).await?;
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring, deal, owner_name, owner_email })
+}
+
+/// The lead owner's name and email, the name falling back to the email like everywhere else.
+async fn owner_of(db: &PgPool, lead: &Lead) -> sqlx::Result<(Option<String>, Option<String>)> {
+    let found: Option<(String, String)> = sqlx::query_as("select coalesce(nullif(name, ''), email::text), email::text from users where id = $1")
+        .bind(lead.owner_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(found.map_or((None, None), |(name, email)| (Some(name), Some(email))))
 }
 
 async fn get_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {
@@ -448,6 +487,20 @@ async fn remove_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<U
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+struct OwnerBody {
+    /// A team member's id, or null for nobody.
+    owner_id: Option<Uuid>,
+}
+
+/// Anyone on the team can give a lead to anyone on the team, or take it back.
+async fn set_owner(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<OwnerBody>) -> AppResult<Json<LeadDetail>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    ownership::assign(&state.db, auth.org_id, &[lead.id], body.owner_id).await?;
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    Ok(Json(detail(&state.db, lead).await?))
+}
+
 /// Leads picked on the Leads page. Ids from another project are ignored.
 #[derive(Deserialize)]
 struct PickedLeads {
@@ -456,6 +509,8 @@ struct PickedLeads {
     segment_id: Option<Uuid>,
     /// For a status change, the new status.
     status: Option<String>,
+    /// For an assignment, the new owner, or null for nobody.
+    owner_id: Option<Uuid>,
 }
 
 /// A page of the Leads table holds at most 100, so a bigger pick isn't from the page.
@@ -512,6 +567,17 @@ async fn set_status(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
     Ok(Json(json!({ "changed": changed.len() })))
 }
 
+async fn assign_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
+    picked(&state, &auth, id, &body).await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar("select id from leads where project_id = $1 and id = any($2)")
+        .bind(id)
+        .bind(&body.ids)
+        .fetch_all(&state.db)
+        .await?;
+    let changed = ownership::assign(&state.db, auth.org_id, &ids, body.owner_id).await?;
+    Ok(Json(json!({ "changed": changed })))
+}
+
 async fn delete_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<PickedLeads>) -> AppResult<Json<Value>> {
     picked(&state, &auth, id, &body).await?;
     let leads: Vec<Lead> = sqlx::query_as("select * from leads where project_id = $1 and id = any($2)")
@@ -550,13 +616,16 @@ async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<U
     }
     let ids: Vec<Uuid> = if body.all {
         let min_score = body.filter.min_score()?;
-        sqlx::query_scalar(&format!("select l.id from leads l {LEAD_FILTER}"))
+        let owner = OwnerFilter::parse(body.filter.owner.as_deref(), Some(auth.user_id))?;
+        sqlx::query_scalar(&format!("select l.id from leads l {}", lead_filter()))
             .bind(id)
             .bind(body.filter.segment_id)
             .bind(body.filter.status.filter(|s| !s.is_empty()))
             .bind(util_input::like_pattern(body.filter.q.as_deref()))
             .bind(true)
             .bind(min_score)
+            .bind(owner.mode())
+            .bind(owner.user())
             .fetch_all(&state.db)
             .await?
     } else {

@@ -210,7 +210,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
             </Field>
             <Field label="Owner">
               <Select value={values.owner_id} onChange={(e) => set({ owner_id: e.target.value })}>
-                <option value="">No owner</option>
+                <option value="">Unassigned</option>
                 {members?.map((m) => (
                   <option key={m.user_id} value={m.user_id}>
                     {m.name || m.email}

@@ -42,8 +42,8 @@ const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email 
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
 so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule. Hot replies open \
-deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. get_analytics says which campaigns, \
-mailboxes, follow-ups and send times get replies.";
+deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on \
+the team. get_analytics says which campaigns, mailboxes, follow-ups and send times get replies.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -228,7 +228,7 @@ const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Cal
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"];
 const LEAD_FIELDS: &[&str] = &[
     "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
-    "score_fit", "score_intent", "score_reasons",
+    "score_fit", "score_intent", "score_reasons", "owner_id", "owner_name", "owner_email",
 ];
 const COMPANY_FIELDS: &[&str] =
     &["id", "name", "domain", "segment_id", "country_code", "employees", "status", "score", "score_fit", "score_intent", "score_reasons", "hiring", "tech"];
@@ -291,6 +291,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "create_deal" => async { Ok(pick(value(v1::create_deal(st(), auth, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
         "move_deal" => async { Ok(pick(value(v1::move_deal(st(), auth, id(a, "deal_id")?, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
+        "assign_lead" => async {
+            let detail = value(v1::assign_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?;
+            Ok(json!({ "id": detail["id"], "full_name": detail["full_name"], "owner_id": detail["owner_id"], "owner_email": detail["owner_email"] }))
+        }
+        .await,
         _ => return None,
     })
 }
@@ -477,6 +482,7 @@ fn tools() -> Vec<Value> {
                 "q": { "type": "string", "description": "Optional. Matches name, email, company or title" },
                 "min_score": score_prop(),
                 "sort": sort_prop(),
+                "owner": owner_prop(),
             })),
             &["project_id"],
             read.clone(),
@@ -533,6 +539,7 @@ fn tools() -> Vec<Value> {
                 "project_id": id_prop("Optional. Only this project"),
                 "filter": { "type": "string", "enum": ["all", "needs_reply", "hot", "auto_replied", "other"], "description": "all by default" },
                 "q": { "type": "string", "description": "Optional. Matches the lead's name, email or company" },
+                "owner": owner_prop(),
             })),
             &[],
             read.clone(),
@@ -577,9 +584,25 @@ fn tools() -> Vec<Value> {
                 "lost_reason": { "type": "string", "description": "Optional. Why it was lost" },
             }),
             &["deal_id", "stage"],
+            adds.clone(),
+        ),
+        tool(
+            "assign_lead",
+            "Assign lead",
+            "Gives a lead to someone on the team, who then gets its hot-reply alerts, or takes it back with owner null. The project's \
+             assignment rule never moves a lead that has an owner.",
+            json!({
+                "lead_id": id_prop("A lead id from list_leads or list_replies"),
+                "owner": { "type": ["string", "null"], "description": "A team member's email or user id, or null for nobody" },
+            }),
+            &["lead_id", "owner"],
             adds,
         ),
     ]
+}
+
+fn owner_prop() -> Value {
+    json!({ "type": "string", "description": "Optional. Only leads of this team member, by email or user id, or \"unassigned\"" })
 }
 
 #[cfg(test)]
@@ -709,7 +732,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
-                     "create_deal", "move_deal", "get_analytics"] {
+                     "create_deal", "move_deal", "get_analytics", "assign_lead"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -793,6 +816,60 @@ mod tests {
         }
         let (is_error, _) = server.call(KEY, "list_leads", json!({ "project_id": other_project, "sort": "score" })).await;
         assert!(is_error);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn leads_are_assigned_and_filtered_by_owner_for_the_keys_organization(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        let org_of = |p: Uuid| sqlx::query_scalar::<_, Uuid>("select org_id from projects where id = $1").bind(p).fetch_one(&db);
+        let (acme, other) = (org_of(project).await.unwrap(), org_of(other_project).await.unwrap());
+        let mut people = vec![];
+        for (org, email) in [(acme, "ana@acme.test"), (acme, "ben@acme.test"), (other, "eve@other.test")] {
+            let id: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ($1, 'x') returning id").bind(email).fetch_one(&db).await.unwrap();
+            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(org).bind(id).execute(&db).await.unwrap();
+            people.push(id);
+        }
+        let lead = |project: Uuid, name: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, full_name) values ($1, $2) returning id").bind(project).bind(name).fetch_one(&db)
+        };
+        let (cy, dee, theirs) = (lead(project, "Cy").await.unwrap(), lead(project, "Dee").await.unwrap(), lead(other_project, "Their Lead").await.unwrap());
+        let server = Server::start(db.clone()).await;
+
+        let (is_error, text) = server.call(KEY, "assign_lead", json!({ "lead_id": cy, "owner": "Ana@acme.test" })).await;
+        assert!(!is_error, "{text}");
+        let assigned: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((assigned["owner_id"].clone(), assigned["owner_email"].clone()), (json!(people[0]), json!("ana@acme.test")));
+        let (is_error, text) = server.call(KEY, "assign_lead", json!({ "lead_id": dee, "owner": "eve@other.test" })).await;
+        assert!(is_error && text.contains("Nobody on your team"), "{text}");
+        let (is_error, _) = server.call(KEY, "assign_lead", json!({ "lead_id": dee, "owner": people[2] })).await;
+        assert!(is_error, "Eve's id is no better than her email");
+        let (is_error, _) = server.call(KEY, "assign_lead", json!({ "lead_id": theirs, "owner": "ana@acme.test" })).await;
+        assert!(is_error, "the other organization's lead");
+
+        let names = |text: &str| -> Vec<String> {
+            let page: Value = serde_json::from_str(text).unwrap();
+            page["items"].as_array().unwrap().iter().map(|l| l["full_name"].as_str().unwrap().to_string()).collect()
+        };
+        let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "owner": "ana@acme.test" })).await;
+        assert_eq!(names(&text), ["Cy"]);
+        assert!(text.contains("\"owner_email\":\"ana@acme.test\""), "{text}");
+        let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "owner": "unassigned" })).await;
+        assert_eq!(names(&text), ["Dee"]);
+        let (is_error, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "owner": "mine" })).await;
+        assert!(is_error && text.contains("API key"), "{text}");
+
+        // The REST API: assign, take back with null, and filter by id.
+        let api = server.url.replace("/mcp", "/v1");
+        let res = server.client.post(format!("{api}/leads/{dee}/assign")).bearer_auth(KEY).json(&json!({ "owner": people[1] })).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.json::<Value>().await.unwrap()["owner_email"], "ben@acme.test");
+        let page: Value = server.client.get(format!("{api}/projects/{project}/leads?owner={}", people[1])).bearer_auth(KEY).send().await.unwrap().json().await.unwrap();
+        assert_eq!(page["items"][0]["full_name"], "Dee");
+        let res = server.client.post(format!("{api}/leads/{cy}/assign")).bearer_auth(KEY).json(&json!({ "owner": null })).send().await.unwrap();
+        assert_eq!(res.json::<Value>().await.unwrap()["owner_id"], Value::Null);
+        let res = server.client.post(format!("{api}/leads/{theirs}/assign")).bearer_auth(KEY).json(&json!({ "owner": null })).send().await.unwrap();
+        assert_eq!(res.status(), 404);
     }
 
     #[sqlx::test]

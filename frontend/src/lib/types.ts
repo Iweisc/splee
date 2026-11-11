@@ -32,7 +32,14 @@ export interface Me {
   tumblr_sign_in: boolean;
   /** The CRMs that sign in which the server has an app for, so the integrations page offers them. */
   crm_sign_in: SignInCrm[];
+  /** Round robin skips you while it's on. */
+  away: boolean;
+  /** The owner filter each page was left on. */
+  owner_filters: Partial<Record<OwnerView, OwnerFilter>>;
 }
+
+export type OwnerView = "inbox" | "leads" | "pipeline";
+export type OwnerFilter = "everyone" | "mine" | "unassigned";
 
 export type SignInProvider = "google" | "microsoft";
 
@@ -41,6 +48,7 @@ export interface Member {
   email: string;
   name: string;
   role: Role;
+  away: boolean;
   created_at: Ts;
 }
 
@@ -320,7 +328,13 @@ export interface ProjectSettings extends CrmStatus {
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */
   daily_text_limit: number;
+  /** Who gets a lead that has no owner when it first replies, books or is captured by the chat. */
+  assign_rule: AssignRule;
+  /** Round robin's members, in the order it goes through them. */
+  assign_members: UUID[];
 }
+
+export type AssignRule = "off" | "round_robin" | "mailbox";
 
 /** GET /projects/:id/autopilot. Spend and leads count the current calendar month (UTC). */
 export interface AutopilotStatus {
@@ -815,6 +829,8 @@ export interface Lead extends Scored {
   email_search_lookups: number;
   email_search_credits: number | null;
   email_searched_at: Ts | null;
+  /** The team member who works the lead. */
+  owner_id: UUID | null;
 }
 
 export type EmailSearch = "" | "queued" | "found" | "guessed" | "catch_all" | "not_found" | "suppressed" | "duplicate" | "failed";
@@ -831,6 +847,9 @@ export interface LeadRow extends Lead {
   last_email_status: string | null;
   /** The watched roles that open posts at their company match, newest first. */
   hiring: string[];
+  /** The owner's name, or their email when they have none. */
+  owner_name: string | null;
+  owner_email: string | null;
 }
 
 export interface LeadDetail extends Lead {
@@ -842,6 +861,8 @@ export interface LeadDetail extends Lead {
   hiring: JobPost[];
   /** Their open deal, or else the one that closed last. */
   deal: Deal | null;
+  owner_name: string | null;
+  owner_email: string | null;
 }
 
 export interface CompanyRow extends Company {
@@ -1190,6 +1211,8 @@ export interface Mailbox {
   id: UUID;
   org_id: UUID;
   email: string;
+  /** Whose mailbox it is. The "by mailbox" assignment rule gives them the leads it emailed. */
+  owner_id: UUID | null;
   from_name: string;
   /** Used instead of the project's in the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
   signature: string;
@@ -1417,6 +1440,8 @@ export interface MailboxStats {
 export interface MailboxInput {
   email: string;
   from_name: string;
+  /** Left out on create, the mailbox is whoever connects it. Null is nobody. */
+  owner_id?: string | null;
   /** Used instead of the project's in the emails Splee writes, when this mailbox sends them. Empty keeps the project's. */
   signature: string;
   booking_link: string;
@@ -1697,6 +1722,7 @@ export interface Deal {
   currency: string;
   /** YYYY-MM-DD. */
   close_date: string | null;
+  /** The lead's owner. Setting it on the deal assigns the lead. */
   owner_id: UUID | null;
   owner_name: string | null;
   notes: string;

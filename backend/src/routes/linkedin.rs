@@ -166,7 +166,8 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result
     sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
     sqlx::query(crate::twilio::STOP_TEXTS).bind(lead.id).bind(why).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(updated)
+    let owner = crate::ownership::claim(db, lead.id).await;
+    Ok(Lead { owner_id: updated.owner_id.or(owner), ..updated })
 }
 
 /// Unipile's posts for the project's LinkedIn account. The token in the URL picks the project, like a booking webhook.

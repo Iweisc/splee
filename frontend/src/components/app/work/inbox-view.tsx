@@ -16,6 +16,7 @@ import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
 import { LeadDeal } from "./deal-dialog";
 import { LeadNotes } from "./lead-modal";
+import { OwnerFilterSelect, OwnerMenu, useOwnerFilter } from "./owner-menu";
 import { ListKeysHint, useListKeys, useShortcut } from "./list-keys";
 import { SearchField } from "./search-field";
 import { ClassificationBadge, EmailStatusBadge, LeadStatusBadge } from "./status";
@@ -30,9 +31,11 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const [page, setPage] = useState(1);
   const [selectedLead, setSelectedLead] = useState<string | null>(initialLead ?? null);
   const query = useDebounced(q);
+  const [owner, setOwner] = useOwnerFilter("inbox");
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
-  const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, page, per_page: PER_PAGE })}`;
+  const ownerParam = owner === "everyone" ? "" : owner;
+  const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, owner: ownerParam, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
   useLastPageGuard(data?.total, page, setPage);
   // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
@@ -81,25 +84,36 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
             placeholder="Search name, email or company"
             label="Search replies"
           />
-          {!projectId && (
-            <Select
-              value={project}
-              onChange={(e) => {
-                setProject(e.target.value);
+          {/* Side by side across the org, where the project picker shares the row. Alone, the owner filter takes it. */}
+          <div className="flex gap-2 [&>*]:min-w-0 [&>*]:flex-1">
+            <OwnerFilterSelect
+              value={owner}
+              onChange={(o) => {
+                setOwner(o);
                 setPage(1);
                 setSelectedLead(null);
               }}
-              className="h-9"
-              aria-label="Project"
-            >
-              <option value="">All projects</option>
-              {projects?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || p.domain}
-                </option>
-              ))}
-            </Select>
-          )}
+            />
+            {!projectId && (
+              <Select
+                value={project}
+                onChange={(e) => {
+                  setProject(e.target.value);
+                  setPage(1);
+                  setSelectedLead(null);
+                }}
+                className="h-9"
+                aria-label="Project"
+              >
+                <option value="">All projects</option>
+                {projects?.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.domain}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {error ? (
@@ -109,9 +123,9 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           ) : data.items.length === 0 ? (
             <EmptyState
               icon={query ? <Search className="size-5" /> : <Inbox className="size-5" />}
-              title={query ? "No replies match your search" : filter === "all" ? "No replies yet" : "Nothing here"}
+              title={query ? "No replies match your search" : filter === "all" && owner === "everyone" ? "No replies yet" : "Nothing here"}
             >
-              {!query && filter === "all" && "Replies to your emails land here. Splee checks your mailboxes every minute."}
+              {!query && filter === "all" && owner === "everyone" && "Replies to your emails land here. Splee checks your mailboxes every minute."}
             </EmptyState>
           ) : (
             <ul ref={listRef}>
@@ -318,6 +332,21 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
               </p>
             )}
           </div>
+          <OwnerMenu
+            ownerId={lead.owner_id}
+            ownerName={lead.owner_name}
+            onPick={async (owner_id) => {
+              try {
+                await api(`/leads/${lead.id}/owner`, { method: "PUT", body: { owner_id } });
+                mutate();
+                refresh();
+              } catch (e) {
+                toastError(e);
+              }
+            }}
+            // A phone shows just the avatar, so the name beside it keeps its room. The button's label still says who.
+            className="max-w-36 max-sm:[&_[data-owner-name]]:hidden"
+          />
           {/* A bell button that opens a native menu: the select covers it unseen and resets after each pick. It sits beside the
               name, not with the status buttons, because one more button there took a row of its own on a phone. */}
           <label

@@ -4,15 +4,19 @@ import { useEffect, useRef, useState } from "react";
 import { Clock, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select } from "@/components/ui/form";
-import { Avatar, Card, Favicon, Modal } from "@/components/ui/misc";
+import { Card, Favicon, Modal } from "@/components/ui/misc";
 import type { Deal, DealStage } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { dealMoney, moneyList, sumByCurrency } from "./deal-dialog";
+import { OwnerMenu } from "./owner-menu";
 
 /** What a move carries besides the stage: the final value of a won deal, the reason for a lost one. */
 export type MoveExtras = { value?: number; lost_reason?: string };
 
 export type MoveRequest = (deal: Deal, stage: DealStage) => void;
+
+/** Gives the deal's lead to someone on the team, or nobody. */
+export type AssignRequest = (deal: Deal, ownerId: string | null) => void;
 
 const DAY = 86_400_000;
 
@@ -39,7 +43,7 @@ function StageHeading({ stage, deals, currency }: { stage: DealStage; deals: Dea
 }
 
 /** The company, the person and the deal's numbers. `action` is the card's handle: the drag grip or a stage picker. */
-function DealCardBody({ deal, onOpen, action }: { deal: Deal; onOpen: () => void; action?: React.ReactNode }) {
+function DealCardBody({ deal, onOpen, onAssign, action }: { deal: Deal; onOpen: () => void; onAssign: AssignRequest; action?: React.ReactNode }) {
   return (
     <>
       <div className="flex items-start gap-2">
@@ -60,7 +64,7 @@ function DealCardBody({ deal, onOpen, action }: { deal: Deal; onOpen: () => void
         <span className="ml-auto flex items-center gap-1 text-muted-foreground" title="Time in this stage">
           <Clock className="size-3" /> {daysIn(deal)}
         </span>
-        {deal.owner_name && <Avatar name={deal.owner_name} className="size-5 text-[9px]" />}
+        <OwnerMenu look="avatar" ownerId={deal.owner_id} ownerName={deal.owner_name} onPick={(id) => onAssign(deal, id)} />
       </div>
     </>
   );
@@ -76,12 +80,14 @@ export function PipelineBoard({
   currency,
   onMove,
   onOpen,
+  onAssign,
 }: {
   stages: DealStage[];
   deals: Deal[];
   currency: string;
   onMove: MoveRequest;
   onOpen: (deal: Deal) => void;
+  onAssign: AssignRequest;
 }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -195,6 +201,7 @@ export function PipelineBoard({
                     <DealCardBody
                       deal={deal}
                       onOpen={() => onOpen(deal)}
+                      onAssign={onAssign}
                       action={
                         <button
                           type="button"
@@ -238,12 +245,14 @@ export function PipelineList({
   currency,
   onMove,
   onOpen,
+  onAssign,
 }: {
   stages: DealStage[];
   deals: Deal[];
   currency: string;
   onMove: MoveRequest;
   onOpen: (deal: Deal) => void;
+  onAssign: AssignRequest;
 }) {
   return (
     <div className="flex flex-col gap-5">
@@ -261,7 +270,7 @@ export function PipelineList({
                 {inStage.map((deal) => (
                   <li key={deal.id}>
                     <Card className="rounded-xl p-3">
-                      <DealCardBody deal={deal} onOpen={() => onOpen(deal)} />
+                      <DealCardBody deal={deal} onOpen={() => onOpen(deal)} onAssign={onAssign} />
                       <Select
                         value={deal.stage_id}
                         aria-label={`Stage of ${deal.company_name || deal.lead_name}`}

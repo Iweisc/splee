@@ -103,6 +103,9 @@ struct MailboxBody {
     warmup_daily_cap: Option<i32>,
     total_daily_limit: Option<i32>,
     hold_until_warm: Option<bool>,
+    /// Whose mailbox it is, or a present null for nobody. A new one is whoever connects it, unless this says otherwise.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    owner_id: Option<Option<Uuid>>,
 }
 
 fn trimmed(value: &Option<String>) -> Option<&str> {
@@ -176,6 +179,8 @@ impl MailboxBody {
 
 async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<MailboxBody>) -> AppResult<Json<Mailbox>> {
     auth.require_admin()?;
+    let owner = body.owner_id.unwrap_or(Some(auth.user_id));
+    crate::ownership::check_member(&state.db, auth.org_id, owner).await?;
     let email = body.validate()?.ok_or_else(|| AppError::BadRequest("Email is required".into()))?;
     let dkim_selector = body.dkim_selector()?;
     let smtp_host = trimmed(&body.smtp_host).ok_or_else(|| AppError::BadRequest("SMTP host is required".into()))?;
@@ -195,10 +200,10 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
            imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link,
-           dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm)
+           dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
            $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''),
-           coalesce($19, ''), coalesce($20, true), coalesce($21, 40), coalesce($22, 80), coalesce($23, true))
+           coalesce($19, ''), coalesce($20, true), coalesce($21, 40), coalesce($22, 80), coalesce($23, true), $24)
          returning *",
     )
     .bind(auth.org_id)
@@ -224,6 +229,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.warmup_daily_cap)
     .bind(body.total_daily_limit)
     .bind(body.hold_until_warm)
+    .bind(owner)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -245,6 +251,9 @@ async fn update(
     let body = if mailbox.provider == "password" { body } else { body.without_server_settings() };
     let email = body.validate()?;
     let dkim_selector = body.dkim_selector()?;
+    if let Some(owner) = body.owner_id {
+        crate::ownership::check_member(&state.db, auth.org_id, owner).await?;
+    }
     let secret = &state.cfg.app_secret;
     let encrypt_new = |p: &Option<String>| p.as_deref().filter(|p| !p.is_empty()).map(|p| encrypt(secret, p));
     // Resuming a mailbox the Deliverability check held sends through the problems it has now. Only a new one holds it again.
@@ -285,7 +294,8 @@ async fn update(
            total_daily_limit = coalesce($22, total_daily_limit),
            hold_until_warm = coalesce($23, hold_until_warm),
            health_ack = coalesce($24, health_ack),
-           health_held_at = case when $14 = 'active' then null else health_held_at end
+           health_held_at = case when $14 = 'active' then null else health_held_at end,
+           owner_id = case when $25 then $26 else owner_id end
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -312,6 +322,8 @@ async fn update(
     .bind(body.total_daily_limit)
     .bind(body.hold_until_warm)
     .bind(resumed_through)
+    .bind(body.owner_id.is_some())
+    .bind(body.owner_id.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

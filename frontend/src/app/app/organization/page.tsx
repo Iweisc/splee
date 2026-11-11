@@ -152,6 +152,7 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
                   <p className="flex gap-1 font-medium">
                     <span className="truncate">{m.name || m.email}</span>
                     {self && <span className="shrink-0 font-normal text-muted-foreground">(you)</span>}
+                    {m.away && <Badge className="shrink-0">Away</Badge>}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     <Address email={m.email} /> · joined {timeAgo(m.created_at)}

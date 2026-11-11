@@ -78,6 +78,9 @@ struct SettingsBody {
     autopilot_auto_send: Option<bool>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
+    assign_rule: Option<String>,
+    /// Round robin's members, in the order it goes through them.
+    assign_members: Option<Vec<Uuid>>,
 }
 
 /// Up to 5 texts, each SMS or WhatsApp, 1 to 30 days after the one before.
@@ -157,6 +160,20 @@ async fn update_settings(
     if body.autopilot_lead_cap.is_some_and(|n| !(0..=100_000).contains(&n)) {
         return bad("Autopilot lead cap must be between 0 and 100,000 a month");
     }
+    if let Some(rule) = &body.assign_rule {
+        util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
+    }
+    let assign_members = match body.assign_members {
+        Some(mut members) => {
+            let mut seen = std::collections::HashSet::new();
+            members.retain(|m| seen.insert(*m));
+            for member in &members {
+                crate::ownership::check_member(&state.db, auth.org_id, Some(*member)).await?;
+            }
+            Some(members)
+        }
+        None => None,
+    };
     let bcc_email = match body.bcc_email.as_deref().map(str::trim) {
         Some("") => Some(String::new()),
         Some(raw) => match util_input::email(raw) {
@@ -197,7 +214,9 @@ async fn update_settings(
            autopilot_lead_cap = coalesce($25, autopilot_lead_cap),
            autopilot_auto_send = coalesce($26, autopilot_auto_send),
            text_steps = coalesce($27, text_steps),
-           daily_text_limit = coalesce($28, daily_text_limit)
+           daily_text_limit = coalesce($28, daily_text_limit),
+           assign_rule = coalesce($29, assign_rule),
+           assign_members = coalesce($30, assign_members)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -228,6 +247,8 @@ async fn update_settings(
     .bind(body.autopilot_auto_send)
     .bind(body.text_steps)
     .bind(body.daily_text_limit)
+    .bind(body.assign_rule)
+    .bind(assign_members)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

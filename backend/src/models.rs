@@ -315,6 +315,9 @@ pub struct ProjectSettings {
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.
     pub daily_text_limit: i32,
+    /// "off", "round_robin" among assign_members in their order, or "mailbox". See ownership.rs.
+    pub assign_rule: String,
+    pub assign_members: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -479,6 +482,9 @@ pub struct Lead {
     pub score_reasons: sqlx::types::Json<Vec<crate::score::Reason>>,
     #[sqlx(default)]
     pub scored_at: Option<Ts>,
+    /// The team member who works the lead, or None. See ownership.rs.
+    #[sqlx(default)]
+    pub owner_id: Option<Uuid>,
 }
 
 /// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.
@@ -569,6 +575,9 @@ pub struct Mailbox {
     pub needs_reconnect: bool,
     /// Set while the Deliverability check holds it (status paused, why in last_error). See crate::deliverability.
     pub health_held_at: Option<Ts>,
+    /// Whose mailbox it is. The "by mailbox" assignment rule gives them the leads it emailed.
+    #[sqlx(default)]
+    pub owner_id: Option<Uuid>,
 }
 
 /// A mailbox's booking page at /book/{slug}. See crate::booking.

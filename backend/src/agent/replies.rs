@@ -220,15 +220,7 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     crate::crm::sync(state, t.project.id, &t.lead, &note).await;
 
     let Some(org_id) = t.project.org_id else { return };
-    let recipients: Vec<String> = sqlx::query_scalar(
-        "select u.email::text from memberships m join users u on u.id = m.user_id
-         left join notification_prefs n on n.user_id = u.id
-         where m.org_id = $1 and coalesce(n.hot_lead_email, true)",
-    )
-    .bind(org_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let recipients = crate::ownership::hot_lead_recipients(&state.db, org_id, t.lead.owner_id).await.unwrap_or_default();
     let body = format!("{who} replied to your outreach for {}:\n\n{}\n\nWhy it's hot: {reason}\n\n{link}", t.project.name, t.inbound.body.trim());
     for to in recipients {
         if let Err(e) = mail::send_system_email(state, org_id, &to, &format!("Hot lead: {who}"), &body).await {

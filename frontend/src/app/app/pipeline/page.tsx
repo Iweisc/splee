@@ -6,7 +6,8 @@ import useSWR from "swr";
 import { PageBody, PageHeader, ScreenPage } from "@/components/app/page-header";
 import { amountsOf, DealDialog, moneyList } from "@/components/app/work/deal-dialog";
 import { type Kpi, KpiCard } from "@/components/app/work/kpi-card";
-import { CloseDialog, type MoveExtras, PipelineBoard, PipelineList } from "@/components/app/work/pipeline-board";
+import { OwnerFilterSelect, useMembers, useOwnerFilter } from "@/components/app/work/owner-menu";
+import { type AssignRequest, CloseDialog, type MoveExtras, PipelineBoard, PipelineList } from "@/components/app/work/pipeline-board";
 import { StageEditor } from "@/components/app/work/stage-editor";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,9 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
   const [closing, setClosing] = useState<{ deal: Deal; stage: DealStage } | null>(null);
   const [editing, setEditing] = useState(false);
   const { data: projects } = useSWR<ProjectSummary[]>("/projects", fetcher);
-  const key = `/pipeline${qs({ project_id: project })}`;
+  const [owner, setOwner] = useOwnerFilter("pipeline");
+  const members = useMembers();
+  const key = `/pipeline${qs({ project_id: project, owner: owner === "everyone" ? "" : owner })}`;
   const { data, error, mutate } = useSWR<Pipeline>(key, fetcher, { keepPreviousData: true });
   // A deal that closed more than 90 days ago isn't on the board, so a link to one loads it by itself.
   const onBoard = data?.deals.find((d) => d.id === opened);
@@ -55,6 +58,24 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
         {
           // The board only offers moves once it has loaded.
           optimisticData: (current) => ({ ...current!, deals: current!.deals.map((d) => (d.id === deal.id ? moved : d)) }),
+          populateCache: false,
+          revalidate: true,
+        },
+      );
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  // The avatar changes at once. Under Mine or Unassigned the card may leave the board once the server answers.
+  const assign: AssignRequest = async (deal, ownerId) => {
+    const member = members?.find((m) => m.user_id === ownerId);
+    const changed: Deal = { ...deal, owner_id: ownerId, owner_name: member ? member.name || member.email : null };
+    try {
+      await mutate(
+        api(`/leads/${deal.lead_id}/owner`, { method: "PUT", body: { owner_id: ownerId } }).then(() => undefined),
+        {
+          optimisticData: (current) => ({ ...current!, deals: current!.deals.map((d) => (d.id === deal.id ? changed : d)) }),
           populateCache: false,
           revalidate: true,
         },
@@ -90,6 +111,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
         description="Hot replies open a deal by themselves, and booked meetings move it along. Drag a deal to another stage as it moves."
         actions={
           <>
+            <OwnerFilterSelect value={owner} onChange={setOwner} className="h-8 max-sm:basis-full" />
             {projectPicker}
             <Tabs
               value={view}
@@ -123,11 +145,25 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
         ) : (
           <>
             <Forecast pipeline={data} />
-            {data.deals.length === 0 && <EmptyHint stages={data.stages} />}
+            {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
             {view === "board" ? (
-              <PipelineBoard stages={data.stages} deals={data.deals} currency={data.currency} onMove={request} onOpen={(d) => setOpened(d.id)} />
+              <PipelineBoard
+                stages={data.stages}
+                deals={data.deals}
+                currency={data.currency}
+                onMove={request}
+                onOpen={(d) => setOpened(d.id)}
+                onAssign={assign}
+              />
             ) : (
-              <PipelineList stages={data.stages} deals={data.deals} currency={data.currency} onMove={request} onOpen={(d) => setOpened(d.id)} />
+              <PipelineList
+                stages={data.stages}
+                deals={data.deals}
+                currency={data.currency}
+                onMove={request}
+                onOpen={(d) => setOpened(d.id)}
+                onAssign={assign}
+              />
             )}
           </>
         )}

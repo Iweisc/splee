@@ -14,6 +14,7 @@ import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { LeadDeal } from "./deal-dialog";
+import { OwnerMenu } from "./owner-menu";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
@@ -50,6 +51,18 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
   const setStatus = async (status: LeadStatus) => {
     try {
       await update({ status });
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  const setOwner = async (owner_id: string | null) => {
+    try {
+      await mutate(api<LeadDetail>(`/leads/${leadId}/owner`, { method: "PUT", body: { owner_id } }), {
+        optimisticData: { ...lead, owner_id },
+        revalidate: false,
+      });
+      mutateAll((k) => typeof k === "string" && (k.includes("/leads") || k.startsWith("/inbox") || k.startsWith("/pipeline")));
     } catch (e) {
       toastError(e);
     }
@@ -111,6 +124,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
             </option>
           ))}
         </Select>
+        <OwnerMenu ownerId={lead.owner_id} ownerName={lead.owner_name} onPick={setOwner} className="max-sm:grow" />
         {/* The campaign and source wrap together too, so the source never sits alone under the status. On phones the status stretches to fill the row they leave. */}
         {/* max-w-full on both, so a long campaign name truncates instead of running out of the window on a phone. */}
         <div className="flex max-w-full flex-wrap gap-2">

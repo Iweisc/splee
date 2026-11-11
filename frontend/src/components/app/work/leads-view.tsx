@@ -14,6 +14,7 @@ import { fetcher } from "@/hooks/use-me";
 import { EmailSearchBadge, EmailSearchStrip } from "./email-search";
 import { HiringBadge } from "./hiring";
 import { LeadModal } from "./lead-modal";
+import { memberName, OwnerFilterSelect, OwnerMenu, useMembers, useOwnerFilter } from "./owner-menu";
 import { ScoreButton, ScoreFilter, ScoreHeader, ScoreReasons } from "./score";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced, useLastPageGuard } from "./states";
@@ -25,7 +26,10 @@ const COMPANY = "hidden sm:table-cell";
 // A phone shows the status under the score instead, so the name keeps room for its Hiring badge.
 const STATUS = COMPANY;
 const CONTACTED = "hidden md:table-cell";
-const WIDE = "hidden xl:table-cell";
+// Below md the owner shows under the name instead.
+const OWNER = "hidden md:table-cell";
+// The email waits for 2xl as well. Next to the owner at 1280px it showed a few letters and wrapped longer names.
+const WIDE = "hidden 2xl:table-cell";
 // The campaign waits for 2xl, since at 1280px its name was cut to a few letters and its width wrapped the Hiring roles.
 const CAMPAIGN = "hidden 2xl:table-cell";
 // The text columns split whatever width the status and date leave, by their percentages, so they only cut text off
@@ -48,9 +52,10 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   // The leads ticked on this page. Changing a filter or the page clears it, so nothing off-screen is ever acted on.
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const query = useDebounced(q);
+  const [owner, setOwner] = useOwnerFilter("leads");
 
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
-  const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, sort };
+  const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, sort, owner: owner === "everyone" ? "" : owner };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
 
@@ -81,7 +86,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const findAll = async () => {
     setFinding(true);
     try {
-      const body = { all: true, segment_id: filters.segment_id || null, status, q: query };
+      const body = { all: true, segment_id: filters.segment_id || null, status, q: query, owner: filters.owner };
       queued((await api<{ queued: number }>(`/projects/${projectId}/leads/find-emails`, { method: "POST", body })).queued);
     } catch (e) {
       toastError(e);
@@ -94,9 +99,17 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
     setPicked(new Set());
   };
   useLastPageGuard(data?.total, page, turnPage);
-  const filtered = !!(query || segment || status || email || minScore);
+  const filtered = !!(query || segment || status || email || minScore || owner !== "everyone");
+  const assign = async (leadId: string, ownerId: string | null) => {
+    try {
+      await api(`/leads/${leadId}/owner`, { method: "PUT", body: { owner_id: ownerId } });
+      await mutate();
+    } catch (e) {
+      toastError(e);
+    }
+  };
 
-  const setFilter = (set: (v: string) => void) => (value: string) => {
+  const setFilter = <T,>(set: (v: T) => void) => (value: T) => {
     set(value);
     setPage(1);
     setPicked(new Set());
@@ -154,6 +167,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
             </Select>
           )}
           <div className="flex flex-auto flex-wrap gap-2">
+            <OwnerFilterSelect value={owner} onChange={setFilter(setOwner)} className="flex-auto" />
             <Select value={status} onChange={filter(setStatus)} className="h-9 w-auto flex-auto" aria-label="Status">
               <option value="">Any status</option>
               {Object.entries(LEAD_STATUS).map(([value, s]) => (
@@ -232,6 +246,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                     <ScoreHeader sorted={sort === "score"} onSort={() => setFilter(setSort)(sort ? "" : "score")} />
                   </Th>
                   <Th className={cn(STATUS, "w-[1%]")}>Status</Th>
+                  <Th className={cn(OWNER, "w-[1%]")}>Owner</Th>
                   <Th className={cn(CONTACTED, "w-[1%] text-right whitespace-nowrap")}>Last contacted</Th>
                 </tr>
               </thead>
@@ -253,10 +268,11 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                         {/* Its click bubbles to the row, which opens the lead. */}
                         <button className="block text-left font-medium">{l.full_name || "—"}</button>
                         <p className="truncate text-xs text-muted-foreground">{l.title}</p>
-                        {/* The email column, where the result sits on wide screens, is hidden below xl. */}
-                        <EmailSearchBadge lead={l} className="mt-1 xl:hidden" />
+                        {/* The email column, where the result sits on wide screens, is hidden below 2xl. */}
+                        <EmailSearchBadge lead={l} className="mt-1 2xl:hidden" />
                         {/* The company column, where the badge sits from sm up, is hidden on phones. */}
                         <HiringBadge roles={l.hiring} className="mt-1 sm:hidden" />
+                        {l.owner_name && <p className="truncate text-xs text-muted-foreground md:hidden">Owner: {l.owner_name}</p>}
                       </Td>
                       <Td className={cn(COMPANY, FILL, "w-[30%]")}>
                         <p className="truncate">{l.company_name}</p>
@@ -276,12 +292,20 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                       <Td className={STATUS}>
                         <LeadStatusBadge status={l.status} />
                       </Td>
+                      <Td className={OWNER} onClick={(e) => e.stopPropagation()}>
+                        <OwnerMenu
+                          ownerId={l.owner_id}
+                          ownerName={l.owner_name}
+                          onPick={(id) => assign(l.id, id)}
+                          className="-ml-1.5 max-w-36 border-transparent bg-transparent"
+                        />
+                      </Td>
                       <Td className={cn(CONTACTED, "text-right whitespace-nowrap text-muted-foreground")}>{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
                     </Tr>
                     {whyLead === l.id && (
                       // Spans every column, hidden ones included, so it's the table's full width at any size.
                       <tr className="bg-accent/60">
-                        <td colSpan={8} className="px-4 pt-1 pb-3">
+                        <td colSpan={9} className="px-4 pt-1 pb-3">
                           <ScoreReasons item={l} />
                         </td>
                       </tr>
@@ -356,6 +380,11 @@ function PickedBar({
     if (value === "") return;
     run("status", { status: value }, `Set ${count} to ${LEAD_STATUS[value as LeadStatus].label}`);
   };
+  const members = useMembers();
+  const assign = (ownerId: string | null) => {
+    const member = members?.find((m) => m.user_id === ownerId);
+    run("assign", { owner_id: ownerId }, member ? `Assigned ${count} to ${memberName(member)}` : `Unassigned ${count}`);
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
@@ -368,6 +397,7 @@ function PickedBar({
       <Button variant="outline" size="sm" onClick={findEmails} disabled={busy} className="h-9">
         <MailSearch className="size-3.5" /> Find emails
       </Button>
+      <OwnerMenu look="bulk" ownerId={null} onPick={assign} disabled={busy} className="max-sm:flex-auto" />
       <Button variant="outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="h-9 text-danger">
         <Trash2 className="size-3.5" /> Delete
       </Button>

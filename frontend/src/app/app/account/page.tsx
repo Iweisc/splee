@@ -5,9 +5,11 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/form";
+import { toastError } from "@/components/app/work/states";
+import { Field, Input, Switch } from "@/components/ui/form";
 import { useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
+import type { Me } from "@/lib/types";
 
 export default function AccountPage() {
   const { me } = useMe();
@@ -16,10 +18,25 @@ export default function AccountPage() {
       <PageHeader title="Account" description={me ? `Signed in as ${me.user.email}.` : undefined} />
       <PageBody>
         <SettingsColumn>
+          <Away />
           <ChangePassword />
         </SettingsColumn>
       </PageBody>
     </>
+  );
+}
+
+function Away() {
+  const { me, mutate } = useMe();
+  if (!me) return null;
+  const set = (away: boolean) =>
+    void mutate(api<Me>("/auth/me", { method: "PATCH", body: { away } }), { optimisticData: { ...me, away }, revalidate: false }).catch(toastError);
+  return (
+    <Section
+      title="Away"
+      description="While you're away, round robin skips you and new leads go to the rest of the team. Leads you already own stay yours."
+      actions={<Switch checked={me.away} onChange={set} label="Away" />}
+    />
   );
 }
 

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{Lead, Ts};
+use crate::ownership::{self, OwnerFilter};
 use crate::routes::util_input;
 use crate::state::AppState;
 
@@ -80,10 +81,10 @@ pub struct Deal {
 
 const DEAL_SELECT: &str = "select d.id, d.project_id, p.name as project_name, d.lead_id, l.full_name as lead_name, l.email::text as lead_email,
        l.title as lead_title, l.company_name, l.company_domain::text as company_domain, d.stage_id, s.name as stage, d.status, d.value_cents,
-       d.currency, d.close_date, d.owner_id, coalesce(nullif(u.name, ''), u.email::text) as owner_name, d.notes, d.lost_reason, d.source,
+       d.currency, d.close_date, l.owner_id, coalesce(nullif(u.name, ''), u.email::text) as owner_name, d.notes, d.lost_reason, d.source,
        d.stage_changed_at, d.closed_at, d.created_at
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
-     left join users u on u.id = d.owner_id";
+     left join users u on u.id = l.owner_id";
 
 fn major_units<S: Serializer>(cents: &i64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64(*cents as f64 / 100.0)
@@ -167,8 +168,8 @@ pub async fn list(db: &PgPool, org_id: Uuid, f: &DealFilter, limit: i64, offset:
         util_input::one_of("status", status, &["open", "won", "lost"])?;
     }
     let filter = "where d.org_id = $1 and ($2::uuid is null or d.project_id = $2) and ($3::text is null or d.status = $3)
-       and ($4::uuid is null or d.stage_id = $4) and ($5::uuid is null or d.owner_id = $5) and ($6::uuid is null or d.lead_id = $6)";
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from deals d {filter}"))
+       and ($4::uuid is null or d.stage_id = $4) and ($5::uuid is null or l.owner_id = $5) and ($6::uuid is null or d.lead_id = $6)";
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from deals d join leads l on l.id = d.lead_id {filter}"))
         .bind(org_id)
         .bind(f.project_id)
         .bind(&f.status)
@@ -214,29 +215,35 @@ pub struct Forecast {
     pub win_rate: Option<f64>,
 }
 
-/// "This month" is the calendar month in UTC.
-pub async fn forecast(db: &PgPool, org_id: Uuid, project_id: Option<Uuid>) -> sqlx::Result<Forecast> {
-    let amounts = sqlx::query_as(
+/// "This month" is the calendar month in UTC. `owner` narrows it like the board, so Mine adds up only your deals.
+pub async fn forecast(db: &PgPool, org_id: Uuid, project_id: Option<Uuid>, owner: OwnerFilter) -> sqlx::Result<Forecast> {
+    let amounts = sqlx::query_as(&format!(
         "select d.currency,
            coalesce(sum(d.value_cents) filter (where d.status = 'open'), 0)::bigint as open,
            coalesce(round(sum(d.value_cents * s.probability) filter (where d.status = 'open') / 100.0), 0)::bigint as weighted,
            coalesce(sum(d.value_cents) filter (where d.status = 'won' and d.closed_at >= date_trunc('month', now())), 0)::bigint as won_this_month
-         from deals d join deal_stages s on s.id = d.stage_id
-         where d.org_id = $1 and ($2::uuid is null or d.project_id = $2)
+         from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id
+         where d.org_id = $1 and ($2::uuid is null or d.project_id = $2) and {}
          group by d.currency
          order by d.currency = (select currency from organizations where id = $1) desc, d.currency",
-    )
+        ownership::sql("l", 3, 4)
+    ))
     .bind(org_id)
     .bind(project_id)
+    .bind(owner.mode())
+    .bind(owner.user())
     .fetch_all(db)
     .await?;
-    let (won, lost): (i64, i64) = sqlx::query_as(
-        "select count(*) filter (where status = 'won'), count(*) filter (where status = 'lost') from deals
-         where org_id = $1 and ($2::uuid is null or project_id = $2) and closed_at > now() - make_interval(days => $3)",
-    )
+    let (won, lost): (i64, i64) = sqlx::query_as(&format!(
+        "select count(*) filter (where d.status = 'won'), count(*) filter (where d.status = 'lost') from deals d join leads l on l.id = d.lead_id
+         where d.org_id = $1 and ($2::uuid is null or d.project_id = $2) and d.closed_at > now() - make_interval(days => $3) and {}",
+        ownership::sql("l", 4, 5)
+    ))
     .bind(org_id)
     .bind(project_id)
     .bind(CLOSED_DAYS)
+    .bind(owner.mode())
+    .bind(owner.user())
     .fetch_one(db)
     .await?;
     let win_rate = (won + lost > 0).then(|| won as f64 / (won + lost) as f64);
@@ -253,20 +260,23 @@ pub struct Board {
     pub forecast: Forecast,
 }
 
-pub async fn board(db: &PgPool, org_id: Uuid, project_id: Option<Uuid>) -> AppResult<Board> {
+pub async fn board(db: &PgPool, org_id: Uuid, project_id: Option<Uuid>, owner: OwnerFilter) -> AppResult<Board> {
     let stages = stages(db, org_id).await?;
     let deals = sqlx::query_as(&format!(
         "{DEAL_SELECT} where d.org_id = $1 and ($2::uuid is null or d.project_id = $2)
-           and (d.status = 'open' or d.closed_at > now() - make_interval(days => $3))
-         order by d.stage_changed_at desc limit $4"
+           and (d.status = 'open' or d.closed_at > now() - make_interval(days => $3)) and {}
+         order by d.stage_changed_at desc limit $4",
+        ownership::sql("l", 5, 6)
     ))
     .bind(org_id)
     .bind(project_id)
     .bind(CLOSED_DAYS)
     .bind(BOARD_LIMIT)
+    .bind(owner.mode())
+    .bind(owner.user())
     .fetch_all(db)
     .await?;
-    Ok(Board { currency: org_currency(db, org_id).await?, stages, deals, forecast: forecast(db, org_id, project_id).await? })
+    Ok(Board { currency: org_currency(db, org_id).await?, stages, deals, forecast: forecast(db, org_id, project_id, owner).await? })
 }
 
 /// A value in the currency's main unit as cents. None stays None, so a move or an edit can leave the value alone.
@@ -292,19 +302,6 @@ fn text(field: &str, raw: Option<&str>, max: usize) -> AppResult<Option<String>>
         return Err(AppError::BadRequest(format!("Keep the {field} under {max} characters")));
     }
     Ok(value.map(str::to_string))
-}
-
-async fn check_owner(db: &PgPool, org_id: Uuid, owner_id: Option<Uuid>) -> AppResult<()> {
-    let Some(owner_id) = owner_id else { return Ok(()) };
-    let member: bool = sqlx::query_scalar("select exists (select 1 from memberships where org_id = $1 and user_id = $2)")
-        .bind(org_id)
-        .bind(owner_id)
-        .fetch_one(db)
-        .await?;
-    if !member {
-        return Err(AppError::BadRequest("The owner has to be on your team".into()));
-    }
-    Ok(())
 }
 
 /// The one-open-deal index turned an insert or a reopen away.
@@ -371,7 +368,7 @@ pub async fn create(state: &AppState, org_id: Uuid, by: Option<Uuid>, source: &s
         Some(code) => currency(code)?,
         None => org_currency(db, org_id).await?,
     };
-    check_owner(db, org_id, input.owner_id).await?;
+    crate::ownership::check_member(db, org_id, input.owner_id).await?;
     let notes = util_input::notes(input.notes.as_deref())?.unwrap_or_default();
     let mut tx = db.begin().await?;
     let kind = lock_stage(&mut tx, org_id, stage).await?;
@@ -395,6 +392,10 @@ pub async fn create(state: &AppState, org_id: Uuid, by: Option<Uuid>, source: &s
     .fetch_one(&mut *tx)
     .await
     .map_err(one_open)?;
+    // A deal's owner is its lead's, so naming one assigns the lead.
+    if let Some(owner) = input.owner_id {
+        sqlx::query("update leads set owner_id = $2 where id = $1").bind(input.lead_id).bind(owner).execute(&mut *tx).await?;
+    }
     let deal = get_in(&mut tx, org_id, id).await?;
     tx.commit().await?;
     announce(state, &deal, "deal.created", None).await;
@@ -402,7 +403,7 @@ pub async fn create(state: &AppState, org_id: Uuid, by: Option<Uuid>, source: &s
 }
 
 /// Sets a field when it's present. A present null clears it.
-fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+pub fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
 }
 
@@ -421,7 +422,7 @@ pub struct DealChanges {
 pub async fn update(db: &PgPool, org_id: Uuid, id: Uuid, c: DealChanges) -> AppResult<Deal> {
     let currency = c.currency.as_deref().map(currency).transpose()?;
     if let Some(owner) = c.owner_id {
-        check_owner(db, org_id, owner).await?;
+        crate::ownership::check_member(db, org_id, owner).await?;
     }
     let notes = util_input::notes(c.notes.as_deref())?;
     let reason = text("reason", c.lost_reason.as_deref(), 500)?;
@@ -445,6 +446,14 @@ pub async fn update(db: &PgPool, org_id: Uuid, id: Uuid, c: DealChanges) -> AppR
     .await?;
     if found.rows_affected() == 0 {
         return Err(AppError::NotFound);
+    }
+    if let Some(owner) = c.owner_id {
+        sqlx::query("update leads set owner_id = $3 where id = (select lead_id from deals where id = $1 and org_id = $2)")
+            .bind(id)
+            .bind(org_id)
+            .bind(owner)
+            .execute(db)
+            .await?;
     }
     get(db, org_id, id).await
 }
@@ -1085,7 +1094,7 @@ mod tests {
         let euro = deal("H", "Proposal", 100.0).await;
         update(&db, acme, euro.id, DealChanges { currency: Some("EUR".into()), ..Default::default() }).await.unwrap();
 
-        let f = forecast(&db, acme, None).await.unwrap();
+        let f = forecast(&db, acme, None, OwnerFilter::Everyone).await.unwrap();
         let usd = &f.amounts[0];
         // 10% of 1000, 30% of 2000 and 70% of 3000.
         assert_eq!((usd.currency.as_str(), usd.open, usd.weighted, usd.won_this_month), ("USD", 600_000, 280_000, 500_000));
@@ -1094,10 +1103,10 @@ mod tests {
         assert_eq!((f.won, f.lost), (1, 2));
         assert!((f.win_rate.unwrap() - 1.0 / 3.0).abs() < 1e-9);
 
-        let board = board(&db, acme, Some(project)).await.unwrap();
+        let board = board(&db, acme, Some(project), OwnerFilter::Everyone).await.unwrap();
         assert_eq!(board.deals.len(), 7);
         assert!(board.deals.iter().all(|d| d.id != old.id));
-        let empty = forecast(&db, acme, Some(other_project)).await.unwrap();
+        let empty = forecast(&db, acme, Some(other_project), OwnerFilter::Everyone).await.unwrap();
         assert!(empty.amounts.is_empty() && empty.win_rate.is_none());
     }
 
@@ -1191,7 +1200,7 @@ mod tests {
         assert!(matches!(create(&state, acme, None, "manual", other_stage).await, Err(AppError::BadRequest(_))));
         let outsider = NewDeal { owner_id: Some(stranger), ..new_deal(&ours) };
         assert!(matches!(create(&state, acme, None, "manual", outsider).await, Err(AppError::BadRequest(_))));
-        assert!(board(&db, acme, None).await.unwrap().deals.is_empty());
+        assert!(board(&db, acme, None, OwnerFilter::Everyone).await.unwrap().deals.is_empty());
         assert_eq!(list(&db, acme, &DealFilter::default(), 50, 0).await.unwrap().1, 0);
         let theirs_listed = list(&db, other, &DealFilter { status: Some("open".into()), ..Default::default() }, 50, 0).await.unwrap();
         assert_eq!(theirs_listed.1, 1);

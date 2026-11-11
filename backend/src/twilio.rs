@@ -849,6 +849,7 @@ pub(crate) mod tests {
             score_intent: 0,
             score_reasons: sqlx::types::Json(vec![]),
             scored_at: None,
+            owner_id: None,
         }
     }
 }

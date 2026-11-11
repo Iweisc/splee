@@ -3,13 +3,13 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { fetcher } from "@/hooks/use-me";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import { isUrl } from "@/components/app/settings/is-url";
-import type { BookingPage, Mailbox, MailboxInput } from "@/lib/types";
+import type { BookingPage, Mailbox, MailboxInput, Member } from "@/lib/types";
 import { SIGN_IN_LABEL } from "@/lib/mailbox";
 import { MicroLabel } from "@/components/app/work/states";
 import { toastError } from "@/components/app/settings/use-action";
@@ -55,10 +55,11 @@ const EMPTY: MailboxInput = {
 
 function toInput(m: Mailbox): MailboxInput {
   const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username } = m;
-  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm } = m;
+  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id } = m;
   return {
     email,
     from_name,
+    owner_id,
     signature,
     booking_link,
     smtp_host,
@@ -213,6 +214,7 @@ export function MailboxForm({
         <Textarea value={m.signature} onChange={(e) => set({ signature: e.target.value })} placeholder={"Alex Morgan\nFounder, Acme"} rows={2} />
       </Field>
       <BookingLinkField mailbox={mailbox} value={m.booking_link} onChange={(booking_link) => set({ booking_link })} />
+      <OwnerField value={m.owner_id} onChange={(owner_id) => set({ owner_id })} />
 
       {!signedIn && (
         <>
@@ -457,6 +459,26 @@ function BookingLinkField({ mailbox, value, onChange }: { mailbox?: Mailbox; val
           </p>
         </div>
       )}
+    </Field>
+  );
+}
+
+/** Whose mailbox it is, for projects that give each lead to the owner of the mailbox that emailed it. */
+function OwnerField({ value, onChange }: { value: string | null | undefined; onChange: (ownerId: string | null) => void }) {
+  const { me } = useMe();
+  const { data: members } = useSWR<Member[]>("/organization/users", fetcher);
+  // A new mailbox is whoever connects it until someone picks another.
+  const shown = value === undefined ? (me?.user.id ?? "") : (value ?? "");
+  return (
+    <Field label="Owner" hint="Gets the leads this mailbox emails, in projects that assign leads by mailbox.">
+      <Select value={shown} onChange={(e) => onChange(e.target.value || null)}>
+        <option value="">Nobody</option>
+        {members?.map((member) => (
+          <option key={member.user_id} value={member.user_id}>
+            {member.name || member.email}
+          </option>
+        ))}
+      </Select>
     </Field>
   );
 }

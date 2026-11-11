@@ -140,6 +140,15 @@ impl Client {
         Ok(body["user"]["profile"]["email"].as_str().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()))
     }
 
+    /// The Slack user with this address, or None when the workspace has nobody with it.
+    pub async fn user_by_email(&self, email: &str) -> anyhow::Result<Option<String>> {
+        match self.form("users.lookupByEmail", &[("email", email)]).await {
+            Ok(body) => Ok(body["user"]["id"].as_str().map(str::to_string)),
+            Err(e) if e.downcast_ref::<ApiError>().is_some_and(|e| e.0 == "users_not_found") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Public channels, and the private ones the bot was invited to, by name. Slack pages them 200 at a time.
     pub async fn channels(&self) -> anyhow::Result<Vec<Channel>> {
         let mut out = vec![];
@@ -269,6 +278,8 @@ pub struct HotReply {
     /// Who did what, under the buttons.
     pub note: Option<String>,
     pub link: String,
+    /// The lead owner's Slack user, mentioned so Slack tells them.
+    pub owner: Option<String>,
 }
 
 impl HotReply {
@@ -276,13 +287,18 @@ impl HotReply {
         if self.company.trim().is_empty() { self.lead_name.clone() } else { format!("{} ({})", self.lead_name, self.company) }
     }
 
+    /// " for <@U…>" when the lead has an owner on Slack.
+    fn for_owner(&self) -> String {
+        self.owner.as_ref().map(|id| format!(" for <@{id}>")).unwrap_or_default()
+    }
+
     /// Notifications and screen readers get this instead of the blocks.
     pub fn text(&self) -> String {
-        format!("Hot reply: {} replied to {}", self.who(), self.project_name)
+        format!("Hot reply: {} replied to {}{}", self.who(), self.project_name, self.for_owner())
     }
 
     pub fn blocks(&self) -> Value {
-        let headline = format!("*Hot reply:* {} replied to {}", escape(&self.who()), escape(&self.project_name));
+        let headline = format!("*Hot reply:* {} replied to {}{}", escape(&self.who()), escape(&self.project_name), self.for_owner());
         let mut blocks = vec![section(headline), section(quote(&self.reply, 2500))];
         match (&self.answer, self.answered) {
             (Some(answer), false) => blocks.push(section(format!("*Drafted answer*\n{}", quote(answer, 2500)))),
@@ -436,6 +452,15 @@ pub async fn load_hot_reply(db: &sqlx::PgPool, public_url: &str, lead_id: Uuid, 
     .fetch_optional(db)
     .await?;
     let Some((project_id, lead_name, company, project_name, reply_id, reply, replied_at)) = row else { return Ok(None) };
+    // What owner_slack_user cached, so rebuilding the message after a press calls nobody.
+    let owner: Option<String> = sqlx::query_scalar(
+        "select c.slack_user_id from leads l join projects p on p.id = l.project_id join slack_installs si on si.org_id = p.org_id
+         join slack_user_ids c on c.team_id = si.team_id and c.user_id = l.owner_id where l.id = $1",
+    )
+    .bind(lead_id)
+    .fetch_optional(db)
+    .await?
+    .flatten();
     let answer: Option<(Uuid, String)> = sqlx::query_as(
         "select id, body from email_messages where lead_id = $1 and direction = 'outbound' and kind in ('manual_reply', 'auto_reply')
            and status not in ('draft', 'cancelled') and created_at >= $2
@@ -481,8 +506,41 @@ pub async fn load_hot_reply(db: &sqlx::PgPool, public_url: &str, lead_id: Uuid, 
         draft_id: draft.map(|(id, _)| id),
         note,
         link: crate::hooks::lead_url(public_url, project_id, lead_id),
+        owner,
     };
     Ok(Some((hot, reply_id)))
+}
+
+/// Looks up the lead owner's Slack user by their Splee email, once per person and workspace. Nobody found is kept for a day,
+/// so someone who joins the workspace later is found then. A changed email is looked up again.
+pub async fn owner_slack_user(db: &sqlx::PgPool, client: &Client, team_id: &str, lead_id: Uuid) -> anyhow::Result<Option<String>> {
+    let owner: Option<(Uuid, String)> =
+        sqlx::query_as("select u.id, u.email::text from leads l join users u on u.id = l.owner_id where l.id = $1").bind(lead_id).fetch_optional(db).await?;
+    let Some((user_id, email)) = owner else { return Ok(None) };
+    let cached: Option<Option<String>> = sqlx::query_scalar(
+        "select slack_user_id from slack_user_ids where team_id = $1 and user_id = $2 and email = $3::citext
+           and (slack_user_id is not null or looked_up_at > now() - interval '1 day')",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .bind(&email)
+    .fetch_optional(db)
+    .await?;
+    if let Some(cached) = cached {
+        return Ok(cached);
+    }
+    let found = client.user_by_email(&email).await?;
+    sqlx::query(
+        "insert into slack_user_ids (team_id, user_id, email, slack_user_id) values ($1, $2, $3, $4)
+         on conflict (team_id, user_id) do update set email = excluded.email, slack_user_id = excluded.slack_user_id, looked_up_at = now()",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .bind(&email)
+    .bind(&found)
+    .execute(db)
+    .await?;
+    Ok(found)
 }
 
 /// Saves how a post to a project's channel went, for the Notifications page. Matching on the channel keeps a slow post to
@@ -511,21 +569,26 @@ pub async fn post_hot_reply(state: &AppState, lead_id: Uuid) {
     if state.cfg.slack.is_none() {
         return;
     }
-    let target: sqlx::Result<Option<(Uuid, String, String)>> = sqlx::query_as(
-        "select c.project_id, c.channel_id, i.bot_token_enc from leads l join slack_channels c on c.project_id = l.project_id
+    let target: sqlx::Result<Option<(Uuid, String, String, String)>> = sqlx::query_as(
+        "select c.project_id, c.channel_id, i.bot_token_enc, i.team_id from leads l join slack_channels c on c.project_id = l.project_id
          join projects p on p.id = l.project_id join slack_installs i on i.org_id = p.org_id where l.id = $1",
     )
     .bind(lead_id)
     .fetch_optional(&state.db)
     .await;
-    let (project_id, channel, token_enc) = match target {
+    let (project_id, channel, token_enc, team_id) = match target {
         Ok(Some(t)) => t,
         Ok(None) => return,
         Err(e) => return tracing::warn!(error = %e, "couldn't load the Slack channel"),
     };
     let result = async {
+        let client = Client::for_install(state, &token_enc)?;
+        // A failed lookup only costs the mention, so the post still goes out.
+        if let Err(e) = owner_slack_user(&state.db, &client, &team_id, lead_id).await {
+            tracing::warn!(error = %e, "couldn't find the lead owner on Slack");
+        }
         let (hot, _) = load_hot_reply(&state.db, &state.cfg.public_url, lead_id, None).await?.context("the lead has no reply")?;
-        Client::for_install(state, &token_enc)?.post_message(&channel, &hot.text(), &hot.blocks()).await.map(drop)
+        client.post_message(&channel, &hot.text(), &hot.blocks()).await.map(drop)
     }
     .await;
     record(&state.db, project_id, &channel, &result).await;
@@ -648,6 +711,7 @@ mod tests {
             answered,
             note: None,
             link: "https://splee.test/app/p/1/inbox?lead=2".into(),
+            owner: None,
         }
     }
 
