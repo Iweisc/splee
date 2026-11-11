@@ -441,6 +441,15 @@ export interface AnalyticsTotals {
   spend_micros: number;
   cost_per_hot_micros: number | null;
   cost_per_meeting_micros: number | null;
+  /** Payments less refunds, in cents of the organization's currency. 0 with a mailbox filter. */
+  revenue_cents: number;
+  refunded_cents: number;
+  payments: number;
+  paying_leads: number;
+  /** Revenue over meetings, null without meetings. */
+  revenue_per_meeting_cents: number | null;
+  /** Revenue over spend, null when nothing was spent or the organization's currency isn't USD. */
+  return_on_spend: number | null;
 }
 
 export interface AnalyticsPoint {
@@ -457,6 +466,13 @@ export interface Analytics {
   previous_from: string;
   previous_to: string;
   timezone: string;
+  /** The organization's currency, which revenue is in. */
+  currency: string;
+  /** A payment provider is connected, or was, so the page shows revenue. */
+  revenue_tracked: boolean;
+  /** Payments in the range in other currencies, which revenue leaves out. */
+  ignored_payments: number;
+  ignored_currencies: string[];
   interval: "day" | "week";
   totals: AnalyticsTotals;
   previous: AnalyticsTotals;
@@ -475,6 +491,8 @@ export interface Analytics {
     bounce_rate: number | null;
     spend_micros: number;
     cost_per_hot_micros: number | null;
+    revenue_cents: number;
+    return_on_spend: number | null;
   }[];
   mailboxes: {
     mailbox_id: UUID | null;
@@ -1762,9 +1780,33 @@ export interface Deal {
   owner_name: string | null;
   notes: string;
   lost_reason: string;
-  source: "manual" | "hot_reply" | "booking" | "api";
+  /** A payment provider when the lead's first payment made the deal. */
+  source: "manual" | "hot_reply" | "booking" | "api" | PaymentProvider;
+  /** The provider of the lead's first payment, on a won deal it won. */
+  paid_through: PaymentProvider | null;
   stage_changed_at: Ts;
   closed_at: Ts | null;
+  created_at: Ts;
+}
+
+/** In the order the integrations page offers them. Keep in sync with Provider in backend/src/payments/mod.rs. */
+export const PAYMENT_PROVIDERS = ["stripe", "paddle", "lemonsqueezy"] as const;
+export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
+export const PAYMENT_NAMES: Record<PaymentProvider, string> = { stripe: "Stripe", paddle: "Paddle", lemonsqueezy: "Lemon Squeezy" };
+
+/** GET /projects/:id/payments. The key and signing secret never come back. */
+export interface PaymentConnection {
+  provider: PaymentProvider;
+  /** The secret in the webhook URL, /api/payments/{provider}/{webhook_token}. */
+  webhook_token: string;
+  has_secret: boolean;
+  /** The look back over the last 90 days that connecting starts. */
+  backfill_status: "queued" | "running" | "done" | "failed";
+  backfill_error: string;
+  backfill_found: number;
+  backfill_matched: number;
+  backfilled_at: Ts | null;
+  last_event_at: Ts | null;
   created_at: Ts;
 }
 

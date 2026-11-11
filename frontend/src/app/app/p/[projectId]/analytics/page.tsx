@@ -12,7 +12,7 @@ import { Input, Select } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import type { Analytics, Mailbox, ProjectDetail, SegmentWithStats } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, plural } from "@/lib/utils";
 
 const PRESETS = [
   { days: 7, label: "7 days" },
@@ -60,7 +60,7 @@ export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/
 
   const filtered = Boolean(segmentId || mailboxId);
   const t = data?.totals;
-  const empty = data && t && t.sent === 0 && t.replies === 0 && t.meetings === 0 && t.deals_won === 0 && data.channels.every((c) => c.sent === 0);
+  const empty = data && t && t.sent === 0 && t.replies === 0 && t.meetings === 0 && t.deals_won === 0 && t.revenue_cents === 0 && data.channels.every((c) => c.sent === 0);
 
   return (
     <>
@@ -118,6 +118,8 @@ export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/
           data && (
             <p className="-mt-1 text-xs text-muted-foreground">
               {rangeText(data.from, data.to)}, compared with {rangeText(data.previous_from, data.previous_to)}. Days are in {data.timezone}.
+              {data.ignored_payments > 0 &&
+                ` Revenue is in ${data.currency}, so ${plural(data.ignored_payments, "payment")} in ${data.ignored_currencies.join(" and ")} ${data.ignored_payments === 1 ? "is" : "are"} left out.`}
             </p>
           )
         )}

@@ -44,6 +44,13 @@ pub struct Analytics {
     pub(crate) previous_from: NaiveDate,
     pub(crate) previous_to: NaiveDate,
     timezone: String,
+    /// The organization's currency, which revenue is counted in.
+    currency: String,
+    /// Whether the project has a payment provider connected or payments kept from one, so the page shows revenue.
+    revenue_tracked: bool,
+    /// Payments in the range in other currencies, which revenue leaves out, and those currencies.
+    ignored_payments: i64,
+    ignored_currencies: Vec<String>,
     /// "day", or "week" for ranges over 90 days. Weeks start on Monday.
     interval: &'static str,
     pub(crate) totals: Totals,
@@ -83,6 +90,17 @@ pub struct Totals {
     pub(crate) spend_micros: i64,
     cost_per_hot_micros: Option<i64>,
     cost_per_meeting_micros: Option<i64>,
+    /// Payments less refunds kept in the range, in cents of the organization's currency. A mailbox filter leaves them at 0,
+    /// since payments don't belong to a mailbox.
+    pub(crate) revenue_cents: i64,
+    refunded_cents: i64,
+    payments: i64,
+    paying_leads: i64,
+    /// Revenue over meetings booked, null without meetings.
+    revenue_per_meeting_cents: Option<i64>,
+    /// Revenue over spend, null when nothing was spent. Spend is in US dollars, so it's also null when the organization
+    /// counts revenue in another currency.
+    pub(crate) return_on_spend: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -117,6 +135,9 @@ pub(crate) struct CampaignRow {
     bounce_rate: Option<f64>,
     spend_micros: i64,
     cost_per_hot_micros: Option<i64>,
+    /// From the payments of the campaign's leads.
+    revenue_cents: i64,
+    return_on_spend: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -262,6 +283,49 @@ fn per(spend: i64, n: i64) -> Option<i64> {
     (n > 0).then(|| spend / n)
 }
 
+/// Cents over micro-dollars, which only compare when the cents are US ones.
+fn return_on(revenue_cents: i64, spend_micros: i64, usd: bool) -> Option<f64> {
+    (usd && spend_micros > 0).then(|| revenue_cents as f64 * 10_000.0 / spend_micros as f64)
+}
+
+#[derive(FromRow)]
+struct PaymentSums {
+    cur: bool,
+    /// Whether the row is a campaign's, with segment_id null for leads outside any campaign, or the period's total.
+    by_campaign: bool,
+    segment_id: Option<Uuid>,
+    currency: String,
+    net: i64,
+    refunded: i64,
+    payments: i64,
+    leads: i64,
+}
+
+/// Payments kept in both periods, per currency, in total and per campaign of the lead who paid. Revenue comes from here
+/// rather than won deals, since one deal can be paid many times.
+async fn payment_sums(db: &PgPool, id: Uuid, q: &AnalyticsQuery, previous_from: NaiveDate, from: NaiveDate, to: NaiveDate, tz: &str) -> sqlx::Result<Vec<PaymentSums>> {
+    if q.mailbox_id.is_some() {
+        return Ok(vec![]);
+    }
+    sqlx::query_as(
+        "select p.paid_at >= $3::date::timestamp at time zone $5 as cur, grouping(l.segment_id) = 0 as by_campaign, l.segment_id, p.currency,
+           sum(p.amount_cents)::bigint as net, coalesce(-sum(p.amount_cents) filter (where p.kind = 'refund'), 0)::bigint as refunded,
+           count(*) filter (where p.kind = 'payment') as payments, count(distinct p.lead_id) filter (where p.kind = 'payment') as leads
+         from payments p left join leads l on l.id = p.lead_id
+         where p.project_id = $1 and p.paid_at >= $2::date::timestamp at time zone $5 and p.paid_at < ($4::date + 1)::timestamp at time zone $5
+           and ($6::uuid is null or l.segment_id = $6)
+         group by grouping sets ((1, p.currency), (1, l.segment_id, p.currency))",
+    )
+    .bind(id)
+    .bind(previous_from)
+    .bind(from)
+    .bind(to)
+    .bind(tz)
+    .bind(q.segment_id)
+    .fetch_all(db)
+    .await
+}
+
 struct Project {
     org_id: Option<Uuid>,
     timezone: String,
@@ -305,6 +369,13 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         .fetch_all(db)
         .await?;
     let claude = claude_costs(db, id, previous_from, from, to, &project.timezone).await?;
+    let paid = payment_sums(db, id, q, previous_from, from, to, &project.timezone).await?;
+    let revenue_tracked: bool = sqlx::query_scalar(
+        "select exists (select 1 from payment_connections where project_id = $1) or exists (select 1 from payments where project_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?;
     // Agent runs belong to a campaign or the whole project, never a mailbox.
     let claude_for = |cur: bool, segment: Option<Uuid>| -> i64 {
         if q.mailbox_id.is_some() {
@@ -354,6 +425,26 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         won.sort_by(|a, b| (a.currency != project.currency).cmp(&(b.currency != project.currency)).then(a.currency.cmp(&b.currency)));
         t.won_value = won;
     }
+    let (mut ignored_payments, mut ignored_currencies) = (0, vec![]);
+    for p in paid.iter().filter(|p| !p.by_campaign) {
+        if p.currency != project.currency {
+            if p.cur {
+                ignored_payments += p.payments;
+                ignored_currencies.push(p.currency.clone());
+            }
+            continue;
+        }
+        let t = &mut totals[usize::from(p.cur)];
+        (t.revenue_cents, t.refunded_cents, t.payments, t.paying_leads) = (p.net, p.refunded, p.payments, p.leads);
+    }
+    ignored_currencies.sort();
+    let usd = project.currency == "USD";
+    for t in &mut totals {
+        t.revenue_per_meeting_cents = per(t.revenue_cents, t.meetings);
+        t.return_on_spend = return_on(t.revenue_cents, t.spend_micros, usd);
+    }
+    let campaign_revenue: Vec<(Option<Uuid>, i64)> =
+        paid.iter().filter(|p| p.by_campaign && p.cur && p.currency == project.currency).map(|p| (p.segment_id, p.net)).collect();
     let [previous, totals] = totals;
     let email = ChannelRow {
         channel: "email",
@@ -367,7 +458,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
 
     Ok(Analytics {
         series: fill(series, from, to, weekly),
-        campaigns: campaign_rows(db, id, campaigns, |segment| claude_for(true, segment)).await?,
+        campaigns: campaign_rows(db, id, campaigns, &campaign_revenue, usd, |segment| claude_for(true, segment)).await?,
         mailboxes: mailbox_rows(db, project.org_id, mailboxes).await?,
         channels: channels(db, id, q, from, to, &project.timezone, email).await?,
         from,
@@ -375,6 +466,10 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         previous_from,
         previous_to,
         timezone: project.timezone,
+        currency: project.currency,
+        revenue_tracked,
+        ignored_payments,
+        ignored_currencies,
         interval: if weekly { "week" } else { "day" },
         totals,
         previous,
@@ -405,6 +500,12 @@ impl Totals {
             spend_micros,
             cost_per_hot_micros: per(spend_micros, n.hot),
             cost_per_meeting_micros: per(spend_micros, n.meetings),
+            revenue_cents: 0,
+            refunded_cents: 0,
+            payments: 0,
+            paying_leads: 0,
+            revenue_per_meeting_cents: None,
+            return_on_spend: None,
         }
     }
 }
@@ -454,13 +555,22 @@ async fn claude_costs(db: &PgPool, id: Uuid, previous_from: NaiveDate, from: Nai
 async fn campaign_rows(
     db: &PgPool,
     id: Uuid,
-    rows: Vec<(Option<Uuid>, Counts)>,
+    mut rows: Vec<(Option<Uuid>, Counts)>,
+    revenue: &[(Option<Uuid>, i64)],
+    usd: bool,
     claude: impl Fn(Option<Uuid>) -> i64,
 ) -> sqlx::Result<Vec<CampaignRow>> {
     let names: Vec<(Uuid, String)> = sqlx::query_as("select id, name from segments where project_id = $1").bind(id).fetch_all(db).await?;
+    // A campaign whose leads paid in the range gets a row even when nothing else about it happened then.
+    for (segment, _) in revenue {
+        if !rows.iter().any(|(s, _)| s == segment) {
+            rows.push((*segment, Counts::default()));
+        }
+    }
     Ok(rows
         .into_iter()
         .map(|(segment_id, n)| {
+            let revenue_cents = revenue.iter().find(|(s, _)| *s == segment_id).map_or(0, |(_, cents)| *cents);
             // The project-wide runs, like explore, aren't any one campaign's, so the no-campaign row leaves them out.
             let spend_micros = n.email_cost_micros + segment_id.map_or(0, |s| claude(Some(s)));
             let name = segment_id.and_then(|s| names.iter().find(|(id, _)| *id == s)).map_or("No campaign", |(_, name)| name.as_str());
@@ -478,6 +588,8 @@ async fn campaign_rows(
                 bounce_rate: rate(n.bounced, n.contacted),
                 spend_micros,
                 cost_per_hot_micros: per(spend_micros, n.hot),
+                revenue_cents,
+                return_on_spend: return_on(revenue_cents, spend_micros, usd),
             }
         })
         .collect())
@@ -880,6 +992,123 @@ mod tests {
         assert!(matches!(refused, Err(AppError::NotFound)));
         let refused = super::super::api_v1::project_analytics(State(state), ApiKeyAuth { org_id: other }, Path(s.project), Query(october())).await;
         assert!(matches!(refused, Err(AppError::NotFound)));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn revenue_comes_from_payments_in_the_organizations_currency(db: PgPool) {
+        let s = seed(&db).await;
+        let untracked = json(&db, s.project, october()).await;
+        assert_eq!((untracked["revenue_tracked"].as_bool(), untracked["totals"]["revenue_cents"].as_i64()), (Some(false), Some(0)));
+
+        let lead = |status: &'static str| sqlx::query_scalar::<_, Uuid>("select id from leads where project_id = $1 and status = $2").bind(s.project).bind(status);
+        let (alpha_lead, beta_lead, eur_lead, earlier) =
+            (lead("meeting_booked").fetch_one(&db).await.unwrap(), lead("bounced").fetch_one(&db).await.unwrap(), lead("hot").fetch_one(&db).await.unwrap(), lead("replied").fetch_one(&db).await.unwrap());
+        // October 31 at 23:00 in New York is November in UTC, and still counts.
+        let payments = [
+            (alpha_lead, "ch_1", "payment", 100_000i64, "USD", "2026-10-20 12:00Z"),
+            (alpha_lead, "refund:ch_1:20000", "refund", -20_000, "USD", "2026-11-01 03:00Z"),
+            (beta_lead, "ch_2", "payment", 50_000, "USD", "2026-10-10 12:00Z"),
+            (eur_lead, "ch_3", "payment", 9_000, "EUR", "2026-10-12 12:00Z"),
+            (earlier, "ch_4", "payment", 30_000, "USD", "2026-09-15 12:00Z"),
+            (alpha_lead, "ch_5", "payment", 70_000, "USD", "2026-11-02 12:00Z"),
+        ];
+        for (lead, external_id, kind, cents, currency, at) in payments {
+            sqlx::query(
+                "insert into payments (org_id, project_id, lead_id, provider, external_id, kind, amount_cents, currency, paid_at)
+                 values ($1, $2, $3, 'stripe', $4, $5, $6, $7, $8::timestamptz)",
+            )
+            .bind(s.org)
+            .bind(s.project)
+            .bind(lead)
+            .bind(external_id)
+            .bind(kind)
+            .bind(cents)
+            .bind(currency)
+            .bind(at)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let a = json(&db, s.project, october()).await;
+        let t = &a["totals"];
+        assert_eq!(a["revenue_tracked"], true);
+        assert_eq!(
+            [&t["revenue_cents"], &t["refunded_cents"], &t["payments"], &t["paying_leads"]].map(|v| v.as_i64().unwrap()),
+            [130_000, 20_000, 2, 2]
+        );
+        // $1,300 over $1.5053 of spend.
+        assert!((t["return_on_spend"].as_f64().unwrap() - 1300.0 / 1.5053).abs() < 1e-9);
+        assert_eq!((a["ignored_payments"].as_i64(), a["ignored_currencies"].clone()), (Some(1), serde_json::json!(["EUR"])));
+        assert_eq!(a["previous"]["revenue_cents"], 30_000);
+        let campaign = |name: &str| a["campaigns"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone();
+        assert_eq!((campaign("Alpha")["revenue_cents"].as_i64(), campaign("Beta")["revenue_cents"].as_i64()), (Some(80_000), Some(50_000)));
+        assert!((campaign("Alpha")["return_on_spend"].as_f64().unwrap() - 800.0 / 0.5033).abs() < 1e-9);
+
+        // A campaign filter keeps its leads' payments, the euro one included. Payments don't belong to a mailbox, so a mailbox
+        // filter has none.
+        let alpha = json(&db, s.project, AnalyticsQuery { segment_id: Some(s.alpha), ..october() }).await;
+        assert_eq!((alpha["totals"]["revenue_cents"].as_i64(), alpha["ignored_payments"].as_i64()), (Some(80_000), Some(1)));
+        let mailbox = json(&db, s.project, AnalyticsQuery { mailbox_id: Some(s.second_mailbox), ..october() }).await;
+        assert_eq!(mailbox["totals"]["revenue_cents"], 0);
+
+        // A campaign with only a payment in the range still gets its row.
+        let november = AnalyticsQuery { from: Some(day("2026-11-02")), to: Some(day("2026-11-02")), ..Default::default() };
+        let n = json(&db, s.project, november).await;
+        let rows: Vec<_> = n["campaigns"].as_array().unwrap().iter().map(|c| (c["name"].clone(), c["sent"].clone(), c["revenue_cents"].clone())).collect();
+        assert_eq!(rows, [("Alpha".into(), 0.into(), 70_000.into())]);
+        assert!(n["totals"]["return_on_spend"].is_null(), "nothing was spent");
+
+        // Another organization's payments never count here.
+        let other: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(&db).await.unwrap();
+        let theirs: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Other') returning id").bind(other).fetch_one(&db).await.unwrap();
+        assert_eq!(json(&db, theirs, october()).await["totals"]["revenue_cents"], 0);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_api_has_revenue_per_meeting_and_no_return_on_spend_outside_usd(db: PgPool) {
+        let s = seed(&db).await;
+        let lead = |status: &'static str| sqlx::query_scalar::<_, Uuid>("select id from leads where project_id = $1 and status = $2").bind(s.project).bind(status);
+        let (booked, earlier) = (lead("meeting_booked").fetch_one(&db).await.unwrap(), lead("replied").fetch_one(&db).await.unwrap());
+        // The earlier lead booked in September, which makes one meeting in each period.
+        sqlx::query("update leads set status = 'meeting_booked' where id = $1").bind(earlier).execute(&db).await.unwrap();
+        sqlx::query("update leads set status_changed_at = '2026-09-20 12:00Z' where id = $1").bind(earlier).execute(&db).await.unwrap();
+        let payments = [(booked, "ch_1", 100_000i64, "USD", "2026-10-20 12:00Z"), (earlier, "ch_2", 30_000, "USD", "2026-09-15 12:00Z"), (booked, "ch_3", 9_000, "EUR", "2026-10-21 12:00Z")];
+        for (lead, external_id, cents, currency, at) in payments {
+            sqlx::query(
+                "insert into payments (org_id, project_id, lead_id, provider, external_id, kind, amount_cents, currency, paid_at)
+                 values ($1, $2, $3, 'stripe', $4, 'payment', $5, $6, $7::timestamptz)",
+            )
+            .bind(s.org)
+            .bind(s.project)
+            .bind(lead)
+            .bind(external_id)
+            .bind(cents)
+            .bind(currency)
+            .bind(at)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let state = crate::autopilot::tests::state(db.clone());
+        let api = || super::super::api_v1::project_analytics(State(state.clone()), ApiKeyAuth { org_id: s.org }, Path(s.project), Query(october()));
+        let Json(usd) = api().await.unwrap();
+        let usd = serde_json::to_value(usd).unwrap();
+        assert_eq!((usd["totals"]["revenue_per_meeting_cents"].as_i64(), usd["previous"]["revenue_per_meeting_cents"].as_i64()), (Some(100_000), Some(30_000)));
+        assert!(usd["totals"]["return_on_spend"].is_number());
+
+        // Spend is in dollars, so revenue in euros has no return on it.
+        sqlx::query("update organizations set currency = 'EUR' where id = $1").bind(s.org).execute(&db).await.unwrap();
+        let Json(eur) = api().await.unwrap();
+        let eur = serde_json::to_value(eur).unwrap();
+        assert_eq!((eur["totals"]["revenue_cents"].as_i64(), eur["totals"]["revenue_per_meeting_cents"].as_i64()), (Some(9_000), Some(9_000)));
+        assert!(eur["totals"]["return_on_spend"].is_null() && eur["previous"]["return_on_spend"].is_null());
+        let campaigns = eur["campaigns"].as_array().unwrap();
+        assert!(campaigns.iter().any(|c| c["revenue_cents"] == 9_000) && campaigns.iter().all(|c| c["return_on_spend"].is_null()));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

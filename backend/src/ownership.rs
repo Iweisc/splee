@@ -521,6 +521,7 @@ mod tests {
             salesforce: None,
             zoho: None,
             crm_api_url: String::new(),
+            payments_api_url: String::new(),
             ipinfo_token: None,
         }
     }

@@ -448,9 +448,11 @@ fn tools() -> Vec<Value> {
             "Get analytics",
             "What's working in a project over a date range, 30 days by default and at most 365: totals with reply, hot and \
              bounce rates by lead, meetings, deals won, unsubscribes and spend split into claude_cost_micros and email_cost_micros \
-             (micro-dollars), the same totals for the period before in previous, a daily series (weekly past 90 days), and \
-             breakdowns by campaign, mailbox (bouncing flags over 5% bounced), sequence step, weekday and hour of send in the \
-             project's time zone, and channel. Replies, bounces and meetings count for the last email the lead got before them.",
+             (micro-dollars), revenue_cents from the payments of leads through Stripe, Paddle or Lemon Squeezy in the organization's \
+             currency (payments in others are counted in ignored_payments) with revenue_per_meeting_cents and return_on_spend (null \
+             unless that currency is USD, since spend is in dollars), the same totals for the period before in previous, a daily series (weekly past 90 days), and breakdowns by campaign (with its leads' revenue), mailbox \
+             (bouncing flags over 5% bounced), sequence step, weekday and hour of send in the project's time zone, and channel. \
+             Replies, bounces and meetings count for the last email the lead got before them.",
             json!({
                 "project_id": project,
                 "from": { "type": "string", "format": "date", "description": "Optional. First day, as YYYY-MM-DD in the project's time zone" },
@@ -654,6 +656,7 @@ mod tests {
                 meta: None,
                 graph_api_url: String::new(),
                 crm_api_url: String::new(),
+                payments_api_url: String::new(),
                 ipinfo_token: None,
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };

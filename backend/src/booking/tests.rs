@@ -203,6 +203,7 @@ fn state(db: PgPool) -> AppState {
         meta: None,
         graph_api_url: String::new(),
         crm_api_url: String::new(),
+        payments_api_url: String::new(),
         ipinfo_token: None,
     };
     AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }

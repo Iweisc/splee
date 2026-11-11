@@ -7,7 +7,7 @@ import { ListSkeleton, MicroLabel } from "@/components/app/work/states";
 import { Badge, Card, Skeleton } from "@/components/ui/misc";
 import { bouncing } from "@/lib/mailbox";
 import type { Analytics, AnalyticsTotals } from "@/lib/types";
-import { cn, money, num, percent } from "@/lib/utils";
+import { cn, money, num, percent, plural } from "@/lib/utils";
 
 /** "Oct 14 – Nov 12, 2026", with both years when the range crosses one. */
 export function rangeText(from: string, to: string) {
@@ -40,6 +40,46 @@ function cost(micros: number) {
 
 function dealValue(v: AnalyticsTotals["won_value"][number]) {
   return (v.value_cents / 100).toLocaleString("en-US", { style: "currency", currency: v.currency, maximumFractionDigits: 0 });
+}
+
+/** "12.4x", and whole numbers from 10 up. */
+function times(ratio: number | null) {
+  return ratio === null ? "—" : `${ratio < 10 ? ratio.toFixed(1) : num(Math.round(ratio))}x`;
+}
+
+/** The tiles for what leads paid, which only show once a payment provider is connected. */
+function revenueKpis(currency: string, t?: AnalyticsTotals, p?: AnalyticsTotals): Kpi[] {
+  const change = (f: (t: AnalyticsTotals, p: AnalyticsTotals) => Change | undefined) => (t && p ? f(t, p) : undefined);
+  const paid = (cents: number) => dealValue({ currency, value_cents: cents });
+  return [
+    {
+      label: "Revenue",
+      title: "What leads, and people at their companies, paid through Stripe, Paddle or Lemon Squeezy in these dates, less refunds.",
+      value: t && paid(t.revenue_cents),
+      note: t && (t.refunded_cents > 0 ? `${paid(t.refunded_cents)} refunded` : `in ${currency}`),
+      change: change((t, p) => countChange(t.revenue_cents, p.revenue_cents, true)),
+    },
+    {
+      label: "Payments",
+      value: t && num(t.payments),
+      note: t && `from ${plural(t.paying_leads, "lead")}`,
+      change: change((t, p) => countChange(t.payments, p.payments, true)),
+    },
+    {
+      label: "Revenue/meeting",
+      title: "Revenue divided by meetings.",
+      value: t && (t.revenue_per_meeting_cents === null ? "—" : paid(t.revenue_per_meeting_cents)),
+      change: change((t, p) =>
+        t.revenue_per_meeting_cents !== null && p.revenue_per_meeting_cents !== null ? countChange(t.revenue_per_meeting_cents, p.revenue_per_meeting_cents, true) : undefined,
+      ),
+    },
+    {
+      label: "Return on spend",
+      title: "Revenue divided by spend.",
+      value: t && times(t.return_on_spend),
+      change: change((t, p) => (t.return_on_spend !== null && p.return_on_spend !== null ? countChange(t.return_on_spend, p.return_on_spend, true) : undefined)),
+    },
+  ];
 }
 
 function kpis(t?: AnalyticsTotals, p?: AnalyticsTotals): Kpi[] {
@@ -173,6 +213,21 @@ function stepColumns(steps: StepRow[]): Column<StepRow>[] {
   ];
 }
 
+/** The campaign's revenue, in the organization's currency, and its return on spend. */
+function revenueColumns(currency: string): Column<CampaignRow>[] {
+  return [
+    {
+      label: "Revenue",
+      value: (r) => r.revenue_cents / 100,
+      render: (r) => dealValue({ currency, value_cents: r.revenue_cents }),
+      numeric: true,
+      className: WIDE,
+    },
+    // The table only has room for a twelfth column on the widest screens. The Return on spend tile has the total.
+    { label: "Return", value: (r) => r.return_on_spend, render: (r) => times(r.return_on_spend), numeric: true, className: "hidden 2xl:table-cell" },
+  ];
+}
+
 const CHANNEL_NAMES: Record<ChannelRow["channel"], string> = { email: "Email", linkedin: "LinkedIn", sms: "SMS", whatsapp: "WhatsApp", social: "Social posts" };
 
 const CHANNEL_COLUMNS: Column<ChannelRow>[] = [
@@ -189,7 +244,7 @@ const CHANNEL_COLUMNS: Column<ChannelRow>[] = [
  */
 const CLIENT_KPIS = ["Sent", "Replies", "Hot leads", "Meetings", "Deals won", "Bounce rate"];
 const CLIENT_SPEND_KPIS = [...CLIENT_KPIS, "Spend", "Cost/meeting"];
-const SPEND_COLUMNS = ["Spend", "Cost/hot"];
+const SPEND_COLUMNS = ["Spend", "Cost/hot", "Return"];
 
 /**
  * The Analytics page's numbers, chart and breakdowns. `shared` is a client report's view of them, where spend and mailboxes
@@ -197,11 +252,25 @@ const SPEND_COLUMNS = ["Spend", "Cost/hot"];
  */
 export function AnalyticsView({ data, validating, shared }: { data?: Analytics; validating?: boolean; shared?: { spend: boolean; mailboxes: boolean } }) {
   const slug = data ? `${data.from}-to-${data.to}` : "";
+  const revenue = !!data?.revenue_tracked;
   const all = kpis(data?.totals, data?.previous);
+  if (revenue && !shared) {
+    // Revenue goes next to deals won, and what it's worth per meeting and per dollar next to the costs, which keeps four full rows.
+    const extra = revenueKpis(data.currency, data.totals, data.previous);
+    all.splice(all.findIndex((k) => k.label === "Deals won") + 1, 0, ...extra.slice(0, 2));
+    all.splice(all.findIndex((k) => k.label === "Cost/meeting") + 1, 0, ...extra.slice(2));
+  }
   const picked = shared ? (shared.spend ? CLIENT_SPEND_KPIS : CLIENT_KPIS) : null;
   const tiles = picked ? all.filter((k) => picked.includes(k.label)) : all;
-  const grid = !shared ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" : shared.spend ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-6";
-  const campaignColumns = shared && !shared.spend ? CAMPAIGN_COLUMNS.filter((c) => !SPEND_COLUMNS.includes(c.label)) : CAMPAIGN_COLUMNS;
+  const grid = shared
+    ? shared.spend
+      ? "grid-cols-2 sm:grid-cols-4"
+      : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-6"
+    : revenue
+      ? "grid-cols-2 sm:grid-cols-4 2xl:grid-cols-8"
+      : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6";
+  const withRevenue = revenue && data ? [...CAMPAIGN_COLUMNS, ...revenueColumns(data.currency)] : CAMPAIGN_COLUMNS;
+  const campaignColumns = shared && !shared.spend ? withRevenue.filter((c) => !SPEND_COLUMNS.includes(c.label)) : withRevenue;
 
   return (
     <div className={cn("flex flex-col gap-4 transition-opacity", validating && data && "opacity-60")}>

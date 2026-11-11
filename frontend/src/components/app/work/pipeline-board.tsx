@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Clock, GripVertical } from "lucide-react";
+import { Clock, CreditCard, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select } from "@/components/ui/form";
 import { Card, Favicon, Modal } from "@/components/ui/misc";
-import type { Deal, DealStage } from "@/lib/types";
+import { type Deal, type DealStage, PAYMENT_NAMES } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { dealMoney, moneyList, sumByCurrency } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
@@ -61,6 +61,11 @@ function DealCardBody({ deal, onOpen, onAssign, action }: { deal: Deal; onOpen: 
         <span className="font-medium tabular-nums">
           {deal.value > 0 ? dealMoney(deal.value, deal.currency) : <span className="text-muted-foreground">No value yet</span>}
         </span>
+        {deal.paid_through && (
+          <span className="flex min-w-0 items-center gap-1 text-muted-foreground" title={`Won when they paid through ${PAYMENT_NAMES[deal.paid_through]}`}>
+            <CreditCard className="size-3 shrink-0" /> <span className="truncate">{PAYMENT_NAMES[deal.paid_through]}</span>
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1 text-muted-foreground" title="Time in this stage">
           <Clock className="size-3" /> {daysIn(deal)}
         </span>
