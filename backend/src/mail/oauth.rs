@@ -101,15 +101,15 @@ pub fn pkce_challenge(verifier: &str) -> String {
 }
 
 /// Google only returns a refresh token with access_type=offline, and again for an account that already allowed the app
-/// only with prompt=consent.
-pub fn authorize_url(cfg: &Config, provider: Provider, state: &str, verifier: &str, login_hint: Option<&str>) -> anyhow::Result<String> {
+/// only with prompt=consent. `scope` is the provider's own for a mailbox, or another one, like Postmaster Tools'.
+pub fn authorize_url(cfg: &Config, provider: Provider, scope: &str, state: &str, verifier: &str, login_hint: Option<&str>) -> anyhow::Result<String> {
     let app = provider.app(cfg).context("not configured")?;
     let mut url = Url::parse(&app.authorize_url)?;
     url.query_pairs_mut()
         .append_pair("client_id", &app.client_id)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", &redirect_uri(cfg))
-        .append_pair("scope", provider.scope())
+        .append_pair("scope", scope)
         .append_pair("state", state)
         .append_pair("code_challenge", &pkce_challenge(verifier))
         .append_pair("code_challenge_method", "S256");
@@ -126,6 +126,7 @@ pub fn authorize_url(cfg: &Config, provider: Provider, state: &str, verifier: &s
 /// What a sign-in is for, so a state made for one can't finish another.
 pub const MAILBOX: &str = "mailbox-oauth";
 pub const TUMBLR: &str = "tumblr-oauth";
+pub const POSTMASTER: &str = "postmaster-oauth";
 
 pub use crypto::{sign_state, state_nonce, verify_state};
 
@@ -380,6 +381,8 @@ pub(crate) mod tests {
             twilio_api_url: String::new(),
             bots_api_url: String::new(),
             outreach_api_url: String::new(),
+            // A closed port, so a sync after a sign-in fails at once instead of reaching Google.
+            postmaster_api_url: "http://127.0.0.1:9".into(),
             operator_emails: Vec::new(),
             google: Some(fake.app()),
             microsoft: Some(fake.app()),
@@ -412,7 +415,7 @@ pub(crate) mod tests {
         let fake = FakeProvider { url: "https://auth.test".into(), hits: Arc::default(), forms: Arc::default() };
         let cfg = config(&fake);
         let verifier = "a-verifier-of-at-least-forty-three-characters-0123456789";
-        let url = Url::parse(&authorize_url(&cfg, Provider::Google, "nonce.sig", verifier, Some("ana@acme.test")).unwrap()).unwrap();
+        let url = Url::parse(&authorize_url(&cfg, Provider::Google, Provider::Google.scope(), "nonce.sig", verifier, Some("ana@acme.test")).unwrap()).unwrap();
         let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
         assert_eq!(url.path(), "/authorize");
         assert_eq!(q["client_id"], "client-123");
@@ -425,11 +428,11 @@ pub(crate) mod tests {
         assert_eq!((q["access_type"].as_str(), q["prompt"].as_str()), ("offline", "consent"));
         assert_eq!(q["login_hint"], "ana@acme.test");
 
-        let url = Url::parse(&authorize_url(&cfg, Provider::Microsoft, "s", verifier, None).unwrap()).unwrap();
+        let url = Url::parse(&authorize_url(&cfg, Provider::Microsoft, Provider::Microsoft.scope(), "s", verifier, None).unwrap()).unwrap();
         let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
         assert!(q["scope"].starts_with("offline_access https://outlook.office.com/SMTP.Send https://outlook.office.com/IMAP.AccessAsUser.All"));
         assert!(!q.contains_key("access_type") && !q.contains_key("login_hint"));
-        assert!(authorize_url(&Config { google: None, ..cfg }, Provider::Google, "s", verifier, None).is_err());
+        assert!(authorize_url(&Config { google: None, ..cfg }, Provider::Google, "", "s", verifier, None).is_err());
     }
 
     #[test]

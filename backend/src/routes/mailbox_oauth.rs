@@ -22,7 +22,24 @@ use crate::state::AppState;
 
 const STATE_MINUTES: i64 = 10;
 const PAGE: &str = "/app/domains";
-const START_AGAIN: &str = "This sign-in expired or was already used. Connect the mailbox again.";
+
+/// What a Google or Microsoft sign-in started here is for. Postmaster Tools signs in through the same app and callback,
+/// so the operator registers one redirect URI.
+pub(super) struct Purpose {
+    /// Signed into the state, so a state made for one can't finish another.
+    pub state: &'static str,
+    /// As stored in mailbox_oauth_states.purpose.
+    pub name: &'static str,
+    /// What the user is connecting, in messages.
+    pub what: &'static str,
+}
+
+pub(super) const MAILBOX: Purpose = Purpose { state: oauth::MAILBOX, name: "mailbox", what: "the mailbox" };
+pub(super) const POSTMASTER: Purpose = Purpose { state: oauth::POSTMASTER, name: "postmaster", what: "Google Postmaster" };
+
+fn start_again(purpose: &Purpose) -> String {
+    format!("This sign-in expired or was already used. Connect {} again.", purpose.what)
+}
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/mailboxes/oauth/callback", get(callback)).route("/mailboxes/oauth/{provider}", post(start))
@@ -35,15 +52,30 @@ struct StartBody {
 }
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(provider): Path<String>, Json(body): Json<StartBody>) -> AppResult<Json<Value>> {
-    auth.require_admin()?;
     let provider = Provider::parse(&provider).ok_or(AppError::NotFound)?;
+    let hint = body.email.as_deref().and_then(util_input::email);
+    let url = start_sign_in(&state, &auth, provider, &MAILBOX, provider.scope(), hint.as_deref()).await?;
+    Ok(Json(json!({ "url": url })))
+}
+
+/// Saves a pending sign-in and returns the provider's URL to send the browser to.
+pub(super) async fn start_sign_in(
+    state: &AppState,
+    auth: &Auth,
+    provider: Provider,
+    purpose: &Purpose,
+    scope: &str,
+    login_hint: Option<&str>,
+) -> AppResult<String> {
+    auth.require_admin()?;
     if provider.app(&state.cfg).is_none() {
         return Err(AppError::BadRequest(format!("{} sign-in isn't set up on this Splee", provider.label())));
     }
     let (nonce, verifier) = (random_token(), random_token());
     sqlx::query("delete from mailbox_oauth_states where expires_at < now()").execute(&state.db).await?;
     sqlx::query(
-        "insert into mailbox_oauth_states (nonce_hash, user_id, org_id, provider, code_verifier_enc, expires_at) values ($1, $2, $3, $4, $5, $6)",
+        "insert into mailbox_oauth_states (nonce_hash, user_id, org_id, provider, code_verifier_enc, expires_at, purpose)
+         values ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(sha256_hex(&nonce))
     .bind(auth.user_id)
@@ -51,31 +83,40 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(provider): Path<S
     .bind(provider.name())
     .bind(crypto::encrypt(&state.cfg.app_secret, &verifier))
     .bind(Utc::now() + Duration::minutes(STATE_MINUTES))
+    .bind(purpose.name)
     .execute(&state.db)
     .await?;
-    let signed = oauth::sign_state(&state.cfg.app_secret, oauth::MAILBOX, &nonce, auth.user_id, auth.org_id);
-    let hint = body.email.as_deref().and_then(util_input::email);
-    let url = oauth::authorize_url(&state.cfg, provider, &signed, &verifier, hint.as_deref()).map_err(AppError::Internal)?;
-    Ok(Json(json!({ "url": url })))
+    let signed = oauth::sign_state(&state.cfg.app_secret, purpose.state, &nonce, auth.user_id, auth.org_id);
+    oauth::authorize_url(&state.cfg, provider, scope, &signed, &verifier, login_hint).map_err(AppError::Internal)
 }
 
 #[derive(Deserialize)]
-struct CallbackQuery {
+pub(super) struct CallbackQuery {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
 }
 
-/// Always redirects to the Mailboxes page: with `connected`, the mailbox's id, which the page then tests like a mailbox added
-/// with a password, or with `mailbox_error`.
+/// Always redirects: a Postmaster sign-in to the Deliverability page, and a mailbox's to the Mailboxes page, with
+/// `connected`, the mailbox's id, which the page then tests like a mailbox added with a password, or with `mailbox_error`.
 async fn callback(State(state): State<AppState>, MaybeAuth(auth): MaybeAuth, Query(q): Query<CallbackQuery>) -> Redirect {
+    let nonce = q.state.as_deref().and_then(oauth::state_nonce).map(sha256_hex);
+    let purpose: Option<String> =
+        sqlx::query_scalar("select purpose from mailbox_oauth_states where nonce_hash = $1").bind(nonce).fetch_optional(&state.db).await.ok().flatten();
+    if purpose.as_deref() == Some(POSTMASTER.name) {
+        return super::deliverability::postmaster_callback(&state, auth, q).await;
+    }
     let params = match finish(&state, auth, q).await {
         Ok(id) => vec![("connected", id.to_string())],
         Err(error) => vec![("mailbox_error", error)],
     };
-    let url = Url::parse_with_params(&format!("http://splee{PAGE}"), &params).expect("a fixed URL");
-    Redirect::to(&format!("{PAGE}?{}", url.query().unwrap_or_default()))
+    redirect(PAGE, &params)
+}
+
+pub(super) fn redirect(page: &str, params: &[(&str, String)]) -> Redirect {
+    let url = Url::parse_with_params("http://splee/", params).expect("a fixed URL");
+    Redirect::to(&format!("{page}?{}", url.query().unwrap_or_default()))
 }
 
 #[derive(sqlx::FromRow)]
@@ -87,27 +128,37 @@ struct Pending {
     expires_at: Ts,
 }
 
-/// The saved mailbox, or what went wrong as the page shows it.
-async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<Uuid, String> {
+pub(super) struct SignedIn {
+    pub auth: Auth,
+    pub provider: Provider,
+    pub tokens: oauth::Tokens,
+    pub account: oauth::Account,
+}
+
+/// Checks the callback's state against its pending sign-in and trades the code for tokens, or says what went wrong as
+/// the page shows it.
+pub(super) async fn signed_in(state: &AppState, auth: Option<Auth>, q: CallbackQuery, purpose: &Purpose) -> Result<SignedIn, String> {
+    let what = purpose.what;
     let internal = |e: &dyn std::fmt::Display| {
-        tracing::error!(error = %e, "mailbox sign-in failed");
-        "Something went wrong saving the mailbox. Try again.".to_string()
+        tracing::error!(error = %e, "{what} sign-in failed");
+        format!("Something went wrong saving {what}. Try again.")
     };
     let signed = q.state.as_deref().unwrap_or_default();
-    let nonce = oauth::state_nonce(signed).ok_or(START_AGAIN)?;
+    let nonce = oauth::state_nonce(signed).ok_or_else(|| start_again(purpose))?;
     // Deleted before anything else is checked, so a state works once whatever happens.
     let pending = sqlx::query_as::<_, Pending>(
-        "delete from mailbox_oauth_states where nonce_hash = $1 returning user_id, org_id, provider, code_verifier_enc, expires_at",
+        "delete from mailbox_oauth_states where nonce_hash = $1 and purpose = $2 returning user_id, org_id, provider, code_verifier_enc, expires_at",
     )
     .bind(sha256_hex(nonce))
+    .bind(purpose.name)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| internal(&e))?
-    .ok_or(START_AGAIN)?;
-    if !oauth::verify_state(&state.cfg.app_secret, oauth::MAILBOX, signed, pending.user_id, pending.org_id) || pending.expires_at <= Utc::now() {
-        return Err(START_AGAIN.into());
+    .ok_or_else(|| start_again(purpose))?;
+    if !oauth::verify_state(&state.cfg.app_secret, purpose.state, signed, pending.user_id, pending.org_id) || pending.expires_at <= Utc::now() {
+        return Err(start_again(purpose));
     }
-    let provider = Provider::parse(&pending.provider).ok_or(START_AGAIN)?;
+    let provider = Provider::parse(&pending.provider).ok_or_else(|| start_again(purpose))?;
     let label = provider.label();
     if let Some(error) = q.error {
         return Err(match error.as_str() {
@@ -115,18 +166,29 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
             _ => format!("{label} couldn't sign you in: {}", q.error_description.unwrap_or(error)),
         });
     }
-    let auth = auth.ok_or("Sign in to Splee, then connect the mailbox again.")?;
+    let auth = auth.ok_or(format!("Sign in to Splee, then connect {what} again."))?;
     if (auth.user_id, auth.org_id) != (pending.user_id, pending.org_id) {
-        return Err("You switched organizations while signing in. Connect the mailbox again from this one.".into());
+        return Err(format!("You switched organizations while signing in. Connect {what} again from this one."));
     }
     auth.require_admin().map_err(|e| e.public_message())?;
-    let code = q.code.filter(|c| !c.is_empty()).ok_or(START_AGAIN)?;
+    let code = q.code.filter(|c| !c.is_empty()).ok_or_else(|| start_again(purpose))?;
 
-    let secret = &state.cfg.app_secret;
-    let verifier = crypto::decrypt(secret, &pending.code_verifier_enc).map_err(|e| internal(&e))?;
+    let verifier = crypto::decrypt(&state.cfg.app_secret, &pending.code_verifier_enc).map_err(|e| internal(&e))?;
     let tokens = oauth::exchange_code(&state.cfg, provider, &code, &verifier).await.map_err(|e| e.to_string())?;
-    let refresh = tokens.refresh_token.as_deref().filter(|t| !t.is_empty()).ok_or(format!("{label} didn't let Splee stay signed in. Connect the mailbox again."))?;
     let account = tokens.id_token.as_deref().and_then(oauth::account).ok_or(format!("{label} didn't share the account's email address."))?;
+    Ok(SignedIn { auth, provider, tokens, account })
+}
+
+/// The saved mailbox, or what went wrong as the page shows it.
+async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<Uuid, String> {
+    let internal = |e: &dyn std::fmt::Display| {
+        tracing::error!(error = %e, "mailbox sign-in failed");
+        "Something went wrong saving the mailbox. Try again.".to_string()
+    };
+    let SignedIn { auth, provider, tokens, account } = signed_in(state, auth, q, &MAILBOX).await?;
+    let label = provider.label();
+    let secret = &state.cfg.app_secret;
+    let refresh = tokens.refresh_token.as_deref().filter(|t| !t.is_empty()).ok_or(format!("{label} didn't let Splee stay signed in. Connect the mailbox again."))?;
     let email = util_input::email(&account.email).ok_or(format!("{label} signed in as {}, which isn't an email address.", account.email))?;
 
     let hosts = provider.hosts(account.consumer);
@@ -272,7 +334,7 @@ mod tests {
         assert!(mb.smtp_password_enc.is_empty() && !mb.needs_reconnect);
 
         // The same state again is refused, and nothing more is asked of the provider.
-        assert_eq!(s.callback("acme", &q["state"]).await["mailbox_error"], START_AGAIN);
+        assert_eq!(s.callback("acme", &q["state"]).await["mailbox_error"], start_again(&MAILBOX));
         assert_eq!(s.fake.hits(), 1);
 
         // The password mailbox is as it was.
@@ -287,20 +349,50 @@ mod tests {
         let s = Server::start(db).await;
         let error = |q: std::collections::HashMap<String, String>| q.get("mailbox_error").cloned().unwrap_or_default();
 
-        assert_eq!(error(s.callback("acme", "made-up.state").await), START_AGAIN);
+        assert_eq!(error(s.callback("acme", "made-up.state").await), start_again(&MAILBOX));
         let q = s.authorize("acme").await;
         let (nonce, _) = q["state"].split_once('.').unwrap();
-        assert_eq!(error(s.callback("acme", &format!("{nonce}.{}", "0".repeat(64))).await), START_AGAIN, "a forged signature");
-        assert_eq!(error(s.callback("acme", &q["state"]).await), START_AGAIN, "the forged try used the state up");
+        assert_eq!(error(s.callback("acme", &format!("{nonce}.{}", "0".repeat(64))).await), start_again(&MAILBOX), "a forged signature");
+        assert_eq!(error(s.callback("acme", &q["state"]).await), start_again(&MAILBOX), "the forged try used the state up");
 
         let q = s.authorize("acme").await;
         assert!(error(s.callback("beta", &q["state"]).await).starts_with("You switched organizations"));
 
         let q = s.authorize("acme").await;
         sqlx::query("update mailbox_oauth_states set expires_at = now() - interval '1 second'").execute(&s.db).await.unwrap();
-        assert_eq!(error(s.callback("acme", &q["state"]).await), START_AGAIN);
+        assert_eq!(error(s.callback("acme", &q["state"]).await), start_again(&MAILBOX));
 
         assert_eq!(s.fake.hits(), 0, "no code was traded");
+        let oauth: i64 = sqlx::query_scalar("select count(*) from mailboxes where provider <> 'password'").fetch_one(&s.db).await.unwrap();
+        assert_eq!(oauth, 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_postmaster_sign_in_comes_back_to_deliverability_without_adding_a_mailbox(db: PgPool) {
+        let s = Server::start(db).await;
+        let res = s
+            .client
+            .post(format!("{}/deliverability/postmaster/oauth", s.base))
+            .header("cookie", "splee_session=session-acme")
+            .send()
+            .await
+            .unwrap();
+        let url: Value = res.json().await.unwrap();
+        let q: std::collections::HashMap<String, String> = Url::parse(url["url"].as_str().unwrap()).unwrap().query_pairs().into_owned().collect();
+        assert_eq!(q["scope"], crate::deliverability::postmaster::SCOPE);
+
+        let res = s
+            .client
+            .get(Url::parse_with_params(&format!("{}/mailboxes/oauth/callback", s.base), [("code", "the-code"), ("state", q["state"].as_str())]).unwrap())
+            .header("cookie", "splee_session=session-acme")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.headers()["location"], "/app/deliverability?postmaster=connected");
+        let (email, refresh): (String, String) =
+            sqlx::query_as("select email, refresh_token_enc from postmaster_connections where org_id = $1").bind(s.acme).fetch_one(&s.db).await.unwrap();
+        assert_eq!((email.as_str(), crypto::decrypt("test-secret", &refresh).unwrap().as_str()), ("ana@acme.test", "refresh-for-the-code"));
         let oauth: i64 = sqlx::query_scalar("select count(*) from mailboxes where provider <> 'password'").fetch_one(&s.db).await.unwrap();
         assert_eq!(oauth, 0);
     }

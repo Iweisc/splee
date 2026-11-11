@@ -1161,6 +1161,95 @@ export interface Mailbox {
   provider: "password" | SignInProvider;
   /** The provider signed Splee out, so it waits for someone to sign in again. */
   needs_reconnect: boolean;
+  /** Set while the Deliverability check holds it from sending. It's paused, with why in last_error. */
+  health_held_at: Ts | null;
+}
+
+/** From routes/deliverability.rs. */
+export type Verdict = "good" | "watch" | "at_risk";
+
+export interface HealthReason {
+  code: string;
+  level: Verdict;
+  text: string;
+  /** What to do about it. */
+  fix: string;
+}
+
+/** Leads emailed in a window, and how many of them bounced, opted out or replied. */
+export interface HealthRates {
+  emailed: number;
+  bounced: number;
+  opted_out: number;
+  replied: number;
+}
+
+export interface BlocklistCheck {
+  list: string;
+  label: string;
+  kind: "domain" | "ip";
+  target: string;
+  /** "unknown" when the list couldn't be asked, which isn't a listing. */
+  status: "clear" | "listed" | "unknown";
+  detail: string;
+  delist_url: string;
+  checked_at: Ts;
+}
+
+export interface PostmasterDay {
+  domain: string;
+  day: string;
+  /** "HIGH", "MEDIUM", "LOW", "BAD" or "" when Google gave none. */
+  reputation: string;
+  spam_rate: number | null;
+  spf_rate: number | null;
+  dkim_rate: number | null;
+  dmarc_rate: number | null;
+}
+
+export interface MailboxHealth {
+  id: UUID;
+  email: string;
+  domain: string;
+  status: Mailbox["status"];
+  held: boolean;
+  last_error: string;
+  verdict: Verdict;
+  reasons: HealthReason[];
+  week: HealthRates;
+  month: HealthRates;
+  ips: string[];
+  ip_source: "received" | "smtp_host";
+}
+
+export interface DomainHealth {
+  domain: string;
+  verdict: Verdict;
+  reasons: HealthReason[];
+  listings: BlocklistCheck[];
+  postmaster: PostmasterDay | null;
+  mailboxes: number;
+}
+
+/** A chart day: the bounce and opt-out rates of the week ending that day, and Gmail's spam rate that day. */
+export interface HealthPoint {
+  date: string;
+  bounce_rate: number | null;
+  opt_out_rate: number | null;
+  spam_rate: number | null;
+}
+
+export interface Deliverability {
+  checked_at: Ts | null;
+  domains: DomainHealth[];
+  mailboxes: MailboxHealth[];
+  /** The first is every domain together, with domain "". */
+  series: { domain: string; days: HealthPoint[] }[];
+  postmaster: {
+    /** This Splee has a Google app to sign in with. */
+    available: boolean;
+    connection: { email: string; domains: string[]; error: string; synced_at: Ts | null; signed_out: boolean } | null;
+  };
 }
 
 /** Monday first: null for a day off, else [start, end] in minutes after midnight. */

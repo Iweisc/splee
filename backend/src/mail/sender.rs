@@ -275,6 +275,14 @@ async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> 
     if let Some(mb) = available.iter().find(|m| m.id == wanted) {
         return Ok(Some(mb.clone()));
     }
+    // A mailbox Deliverability held keeps its threads waiting for the user to resume it, rather than moving them to another sender.
+    let held: bool = sqlx::query_scalar("select exists (select 1 from mailboxes where id = $1 and status = 'paused' and health_held_at is not null)")
+        .bind(wanted)
+        .fetch_one(db)
+        .await?;
+    if held {
+        return Ok(None);
+    }
     let thread_mailbox = sqlx::query_as::<_, Mailbox>("select * from mailboxes where id = $1 and status = 'active'")
         .bind(wanted)
         .fetch_optional(db)
@@ -990,6 +998,17 @@ mod tests {
         }
         let follow_up = queued("follow_up").await.unwrap();
         assert!(pick_mailbox(&db, org, &follow_up).await.unwrap().is_none());
+
+        // Held by Deliverability, the thread waits for it even with another mailbox free, replies included.
+        sqlx::query("update mailboxes set status = 'paused', health_held_at = now() where id = $1").bind(mailbox).execute(&db).await.unwrap();
+        sqlx::query("insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'free@example.test', 'smtp.example.test', 'free', 'x')")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        for kind in ["follow_up", "manual_reply"] {
+            assert!(pick_mailbox(&db, org, &queued(kind).await.unwrap()).await.unwrap().is_none(), "{kind}");
+        }
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

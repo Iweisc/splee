@@ -247,6 +247,11 @@ async fn update(
     let dkim_selector = body.dkim_selector()?;
     let secret = &state.cfg.app_secret;
     let encrypt_new = |p: &Option<String>| p.as_deref().filter(|p| !p.is_empty()).map(|p| encrypt(secret, p));
+    // Resuming a mailbox the Deliverability check held sends through the problems it has now. Only a new one holds it again.
+    let resumed_through = match (body.status.as_deref(), mailbox.health_held_at) {
+        (Some("active"), Some(_)) => Some(crate::deliverability::at_risk_now(&state.db, auth.org_id, mailbox.id).await?),
+        _ => None,
+    };
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "update mailboxes set
            email = coalesce($2, email),
@@ -278,7 +283,9 @@ async fn update(
            warmup_next_at = case when $20 = false then null else warmup_next_at end,
            warmup_daily_cap = coalesce($21, warmup_daily_cap),
            total_daily_limit = coalesce($22, total_daily_limit),
-           hold_until_warm = coalesce($23, hold_until_warm)
+           hold_until_warm = coalesce($23, hold_until_warm),
+           health_ack = coalesce($24, health_ack),
+           health_held_at = case when $14 = 'active' then null else health_held_at end
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -304,6 +311,7 @@ async fn update(
     .bind(body.warmup_daily_cap)
     .bind(body.total_daily_limit)
     .bind(body.hold_until_warm)
+    .bind(resumed_through)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))
