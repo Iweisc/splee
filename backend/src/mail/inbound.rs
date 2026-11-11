@@ -347,6 +347,7 @@ mod tests {
             operator_emails: Vec::new(),
             google: None,
             microsoft: None,
+            slack: None,
         };
         let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();

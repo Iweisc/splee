@@ -29,6 +29,7 @@ mod notion;
 mod porkbun;
 mod reddit;
 mod routes;
+mod slack;
 mod social;
 mod stackexchange;
 mod state;

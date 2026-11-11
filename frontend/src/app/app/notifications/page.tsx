@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/form";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { NotificationPrefs } from "@/lib/types";
+import { SlackSection } from "./slack-section";
 
 type Pref = Exclude<keyof NotificationPrefs, "user_id">;
 
@@ -55,6 +56,7 @@ export default function NotificationsPage() {
               />
             ))
           )}
+          <SlackSection />
         </SettingsColumn>
       </PageBody>
     </>

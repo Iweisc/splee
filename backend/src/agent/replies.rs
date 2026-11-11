@@ -191,6 +191,10 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
         if mode.as_deref().is_some_and(|m| m != "off") {
             super::enqueue(db, kind::DRAFT_REPLY, Some(t.project.id), t.project.org_id, json!({"message_id": t.inbound.id})).await?;
         }
+        // In approve mode the Slack message waits for the draft, so it can offer to send it. draft_run posts it then.
+        if verdict.classification == "hot" && mode.as_deref() != Some("approve") {
+            crate::slack::post_hot_reply(&ctx.state, lead_id).await;
+        }
     }
     Ok(())
 }
@@ -318,5 +322,8 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    if !auto && !manual && t.inbound.classification.as_deref() == Some("hot") {
+        crate::slack::post_hot_reply(&ctx.state, t.lead.id).await;
+    }
     Ok(Outcome::new(if auto { "Reply sent to the outbox" } else { "Reply drafted for approval" }))
 }

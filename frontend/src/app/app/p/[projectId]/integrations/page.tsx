@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
+import Link from "next/link";
 import {
   AtSign,
   CalendarCheck,
@@ -47,6 +48,7 @@ import {
   type DiscourseForum,
   type Endpoint,
   type ProjectSettings,
+  type SlackStatus,
   type WebhookDelivery,
   type WebhookEvent,
 } from "@/lib/types";
@@ -687,6 +689,7 @@ function EndpointList({
 /** The chats that get the project's alerts. */
 function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; weekly: boolean; setWeekly: (on: boolean) => void }) {
   const { data } = useSWR<Endpoint[]>(`/projects/${projectId}/chat-channels`, fetcher);
+  const { data: slack } = useSWR<SlackStatus>("/organization/slack", fetcher);
   return (
     <Section
       title={
@@ -706,6 +709,15 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
         placeholder="https://hooks.slack.com/…"
       />
       <AppSteps steps={CHAT_APPS} />
+      {slack?.available && (
+        <p className="mt-3 text-sm text-muted-foreground">
+          To send replies and approve emails from Slack, add the Splee app on the{" "}
+          <Link href="/app/notifications" className="font-medium text-foreground underline underline-offset-2">
+            Notifications page
+          </Link>
+          .
+        </p>
+      )}
       <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
         <span>
           <span className="block text-sm font-medium">Weekly report</span>

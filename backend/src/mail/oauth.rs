@@ -11,7 +11,6 @@ use anyhow::{Context, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
-use hmac::{Hmac, KeyInit, Mac};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::Value;
@@ -124,26 +123,15 @@ pub fn authorize_url(cfg: &Config, provider: Provider, state: &str, verifier: &s
     Ok(url.into())
 }
 
-fn state_mac(secret: &str, nonce: &str, user_id: Uuid, org_id: Uuid) -> Hmac<Sha256> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
-    mac.update(format!("mailbox-oauth.{nonce}.{user_id}.{org_id}").as_bytes());
-    mac
-}
-
 /// The state sent to the provider: the nonce and an HMAC binding it to the user and org.
 pub fn sign_state(secret: &str, nonce: &str, user_id: Uuid, org_id: Uuid) -> String {
-    format!("{nonce}.{}", hex::encode(state_mac(secret, nonce, user_id, org_id).finalize().into_bytes()))
+    crypto::sign_state(secret, "mailbox-oauth", nonce, user_id, org_id)
 }
 
-/// The nonce of a state this server signed. The user and org are checked against the stored row's.
-pub fn state_nonce(state: &str) -> Option<&str> {
-    state.split_once('.').map(|(nonce, _)| nonce).filter(|n| !n.is_empty())
-}
+pub use crypto::state_nonce;
 
 pub fn verify_state(secret: &str, state: &str, user_id: Uuid, org_id: Uuid) -> bool {
-    let Some((nonce, sig)) = state.split_once('.') else { return false };
-    let Ok(sig) = hex::decode(sig) else { return false };
-    state_mac(secret, nonce, user_id, org_id).verify_slice(&sig).is_ok()
+    crypto::verify_state(secret, "mailbox-oauth", state, user_id, org_id)
 }
 
 /// The SASL XOAUTH2 initial response, before base64. lettre builds the same one for SMTP itself.
@@ -397,6 +385,7 @@ pub(crate) mod tests {
             operator_emails: Vec::new(),
             google: Some(fake.app()),
             microsoft: Some(fake.app()),
+            slack: None,
         }
     }
 

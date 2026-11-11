@@ -212,8 +212,13 @@ async fn reply(
     Path(lead_id): Path<Uuid>,
     Json(body): Json<ReplyBody>,
 ) -> AppResult<Json<EmailMessage>> {
-    let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
-    let text = body.body.trim();
+    Ok(Json(send_reply(&state.db, auth.org_id, lead_id, &body.body).await?))
+}
+
+/// Queues a reply written by a person to the lead's last message. The inbox's Send and Slack's Edit both end up here.
+pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, text: &str) -> AppResult<EmailMessage> {
+    let lead: Lead = util_scope::load(db, "leads", lead_id, org_id).await?;
+    let text = text.trim();
     if text.is_empty() {
         return Err(AppError::BadRequest("Write a reply first".into()));
     }
@@ -221,7 +226,7 @@ async fn reply(
         "select * from email_messages where lead_id = $1 and direction = 'inbound' order by created_at desc limit 1",
     )
     .bind(lead.id)
-    .fetch_optional(&state.db)
+    .fetch_optional(db)
     .await?
     .ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
 
@@ -231,7 +236,7 @@ async fn reply(
         format!("Re: {}", inbound.subject)
     };
     let to_email = inbound.from_email.clone().or(lead.email.clone());
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     // Takes turns with a reply draft being saved, so the draft either lands first and is cancelled below or sees this reply.
     sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;
     let message = sqlx::query_as::<_, EmailMessage>(
@@ -258,7 +263,7 @@ async fn reply(
     // Following up is what a due reminder asked for. One still ahead stays, to check back if they don't answer.
     sqlx::query("update leads set remind_at = null where id = $1 and remind_at <= now()").bind(lead.id).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(message))
+    Ok(message)
 }
 
 #[derive(Deserialize, Default)]
@@ -299,20 +304,27 @@ async fn approve(
     Path(id): Path<Uuid>,
     body: Option<Json<ApproveBody>>,
 ) -> AppResult<Json<EmailMessage>> {
-    let message: EmailMessage = util_scope::load(&state.db, "email_messages", id, auth.org_id).await?;
+    Ok(Json(approve_reply(&state.db, auth.org_id, id, body.unwrap_or_default().0.body).await?))
+}
+
+/// Sends a pending auto-reply, with `body` in place of the draft's when it was edited. The inbox's Approve and Slack's Send
+/// reply both end up here.
+pub(crate) async fn approve_reply(db: &sqlx::PgPool, org_id: Uuid, id: Uuid, body: Option<String>) -> AppResult<EmailMessage> {
+    let message: EmailMessage = util_scope::load(db, "email_messages", id, org_id).await?;
     if message.kind != "auto_reply" || message.status != "draft" {
         return Err(AppError::BadRequest("Only pending auto-replies can be approved".into()));
     }
-    let new_body = body.unwrap_or_default().0.body.filter(|b| !b.trim().is_empty());
-    let message = sqlx::query_as::<_, EmailMessage>(
+    let new_body = body.filter(|b| !b.trim().is_empty());
+    // Only a draft moves, so a second approval can't put a reply the sender already took back in the queue.
+    sqlx::query_as::<_, EmailMessage>(
         "update email_messages set status = 'scheduled', scheduled_for = now(), body = coalesce($2, body)
-         where id = $1 returning *",
+         where id = $1 and status = 'draft' returning *",
     )
     .bind(message.id)
     .bind(new_body)
-    .fetch_one(&state.db)
-    .await?;
-    Ok(Json(message))
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::Conflict("This reply was already sent".into()))
 }
 
 #[derive(Deserialize)]
@@ -367,16 +379,21 @@ async fn remind(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<U
         return Err(AppError::BadRequest("Pick a reminder time in the next year".into()));
     }
     let at = body.at.or(body.days.map(|d| Utc::now() + Duration::days(d.into())));
-    let mut tx = state.db.begin().await?;
-    sqlx::query("update leads set remind_at = $2 where id = $1").bind(lead.id).bind(at).execute(&mut *tx).await?;
+    set_reminder(&state.db, lead.id, at).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Brings the thread back at `at`, taking it out of Needs reply until then, or clears the reminder. Slack's Snooze uses it too.
+pub(crate) async fn set_reminder(db: &sqlx::PgPool, lead_id: Uuid, at: Option<Ts>) -> sqlx::Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("update leads set remind_at = $2 where id = $1").bind(lead_id).bind(at).execute(&mut *tx).await?;
     if at.is_some() {
         sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
-            .bind(lead.id)
+            .bind(lead_id)
             .execute(&mut *tx)
             .await?;
     }
-    tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
+    tx.commit().await
 }
 
 #[cfg(test)]

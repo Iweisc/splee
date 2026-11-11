@@ -24,7 +24,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Serialize, FromRow)]
-pub(super) struct EmailRow {
+pub(crate) struct EmailRow {
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub email: EmailMessage,
@@ -126,7 +126,7 @@ async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
 const EDITABLE: &[&str] = &["draft", "approved", "scheduled", "failed", "cancelled"];
 
 #[derive(Deserialize, Default)]
-pub(super) struct UpdateBody {
+pub(crate) struct UpdateBody {
     pub subject: Option<String>,
     pub body: Option<String>,
     pub status: Option<String>,
@@ -142,7 +142,7 @@ async fn update(
 }
 
 /// Edits, approves or cancels an outbound email that hasn't gone out. Any member of the organization may.
-pub(super) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: UpdateBody) -> AppResult<EmailRow> {
+pub(crate) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: UpdateBody) -> AppResult<EmailRow> {
     let row = load(db, id, org_id).await?;
     if row.email.direction != "outbound" || !EDITABLE.contains(&row.email.status.as_str()) {
         return Err(AppError::BadRequest("This email was already sent and can't be changed".into()));
