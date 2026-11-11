@@ -22,7 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/signup", post(signup))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/auth/me", get(get_me))
+        .route("/auth/me", get(get_me).patch(update_me))
         .route("/auth/password", post(change_password))
         .route("/auth/switch-org", post(switch_org))
         .route("/invites/{token}", get(get_invite))
@@ -45,6 +45,10 @@ pub struct Me {
     tumblr_sign_in: bool,
     /// The CRMs that sign in which the server has an app for, so the integrations page offers them.
     crm_sign_in: Vec<&'static str>,
+    /// Round robin skips this member while it's on.
+    away: bool,
+    /// The owner filter each of ownership::VIEWS was left on, like {"inbox": "mine"}.
+    owner_filters: Value,
 }
 
 #[derive(Serialize, FromRow)]
@@ -52,6 +56,10 @@ struct OrgRef {
     id: Uuid,
     name: String,
     role: String,
+    #[serde(skip)]
+    away: bool,
+    #[serde(skip)]
+    owner_filters: Value,
 }
 
 pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> {
@@ -62,18 +70,60 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
         .fetch_one(db)
         .await?;
     let orgs = sqlx::query_as::<_, OrgRef>(
-        "select o.id, o.name, m.role from memberships m join organizations o on o.id = m.org_id
+        "select o.id, o.name, m.role, m.away, m.owner_filters from memberships m join organizations o on o.id = m.org_id
          where m.user_id = $1 order by m.created_at",
     )
     .bind(user_id)
     .fetch_all(db)
     .await?;
-    let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
+    let current = orgs.iter().find(|o| o.id == org_id).ok_or(AppError::Unauthorized)?;
+    let (role, away, owner_filters) = (current.role.clone(), current.away, current.owner_filters.clone());
     let operator = state.cfg.is_operator(&user.email);
     let mailbox_sign_in = crate::mail::oauth::configured(&state.cfg);
     let tumblr_sign_in = state.cfg.tumblr.is_some();
     let crm_sign_in = crate::crm::signin::configured(&state.cfg);
-    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in, tumblr_sign_in, crm_sign_in })
+    Ok(Me {
+        user,
+        org,
+        role,
+        orgs,
+        public_url: state.cfg.public_url.clone(),
+        operator,
+        mailbox_sign_in,
+        tumblr_sign_in,
+        crm_sign_in,
+        away,
+        owner_filters,
+    })
+}
+
+#[derive(Deserialize)]
+struct MeBody {
+    away: Option<bool>,
+    /// One of ownership::VIEWS and the filter to remember for it.
+    view: Option<String>,
+    owner_filter: Option<String>,
+}
+
+/// Your own settings in this organization: Away, and the owner filter each page was left on.
+async fn update_me(State(state): State<AppState>, auth: Auth, Json(body): Json<MeBody>) -> AppResult<Json<Me>> {
+    let remembered = match (&body.view, &body.owner_filter) {
+        (Some(view), Some(filter)) => {
+            util_input::one_of("view", view, crate::ownership::VIEWS)?;
+            util_input::one_of("owner_filter", filter, crate::ownership::VIEW_FILTERS)?;
+            Some(json!({ view: filter }))
+        }
+        (None, None) => None,
+        _ => return Err(AppError::BadRequest("Send view and owner_filter together".into())),
+    };
+    sqlx::query("update memberships set away = coalesce($3, away), owner_filters = owner_filters || coalesce($4, '{}') where org_id = $1 and user_id = $2")
+        .bind(auth.org_id)
+        .bind(auth.user_id)
+        .bind(body.away)
+        .bind(remembered)
+        .execute(&state.db)
+        .await?;
+    Ok(Json(me(&state, auth.user_id, auth.org_id).await?))
 }
 
 #[derive(Deserialize)]

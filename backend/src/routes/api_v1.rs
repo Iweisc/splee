@@ -25,6 +25,7 @@ use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
+use crate::ownership;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -35,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/companies", get(list_companies))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
+        .route("/v1/leads/{id}/assign", post(assign_lead))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/stats", get(project_stats))
@@ -154,11 +156,20 @@ pub(super) async fn list_leads(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
-    Query(q): Query<leads::ListQuery>,
+    Query(mut q): Query<leads::ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<LeadRow>>> {
     check_project(&state.db, id, auth.org_id).await?;
-    Ok(Json(leads::page_of(&state.db, id, q, &page).await?))
+    q.owner = owner_by_email(&state.db, auth.org_id, q.owner).await?;
+    Ok(Json(leads::page_of(&state.db, id, None, q, &page).await?))
+}
+
+/// An owner filter may name the member by email here, since a CRM or calendar knows people by their address.
+async fn owner_by_email(db: &PgPool, org_id: Uuid, owner: Option<String>) -> AppResult<Option<String>> {
+    match owner {
+        Some(email) if email.contains('@') => Ok(ownership::resolve_owner(db, org_id, &json!(email)).await?.map(|id| id.to_string())),
+        other => Ok(other),
+    }
 }
 
 /// The project's own companies with their scores. GET /v1/companies searches the company database instead.
@@ -252,9 +263,31 @@ async fn update_lead(
         .await?;
     // No meeting_booked webhook here: it would echo a booking straight back to the tool that sent it.
     if hooks::booked(&before, &lead) {
+        ownership::claim(&state.db, lead.id).await;
         crate::deals::booked(&state, &lead).await;
         hooks::announce_booked(&state, &lead);
     }
+    Ok(Json(leads::detail(&state.db, lead).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AssignBody {
+    /// A team member's user id or email, or null for nobody.
+    #[serde(default)]
+    owner: Value,
+}
+
+/// Gives the lead to someone on the team, or takes it back with null. A rule never moves it afterwards.
+pub(super) async fn assign_lead(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AssignBody>,
+) -> AppResult<Json<LeadDetail>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    let owner = ownership::resolve_owner(&state.db, auth.org_id, &body.owner).await?;
+    ownership::assign(&state.db, auth.org_id, &[lead.id], owner).await?;
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
     Ok(Json(leads::detail(&state.db, lead).await?))
 }
 
@@ -517,6 +550,8 @@ pub(super) struct Thread {
     lead_email: Option<String>,
     company_name: String,
     lead_status: String,
+    owner_id: Option<Uuid>,
+    owner_email: Option<String>,
     classification: Option<String>,
     pending_auto_reply: bool,
     last_message: ThreadMessage,
@@ -535,7 +570,7 @@ const SNIPPET_CHARS: usize = 300;
 
 impl From<InboxThread> for Thread {
     fn from(t: InboxThread) -> Self {
-        let (lead, m) = (t.lead.lead, t.last_message);
+        let (owner_email, lead, m) = (t.lead.owner_email, t.lead.lead, t.last_message);
         Self {
             lead_id: lead.id,
             project_id: lead.project_id,
@@ -544,6 +579,8 @@ impl From<InboxThread> for Thread {
             lead_email: lead.email,
             company_name: lead.company_name,
             lead_status: lead.status,
+            owner_id: lead.owner_id,
+            owner_email,
             classification: t.classification,
             pending_auto_reply: t.pending_auto_reply,
             last_message: ThreadMessage {
@@ -561,10 +598,11 @@ impl From<InboxThread> for Thread {
 pub(super) async fn list_inbox(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
-    Query(q): Query<inbox::ListQuery>,
+    Query(mut q): Query<inbox::ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<Thread>>> {
-    let Paginated { items, total } = inbox::page_of(&state.db, auth.org_id, q, &page).await?;
+    q.owner = owner_by_email(&state.db, auth.org_id, q.owner).await?;
+    let Paginated { items, total } = inbox::page_of(&state.db, auth.org_id, None, q, &page).await?;
     Ok(Json(Paginated { items: items.into_iter().map(Thread::from).collect(), total }))
 }
 

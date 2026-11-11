@@ -736,6 +736,7 @@ pub async fn team_set_status(state: &AppState, before: &str, lead: &Lead) {
 /// its deal along. The API only posts to chat (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
     if booked(before, lead) {
+        crate::ownership::claim(&state.db, lead.id).await;
         // First, so the CRM note announce_booked sends has the deal's new stage.
         crate::deals::booked(state, lead).await;
         announce_booked(state, lead);

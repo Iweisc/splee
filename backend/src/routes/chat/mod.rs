@@ -615,7 +615,8 @@ async fn capture(state: &AppState, w: &Widget, ip_hash: &str, body: LeadBody) ->
     }
     let id = add_message(db, w.project_id, conv.id, "notice", &thanks, 0, None).await?;
     chat::changed(state, w.project_id, conv.id);
-    if let Some(lead) = lead {
+    if let Some(mut lead) = lead {
+        lead.owner_id = lead.owner_id.or(crate::ownership::claim(db, lead.id).await);
         announce(state, w, conv.id, lead);
     }
     Ok(Json(json!({"messages": widget_messages(db, conv.id, id - 1).await?})))

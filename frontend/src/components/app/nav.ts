@@ -31,6 +31,7 @@ import {
   Swords,
   Target,
   Upload,
+  UserCheck,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -71,6 +72,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Email templates", href: (p) => `/app/p/${p}/email-templates`, icon: FileText }, // D2
       { label: "Follow-ups", href: (p) => `/app/p/${p}/follow-ups`, icon: Repeat }, // D2
       { label: "Auto-replies", href: (p) => `/app/p/${p}/auto-replies`, icon: MessageSquareReply }, // D2
+      { label: "Assignment", href: (p) => `/app/p/${p}/assignment`, icon: UserCheck },
       { label: "Saved replies", href: (p) => `/app/p/${p}/saved-replies`, icon: MessageSquareText },
       { label: "Materials", href: (p) => `/app/p/${p}/materials`, icon: BookOpen }, // D2
       { label: "Website chat", href: (p) => `/app/p/${p}/website-chat`, icon: MessagesSquare },

@@ -17,6 +17,7 @@ use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::{EmailMessage, Lead, Ts};
+use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -36,6 +37,8 @@ pub(super) struct ListQuery {
     pub project_id: Option<Uuid>,
     pub filter: Option<String>,
     pub q: Option<String>,
+    /// Mine, unassigned, mine_or_unassigned or a member's id. See ownership::OwnerFilter.
+    pub owner: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -57,8 +60,9 @@ struct ThreadRef {
 }
 
 // One thread per lead with at least one inbound message. Drafts and cancelled emails never count as the
-// last message, so a pending auto-reply doesn't hide that the lead is waiting for an answer.
-const THREADS: &str = "with t as (
+// last message, so a pending auto-reply doesn't hide that the lead is waiting for an answer. $5 and $6 are an OwnerFilter.
+fn threads() -> String {
+    format!("with t as (
        select l.id as lead_id, l.status as lead_status, l.remind_at, p.name as project_name,
          last.id as last_message_id, last.direction as last_direction, last.at as last_at,
          reply.classification, reply.handled_at is not null as handled,
@@ -83,6 +87,7 @@ const THREADS: &str = "with t as (
          -- replied instead of looking up the last message of every lead in the org: 490 ms to 30 ms at 50k leads.
          and l.id in (select i.lead_id from email_messages i where i.direction = 'inbound')
          and ($4::text is null or l.full_name ilike $4 or l.email::text ilike $4 or l.company_name ilike $4)
+         and {}
      ), f as (
        select *,
          lead_status in ('hot', 'meeting_booked') as is_hot,
@@ -101,15 +106,18 @@ const THREADS: &str = "with t as (
        when 'needs_reply' then is_needs_reply
        when 'auto_replied' then auto_replied
        when 'other' then not (is_hot or is_needs_reply or auto_replied)
-       else true end";
+       else true end", ownership::sql("l", 5, 6))
+}
 
 /// Threads in the Needs reply filter, across the organization or in one project, for the digest emails and weekly chat reports.
 pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid, project_id: Option<Uuid>) -> sqlx::Result<i64> {
-    sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
+    sqlx::query_scalar(&format!("select count(*) from ({}) x", threads()))
         .bind(org_id)
         .bind(project_id)
         .bind("needs_reply")
         .bind(None::<String>)
+        .bind(OwnerFilter::Everyone.mode())
+        .bind(None::<Uuid>)
         .fetch_one(db)
         .await
 }
@@ -120,27 +128,33 @@ async fn list(
     Query(q): Query<ListQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<Paginated<InboxThread>>> {
-    Ok(Json(page_of(&state.db, auth.org_id, q, &page).await?))
+    Ok(Json(page_of(&state.db, auth.org_id, Some(auth.user_id), q, &page).await?))
 }
 
 /// A page of the organization's reply threads, the latest message first. `project_id` is matched against the org in the query.
-pub(super) async fn page_of(db: &sqlx::PgPool, org_id: Uuid, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<InboxThread>> {
+/// `me` is who "mine" means, None for an API key.
+pub(super) async fn page_of(db: &sqlx::PgPool, org_id: Uuid, me: Option<Uuid>, q: ListQuery, page: &PageQuery) -> AppResult<Paginated<InboxThread>> {
     let filter = q.filter.unwrap_or_else(|| "all".into());
     util_input::one_of("filter", &filter, &["all", "hot", "needs_reply", "auto_replied", "other"])?;
     let like = util_input::like_pattern(q.q.as_deref());
+    let owner = OwnerFilter::parse(q.owner.as_deref(), me)?;
 
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({THREADS}) x"))
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({}) x", threads()))
         .bind(org_id)
         .bind(q.project_id)
         .bind(&filter)
         .bind(&like)
+        .bind(owner.mode())
+        .bind(owner.user())
         .fetch_one(db)
         .await?;
-    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{THREADS} order by last_at desc limit $5 offset $6"))
+    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{} order by last_at desc limit $7 offset $8", threads()))
         .bind(org_id)
         .bind(q.project_id)
         .bind(&filter)
         .bind(&like)
+        .bind(owner.mode())
+        .bind(owner.user())
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(db)
@@ -404,7 +418,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::THREADS;
+    use super::threads;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
@@ -485,11 +499,13 @@ mod tests {
         let search = |filter: &'static str, q: Option<&'static str>| {
             let db = db.clone();
             async move {
-                let mut ids: Vec<Uuid> = sqlx::query_scalar(&format!("select lead_id from ({THREADS}) x"))
+                let mut ids: Vec<Uuid> = sqlx::query_scalar(&format!("select lead_id from ({}) x", threads()))
                     .bind(org)
                     .bind(None::<Uuid>)
                     .bind(filter)
                     .bind(super::util_input::like_pattern(q))
+                    .bind("everyone")
+                    .bind(None::<Uuid>)
                     .fetch_all(&db)
                     .await
                     .unwrap();

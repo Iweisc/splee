@@ -58,10 +58,12 @@ struct Member {
     email: String,
     name: String,
     role: String,
+    /// Round robin skips them while they're away. They set it on their account page.
+    away: bool,
     created_at: Ts,
 }
 
-const MEMBER_SELECT: &str = "select m.user_id, u.email::text as email, u.name, m.role, m.created_at
+const MEMBER_SELECT: &str = "select m.user_id, u.email::text as email, u.name, m.role, m.away, m.created_at
      from memberships m join users u on u.id = m.user_id where m.org_id = $1";
 
 async fn list_members(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<Member>>> {
@@ -136,6 +138,13 @@ async fn remove_member(State(state): State<AppState>, auth: Auth, Path(user_id):
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+    // Their leads go back to nobody, so the rule or a teammate can pick them up, and so do their mailboxes.
+    sqlx::query("update leads set owner_id = null where owner_id = $2 and project_id in (select id from projects where org_id = $1)")
+        .bind(auth.org_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("update mailboxes set owner_id = null where org_id = $1 and owner_id = $2").bind(auth.org_id).bind(user_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }

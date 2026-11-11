@@ -253,9 +253,13 @@ function NavLink({
   );
 }
 
-/** Threads in the inbox's "Needs reply" filter, so a new reply is visible from any page. Polled like the mailboxes. */
+/**
+ * Threads in the inbox's "Needs reply" filter that are yours or nobody's, so a new reply is visible from any page without
+ * counting a teammate's. Polled like the mailboxes.
+ */
 function NeedsReplyCount({ projectId }: { projectId?: string }) {
-  const { data } = useSWR<{ total: number }>(`/inbox${qs({ project_id: projectId, filter: "needs_reply", per_page: 1 })}`, fetcher, {
+  const key = `/inbox${qs({ project_id: projectId, filter: "needs_reply", owner: "mine_or_unassigned", per_page: 1 })}`;
+  const { data } = useSWR<{ total: number }>(key, fetcher, {
     refreshInterval: 60_000,
   });
   if (!data?.total) return null;

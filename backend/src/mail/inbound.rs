@@ -278,6 +278,8 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
         .bind(lead.id)
         .execute(&state.db)
         .await?;
+    // Before the classifier runs, so its hot-lead alert goes to the new owner.
+    crate::ownership::claim(&state.db, lead.id).await;
     agent::enqueue(&state.db, kind::CLASSIFY_REPLY, Some(lead.project_id), project_org, json!({"message_id": inbound_id})).await?;
     tracing::info!(lead = %lead.id, from = %from, "stored reply");
     Ok(())

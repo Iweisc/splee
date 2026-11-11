@@ -700,6 +700,10 @@ mod tests {
         };
         fake.calls.lock().unwrap().push((method.clone(), body.clone()));
         Json(match method.as_str() {
+            "users.lookupByEmail" => match body["email"].as_str() {
+                Some("ana@acme.test") => json!({ "ok": true, "user": { "id": "UANA" } }),
+                _ => json!({ "ok": false, "error": "users_not_found" }),
+            },
             "users.info" => match body["user"].as_str() {
                 Some("UANA") => json!({ "ok": true, "user": { "profile": { "email": "Ana@Acme.test" } } }),
                 Some("UEVE") => json!({ "ok": true, "user": { "profile": { "email": "eve@beta.test" } } }),
@@ -903,6 +907,54 @@ mod tests {
                 .unwrap();
             res.status().as_u16()
         }
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_hot_reply_mentions_its_owner_looked_up_once(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let ana: Uuid = scalar(&s.state.db, "select id from users where email = 'ana@acme.test'").await;
+        let bo: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('bo@acme.test', 'Bo', 'x') returning id")
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
+        sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(s.acme).bind(bo).execute(&s.state.db).await.unwrap();
+        let owned_by = |lead: Uuid, owner: Option<Uuid>| {
+            sqlx::query("update leads set owner_id = $2 where id = $1").bind(lead).bind(owner).execute(&s.state.db)
+        };
+        let posts = || s.fake.calls("chat.postMessage").iter().map(|c| c["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+        crate::slack::post_hot_reply(&s.state, s.lead).await;
+        assert_eq!(posts(), ["Hot reply: Sarah Lee (Acme) replied to Fieldnote"], "nobody owns it yet");
+        assert!(s.fake.calls("users.lookupByEmail").is_empty());
+
+        owned_by(s.lead, Some(ana)).await.unwrap();
+        crate::slack::post_hot_reply(&s.state, s.lead).await;
+        crate::slack::post_hot_reply(&s.state, s.lead).await;
+        assert_eq!(posts()[1..], ["Hot reply: Sarah Lee (Acme) replied to Fieldnote for <@UANA>"; 2]);
+        let headline = &s.fake.calls("chat.postMessage")[1]["blocks"][0]["text"]["text"];
+        assert_eq!(headline, "*Hot reply:* Sarah Lee (Acme) replied to Fieldnote for <@UANA>");
+        assert_eq!(s.fake.calls("users.lookupByEmail").len(), 1, "the second post used the cache");
+        assert_eq!(s.fake.calls("users.lookupByEmail")[0]["email"], "ana@acme.test");
+
+        // Someone Slack doesn't know is looked up once too, and the post goes out without a mention.
+        owned_by(s.quiet_lead, Some(bo)).await.unwrap();
+        crate::slack::post_hot_reply(&s.state, s.quiet_lead).await;
+        crate::slack::post_hot_reply(&s.state, s.quiet_lead).await;
+        assert_eq!(posts()[3..], ["Hot reply: Sam Quiet (Acme) replied to Fieldnote"; 2]);
+        assert_eq!(s.fake.calls("users.lookupByEmail").len(), 2);
+        let cached: Vec<(String, Option<String>)> = sqlx::query_as("select email::text, slack_user_id from slack_user_ids order by email")
+            .fetch_all(&s.state.db)
+            .await
+            .unwrap();
+        assert_eq!(cached, [("ana@acme.test".into(), Some("UANA".into())), ("bo@acme.test".into(), None)]);
+
+        // A changed address is looked up again.
+        sqlx::query("update users set email = 'ana.silva@acme.test' where id = $1").bind(ana).execute(&s.state.db).await.unwrap();
+        crate::slack::post_hot_reply(&s.state, s.lead).await;
+        assert_eq!(s.fake.calls("users.lookupByEmail").len(), 3);
+        assert_eq!(posts().last().unwrap(), "Hot reply: Sarah Lee (Acme) replied to Fieldnote");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server. See CONTRIBUTING.md.

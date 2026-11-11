@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::auth::Auth;
 use crate::deals::{self, Board, Deal, DealChanges, Move, NewDeal, PipelineBody};
 use crate::error::AppResult;
+use crate::ownership::OwnerFilter;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -23,20 +24,23 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct BoardQuery {
     project_id: Option<Uuid>,
+    /// Everyone's deals by default, or mine, unassigned or a member's id. See ownership::OwnerFilter.
+    owner: Option<String>,
 }
 
 async fn board(State(state): State<AppState>, auth: Auth, Query(q): Query<BoardQuery>) -> AppResult<Json<Board>> {
     if let Some(project_id) = q.project_id {
         auth.project(&state.db, project_id).await?;
     }
-    Ok(Json(deals::board(&state.db, auth.org_id, q.project_id).await?))
+    let owner = OwnerFilter::parse(q.owner.as_deref(), Some(auth.user_id))?;
+    Ok(Json(deals::board(&state.db, auth.org_id, q.project_id, owner).await?))
 }
 
 /// Stages and the currency belong to the whole organization, so only admins change them, like the rest of its settings.
 async fn save_stages(State(state): State<AppState>, auth: Auth, Json(body): Json<PipelineBody>) -> AppResult<Json<Board>> {
     auth.require_admin()?;
     deals::save_stages(&state, auth.org_id, body).await?;
-    Ok(Json(deals::board(&state.db, auth.org_id, None).await?))
+    Ok(Json(deals::board(&state.db, auth.org_id, None, OwnerFilter::Everyone).await?))
 }
 
 async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<NewDeal>) -> AppResult<Json<Deal>> {
