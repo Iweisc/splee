@@ -4,6 +4,7 @@
 //! Clearout, EmailListVerify and Abstract take it in a header. It also finds the real address behind a guessed one, with Hunter, Findymail, Prospeo,
 //! Anymail Finder, LeadMagic, Apollo, Voila Norbert, Skrapp or Lusha.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use reqwest::Url;
@@ -124,7 +125,7 @@ impl Verifier {
         }
     }
 
-    async fn verify(self, key: &str, email: &str) -> anyhow::Result<Verdict> {
+    pub(crate) async fn verify(self, key: &str, email: &str) -> anyhow::Result<Verdict> {
         match self {
             Verifier::NeverBounce => {
                 let url = Url::parse_with_params("https://api.neverbounce.com/v4.2/single/check", [("key", key), ("email", email), ("timeout", "10")])?;
@@ -295,25 +296,31 @@ impl Finder {
         }
     }
 
-    /// The person's address at `domain`, or None when the service has nothing it's sure of there.
-    async fn find(self, key: &str, (first, last): (&str, &str), domain: &str) -> anyhow::Result<Option<Found>> {
+    /// The person's address at `domain`, or None when the service has nothing it's sure of there. Prospeo, Apollo and Lusha
+    /// also match on the LinkedIn profile, when the lead has one.
+    pub(crate) async fn find(self, key: &str, person: &Person<'_>, domain: &str) -> anyhow::Result<Search> {
+        let Person { first, last, linkedin } = *person;
+        let found = |found| Search { found, credits: None };
         match self {
             Finder::Hunter => {
                 let query = [("domain", domain), ("first_name", first), ("last_name", last)];
                 let url = Url::parse_with_params("https://api.hunter.io/v2/email-finder", query)?;
-                Ok(hunter_found(&hunter_get(url, key).await?, domain))
+                Ok(found(hunter_found(&hunter_get(url, key).await?, domain)))
             }
             Finder::Findymail => {
                 let name = format!("{first} {last}");
                 let req = client()?.post("https://app.findymail.com/api/search/name").json(&json!({ "name": name.trim(), "domain": domain }));
-                Ok(findymail_found(&findymail_call(req, key).await?, domain))
+                Ok(found(findymail_found(&findymail_call(req, key).await?, domain)))
             }
             Finder::Prospeo => {
                 // Only a verified address costs a credit, and it's the only kind wanted here.
                 let person = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
                 let mut body = json!({ "only_verified_email": true, "data": person });
                 body["data"]["company_website"] = json!(domain);
-                Ok(prospeo_found(&prospeo_call(client()?.post("https://api.prospeo.io/enrich-person").json(&body), key).await?, domain))
+                if !linkedin.is_empty() {
+                    body["data"]["linkedin_url"] = json!(linkedin);
+                }
+                Ok(found(prospeo_found(&prospeo_call(client()?.post("https://api.prospeo.io/enrich-person").json(&body), key).await?, domain)))
             }
             Finder::Anymail => {
                 let mut body = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
@@ -322,20 +329,28 @@ impl Finder {
                 // It searches live and suggests waiting up to 3 minutes. One that runs past the client's wait counts as
                 // nothing found, and asking again within 30 days is free.
                 match anymailfinder_call(req, key).await {
-                    Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(None),
-                    body => Ok(anymailfinder_found(&body?, domain)),
+                    Err(e) if e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout) => Ok(found(None)),
+                    body => {
+                        let body = body?;
+                        Ok(Search { found: anymailfinder_found(&body, domain), credits: body["credits_charged"].as_i64() })
+                    }
                 }
             }
             Finder::LeadMagic => {
                 let mut body = if last.is_empty() { json!({ "full_name": first }) } else { json!({ "first_name": first, "last_name": last }) };
                 body["domain"] = json!(domain);
                 let req = client()?.post(format!("{LEADMAGIC}/people/email-finder")).json(&body);
-                Ok(leadmagic_found(&leadmagic_call(req, key).await?, domain))
+                let body = leadmagic_call(req, key).await?;
+                Ok(Search { found: leadmagic_found(&body, domain), credits: body["credits_consumed"].as_i64() })
             }
             Finder::Apollo => {
-                let name = if last.is_empty() { vec![("name", first)] } else { vec![("first_name", first), ("last_name", last)] };
-                let url = Url::parse_with_params(&format!("{APOLLO}/people/match"), name.into_iter().chain([("domain", domain)]))?;
-                Ok(apollo_found(&apollo_call(client()?.post(url).json(&json!({})), key).await?, domain))
+                let mut query = if last.is_empty() { vec![("name", first)] } else { vec![("first_name", first), ("last_name", last)] };
+                query.push(("domain", domain));
+                if !linkedin.is_empty() {
+                    query.push(("linkedin_url", linkedin));
+                }
+                let url = Url::parse_with_params(&format!("{APOLLO}/people/match"), query)?;
+                Ok(found(apollo_found(&apollo_call(client()?.post(url).json(&json!({})), key).await?, domain)))
             }
             Finder::Norbert => {
                 let name = format!("{first} {last}");
@@ -348,22 +363,54 @@ impl Finder {
                     tokio::time::sleep(NORBERT_WAIT).await;
                     body = norbert_call(client()?.get(format!("{NORBERT}/contacts/{id}")), key).await?;
                 }
-                Ok(norbert_found(&body, domain))
+                Ok(found(norbert_found(&body, domain)))
             }
             Finder::Skrapp => {
                 let name = if last.is_empty() { vec![("fullName", first)] } else { vec![("firstName", first), ("lastName", last)] };
                 let url = Url::parse_with_params(&format!("{SKRAPP}/v3/people/email"), name.into_iter().chain([("domain", domain)]))?;
-                Ok(skrapp_found(&skrapp_call(client()?.get(url), key).await?, domain))
+                Ok(found(skrapp_found(&skrapp_call(client()?.get(url), key).await?, domain)))
             }
-            // Lusha needs a last name, and charges for every search, even one that finds no one.
-            Finder::Lusha if last.is_empty() => Ok(None),
+            // Lusha needs a last name or a LinkedIn profile, and charges for every search, even one that finds no one.
+            Finder::Lusha if last.is_empty() && linkedin.is_empty() => Ok(found(None)),
             Finder::Lusha => {
-                let contact = json!({ "firstName": first, "lastName": last, "companyDomain": domain });
+                let mut contact = json!({ "firstName": first, "lastName": last, "companyDomain": domain });
+                if !linkedin.is_empty() {
+                    contact["linkedinUrl"] = json!(linkedin);
+                }
                 let req = client()?.post(format!("{LUSHA}/contacts/search-and-enrich")).json(&json!({ "contacts": [contact], "reveal": ["emails"] }));
-                Ok(lusha_found(&lusha_call(req, key).await?, domain))
+                let body = lusha_call(req, key).await?;
+                Ok(Search { found: lusha_found(&body, domain), credits: body["billing"]["creditsCharged"].as_i64() })
             }
         }
     }
+}
+
+/// Who a finder looks for.
+#[derive(Clone, Copy)]
+pub struct Person<'a> {
+    pub first: &'a str,
+    pub last: &'a str,
+    /// The LinkedIn profile, or "".
+    pub linkedin: &'a str,
+}
+
+impl<'a> Person<'a> {
+    /// A lead imported with only a full name has it split at the first space.
+    pub fn of(lead: &'a Lead) -> Person<'a> {
+        let (first, last) = if lead.first_name.trim().is_empty() {
+            lead.full_name.trim().split_once(' ').unwrap_or((lead.full_name.trim(), ""))
+        } else {
+            (lead.first_name.as_str(), lead.last_name.as_str())
+        };
+        Person { first: first.trim(), last: last.trim(), linkedin: lead.linkedin_url.trim() }
+    }
+}
+
+/// A finder's answer about one person.
+pub struct Search {
+    pub found: Option<Found>,
+    /// The credits it said it charged, for the services whose answer says.
+    pub credits: Option<i64>,
 }
 
 /// An address a finder found for a lead, to replace a guessed one.
@@ -401,13 +448,8 @@ pub async fn find(state: &AppState, project_id: Uuid, lead: &Lead, guessed: &str
     };
     let Some((_, domain)) = guessed.rsplit_once('@') else { return Lookup::Nothing };
     let domain = domain.to_lowercase();
-    let (first, last) = if lead.first_name.is_empty() {
-        lead.full_name.trim().split_once(' ').unwrap_or((lead.full_name.trim(), ""))
-    } else {
-        (lead.first_name.as_str(), lead.last_name.as_str())
-    };
     let result = match crypto::decrypt(&state.cfg.app_secret, &enc) {
-        Ok(key) => service.find(&key, (first.trim(), last.trim()), &domain).await,
+        Ok(key) => service.find(&key, &Person::of(lead), &domain).await.map(|search| search.found),
         Err(e) => Err(e),
     };
     // Under Email verification the failure says it came from the finder, and only a failure is recorded here, since the
@@ -443,7 +485,7 @@ fn hunter_found(body: &Value, domain: &str) -> Option<Found> {
 /// Findymail's errors come as `{"error": ...}`, like "Not enough credits", or `{"message": "Unauthenticated."}` for a bad
 /// key. It doesn't document how it answers when it finds nothing, so a 404 counts as nothing found.
 async fn findymail_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.bearer_auth(key).header("accept", "application/json").send().await?;
+    let res = send(req.bearer_auth(key).header("accept", "application/json")).await?;
     let status = res.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(Value::Null);
@@ -461,7 +503,7 @@ fn findymail_found(body: &Value, domain: &str) -> Option<Found> {
 /// Prospeo answers every error with `{"error": true, "error_code": ...}`, like INVALID_API_KEY or INSUFFICIENT_CREDITS.
 /// NO_MATCH means it found nobody, which isn't a failure.
 async fn prospeo_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("X-KEY", key).send().await?;
+    let res = send(req.header("X-KEY", key)).await?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     let code = body["error_code"].as_str().map(str::to_string);
@@ -481,7 +523,7 @@ fn prospeo_found(body: &Value, domain: &str) -> Option<Found> {
 
 /// Anymail Finder explains a failure in `message`, like "Invalid API key. Copy it again from ..." for a 401.
 async fn anymailfinder_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("Authorization", key).send().await?;
+    let res = send(req.header("Authorization", key)).await?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
@@ -498,7 +540,7 @@ const LEADMAGIC: &str = "https://api.leadmagic.io/v1";
 /// LeadMagic explains a failure in `detail`, like "Not enough credits for this request." A wrong key's detail quotes
 /// the key's first characters, so a 401 gets its own message.
 async fn leadmagic_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("X-API-Key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(req.header("X-API-Key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -516,7 +558,7 @@ const APOLLO: &str = "https://api.apollo.io/api/v1";
 
 /// Apollo explains a failure in `error_details.message`, where `error` adds a link to its docs.
 async fn apollo_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("x-api-key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(req.header("x-api-key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -539,7 +581,7 @@ const NORBERT_WAIT: Duration = Duration::from_secs(5);
 /// Norbert takes the key as the password of basic auth, with any user. A failure is `{code, error}`, a 402 is no credits
 /// left, and a 400 is a domain it can't place, which counts as nothing found.
 async fn norbert_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.basic_auth("splee", Some(key)).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(req.basic_auth("splee", Some(key))).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     anyhow::ensure!(status != reqwest::StatusCode::PAYMENT_REQUIRED, "the account is out of credits");
@@ -568,7 +610,7 @@ const SKRAPP: &str = "https://api.skrapp.io/api";
 /// credits ran out. A 404 is nothing found, unless its code is KNF, a revoked key, and a 408 is a search that ran past
 /// Skrapp's 10 seconds, which costs nothing and counts as nothing found.
 async fn skrapp_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("X-Access-Key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(req.header("X-Access-Key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(body["email_limit_exeeded"] != true, "the account is out of credits");
@@ -597,7 +639,7 @@ const LUSHA: &str = "https://api.lusha.com/v3";
 /// Lusha explains a failure in `message`: a 401 (or a 400 for a key that isn't shaped like one) is a wrong key, a 402
 /// is no credits left, and a 403 an inactive account or one without V3 API access.
 async fn lusha_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.header("api_key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(req.header("api_key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     let message = body["message"].as_str().unwrap_or(status.as_str());
@@ -618,7 +660,7 @@ fn lusha_found(body: &Value, domain: &str) -> Option<Found> {
 
 async fn get(url: Url) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let res = client.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client.get(url)).await.map_err(reqwest::Error::without_url)?;
     Ok(res.error_for_status().map_err(reqwest::Error::without_url)?.json().await.map_err(reqwest::Error::without_url)?)
 }
 
@@ -650,7 +692,7 @@ fn millionverifier_ok(body: &Value) -> anyhow::Result<()> {
 /// which reads as Unsure.
 pub async fn hunter_get(url: Url, key: &str) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let res = client.get(url).header("X-API-KEY", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client.get(url).header("X-API-KEY", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success(), "{}", body["errors"][0]["details"].as_str().unwrap_or(status.as_str()));
@@ -670,7 +712,7 @@ fn hunter_verdict(status: &str) -> Verdict {
 /// with `"success": "false"`. The message doesn't quote the key.
 async fn kickbox_get(url: Url) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let res = client.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success() && body["success"] != false && body["success"] != "false", "{}", body["message"].as_str().unwrap_or(status.as_str()));
@@ -690,7 +732,7 @@ fn kickbox_verdict(body: &Value) -> Verdict {
 /// Bouncer's errors come as `{"message": ...}`, like "user not found" for a bad key or "0 credits left".
 async fn bouncer_get(url: Url, key: &str) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let res = client.get(url).header("x-api-key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client.get(url).header("x-api-key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
@@ -711,7 +753,7 @@ fn bouncer_verdict(body: &Value) -> Verdict {
 /// the timeout answers 249 with only a message, which has no state and so reads as unsure.
 async fn emailable_get(url: Url, key: &str) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let res = client.get(url).bearer_auth(key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client.get(url).bearer_auth(key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success(), "{}", body["message"].as_str().unwrap_or(status.as_str()));
@@ -732,10 +774,37 @@ fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().timeout(Duration::from_secs(30)).build()
 }
 
+/// A local sandbox sets EMAIL_API_URL to send every finder and verifier call to a fake server on its own path, so trying
+/// the app spends no credits. Never set it in production.
+static FAKE_API: LazyLock<Option<Url>> = LazyLock::new(|| std::env::var("EMAIL_API_URL").ok().and_then(|u| Url::parse(&u).ok()));
+
+#[cfg(test)]
+tokio::task_local! {
+    /// The same for one test, so tests running side by side each talk to their own fake.
+    pub static TEST_API: Url;
+}
+
+/// Every call to a finder or verifier goes through here.
+async fn send(req: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    let (client, req) = req.build_split();
+    let mut req = req?;
+    #[cfg(test)]
+    let fake = TEST_API.try_with(Url::clone).ok().or_else(|| FAKE_API.clone());
+    #[cfg(not(test))]
+    let fake = FAKE_API.clone();
+    if let Some(fake) = fake {
+        let url = req.url_mut();
+        let _ = url.set_scheme(fake.scheme());
+        let _ = url.set_host(fake.host_str());
+        let _ = url.set_port(fake.port());
+    }
+    client.execute(req).await
+}
+
 /// Clearout's errors come as `{"status": "failed", "error": {"message": ...}}`, like "Invalid API Token, please generate new
 /// token". A deep check that runs past the timeout answers 524 and goes on in the background, so it reads as unsure.
 async fn clearout_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Result<Value> {
-    let res = req.bearer_auth(key).send().await?;
+    let res = send(req.bearer_auth(key)).await?;
     let status = res.status();
     if status.as_u16() == 524 {
         return Ok(Value::Null);
@@ -758,7 +827,7 @@ fn clearout_verdict(body: &Value) -> Verdict {
 
 /// Reoon's errors come as `{"status": "error", "reason": ...}`, like "Invalid API key.", which doesn't quote the key.
 async fn reoon_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     anyhow::ensure!(status.is_success() && body["status"] != "error", "{}", body["reason"].as_str().unwrap_or(status.as_str()));
@@ -778,7 +847,7 @@ fn reoon_verdict(status: &str) -> Verdict {
 /// A failure comes back as `{"debounce": {"error": ...}, "success": "0"}`. A wrong key's error is "Wrong API", so that
 /// one gets the same message as NeverBounce's.
 async fn debounce_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -800,7 +869,7 @@ const ELV: &str = "https://api.emaillistverify.com/api";
 
 /// The answer as text: a verification answers with its result alone, like `ok`. A failure is `{statusCode, message}`.
 async fn elv_get(url: Url, key: &str) -> anyhow::Result<String> {
-    let res = client()?.get(url).header("x-api-key", key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url).header("x-api-key", key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let text = res.text().await.unwrap_or_default();
@@ -824,7 +893,7 @@ fn elv_verdict(result: &str) -> Verdict {
 /// A failure is `{"result": "Invalid API key", "success": false}`, so its `result` is the reason. A wrong key is a 401,
 /// which gets the same message as the other services'.
 async fn bouncify_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -849,7 +918,7 @@ const QEV: &str = "https://api.quickemailverification.com/v1/verify";
 
 /// A failure is `{success: "false", message}`, like "Low credit. Payment required", and a wrong key a 401.
 async fn qev_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -874,7 +943,7 @@ const ABSTRACT: &str = "https://emailreputation.abstractapi.com/v1/";
 
 /// Abstract's Email Reputation API. A failure is `{error: {message}}`, like a used-up quota's 422.
 async fn abstract_get(url: Url, key: &str) -> anyhow::Result<Value> {
-    let res = client()?.get(url).bearer_auth(key).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url).bearer_auth(key)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key was rejected");
     let body: Value = res.json().await.unwrap_or_default();
@@ -903,7 +972,7 @@ const MBV: &str = "https://api.mailboxvalidator.com/v2/validation/single";
 /// MailboxValidator answers every key problem with a 401 and says which in `{error: {error_code, error_message}}`, where
 /// 10004 is a used-up balance.
 async fn mbv_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     let error = &body["error"];
@@ -929,7 +998,7 @@ fn mbv_verdict(body: &Value) -> Verdict {
 /// MyEmailVerifier answers a wrong key with a 401 on the balance and a 200 on a verification, and either way puts the
 /// failure in `{status: "error" or false, error, message}`. A result has `Status` instead.
 async fn mev_get(url: Url) -> anyhow::Result<Value> {
-    let res = client()?.get(url).send().await.map_err(reqwest::Error::without_url)?;
+    let res = send(client()?.get(url)).await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     let said = |key: &str| body[key].as_str().unwrap_or_default().to_ascii_lowercase();
