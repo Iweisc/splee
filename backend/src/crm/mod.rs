@@ -152,15 +152,20 @@ impl Crm {
     }
 }
 
-/// Adds or updates the lead in every connected CRM and puts `note` on it. Failures are logged and shown on the
-/// integrations page, they never fail the caller.
+/// Adds or updates the lead in every connected CRM and puts `note` on it, with the lead's Splee deal when it has one.
+/// Failures are logged and shown on the integrations page, they never fail the caller.
 pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     let Some(email) = lead.email.as_deref() else { return };
     // The column names come from Crm::name, never from input.
     let columns: Vec<String> = Crm::ALL.iter().map(|crm| format!("{}_token_enc", crm.name())).collect();
     let sql = format!("select array[{}] from project_settings where project_id = $1", columns.join(", "));
     let tokens: Option<Vec<String>> = sqlx::query_scalar(&sql).bind(project_id).fetch_optional(&state.db).await.ok().flatten();
-    let Some(tokens) = tokens else { return };
+    let Some(tokens) = tokens.filter(|t| t.iter().any(|enc| !enc.is_empty())) else { return };
+    let note = match crate::deals::crm_line(&state.db, lead.id).await {
+        Some(deal) => format!("{note}\n\n{deal}"),
+        None => note.to_string(),
+    };
+    let note = note.as_str();
     for (crm, enc) in Crm::ALL.iter().copied().zip(tokens) {
         if enc.is_empty() {
             continue;

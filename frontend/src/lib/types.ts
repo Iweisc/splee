@@ -326,7 +326,11 @@ export type WebhookEvent =
   | "email_sent"
   | "follow_up_due"
   | "form_submitted"
-  | "status_changed";
+  | "status_changed"
+  | "deal.created"
+  | "deal.stage_changed"
+  | "deal.won"
+  | "deal.lost";
 
 export interface ProjectSummary extends Project {
   sent: number;
@@ -658,6 +662,8 @@ export interface LeadDetail extends Lead {
   /** Texts Splee wrote or sent them. Their answers are in emails, with a text channel. */
   texts: TextMessage[];
   hiring: JobPost[];
+  /** Their open deal, or else the one that closed last. */
+  deal: Deal | null;
 }
 
 export interface CompanyRow extends Company {
@@ -1195,4 +1201,72 @@ export interface SupportMessage {
 export interface Paginated<T> {
   items: T[];
   total: number;
+}
+
+export type StageKind = "open" | "won" | "lost";
+
+/** Keep in sync with deals::Stage in backend/src/deals.rs. */
+export interface DealStage {
+  id: UUID;
+  name: string;
+  kind: StageKind;
+  position: number;
+  /** 0 to 100. Weights an open stage's deals in the forecast. */
+  probability: number;
+  /** Where hot replies open a deal ("hot") or booked meetings move it ("booked"). */
+  auto: "hot" | "booked" | null;
+  /** Every deal in the stage, however long ago it closed. */
+  deals: number;
+}
+
+/** Keep in sync with deals::Deal in backend/src/deals.rs. */
+export interface Deal {
+  id: UUID;
+  project_id: UUID;
+  project_name: string;
+  lead_id: UUID;
+  lead_name: string;
+  lead_email: string | null;
+  lead_title: string;
+  company_name: string;
+  company_domain: string | null;
+  stage_id: UUID;
+  stage: string;
+  status: StageKind;
+  /** In the currency's main unit, like 1200.5 for $1,200.50. */
+  value: number;
+  currency: string;
+  /** YYYY-MM-DD. */
+  close_date: string | null;
+  owner_id: UUID | null;
+  owner_name: string | null;
+  notes: string;
+  lost_reason: string;
+  source: "manual" | "hot_reply" | "booking" | "api";
+  stage_changed_at: Ts;
+  closed_at: Ts | null;
+  created_at: Ts;
+}
+
+export interface DealAmounts {
+  currency: string;
+  open: number;
+  weighted: number;
+  won_this_month: number;
+}
+
+export interface Pipeline {
+  /** What new deals are priced in. */
+  currency: string;
+  stages: DealStage[];
+  /** Every open deal, and those that closed in the last 90 days. */
+  deals: Deal[];
+  forecast: {
+    /** One row per currency, the organization's own first. */
+    amounts: DealAmounts[];
+    /** Won and lost in the last 90 days. */
+    won: number;
+    lost: number;
+    win_rate: number | null;
+  };
 }

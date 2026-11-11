@@ -85,4 +85,4 @@ export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
 ];
 
 // Also routed: /app (redirect), /app/onboarding, /app/onboarding/[domain] (D1),
-// /app/inbox, /app/emails (org-wide, D1), /app/p/[id]/docs (API docs, D2), /app/p/[id]/domains -> /app/domains (D2).
+// /app/inbox, /app/emails, /app/pipeline (org-wide, D1), /app/p/[id]/docs (API docs, D2), /app/p/[id]/domains -> /app/domains (D2).

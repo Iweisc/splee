@@ -186,6 +186,8 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
     };
     hooks::send_lead_event(&ctx.state, t.project.id, "lead_replied", &t.lead, Some(("reply", reply(&verdict.classification)))).await;
     if verdict.classification == "hot" {
+        // Before the alerts, so the CRM note says the deal is open.
+        crate::deals::hot_reply(&ctx.state, &t.lead).await;
         hooks::send_lead_event(&ctx.state, t.project.id, "hot_lead", &t.lead, Some(("reply", reply("hot")))).await;
         notify_hot(&ctx.state, t, &verdict.reason).await;
     }

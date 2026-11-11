@@ -14,6 +14,7 @@ import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
+import { LeadDeal } from "./deal-dialog";
 import { LeadNotes } from "./lead-modal";
 import { ListKeysHint, useListKeys, useShortcut } from "./list-keys";
 import { SearchField } from "./search-field";
@@ -310,6 +311,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             <p className="truncate text-xs text-muted-foreground">
               {[lead.title, lead.company_name, lead.email].filter(Boolean).join(" · ")}
             </p>
+            <LeadDeal leadId={lead.id} deal={lead.deal} onChange={refresh} className="mt-1 text-xs" />
             {lead.remind_at && (
               <p className="mt-1 flex items-center gap-1 text-xs text-amber-700">
                 <Bell className="size-3" /> {reminderDue ? "Reminder: follow up now" : `Reminder ${dateTime(lead.remind_at)}`}
