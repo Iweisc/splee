@@ -63,7 +63,7 @@ export function ChipInput({
         aria-labelledby={labelId}
         aria-label={label}
         placeholder={value.length ? undefined : placeholder}
-        className="h-7 min-w-32 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-subtle-foreground"
+        className="h-7 min-w-24 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-subtle-foreground"
       />
     </div>
   );

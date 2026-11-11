@@ -34,6 +34,8 @@ pub struct Config {
     pub slack: Option<SlackApp>,
     /// The Tumblr app projects sign in with to post on Tumblr. None hides Tumblr on the integrations page.
     pub tumblr: Option<OAuthApp>,
+    /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
+    pub ipinfo_token: Option<String>,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -101,6 +103,7 @@ impl Config {
             },
             slack: SlackApp::from_env(),
             tumblr: OAuthApp::from_env("TUMBLR", crate::tumblr::AUTHORIZE_URL.into(), crate::tumblr::TOKEN_URL.into()),
+            ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -154,6 +157,7 @@ mod tests {
             microsoft: None,
             slack: None,
             tumblr: None,
+            ipinfo_token: None,
         }
     }
 

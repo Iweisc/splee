@@ -184,19 +184,23 @@ function Row({ signal: s, picked, onToggle }: { signal: HiringSignal; picked: bo
   );
 }
 
-/** Replaces the filters while companies are ticked. Moves the ones without leads into the campaign and finds people there. */
+/** Replaces the filters while companies are ticked. Moves the ones without leads into the campaign and finds people there.
+ * The Visitors tab ticks domains, since a visiting company may not be one of the project's companies yet, and posts them to
+ * its own route, which makes the missing ones first. */
 export function AddToCampaignBar({
   projectId,
   ids,
   segments,
   onClear,
   onDone,
+  route = { path: "hiring/add", field: "company_ids" },
 }: {
   projectId: string;
   ids: string[];
   segments: SegmentWithStats[];
   onClear: () => void;
   onDone: () => void;
+  route?: { path: string; field: string };
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -206,7 +210,7 @@ export function AddToCampaignBar({
     if (!segment) return;
     setBusy(true);
     try {
-      const res = await api<{ added: number }>(`/projects/${projectId}/hiring/add`, { body: { segment_id: segment.id, company_ids: ids } });
+      const res = await api<{ added: number }>(`/projects/${projectId}/${route.path}`, { body: { segment_id: segment.id, [route.field]: ids } });
       toast.success(`Finding people at ${plural(res.added, "company", "companies")} in ${segment.name}`, {
         action: { label: "Open campaign", onClick: () => router.push(`/app/p/${projectId}/segments/${segment.id}`) },
       });
