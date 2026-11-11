@@ -2,6 +2,7 @@
 //! Routes call `enqueue` (and `leads_without_initial` to refuse empty write runs). The worker, SDK wrapper and task implementations live in this module.
 
 mod bluesky;
+mod channels;
 mod directory;
 mod discourse;
 mod explore;

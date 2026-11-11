@@ -277,6 +277,18 @@ export interface ProjectSettings extends CrmStatus {
   hashnode_publication_id: string;
   hashnode_error: string | null;
   hashnode_failed_at: string | null;
+  /** The Discord bot posts go out as, by username, and its id, which its invite link needs. The token is write-only, through PUT /integrations/discord. */
+  discord_connected: boolean;
+  discord_bot_id: string;
+  discord_bot: string;
+  discord_error: string | null;
+  discord_failed_at: string | null;
+  /** The Telegram bot posts go out as, by username, and whether its group privacy mode is off. The token is write-only, through PUT /integrations/telegram. */
+  telegram_connected: boolean;
+  telegram_bot: string;
+  telegram_reads_all: boolean;
+  telegram_error: string | null;
+  telegram_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -1286,7 +1298,9 @@ export interface SocialPost {
     | "lemmy"
     | "nostr"
     | "tumblr"
-    | "hashnode";
+    | "hashnode"
+    | "discord"
+    | "telegram";
   /** The link of the post or comment it answers, null for an original post. On Tumblr it's reblogged with the reply as its comment. */
   in_reply_to: string | null;
   /** The text it answers. */
@@ -1310,6 +1324,28 @@ export interface SocialPost {
   updated_at: Ts;
   /** Discourse only: the forum it goes to, null once that forum is removed. */
   forum_id: UUID | null;
+  /** Discord and Telegram only: the channel it goes to, null once the bot can't see it anymore. */
+  channel_id: UUID | null;
+}
+
+/** A Discord text channel or a Telegram group or channel the project's bot can see. Picked ones are read and posted in. */
+export interface SocialChannel {
+  id: UUID;
+  project_id: UUID;
+  platform: "discord" | "telegram";
+  /** Discord's channel id, or Telegram's chat id. */
+  chat_id: string;
+  /** The Discord server. Empty on Telegram. */
+  guild_id: string;
+  guild_name: string;
+  name: string;
+  kind: "text" | "announcement" | "group" | "supergroup" | "channel";
+  /** A public Telegram chat's @username. */
+  username: string;
+  can_read: boolean;
+  can_send: boolean;
+  picked: boolean;
+  created_at: Ts;
 }
 
 export interface AgentRun {

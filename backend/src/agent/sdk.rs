@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{Ctx, bluesky, directory, discourse, hashnode, hiring, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
+use super::{Ctx, bluesky, channels, directory, discourse, hashnode, hiring, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
 use crate::events;
 use crate::state::AppState;
 
@@ -239,7 +239,11 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         nostr::SEARCH => format!("searching Nostr \"{}\"…", input["query"].as_str().unwrap_or_default()),
         tumblr::SEARCH => format!("searching Tumblr #{}…", input["tag"].as_str().unwrap_or_default().trim_start_matches('#')),
         hashnode::SEARCH => format!("searching Hashnode #{}…", input["tag"].as_str().unwrap_or_default().trim_start_matches('#')),
-        nostr::READ | tumblr::READ | hashnode::READ => format!("reading {}…", short_url(input["link"].as_str().unwrap_or_default())),
+        channels::DISCORD_SEARCH => format!("searching Discord \"{}\"…", input["keywords"].as_str().unwrap_or_default()),
+        channels::TELEGRAM_SEARCH => format!("searching Telegram \"{}\"…", input["keywords"].as_str().unwrap_or_default()),
+        nostr::READ | tumblr::READ | hashnode::READ | channels::DISCORD_READ | channels::TELEGRAM_READ => {
+            format!("reading {}…", short_url(input["link"].as_str().unwrap_or_default()))
+        }
         other => format!("{other}…"),
     };
     let step = ctx.step();

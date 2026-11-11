@@ -226,6 +226,10 @@ pub enum Alert {
     Tumblr,
     /// Matched on hashnode_token_enc.
     Hashnode,
+    /// The Discord bot the agent posts as, matched on discord_token_enc. Alerts to a Discord webhook are Chat.
+    Discord,
+    /// The Telegram bot the agent posts as, matched on telegram_token_enc. Alerts to a Telegram chat are Chat.
+    Telegram,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -254,6 +258,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Nostr => ("nostr", "nostr_key_enc".to_string()),
         Alert::Tumblr => ("tumblr", "tumblr_username".to_string()),
         Alert::Hashnode => ("hashnode", "hashnode_token_enc".to_string()),
+        Alert::Discord => ("discord", "discord_token_enc".to_string()),
+        Alert::Telegram => ("telegram", "telegram_token_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

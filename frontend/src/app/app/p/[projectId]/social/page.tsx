@@ -11,7 +11,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Host, Message, Skeleton, Tabs, type BadgeTone } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { DiscourseForum, ProjectSettings, SocialPost } from "@/lib/types";
+import type { DiscourseForum, ProjectSettings, SocialChannel, SocialPost } from "@/lib/types";
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -34,6 +34,8 @@ const PLATFORMS: Record<Platform, string> = {
   nostr: "Nostr",
   tumblr: "Tumblr",
   hashnode: "Hashnode",
+  discord: "Discord",
+  telegram: "Telegram",
 };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
@@ -45,21 +47,34 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
   approved: {
     title: "Nothing waiting to post",
-    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy and Tumblr take 10, LinkedIn, Stack Exchange and each Discourse forum 5, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy, Tumblr, Discord and Telegram take 10, LinkedIn, Stack Exchange and each Discourse forum 5, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
   },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
-/** LinkedIn goes out through the Unipile connection for LinkedIn sending, and Discourse through each forum the project joined. */
-function isConnected(s: ProjectSettings, forums: DiscourseForum[], p: Platform) {
+/** LinkedIn goes out through the Unipile connection for LinkedIn sending, Discourse through each forum the project joined, and
+ *  the Discord and Telegram bots in the channels picked for them. */
+function isConnected(s: ProjectSettings, forums: DiscourseForum[], channels: SocialChannel[], p: Platform) {
   if (p === "linkedin") return s.unipile_connected;
   if (p === "discourse") return forums.length > 0;
+  if (p === "discord" || p === "telegram") return s[`${p}_connected`] && channels.some((c) => c.platform === p && c.picked);
   return s[`${p}_connected`];
 }
+const isBot = (p: Platform): p is "discord" | "telegram" => p === "discord" || p === "telegram";
+/** The picked channels a bot can post in. */
+const postable = (channels: SocialChannel[], p: Platform) => channels.filter((c) => c.platform === p && c.picked && c.can_send);
+/** Like SocialChannel::label on the backend. */
+const channelLabel = (c: SocialChannel) => (c.platform === "discord" ? `#${c.name} in ${c.guild_name}` : c.name);
 /** Original posts a day, like social::daily_cap on the backend. Discourse's is per forum. */
 const dailyCap = (p: Platform) =>
-  p === "linkedin" || p === "stackexchange" || p === "discourse" ? 5 : p === "lemmy" || p === "tumblr" ? 10 : p === "dev" || p === "hashnode" ? 2 : 15;
+  p === "linkedin" || p === "stackexchange" || p === "discourse"
+    ? 5
+    : p === "lemmy" || p === "tumblr" || isBot(p)
+      ? 10
+      : p === "dev" || p === "hashnode"
+        ? 2
+        : 15;
 /** YouTube only takes comments and Stack Exchange answers, like social::takes_posts on the backend. */
 const takesPosts = (p: Platform) => p !== "youtube" && p !== "stackexchange";
 /** Stack Exchange and Discourse turn down short ones, like social::min_length on the backend. */
@@ -92,7 +107,8 @@ function maxLength(p: Platform, reply: boolean, mastodonChars: number): number |
   if (p === "mastodon") return mastodonChars;
   if (p === "threads") return 500;
   if (p === "nostr") return 5000;
-  if (p === "tumblr") return 4096;
+  if (p === "tumblr" || p === "telegram") return 4096;
+  if (p === "discord") return 2000;
   if (p === "linkedin") return reply ? 1250 : 3000;
   return null;
 }
@@ -106,6 +122,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
   const { data: settings, error: settingsError } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
   const { data, error, mutate } = useSWR<SocialPost[]>(`/projects/${projectId}/social`, fetcher);
   const { data: forums, error: forumsError } = useSWR<DiscourseForum[]>(`/projects/${projectId}/discourse-forums`, fetcher);
+  const { data: channels, error: channelsError } = useSWR<SocialChannel[]>(`/projects/${projectId}/social-channels`, fetcher);
   const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
   const run = runs?.find((r) => r.kind === "social" && isActive(r)) ?? null;
   const [tab, setTab] = useState<Tab>("draft");
@@ -121,10 +138,16 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     }
   });
 
-  const connected = settings && forums ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, p)) : [];
-  // Discourse takes topics only on forums with a category, and Hashnode articles only once a publication is picked.
+  const connected =
+    settings && forums && channels ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, channels, p)) : [];
+  // Discourse takes topics only on forums with a category, Hashnode articles only once a publication is picked, and the bots
+  // only post where they may.
   const posting = connected.filter(
-    (p) => takesPosts(p) && (p !== "discourse" || topicForums(forums ?? []).length > 0) && (p !== "hashnode" || !!settings?.hashnode_publication_id),
+    (p) =>
+      takesPosts(p) &&
+      (p !== "discourse" || topicForums(forums ?? []).length > 0) &&
+      (p !== "hashnode" || !!settings?.hashnode_publication_id) &&
+      (!isBot(p) || postable(channels ?? [], p).length > 0),
   );
   const start = async () => {
     setStarting(true);
@@ -146,7 +169,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -156,11 +179,11 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
         }
       />
       <PageBody className="flex flex-col gap-5">
-        {settingsError || error || forumsError ? (
+        {settingsError || error || forumsError || channelsError ? (
           <Card>
-            <LoadError error={settingsError ?? error ?? forumsError} retry={() => mutate()} />
+            <LoadError error={settingsError ?? error ?? forumsError ?? channelsError} retry={() => mutate()} />
           </Card>
-        ) : !settings || !data || !forums ? (
+        ) : !settings || !data || !forums || !channels ? (
           <div className="flex flex-col gap-3">
             {Array.from({ length: 3 }, (_, i) => (
               <Skeleton key={i} className="h-40 rounded-2xl" />
@@ -178,7 +201,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
               }
             >
               Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV,
-              Lemmy, Nostr, Tumblr, Hashnode or a Discourse forum, or LinkedIn sending, on the integrations page.
+              Lemmy, Nostr, Tumblr, Hashnode, a Discourse forum, a Discord or Telegram bot, or LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
@@ -189,6 +212,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                 projectId={projectId}
                 platforms={posting}
                 forums={topicForums(forums)}
+                channels={channels}
                 mastodonChars={settings.mastodon_max_chars}
                 onAdded={() => mutate()}
               />
@@ -217,6 +241,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                     key={p.id}
                     post={p}
                     forum={forums.find((f) => f.id === p.forum_id)}
+                    channel={channels.find((c) => c.id === p.channel_id)}
                     mastodonChars={settings.mastodon_max_chars}
                     onChange={() => mutate()}
                   />
@@ -235,6 +260,7 @@ function Composer({
   projectId,
   platforms,
   forums,
+  channels,
   mastodonChars,
   onAdded,
 }: {
@@ -242,6 +268,7 @@ function Composer({
   platforms: Platform[];
   /** The Discourse forums with a category for new topics. */
   forums: DiscourseForum[];
+  channels: SocialChannel[];
   mastodonChars: number;
   onAdded: () => Promise<unknown>;
 }) {
@@ -251,6 +278,7 @@ function Composer({
   const [subreddit, setSubreddit] = useState("");
   const [community, setCommunity] = useState("");
   const [forumId, setForumId] = useState("");
+  const [channelId, setChannelId] = useState("");
   const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
@@ -259,6 +287,9 @@ function Composer({
   const lemmy = on === "lemmy";
   const discourse = on === "discourse";
   const forum = forums.find((f) => f.id === forumId) ?? forums[0];
+  const bot = isBot(on);
+  const botChannels = postable(channels, on);
+  const channel = botChannels.find((c) => c.id === channelId) ?? botChannels[0];
   const max = maxLength(on, false, mastodonChars);
   const ready =
     !!body.trim() &&
@@ -270,7 +301,7 @@ function Composer({
     e.preventDefault();
     setBusy(true);
     try {
-      const where = { subreddit: lemmy ? community : subreddit, forum_id: discourse ? forum?.id : undefined };
+      const where = { subreddit: lemmy ? community : subreddit, forum_id: discourse ? forum?.id : undefined, channel_id: bot ? channel?.id : undefined };
       await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, ...where, tags: tagList(tags), status: "approved" } });
       await onAdded();
       setBody("");
@@ -332,6 +363,17 @@ function Composer({
         )}
         {dev && <ArticleFields platform={on} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
         {on === "tumblr" && <TagsField platform={on} tags={tags} setTags={setTags} />}
+        {bot && botChannels.length > 1 && (
+          <Field label={on === "discord" ? "Channel" : "Group or channel"} className="sm:w-72">
+            <Select value={channel?.id} onChange={(e) => setChannelId(e.target.value)}>
+              {botChannels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {channelLabel(c)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         <Textarea
           aria-label={dev ? "Article" : discourse ? "Topic" : "Post"}
           rows={dev ? 6 : 3}
@@ -356,7 +398,9 @@ function Composer({
             )}
             {discourse && forum
               ? `Goes in ${forum.category_name}, up to ${dailyCap(on)} a day.`
-              : `Goes out within ten minutes, up to ${dailyCap(on)} a day.`}
+              : bot && channel
+                ? `Goes to ${channelLabel(channel)} within ten minutes, up to ${dailyCap(on)} a day.`
+                : `Goes out within ten minutes, up to ${dailyCap(on)} a day.`}
           </p>
           <Button type="submit" size="sm" loading={busy} disabled={!ready} className="max-sm:ml-auto">
             <Send className="size-3.5" /> {dev ? "Queue article" : discourse ? "Queue topic" : "Queue post"}
@@ -464,6 +508,7 @@ function replyingTo(p: SocialPost): string {
   if (p.platform === "nostr") return "Replying to this note";
   if (p.platform === "tumblr") return "Reblogging this post with your comment";
   if (p.platform === "hashnode") return "Commenting on this article";
+  if (isBot(p.platform)) return "Replying to this message";
   if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
   return "Replying to this thread";
 }
@@ -472,12 +517,15 @@ function replyingTo(p: SocialPost): string {
 function PostCard({
   post: p,
   forum,
+  channel,
   mastodonChars,
   onChange,
 }: {
   post: SocialPost;
   /** The Discourse forum it goes to, while the project still joins it. */
   forum: DiscourseForum | undefined;
+  /** The Discord or Telegram channel it goes to, while the bot still sees it. */
+  channel: SocialChannel | undefined;
   mastodonChars: number;
   onChange: () => Promise<unknown>;
 }) {
@@ -499,9 +547,13 @@ function PostCard({
   // What the backend turns down for an approved post, so those buttons stay off until it fits.
   const tooShort = n < minLength(p.platform);
   const unfit =
-    (max !== null && n > max) || tooShort || (!reply && !titleReady(p.platform, title, subreddit, forum)) || (p.platform === "discourse" && !forum);
+    (max !== null && n > max) ||
+    tooShort ||
+    (!reply && !titleReady(p.platform, title, subreddit, forum)) ||
+    (p.platform === "discourse" && !forum) ||
+    (isBot(p.platform) && !(channel?.picked && channel.can_send));
   // LinkedIn, YouTube, Lemmy, Hashnode and Tumblr call a reply a comment, Stack Exchange an answer, DEV and Hashnode a post an
-  // article, Discourse a topic, and Nostr a post a note.
+  // article, Discourse a topic, Nostr a post a note, and Discord and Telegram a post a message.
   const kind = reply
     ? p.platform === "linkedin" || p.platform === "youtube" || p.platform === "lemmy" || p.platform === "hashnode" || p.platform === "tumblr"
       ? "comment"
@@ -514,7 +566,9 @@ function PostCard({
         ? "topic"
         : p.platform === "nostr"
           ? "note"
-          : "post";
+          : isBot(p.platform)
+            ? "message"
+            : "post";
 
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
@@ -555,6 +609,20 @@ function PostCard({
           {p.platform === "discourse" && (
             <span className="text-sm text-muted-foreground">
               {forum ? <Host host={topic ? `${forumHost(forum)} · ${forum.category_name}` : forumHost(forum)} /> : "Forum removed"}
+            </span>
+          )}
+          {isBot(p.platform) && (
+            <span className="text-sm text-muted-foreground">
+              {!channel ? (
+                "Channel removed"
+              ) : (
+                <>
+                  {channel.platform === "discord" ? `#${channel.name}` : channel.name}
+                  {/* The server's name doesn't fit beside the rest on a phone. */}
+                  {channel.platform === "discord" && <span className="max-sm:hidden"> in {channel.guild_name}</span>}
+                  {!channel.picked && " (not picked)"}
+                </>
+              )}
             </span>
           )}
           <span className="text-xs text-muted-foreground" title={dateTime(p.posted_at ?? p.created_at)}>

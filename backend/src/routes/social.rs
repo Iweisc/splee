@@ -1,8 +1,8 @@
-//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy, Nostr and LinkedIn,
-//! reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles for DEV, and comments
-//! and articles for Hashnode, that a social run drafted or the user wrote, which crate::social posts once approved, and
-//! connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see routes::linkedin,
-//! and Tumblr connects by signing in, see routes::tumblr.
+//! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy, Nostr, Discord,
+//! Telegram and LinkedIn, reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles
+//! for DEV, and comments and articles for Hashnode, that a social run drafted or the user wrote, which crate::social posts once
+//! approved, and connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see
+//! routes::linkedin, Tumblr connects by signing in, see routes::tumblr, and the Discord and Telegram bots in routes::bots.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, patch, post, put};
@@ -23,7 +23,7 @@ use crate::discourse::{self, Discourse};
 use crate::error::{AppError, AppResult};
 use crate::hashnode::{self, Hashnode};
 use crate::lemmy::{self, Lemmy};
-use crate::models::{DiscourseForum, ProjectSettings, SocialPost};
+use crate::models::{DiscourseForum, ProjectSettings, SocialChannel, SocialPost};
 use crate::mastodon::{self, Mastodon};
 use crate::nostr;
 use crate::reddit::{self, Login, Reddit};
@@ -98,6 +98,7 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
         ("dev" | "hashnode", false) => "Articles",
         ("discourse", false) => "Topics",
         ("nostr", _) => "Notes",
+        ("discord" | "telegram", _) => "Messages",
         ("tumblr", true) => "Reblog comments",
         ("linkedin" | "youtube" | "lemmy" | "hashnode", true) => "Comments",
         (_, true) => "Replies",
@@ -196,6 +197,25 @@ async fn require_forum(state: &AppState, project_id: Uuid, forum_id: Option<Uuid
     }
 }
 
+/// A Discord or Telegram post goes to a picked channel the bot can post in.
+async fn require_channel(state: &AppState, project_id: Uuid, platform: &str, channel_id: Option<Uuid>) -> AppResult<()> {
+    let channel: Option<SocialChannel> = match channel_id {
+        Some(id) => {
+            let sql = "select * from social_channels where id = $1 and project_id = $2 and platform = $3";
+            sqlx::query_as(sql).bind(id).bind(project_id).bind(platform).fetch_optional(&state.db).await?
+        }
+        None => None,
+    };
+    match channel {
+        None => Err(AppError::BadRequest(format!("Pick a {} channel on the integrations page first", social::name(platform)))),
+        Some(c) if !c.picked => Err(AppError::BadRequest(format!("Pick {} on the integrations page first", c.label()))),
+        Some(c) if !c.can_send => {
+            Err(AppError::BadRequest(format!("The bot can't post in {}. Check its permissions there, then refresh the list on the integrations page", c.label())))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 /// Approving a post for an account that isn't connected, or a Hashnode article with no publication to go in, would leave it
 /// waiting with no word on why.
 async fn require_account(state: &AppState, project_id: Uuid, platform: &str, reply: bool) -> AppResult<()> {
@@ -223,6 +243,8 @@ struct CreateBody {
     tags: Vec<String>,
     /// Discourse only: the forum the topic goes to.
     forum_id: Option<Uuid>,
+    /// Discord and Telegram only: the channel the post goes to.
+    channel_id: Option<Uuid>,
     /// "draft" (the default) or "approved".
     status: Option<String>,
 }
@@ -237,16 +259,20 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     let title = if titled(&b.platform, false) { b.title.trim() } else { "" };
     let tags = tags(&b.platform, false, &b.tags).unwrap_or_default();
     let forum_id = if b.platform == "discourse" { b.forum_id } else { None };
+    let channel_id = if matches!(b.platform.as_str(), "discord" | "telegram") { b.channel_id } else { None };
     check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
     if b.platform == "discourse" {
         require_forum(&state, id, forum_id, false).await?;
+    }
+    if matches!(b.platform.as_str(), "discord" | "telegram") {
+        require_channel(&state, id, &b.platform, channel_id).await?;
     }
     if status == "approved" {
         require_account(&state, id, &b.platform, false).await?;
     }
     let post = sqlx::query_as::<_, SocialPost>(
-        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id) values ($1, $2, $3, $4, $5, $6, $7, $8)
-         returning *",
+        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id, channel_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *",
     )
     .bind(id)
     .bind(&b.platform)
@@ -256,6 +282,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(b.body.trim())
     .bind(status)
     .bind(forum_id)
+    .bind(channel_id)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(post))
@@ -292,6 +319,9 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
         if post.platform == "discourse" {
             require_forum(&state, post.project_id, post.forum_id, reply).await?;
         }
+        if matches!(post.platform.as_str(), "discord" | "telegram") {
+            require_channel(&state, post.project_id, &post.platform, post.channel_id).await?;
+        }
         require_account(&state, post.project_id, &post.platform, reply).await?;
     }
     let updated = sqlx::query_as::<_, SocialPost>(
@@ -325,8 +355,8 @@ async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     auth.project(&state.db, id).await?;
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
         return Err(AppError::BadRequest(
-            "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, Hashnode or LinkedIn \
-             sending on the integrations page first"
+            "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, Hashnode, Discord, \
+             Telegram or LinkedIn sending on the integrations page first"
                 .into(),
         ));
     }

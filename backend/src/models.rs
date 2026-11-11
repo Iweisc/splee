@@ -262,6 +262,18 @@ pub struct ProjectSettings {
     pub hashnode_publication_id: String,
     pub hashnode_error: Option<String>,
     pub hashnode_failed_at: Option<Ts>,
+    /// The Discord bot posts go out as, by username, and its id, which its invite link needs. Its token stays out of this struct.
+    pub discord_connected: bool,
+    pub discord_bot_id: String,
+    pub discord_bot: String,
+    pub discord_error: Option<String>,
+    pub discord_failed_at: Option<Ts>,
+    /// The Telegram bot posts go out as, by username, and whether its privacy mode is off. Its token stays out of this struct.
+    pub telegram_connected: bool,
+    pub telegram_bot: String,
+    pub telegram_reads_all: bool,
+    pub telegram_error: Option<String>,
+    pub telegram_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -749,7 +761,7 @@ pub struct SocialPost {
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
     /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr",
-    /// "tumblr" or "hashnode".
+    /// "tumblr", "hashnode", "discord" or "telegram".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -775,6 +787,40 @@ pub struct SocialPost {
     pub updated_at: Ts,
     /// Discourse only: the forum it goes to. None once that forum is removed.
     pub forum_id: Option<Uuid>,
+    /// Discord and Telegram only: the channel it goes to. None once the bot can't see it anymore.
+    pub channel_id: Option<Uuid>,
+}
+
+/// A Discord text channel or a Telegram group or channel the project's bot can see. Picked ones are read and posted in.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SocialChannel {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    /// "discord" or "telegram".
+    pub platform: String,
+    /// Discord's channel id, or Telegram's chat id.
+    pub chat_id: String,
+    /// The Discord server. Empty on Telegram.
+    pub guild_id: String,
+    pub guild_name: String,
+    pub name: String,
+    /// "text" or "announcement" on Discord, "group", "supergroup" or "channel" on Telegram.
+    pub kind: String,
+    /// A public Telegram chat's @username.
+    pub username: String,
+    pub can_read: bool,
+    pub can_send: bool,
+    pub picked: bool,
+    #[serde(skip)]
+    pub last_message_id: String,
+    pub created_at: Ts,
+}
+
+impl SocialChannel {
+    /// "#general in Acme" on Discord, the chat's title on Telegram.
+    pub fn label(&self) -> String {
+        if self.platform == "discord" { format!("#{} in {}", self.name, self.guild_name) } else { self.name.clone() }
+    }
 }
 
 /// A Discourse forum the project joins. Its key stays out of the JSON.

@@ -15,10 +15,11 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, discourse, hashnode, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
+use super::{Ctx, Outcome, bluesky, channels, discourse, hashnode, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
 use crate::discourse::{Topic, forum_url};
 use crate::hooks::{self, Alert};
+use crate::models::SocialChannel;
 use crate::reddit::{Reddit, Target, subreddit};
 use crate::social::{self, Accounts, Failure, PLATFORMS, fits, name, takes_posts, takes_replies};
 use crate::stackexchange::Question;
@@ -74,6 +75,8 @@ struct Post {
     forum: String,
     #[serde(default)]
     community: String,
+    #[serde(default)]
+    channel: String,
     reason: String,
     body: String,
 }
@@ -94,9 +97,10 @@ fn schema() -> Value {
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV, Hashnode and Tumblr only. Empty for the others."},
                 "forum": {"type": "string", "description": "Discourse only, the forum's address as listed. Empty for the others."},
                 "community": {"type": "string", "description": "Lemmy only, as name@instance. Empty for the others."},
+                "channel": {"type": "string", "description": "Discord and Telegram only, the channel's id as listed. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
                 "body": {"type": "string"}
-            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "reason", "body"]}}
+            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "channel", "reason", "body"]}}
         },
         "required": ["replies", "posts"]
     })
@@ -115,6 +119,8 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| Question::parse(link).map(|q| q.url()))
         .or_else(|| crate::tumblr::PostRef::parse(link).map(|p| p.url()))
         .or_else(|| crate::nostr::note_id(link).map(|id| crate::nostr::link(&id)))
+        .or_else(|| crate::discord::parse_link(link).map(|(g, c, m)| crate::discord::message_link(&g, &c, &m)))
+        .or_else(|| crate::telegram::parse_link(link).map(|(chat, m)| crate::telegram::message_link(&chat, &m)))
         // Before Discourse and Lemmy, since an article on its own domain can have a path that looks like theirs.
         .or_else(|| crate::hashnode::post_id(link).and_then(|id| crate::hashnode::post_link(link, &id)))
         .or_else(|| Topic::parse(link).map(|t| t.url()))
@@ -135,7 +141,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
     const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, \
-                           Hashnode or LinkedIn on the integrations page first";
+                           Hashnode, Discord, Telegram or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -314,6 +320,41 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             Err(e) => unavailable("hashnode", Alert::Hashnode, e).await?,
         }
     }
+    // The bots only take part with a channel picked, and their tools only read the picked ones they can read.
+    for platform in ["discord", "telegram"] {
+        let picked: Vec<&SocialChannel> = accounts.channels.iter().filter(|c| c.platform == platform && c.picked).collect();
+        if accounts.account(platform).1.is_empty() || picked.is_empty() {
+            continue;
+        }
+        let readable: Vec<SocialChannel> = picked.iter().filter(|c| c.can_read).map(|c| (*c).clone()).collect();
+        if !readable.is_empty() {
+            call.servers.insert(platform.into(), channels::server(platform, ctx.db().clone(), readable, seen.clone()));
+            let (search, read) =
+                if platform == "discord" { (channels::DISCORD_SEARCH, channels::DISCORD_READ) } else { (channels::TELEGRAM_SEARCH, channels::TELEGRAM_READ) };
+            call.server_tools.extend([search.to_string(), read.to_string()]);
+        }
+        let list: Vec<String> = picked
+            .iter()
+            .map(|c| {
+                let can = match (c.can_read, c.can_send) {
+                    (true, true) => "replies and posts",
+                    (false, true) => "posts only",
+                    (true, false) => "read only, the bot can't post here",
+                    (false, false) => "the bot can't read or post here",
+                };
+                format!("- {} (id {}): {can}", c.label(), c.chat_id)
+            })
+            .collect();
+        let bot = if platform == "discord" { &accounts.discord_bot } else { &accounts.telegram_bot };
+        tools.push(format!(
+            "On {} you post as the bot {bot} in these {}:\n{}\nSearch their recent messages with mcp__{platform}__search and read a message \
+             with the ones around it with mcp__{platform}__read.",
+            name(platform),
+            if platform == "discord" { "channels" } else { "groups and channels" },
+            list.join("\n")
+        ));
+        platforms.push(platform);
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -378,12 +419,17 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let name = &profile.name;
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
-    let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p)).collect();
+    // A bot replies where it can read and posts where it can post.
+    let bots = |p: &str, can: fn(&SocialChannel) -> bool| !matches!(p, "discord" | "telegram") || accounts.channels.iter().any(|c| c.platform == p && c.picked && can(c));
+    let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p) && bots(p, |c| c.can_read)).collect();
     // Discourse only takes new topics on forums with a category picked for them, and Hashnode articles need a publication.
     let topics = accounts.forums.iter().any(|f| f.category_id.is_some());
     let articles = !accounts.hashnode_publication_id.is_empty();
-    let posting: Vec<&str> =
-        platforms.iter().copied().filter(|p| takes_posts(p) && (*p != "discourse" || topics) && (*p != "hashnode" || articles)).collect();
+    let posting: Vec<&str> = platforms
+        .iter()
+        .copied()
+        .filter(|p| takes_posts(p) && (*p != "discourse" || topics) && (*p != "hashnode" || articles) && bots(p, |c| c.can_send))
+        .collect();
     let (find, post_on) = (names(&replying), names(&posting));
     let task = match (replying.is_empty(), posting.is_empty()) {
         (true, _) => format!("Draft a few original posts on {post_on} that people who could buy from {name} would want to read."),
@@ -510,6 +556,16 @@ fn rules(platform: &str, company: &str, a: &Accounts) -> String {
                        Markdown with a title of at most 250 characters and up to 5 `tags` like devops or startup, a full article of 600 \
                        to 1500 words that teaches something specific."
             .into(),
+        "discord" => format!(
+            "Discord: messages are at most 2,000 characters, in Discord's Markdown. Each server is a community with its own norms: \
+             write like its regulars, short and conversational, and don't mention {company} where the server bans self-promotion. Reply to \
+             one person's message by its link. A post needs `channel`, the id of a listed channel that takes posts."
+        ),
+        "telegram" => format!(
+            "Telegram: messages are plain text, at most 4,096 characters, but keep them short like a chat message. No Markdown. Each \
+             group has its own norms, and don't mention {company} where a group bans self-promotion. Reply to one person's message by \
+             its link. A post needs `channel`, the id of a listed group or channel that takes posts."
+        ),
         "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
                   lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
                   something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
@@ -548,9 +604,16 @@ async fn save(
             continue;
         }
         let forum_id = Topic::parse(&link).filter(|_| thread.platform == "discourse").and_then(|t| forum(&t.forum)).map(|f| f.id);
+        let channel_id = match thread.platform {
+            "discord" | "telegram" => match channels::channel_of(&a.channels, thread.platform, &link) {
+                Some(c) => Some(c.id),
+                None => continue,
+            },
+            _ => None,
+        };
         let added = sqlx::query(
-            "insert into social_posts (project_id, run_id, platform, in_reply_to, context, subreddit, body, reason, forum_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (project_id, in_reply_to) do nothing",
+            "insert into social_posts (project_id, run_id, platform, in_reply_to, context, subreddit, body, reason, forum_id, channel_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (project_id, in_reply_to) do nothing",
         )
         .bind(project_id)
         .bind(run_id)
@@ -561,6 +624,7 @@ async fn save(
         .bind(body)
         .bind(r.reason.trim())
         .bind(forum_id)
+        .bind(channel_id)
         .execute(db)
         .await?;
         replies += added.rows_affected() as usize;
@@ -573,30 +637,34 @@ async fn save(
         }
         let title = p.title.trim();
         let titles = |min: usize, max: usize| (min..=max).contains(&title.chars().count());
-        let (sr, title, tags, forum_id) = match p.platform.as_str() {
+        let (sr, title, tags, forum_id, channel_id) = match p.platform.as_str() {
             "reddit" => match subreddit(&p.subreddit) {
-                Some(sr) if titles(1, 300) => (sr, title, Vec::new(), None),
+                Some(sr) if titles(1, 300) => (sr, title, Vec::new(), None, None),
                 _ => continue,
             },
-            "dev" if titles(1, crate::dev::TITLE_CHARS) => (String::new(), title, crate::dev::tags(&p.tags), None),
+            "dev" if titles(1, crate::dev::TITLE_CHARS) => (String::new(), title, crate::dev::tags(&p.tags), None, None),
             "hashnode" if titles(1, crate::hashnode::TITLE_CHARS) && !a.hashnode_publication_id.is_empty() => {
-                (String::new(), title, crate::hashnode::tags(&p.tags), None)
+                (String::new(), title, crate::hashnode::tags(&p.tags), None, None)
             }
-            "tumblr" => (String::new(), "", crate::tumblr::tags(&p.tags), None),
+            "tumblr" => (String::new(), "", crate::tumblr::tags(&p.tags), None, None),
             "lemmy" => match crate::lemmy::community(&p.community, a.lemmy_host()) {
-                Some(community) if titles(1, crate::lemmy::TITLE_CHARS) => (community, title, Vec::new(), None),
+                Some(community) if titles(1, crate::lemmy::TITLE_CHARS) => (community, title, Vec::new(), None, None),
                 _ => continue,
             },
             "discourse" => match forum_url(&p.forum).and_then(|url| forum(&url)).filter(|f| f.category_id.is_some()) {
-                Some(f) if titles(crate::discourse::MIN_TITLE_CHARS, crate::discourse::TITLE_CHARS) => (String::new(), title, Vec::new(), Some(f.id)),
+                Some(f) if titles(crate::discourse::MIN_TITLE_CHARS, crate::discourse::TITLE_CHARS) => (String::new(), title, Vec::new(), Some(f.id), None),
                 _ => continue,
             },
+            "discord" | "telegram" => match a.channels.iter().find(|c| c.platform == p.platform && c.chat_id == p.channel.trim() && c.picked && c.can_send) {
+                Some(c) => (String::new(), "", Vec::new(), None, Some(c.id)),
+                None => continue,
+            },
             "dev" | "hashnode" => continue,
-            _ => (String::new(), "", Vec::new(), None),
+            _ => (String::new(), "", Vec::new(), None, None),
         };
         sqlx::query(
-            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id, channel_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(project_id)
         .bind(run_id)
@@ -607,6 +675,7 @@ async fn save(
         .bind(body)
         .bind(p.reason.trim())
         .bind(forum_id)
+        .bind(channel_id)
         .execute(db)
         .await?;
         posts += 1;
@@ -635,12 +704,72 @@ mod tests {
             ("nostr:note1xlr5mlm2alkq3hxyw0s8f3tm6t2gssqq0ld70cjkhptje28uu56qwxgm3j", "https://njump.me/note1xlr5mlm2alkq3hxyw0s8f3tm6t2gssqq0ld70cjkhptje28uu56qwxgm3j"),
             // Its path looks like a Lemmy post's, and the id makes it Hashnode's.
             ("https://bo.dev/post/5?ref=feed&hashnode=66f0c1a2b3c4d5e6f7a8b9c0#c1", "https://bo.dev/post/5?hashnode=66f0c1a2b3c4d5e6f7a8b9c0"),
+            ("https://canary.discord.com/channels/100/200/1003", "https://discord.com/channels/100/200/1003"),
+            ("https://t.me/c/1234567890/7/42", "https://t.me/c/1234567890/42"),
         ] {
             assert_eq!(canonical(link).as_deref(), Some(canonical_link), "{link}");
         }
         assert_eq!(canonical("https://example.com/blog/1"), None);
         assert_eq!(names(&["x"]), "X");
         assert_eq!(names(&["x", "bluesky", "linkedin"]), "X, Bluesky and LinkedIn");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn bot_replies_and_posts_go_to_picked_channels_the_bot_can_post_in(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let run: Uuid = sqlx::query_scalar("insert into agent_runs (kind, project_id) values ('social', $1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1)").bind(project).execute(&db).await.unwrap();
+        let channel = |platform: &str, chat: &str, picked: bool, can_send: bool| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into social_channels (project_id, platform, chat_id, guild_id, name, kind, picked, can_send) values ($1, $2, $3, '100', 'general', 'text', $4, $5)
+                 returning id",
+            )
+            .bind(project)
+            .bind(platform.to_string())
+            .bind(chat.to_string())
+            .bind(picked)
+            .bind(can_send)
+            .fetch_one(&db)
+        };
+        let general = channel("discord", "200", true, true).await.unwrap();
+        channel("discord", "201", false, true).await.unwrap();
+        channel("discord", "202", true, false).await.unwrap();
+        let group = channel("telegram", "-1001234", true, true).await.unwrap();
+        let thread = |platform| Thread { platform, text: "ana: How do you warm up?".into(), subreddit: String::new(), created: Some(Utc::now()), closed: false };
+        let seen = HashMap::from([
+            ("https://discord.com/channels/100/200/1003".to_string(), thread("discord")),
+            // Not picked.
+            ("https://discord.com/channels/100/201/1004".to_string(), thread("discord")),
+            ("https://t.me/c/1234/11".to_string(), thread("telegram")),
+        ]);
+        let reply = |url: &str| Reply { thread_url: url.into(), reason: "Asks for it".into(), body: "Four weeks, 20 a day".into() };
+        let post = |platform: &str, channel: &str| Post {
+            platform: platform.into(),
+            subreddit: String::new(),
+            title: String::new(),
+            tags: Vec::new(),
+            forum: String::new(),
+            community: String::new(),
+            channel: channel.into(),
+            reason: "Useful".into(),
+            body: "A lesson".into(),
+        };
+        let drafts = Drafts {
+            replies: vec![reply("https://discord.com/channels/100/200/1003"), reply("https://discord.com/channels/100/201/1004"), reply("https://t.me/c/1234/11")],
+            // Not picked, can't post, and not one of the bot's.
+            posts: vec![post("discord", "200"), post("discord", "201"), post("discord", "202"), post("telegram", "-1009999"), post("telegram", " -1001234 ")],
+        };
+        let accounts = social::accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(save(&db, project, run, &["discord", "telegram"], &accounts, drafts, &seen).await.unwrap(), (2, 2));
+        let rows: Vec<(String, Option<String>, Option<Uuid>)> =
+            sqlx::query_as("select platform, in_reply_to, channel_id from social_posts order by platform, in_reply_to nulls last").fetch_all(&db).await.unwrap();
+        assert_eq!(rows, [
+            ("discord".into(), Some("https://discord.com/channels/100/200/1003".into()), Some(general)),
+            ("discord".into(), None, Some(general)),
+            ("telegram".into(), Some("https://t.me/c/1234/11".into()), Some(group)),
+            ("telegram".into(), None, Some(group)),
+        ]);
     }
 
     #[sqlx::test]
@@ -679,6 +808,7 @@ mod tests {
             tags: vec!["Cold Email".into(), "sales".into()],
             forum: String::new(),
             community: String::new(),
+            channel: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
