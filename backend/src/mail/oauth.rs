@@ -242,10 +242,13 @@ pub async fn access_token(state: &AppState, mb: &Mailbox) -> anyhow::Result<Stri
     let provider = Provider::parse(&mb.provider).ok_or_else(|| anyhow!("{} doesn't sign in with OAuth", mb.email))?;
     let lock = lock_for(mb.id);
     let _guard = lock.lock().await;
+    // The in-process lock keeps tasks here from each taking a connection. This one covers another backend on the database.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('mailbox-token:' || $1::text, 0))").bind(mb.id).execute(&mut *tx).await?;
     let (refresh_enc, access_enc, expires_at, needs_reconnect): (String, String, Option<Ts>, bool) =
         sqlx::query_as("select oauth_refresh_token_enc, oauth_access_token_enc, oauth_expires_at, needs_reconnect from mailboxes where id = $1")
             .bind(mb.id)
-            .fetch_one(&state.db)
+            .fetch_one(&mut *tx)
             .await?;
     // Nothing asks the provider again for a token it refused, so a revoked mailbox can't be retried forever.
     if needs_reconnect {
@@ -276,12 +279,14 @@ pub async fn access_token(state: &AppState, mb: &Mailbox) -> anyhow::Result<Stri
             .bind(crypto::encrypt(secret, &tokens.access_token))
             .bind(tokens.expires_at())
             .bind(tokens.refresh_token.as_deref().filter(|t| !t.is_empty()).map(|t| crypto::encrypt(secret, t)))
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(tokens.access_token)
         }
         Err(e @ TokenError::Revoked(_)) => {
-            mark_revoked(&state.db, mb.id, &refresh_enc, &e.to_string()).await?;
+            mark_revoked(&mut tx, mb.id, &refresh_enc, &e.to_string()).await?;
+            tx.commit().await?;
             Err(e.into())
         }
         Err(e) => Err(e.into()),
@@ -290,7 +295,7 @@ pub async fn access_token(state: &AppState, mb: &Mailbox) -> anyhow::Result<Stri
 
 /// Stops the mailbox until someone signs in again. A paused one stays paused and keeps why. Matching on the refresh token
 /// leaves alone a mailbox reconnected while the request was out.
-async fn mark_revoked(db: &sqlx::PgPool, mailbox_id: Uuid, refresh_enc: &str, error: &str) -> sqlx::Result<()> {
+async fn mark_revoked(db: &mut sqlx::PgConnection, mailbox_id: Uuid, refresh_enc: &str, error: &str) -> sqlx::Result<()> {
     tracing::warn!(mailbox = %mailbox_id, "the provider revoked a mailbox's sign-in");
     sqlx::query(
         "update mailboxes set needs_reconnect = true, oauth_access_token_enc = '', oauth_expires_at = null, recheck_at = null,
