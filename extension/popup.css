@@ -1,0 +1,193 @@
+/* The app's light theme, from frontend/src/app/globals.css. */
+:root {
+  --background: #f6f5f3;
+  --foreground: #0b0b0b;
+  --card: #ffffff;
+  --muted-foreground: #737373;
+  --border: rgb(0 0 0 / 0.08);
+  --border-strong: rgb(0 0 0 / 0.16);
+  --danger: #dc2626;
+  --brand-50: #ecfdf5;
+  --brand-700: #047857;
+  --amber-50: #fffbeb;
+  --amber-800: #92400e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 360px;
+  margin: 0;
+  padding: 12px 14px 14px;
+  background: var(--background);
+  color: var(--foreground);
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+}
+
+.fields {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 0 0 1px rgb(0 0 0 / 0.06);
+}
+
+label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+input:not([type="checkbox"]),
+select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid rgb(16 185 129 / 0.35);
+  outline-offset: 0;
+  border-color: #10b981;
+}
+
+input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--foreground);
+}
+
+button[type="submit"] {
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--foreground);
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.muted,
+.source {
+  color: var(--muted-foreground);
+}
+
+.source {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+#notes {
+  display: grid;
+  gap: 6px;
+}
+
+#notes:empty {
+  display: none;
+}
+
+.note {
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.note.warn {
+  background: var(--amber-50);
+  color: var(--amber-800);
+  box-shadow: none;
+}
+
+.note.error,
+.error {
+  color: var(--danger);
+}
+
+.note.error {
+  background: #fef2f2;
+  box-shadow: none;
+}
+
+.done {
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+
+.done .link {
+  color: inherit;
+  font-size: 13px;
+}
+
+[hidden] {
+  display: none !important;
+}

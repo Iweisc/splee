@@ -10,6 +10,7 @@ pub mod auth;
 mod bookings;
 mod directory;
 mod endpoints;
+mod extension;
 mod forms;
 mod hiring;
 mod tech;
@@ -85,6 +86,7 @@ pub fn router() -> Router<AppState> {
         .merge(notifications::router())
         .merge(api_keys::router())
         .merge(api_v1::router())
+        .merge(extension::router())
         .merge(mcp::router())
         .merge(oauth::router())
         .merge(stats::router())
