@@ -4,6 +4,7 @@ pub mod dns;
 mod imap;
 mod inbound;
 mod notify;
+pub mod oauth;
 pub mod providers;
 mod sender;
 mod smtp;
@@ -107,7 +108,7 @@ pub async fn send_system_email(state: &AppState, org_id: Uuid, to: &str, subject
             warmup: None,
         },
     )?;
-    smtp::send(&smtp::transport(state, &mb)?, message).await?;
+    smtp::send(&smtp::transport(state, &mb).await?, message).await?;
     Ok(true)
 }
 

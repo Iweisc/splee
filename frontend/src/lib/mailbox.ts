@@ -1,5 +1,7 @@
 import type { BadgeTone } from "@/components/ui/misc";
-import type { Mailbox, WarmupHealth } from "./types";
+import type { Mailbox, SignInProvider, WarmupHealth } from "./types";
+
+export const SIGN_IN_LABEL: Record<SignInProvider, string> = { google: "Google", microsoft: "Microsoft" };
 
 /**
  * Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce

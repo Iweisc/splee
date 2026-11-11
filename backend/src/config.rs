@@ -27,6 +27,26 @@ pub struct Config {
     /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
     /// which every organization shares.
     pub operator_emails: Vec<String>,
+    /// The Google and Microsoft apps people sign in with to connect a mailbox. None hides that provider's button.
+    pub google: Option<OAuthApp>,
+    pub microsoft: Option<OAuthApp>,
+}
+
+/// An OAuth app registered with Google or Microsoft. See mail::oauth.
+#[derive(Clone, Debug)]
+pub struct OAuthApp {
+    pub client_id: String,
+    pub client_secret: String,
+    /// Only tests point these at a fake.
+    pub authorize_url: String,
+    pub token_url: String,
+}
+
+impl OAuthApp {
+    fn from_env(prefix: &str, authorize_url: String, token_url: String) -> Option<Self> {
+        let var = |name: &str| env::var(format!("{prefix}_{name}")).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        Some(Self { client_id: var("CLIENT_ID")?, client_secret: var("CLIENT_SECRET")?, authorize_url, token_url })
+    }
 }
 
 impl Config {
@@ -46,6 +66,12 @@ impl Config {
             public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
             porkbun_api_url: env::var("PORKBUN_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| crate::porkbun::API_URL.into()),
             operator_emails: env::var("OPERATOR_EMAILS").map(|v| emails(&v)).unwrap_or_default(),
+            google: OAuthApp::from_env("GOOGLE", "https://accounts.google.com/o/oauth2/v2/auth".into(), "https://oauth2.googleapis.com/token".into()),
+            microsoft: {
+                let tenant = env::var("MICROSOFT_TENANT").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "common".into());
+                let base = format!("https://login.microsoftonline.com/{}/oauth2/v2.0", tenant.trim());
+                OAuthApp::from_env("MICROSOFT", format!("{base}/authorize"), format!("{base}/token"))
+            },
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -95,6 +121,8 @@ mod tests {
             public_agent: true,
             porkbun_api_url: String::new(),
             operator_emails: emails(" Ops@Example.com,, admin@example.org "),
+            google: None,
+            microsoft: None,
         }
     }
 

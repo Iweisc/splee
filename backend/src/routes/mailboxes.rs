@@ -143,6 +143,22 @@ impl MailboxBody {
         }
     }
 
+    fn without_server_settings(self) -> Self {
+        Self {
+            email: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_security: None,
+            smtp_username: None,
+            smtp_password: None,
+            imap_host: None,
+            imap_port: None,
+            imap_username: None,
+            imap_password: None,
+            ..self
+        }
+    }
+
     /// The DKIM selector as it goes into `{selector}._domainkey.{domain}`. A pasted "s1._domainkey.acme.com" is cut back to
     /// "s1".
     fn dkim_selector(&self) -> AppResult<Option<String>> {
@@ -225,6 +241,8 @@ async fn update(
 ) -> AppResult<Json<Mailbox>> {
     auth.require_admin()?;
     let mailbox = load(&state.db, id, auth.org_id).await?;
+    // The address and servers of a mailbox connected by signing in come from its provider, and it has no passwords.
+    let body = if mailbox.provider == "password" { body } else { body.without_server_settings() };
     let email = body.validate()?;
     let dkim_selector = body.dkim_selector()?;
     let secret = &state.cfg.app_secret;

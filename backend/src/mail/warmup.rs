@@ -413,11 +413,11 @@ async fn deliver(
         Ok(m) => m,
         Err(e) => return Ok(failed(&state.db, id, &e.to_string()).await?),
     };
-    let transport = match smtp::transport(state, from) {
+    let transport = match smtp::transport(state, from).await {
         Ok(t) => t,
         Err(e) => {
             failed(&state.db, id, &e.to_string()).await?;
-            return Ok(sender::stop_mailbox(&state.db, from, &e.to_string(), None).await?);
+            return Ok(sender::stop_mailbox(&state.db, from, &e.to_string(), sender::recheck_after_setup(&e)).await?);
         }
     };
     match smtp::send(&transport, message).await {

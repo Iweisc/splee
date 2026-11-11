@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::Mailbox as Address;
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
 use crate::crypto;
@@ -12,7 +12,7 @@ use crate::state::AppState;
 
 pub type Transport = AsyncSmtpTransport<Tokio1Executor>;
 
-pub fn transport(state: &AppState, mb: &Mailbox) -> anyhow::Result<Transport> {
+pub async fn transport(state: &AppState, mb: &Mailbox) -> anyhow::Result<Transport> {
     let host = mb.smtp_host.trim();
     let builder = match mb.smtp_security.as_str() {
         "tls" => Transport::relay(host)?,
@@ -20,8 +20,11 @@ pub fn transport(state: &AppState, mb: &Mailbox) -> anyhow::Result<Transport> {
         _ => Transport::builder_dangerous(host),
     };
     let mut builder = builder.port(u16::try_from(mb.smtp_port).context("invalid SMTP port")?).timeout(Some(Duration::from_secs(30)));
+    if mb.provider != "password" {
+        let token = super::oauth::access_token(state, mb).await?;
+        builder = builder.credentials(Credentials::new(mb.email.clone(), token)).authentication(vec![Mechanism::Xoauth2]);
     // An empty username means the server accepts mail without login (local relays, test servers).
-    if !mb.smtp_username.trim().is_empty() {
+    } else if !mb.smtp_username.trim().is_empty() {
         let password = crypto::decrypt(&state.cfg.app_secret, &mb.smtp_password_enc)?;
         builder = builder.credentials(Credentials::new(mb.smtp_username.trim().to_string(), password));
     }
@@ -30,7 +33,7 @@ pub fn transport(state: &AppState, mb: &Mailbox) -> anyhow::Result<Transport> {
 
 /// Connects, authenticates and says NOOP.
 pub async fn test(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
-    let ok = transport(state, mb)?.test_connection().await.map_err(|e| anyhow::anyhow!("SMTP: {e}"))?;
+    let ok = transport(state, mb).await?.test_connection().await.map_err(|e| anyhow::anyhow!("SMTP: {e}"))?;
     anyhow::ensure!(ok, "SMTP: the server did not answer NOOP");
     Ok(())
 }

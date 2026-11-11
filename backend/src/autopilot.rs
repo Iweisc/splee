@@ -409,6 +409,8 @@ pub(crate) mod tests {
             public_agent: false,
             porkbun_api_url: String::new(),
             operator_emails: Vec::new(),
+            google: None,
+            microsoft: None,
         };
         AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
     }

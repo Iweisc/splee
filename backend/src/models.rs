@@ -478,6 +478,11 @@ pub struct Mailbox {
     pub hold_until_warm: bool,
     #[serde(skip)]
     pub warmup_junk_uid: i64,
+    /// "password", or "google" and "microsoft" for a mailbox connected by signing in. Its tokens are only read by
+    /// mail::oauth::access_token.
+    pub provider: String,
+    /// The provider signed Splee out, so it waits for someone to sign in again.
+    pub needs_reconnect: bool,
 }
 
 /// A domain bought through the org's registrar to send from. `mailboxes` and `warming` count the org's mailboxes on it
