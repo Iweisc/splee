@@ -2,7 +2,7 @@
 
 pub mod dns;
 pub(crate) mod imap;
-mod inbound;
+pub(crate) mod inbound;
 mod notify;
 pub mod oauth;
 pub mod providers;
@@ -23,7 +23,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts and social posts wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts, social posts and client reports wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -54,6 +54,9 @@ pub fn spawn_workers(state: AppState) {
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social_channels::poll(&s), "discord and telegram reader").await });
+        // Client reports go to people outside the team, so they wait with the rest of the sending.
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(900), || crate::reports::email::tick(&s), "client reports").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });
@@ -99,6 +102,23 @@ pub async fn check_dns(domain: &str, dkim_selector: Option<&str>) -> anyhow::Res
 /// Sends a one-off email (e.g. a team invite) from the org's first active mailbox.
 /// Returns Ok(false) when the org has no active mailbox.
 pub async fn send_system_email(state: &AppState, org_id: Uuid, to: &str, subject: &str, body: &str) -> anyhow::Result<bool> {
+    send_system(state, org_id, to, subject, body, None, None).await
+}
+
+/// send_system_email with an HTML version and a List-Unsubscribe header, for the client reports.
+pub async fn send_system_html(state: &AppState, org_id: Uuid, to: &str, subject: &str, text: &str, html: &str, unsubscribe_url: &str) -> anyhow::Result<bool> {
+    send_system(state, org_id, to, subject, text, Some(html), Some(unsubscribe_url)).await
+}
+
+async fn send_system(
+    state: &AppState,
+    org_id: Uuid,
+    to: &str,
+    subject: &str,
+    body: &str,
+    html: Option<&str>,
+    unsubscribe_url: Option<&str>,
+) -> anyhow::Result<bool> {
     let mailbox = sqlx::query_as::<_, Mailbox>("select * from mailboxes where org_id = $1 and status = 'active' order by created_at limit 1")
         .bind(org_id)
         .fetch_optional(&state.db)
@@ -115,8 +135,9 @@ pub async fn send_system_email(state: &AppState, org_id: Uuid, to: &str, subject
             message_id: &message_id,
             in_reply_to: None,
             references: &[],
-            unsubscribe_url: None,
+            unsubscribe_url,
             warmup: None,
+            html,
         },
     )?;
     smtp::send(&smtp::transport(state, &mb).await?, message).await?;

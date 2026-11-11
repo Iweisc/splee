@@ -37,6 +37,7 @@ mod outreach;
 mod phone;
 mod porkbun;
 mod reddit;
+mod reports;
 mod routes;
 mod score;
 mod slack;

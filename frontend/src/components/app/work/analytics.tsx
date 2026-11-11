@@ -62,7 +62,7 @@ export function Breakdown<T>({
     <Card className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-2">
         <MicroLabel>{title}</MicroLabel>
-        <Button variant="ghost" size="sm" onClick={exportCsv} disabled={rows.length === 0}>
+        <Button variant="ghost" size="sm" onClick={exportCsv} disabled={rows.length === 0} className="print:hidden">
           <Download className="size-3.5" /> CSV
         </Button>
       </div>

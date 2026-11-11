@@ -45,7 +45,7 @@ pub mod materials;
 pub mod imports;
 pub mod suppressions;
 pub mod notifications;
-mod analytics;
+pub(crate) mod analytics;
 pub mod api_keys;
 pub mod api_v1;
 mod mcp;
@@ -56,6 +56,7 @@ pub mod runs;
 pub mod support;
 pub mod explorer;
 pub mod unsubscribe;
+pub(crate) mod reports;
 mod variants;
 mod util_airtable;
 mod util_baserow;
@@ -112,6 +113,7 @@ pub fn router() -> Router<AppState> {
         .merge(support::router())
         .merge(explorer::router())
         .merge(unsubscribe::router())
+        .merge(reports::router())
         .merge(variants::router())
         .merge(bookings::router())
         .merge(booking_pages::router())

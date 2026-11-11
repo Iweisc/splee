@@ -96,3 +96,26 @@ body {
     text-wrap-style: auto;
   }
 }
+
+/* A shared client report (/report/{token}) saves as a PDF from the browser's print dialog. Cards print as bordered boxes
+   instead of shadows, the heatmap keeps its colors, and no card or table row splits across two pages. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+  html, body {
+    background: #fff;
+  }
+  .print-report {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .print-report .shadow-card {
+    box-shadow: none;
+    border: 1px solid var(--border-strong);
+    break-inside: avoid;
+  }
+  .print-report tr {
+    break-inside: avoid;
+  }
+}

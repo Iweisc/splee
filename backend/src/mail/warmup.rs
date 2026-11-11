@@ -407,6 +407,7 @@ async fn deliver(
             references: &references,
             unsubscribe_url: None,
             warmup: Some(token),
+            html: None,
         },
     );
     let message = match built {

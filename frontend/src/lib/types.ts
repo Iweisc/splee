@@ -471,6 +471,54 @@ export interface Analytics {
   channels: { channel: "email" | "linkedin" | "sms" | "whatsapp" | "social"; sent: number; leads: number | null; replies: number | null; reply_rate: number | null }[];
 }
 
+export type ReportRange = "last_7" | "last_30" | "last_90" | "month_to_date";
+
+/** A client report link (GET /projects/{id}/report-links). Its token was only shown when it was made. */
+export interface ReportLink {
+  id: UUID;
+  project_id: UUID;
+  title: string;
+  intro: string;
+  brand: "project" | "org";
+  logo_url: string;
+  range_preset: ReportRange;
+  show_spend: boolean;
+  show_mailboxes: boolean;
+  show_leads: boolean;
+  email_schedule: "none" | "weekly" | "monthly";
+  recipients: { email: string; unsubscribed: boolean }[];
+  expires_at: Ts | null;
+  last_viewed_at: Ts | null;
+  created_at: Ts;
+}
+
+/** A lead on a shared report: first name and company only. */
+export interface ReportPerson {
+  first_name: string;
+  company: string;
+  at: Ts;
+  meeting_at: Ts | null;
+  excerpt: string;
+}
+
+/**
+ * A shared report (GET /shared-reports/{token}). The spend fields of `analytics` are missing unless `show_spend`, and its
+ * mailboxes unless `show_mailboxes`. `meetings` and `hot_replies` are null unless `show_leads`.
+ */
+export interface SharedReport {
+  name: string;
+  logo_url: string;
+  title: string;
+  intro: string;
+  range_preset: ReportRange;
+  show_spend: boolean;
+  show_mailboxes: boolean;
+  show_leads: boolean;
+  analytics: Analytics;
+  meetings: ReportPerson[] | null;
+  hot_replies: ReportPerson[] | null;
+}
+
 export interface WebhookDelivery {
   id: UUID;
   project_id: UUID;
