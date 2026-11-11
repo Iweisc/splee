@@ -142,8 +142,33 @@ pub async fn search_and_save(state: &AppState, lead: &Lead) -> anyhow::Result<Ou
             save(&state.db, lead, &taken).await?;
             Ok(taken)
         }
-        saved => saved.map(|()| outcome).map_err(Into::into),
+        Err(e) => Err(e.into()),
+        Ok(()) => match &outcome.email {
+            Some((email, _)) if unset_if_suppressed(&state.db, lead, email).await? => {
+                Ok(Outcome { email: None, state: "suppressed", note: format!("{email} is on the do-not-contact list."), ..outcome })
+            }
+            _ => Ok(outcome),
+        },
     }
+}
+
+/// Checked again once the address is saved, since it may have gone on the do-not-contact list after the search checked it.
+/// A suppression added later than this check came after the address was set, like one added after an import.
+async fn unset_if_suppressed(db: &PgPool, lead: &Lead, email: &str) -> sqlx::Result<bool> {
+    let domain = email.rsplit('@').next().unwrap_or_default();
+    let unset = sqlx::query(
+        "update leads l
+         set email = null, email_status = default, email_search = 'suppressed', email_search_note = $3 || ' is on the do-not-contact list.'
+         from projects p
+         where l.id = $1 and p.id = l.project_id and lower(l.email::text) = $3
+           and exists (select 1 from suppressions where org_id = p.org_id and value in ($3, $2))",
+    )
+    .bind(lead.id)
+    .bind(domain.to_lowercase())
+    .bind(email.to_lowercase())
+    .execute(db)
+    .await?;
+    Ok(unset.rows_affected() == 1)
 }
 
 /// Leaves the lead alone when it got an address some other way while the search ran.
@@ -780,6 +805,15 @@ mod tests {
         let sam = find(&s, &url, &lead(&db, s.project, "Sam Lee", "beta.io").await).await;
         assert_eq!((sam.email, sam.email_search.as_str()), (None, "duplicate"));
         assert_eq!(sam.email_search_note, "sam@beta.io is already Samuel Lee's address.");
+
+        // Suppressed while the search ran: the saved address is taken off again.
+        let late = lead(&db, s.project, "Kim Ek", "late.io").await;
+        sqlx::query("update leads set email = 'kim@late.io' where id = $1").bind(late.id).execute(&db).await.unwrap();
+        assert!(!unset_if_suppressed(&db, &late, "kim@late.io").await.unwrap());
+        crate::routes::suppressions::insert(&db, s.org, ["late.io"]).await.unwrap();
+        assert!(unset_if_suppressed(&db, &late, "kim@late.io").await.unwrap());
+        let late = reload(&db, &late).await;
+        assert_eq!((late.email, late.email_search.as_str()), (None, "suppressed"));
     }
 
     #[sqlx::test]
