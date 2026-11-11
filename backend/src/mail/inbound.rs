@@ -353,6 +353,9 @@ mod tests {
             microsoft: None,
             slack: None,
             tumblr: None,
+            salesforce: None,
+            zoho: None,
+            crm_api_url: String::new(),
             ipinfo_token: None,
         };
         let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };

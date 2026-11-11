@@ -127,6 +127,7 @@ pub fn authorize_url(cfg: &Config, provider: Provider, scope: &str, state: &str,
 pub const MAILBOX: &str = "mailbox-oauth";
 pub const TUMBLR: &str = "tumblr-oauth";
 pub const POSTMASTER: &str = "postmaster-oauth";
+pub const CRM: &str = "crm-oauth";
 
 pub use crypto::{sign_state, state_nonce, verify_state};
 
@@ -157,6 +158,9 @@ pub struct Tokens {
     pub expires_in: Option<i64>,
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
+    /// Where the account's API is, from Salesforce and from Zoho.
+    pub instance_url: Option<String>,
+    pub api_domain: Option<String>,
 }
 
 impl Tokens {
@@ -173,15 +177,17 @@ pub(crate) async fn token_request(label: &'static str, app: &OAuthApp, form: &[(
     form.extend([("client_id", app.client_id.as_str()), ("client_secret", app.client_secret.as_str())]);
     let res = client.post(&app.token_url).form(&form).send().await.map_err(|e| unavailable(e.without_url().to_string()))?;
     let status = res.status();
-    if status.is_success() {
-        return res.json::<Tokens>().await.map_err(|e| TokenError::Refused(label, format!("unreadable answer: {e}")));
-    }
     if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(unavailable(status.to_string()));
     }
     let body: Value = res.json().await.unwrap_or_default();
+    // Zoho turns a request down with a 200 and an error in the body.
+    if status.is_success() && body["error"].is_null() {
+        return serde_json::from_value::<Tokens>(body).map_err(|e| TokenError::Refused(label, format!("unreadable answer: {e}")));
+    }
     match body["error"].as_str() {
-        Some("invalid_grant") => Err(TokenError::Revoked(label)),
+        // Zoho's invalid_code is a refresh token that was revoked, or a code that was used or ran out.
+        Some("invalid_grant" | "invalid_code") => Err(TokenError::Revoked(label)),
         error => {
             let said = body["error_description"].as_str().or(error).unwrap_or(status.as_str());
             // Microsoft follows its reason with trace and correlation ids on new lines.
@@ -388,6 +394,9 @@ pub(crate) mod tests {
             microsoft: Some(fake.app()),
             slack: None,
             tumblr: None,
+            salesforce: None,
+            zoho: None,
+            crm_api_url: String::new(),
             ipinfo_token: None,
         }
     }

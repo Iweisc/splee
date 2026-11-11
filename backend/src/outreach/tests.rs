@@ -35,6 +35,9 @@ fn config(fake_url: &str) -> Config {
         google: None,
         microsoft: None,
         tumblr: None,
+        salesforce: None,
+        zoho: None,
+        crm_api_url: String::new(),
         ipinfo_token: None,
         slack: None,
     }

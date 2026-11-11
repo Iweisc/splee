@@ -198,6 +198,9 @@ fn state(db: PgPool) -> AppState {
         microsoft: None,
         slack: None,
         tumblr: None,
+        salesforce: None,
+        zoho: None,
+        crm_api_url: String::new(),
         ipinfo_token: None,
     };
     AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }

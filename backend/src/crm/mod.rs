@@ -9,6 +9,7 @@ mod brevo;
 mod capsule;
 mod close;
 mod copper;
+mod dynamics;
 mod espocrm;
 mod folk;
 mod freshsales;
@@ -22,8 +23,11 @@ mod notion;
 mod odoo;
 mod pipedrive;
 mod salesflare;
+mod salesforce;
+pub mod signin;
 mod twenty;
 mod zendesk_sell;
+mod zoho;
 
 use std::time::Duration;
 
@@ -39,7 +43,7 @@ use crate::state::AppState;
 /// Declares every CRM once: its variant, its module (with `check` and `push`), its name and its label.
 macro_rules! crms {
     ($($variant:ident: $module:ident, $name:literal, $label:literal;)+) => {
-        #[derive(Clone, Copy, Debug)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Crm {
             $($variant,)+
         }
@@ -63,7 +67,8 @@ macro_rules! crms {
                 }
             }
 
-            /// Checks the CRM accepts the token, so a typo shows up when connecting and not on the first hot lead.
+            /// Checks the CRM accepts the token, so a typo shows up when connecting and not on the first hot lead. A CRM that
+            /// signs in gets a signin::Session as its token, here and in push.
             pub async fn check(self, token: &str) -> anyhow::Result<()> {
                 match self {
                     $(Crm::$variant => $module::check(token).await,)+
@@ -81,6 +86,9 @@ macro_rules! crms {
 
 crms! {
     HubSpot: hubspot, "hubspot", "HubSpot";
+    Salesforce: salesforce, "salesforce", "Salesforce";
+    Zoho: zoho, "zoho", "Zoho CRM";
+    Dynamics: dynamics, "dynamics", "Dynamics 365 Sales";
     Pipedrive: pipedrive, "pipedrive", "Pipedrive";
     Attio: attio, "attio", "Attio";
     Close: close, "close", "Close";
@@ -136,6 +144,11 @@ impl Crm {
         Crm::ALL.iter().copied().find(|crm| crm.name() == name)
     }
 
+    /// Connected by signing in on the integrations page rather than with a pasted token. See signin.
+    pub fn signs_in(self) -> bool {
+        matches!(self, Crm::Salesforce | Crm::Zoho | Crm::Dynamics)
+    }
+
     /// What the CRM needs besides the token to find the account, asked for on its own. It's saved in the token, a line
     /// before it, so syncing needs nothing new.
     pub fn account(self) -> Option<&'static str> {
@@ -171,6 +184,7 @@ pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
             continue;
         }
         let result = match crypto::decrypt(&state.cfg.app_secret, &enc) {
+            Ok(_) if crm.signs_in() => signin::push(state, project_id, crm, email, lead, note).await,
             Ok(token) => crm.push(&token, email, lead, note).await,
             Err(e) => Err(e),
         };
@@ -181,29 +195,56 @@ pub async fn sync(state: &AppState, project_id: Uuid, lead: &Lead, note: &str) {
     }
 }
 
+/// Checks the saved connection still works, for the Test button, and saves how it went like a sync does.
+pub async fn test(state: &AppState, project_id: Uuid, crm: Crm) -> anyhow::Result<()> {
+    // The column name comes from Crm::name, never from input.
+    let sql = format!("select {}_token_enc from project_settings where project_id = $1", crm.name());
+    let enc: String = sqlx::query_scalar(&sql).bind(project_id).fetch_optional(&state.db).await?.unwrap_or_default();
+    anyhow::ensure!(!enc.is_empty(), "connect {} first", crm.label());
+    let result = match crypto::decrypt(&state.cfg.app_secret, &enc) {
+        Ok(_) if crm.signs_in() => signin::test(state, project_id, crm).await,
+        Ok(token) => crm.check(&token).await,
+        Err(e) => Err(e),
+    };
+    hooks::record(&state.db, project_id, Alert::Crm(crm), &enc, &result).await;
+    result
+}
+
 fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().timeout(Duration::from_secs(20)).build()
 }
 
-/// Sends the request and turns a failure into a plain message: a 401 says the key was turned down, and anything else gives
-/// the CRM's own `message` or `error`, or the status. reqwest's own errors quote the URL, which can hold the lead's email
-/// and reads like noise on the integrations page.
+/// A 401. A CRM that signs in gets a new access token and tries once more (see signin).
+#[derive(Debug, thiserror::Error)]
+#[error("the API key or token is wrong or was revoked")]
+struct Unauthorized;
+
+/// Sends the request and turns a failure into a plain message: a 401 is Unauthorized, and anything else gives the CRM's own
+/// message, or the status. Salesforce puts it in a list and Dynamics and Zoho one level down. reqwest's own errors quote the
+/// URL, which can hold the lead's email and reads like noise on the integrations page.
 async fn send(request: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
     let res = request.send().await.map_err(reqwest::Error::without_url)?;
     let status = res.status();
     if status.is_success() {
         return Ok(res);
     }
-    anyhow::ensure!(status != reqwest::StatusCode::UNAUTHORIZED, "the API key or token is wrong or was revoked");
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Unauthorized.into());
+    }
     let body: serde_json::Value = res.json().await.unwrap_or_default();
-    let said = body["message"].as_str().or(body["error"].as_str()).filter(|s| !s.is_empty());
-    anyhow::bail!("{}", said.map_or_else(|| status.to_string(), str::to_string))
+    let said = ["/message", "/error", "/0/message", "/error/message", "/data/0/message"].iter().find_map(|p| body.pointer(p)?.as_str());
+    anyhow::bail!("{}", said.filter(|s| !s.is_empty()).map_or_else(|| status.to_string(), str::to_string))
 }
 
 /// "Sarah van Dijk" is ("Sarah", "van Dijk"). A one-word name has no last name.
 fn split_name(full: &str) -> (&str, &str) {
     let full = full.trim();
     full.split_once(' ').map(|(f, l)| (f, l.trim())).unwrap_or((full, ""))
+}
+
+/// A note's first line, cut to `max` characters, for a CRM that wants a title or subject too.
+fn first_line(note: &str, max: usize) -> String {
+    note.lines().next().unwrap_or_default().chars().take(max).collect()
 }
 
 /// HubSpot, Pipedrive, Brevo, Insightly and Odoo render notes as HTML, so the reply is escaped and its line breaks kept.

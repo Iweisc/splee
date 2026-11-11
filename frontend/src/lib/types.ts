@@ -30,6 +30,8 @@ export interface Me {
   mailbox_sign_in: SignInProvider[];
   /** The server has a Tumblr app, so the integrations page offers to connect Tumblr. */
   tumblr_sign_in: boolean;
+  /** The CRMs that sign in which the server has an app for, so the integrations page offers them. */
+  crm_sign_in: SignInCrm[];
 }
 
 export type SignInProvider = "google" | "microsoft";
@@ -151,8 +153,13 @@ export interface Targeting {
 }
 
 /** Every CRM, in the order the integrations page lists them. Keep in sync with Crm::ALL in backend/src/crm/mod.rs. */
-export const CRM_NAMES = ["hubspot", "pipedrive", "attio", "close", "folk", "capsule", "brevo", "zendesk_sell", "lacrm", "salesflare", "affinity", "freshsales", "copper", "insightly", "twenty", "twenty_self", "espocrm", "odoo", "notion", "airtable", "baserow", "nocodb", "grist", "teable"] as const;
+export const CRM_NAMES = ["hubspot", "salesforce", "zoho", "dynamics", "pipedrive", "attio", "close", "folk", "capsule", "brevo", "zendesk_sell", "lacrm", "salesflare", "affinity", "freshsales", "copper", "insightly", "twenty", "twenty_self", "espocrm", "odoo", "notion", "airtable", "baserow", "nocodb", "grist", "teable"] as const;
 export type CrmName = (typeof CRM_NAMES)[number];
+
+/** The CRMs that connect by signing in. Keep in sync with Crm::signs_in in backend/src/crm/mod.rs. */
+export const SIGN_IN_CRMS = ["salesforce", "zoho", "dynamics"] as const;
+export type SignInCrm = (typeof SIGN_IN_CRMS)[number];
+export const signsIn = (crm: CrmName): crm is SignInCrm => (SIGN_IN_CRMS as readonly string[]).includes(crm);
 
 /** Each CRM's connection and last failed sync, as {crm}_connected, {crm}_error and {crm}_failed_at. Its token is write-only,
  * through PUT /integrations/{crm}. */
@@ -263,6 +270,18 @@ export interface ProjectSettings extends CrmStatus {
   nostr_relays: string[];
   nostr_error: string | null;
   nostr_failed_at: string | null;
+  /** Salesforce, Zoho CRM and Dynamics 365 Sales connect by signing in. Each has the host it's signed in to, and
+   * needs_reconnect once it signed Splee out. */
+  salesforce_site: string;
+  salesforce_sandbox: boolean;
+  salesforce_needs_reconnect: boolean;
+  /** The org's active Lead Status values, and the one booked leads get. Empty leaves the status alone. */
+  salesforce_statuses: { value: string; label: string }[];
+  salesforce_booked_status: string;
+  zoho_site: string;
+  zoho_needs_reconnect: boolean;
+  dynamics_site: string;
+  dynamics_needs_reconnect: boolean;
   /** The Tumblr account, connected by signing in, its blogs and the one that posts. */
   tumblr_connected: boolean;
   tumblr_username: string;

@@ -45,6 +45,12 @@ pub struct Config {
     pub slack: Option<SlackApp>,
     /// The Tumblr app projects sign in with to post on Tumblr. None hides Tumblr on the integrations page.
     pub tumblr: Option<OAuthApp>,
+    /// The Salesforce connected app and Zoho client projects sign in with to send leads there. None leaves that CRM off the
+    /// integrations page. Dynamics 365 signs in with the Microsoft app above.
+    pub salesforce: Option<OAuthApp>,
+    pub zoho: Option<OAuthApp>,
+    /// Only tests and sandboxes set it, to a fake Dynamics 365 org, which the org address check would otherwise turn down.
+    pub crm_api_url: String,
     /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
     pub ipinfo_token: Option<String>,
 }
@@ -60,7 +66,7 @@ pub struct SlackApp {
     pub api_url: String,
 }
 
-/// An OAuth app registered with Google, Microsoft or Tumblr. See mail::oauth and tumblr.
+/// An OAuth app registered with Google, Microsoft, Tumblr, Salesforce or Zoho. See mail::oauth, tumblr and crm::signin.
 #[derive(Clone, Debug)]
 pub struct OAuthApp {
     pub client_id: String,
@@ -118,6 +124,9 @@ impl Config {
             },
             slack: SlackApp::from_env(),
             tumblr: OAuthApp::from_env("TUMBLR", crate::tumblr::AUTHORIZE_URL.into(), crate::tumblr::TOKEN_URL.into()),
+            salesforce: OAuthApp::from_env("SALESFORCE", crate::crm::signin::SALESFORCE_AUTHORIZE.into(), crate::crm::signin::SALESFORCE_TOKEN.into()),
+            zoho: OAuthApp::from_env("ZOHO", crate::crm::signin::ZOHO_AUTHORIZE.into(), crate::crm::signin::ZOHO_TOKEN.into()),
+            crm_api_url: env::var("CRM_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         };
         cfg.check_app_secret()?;
@@ -176,6 +185,9 @@ mod tests {
             microsoft: None,
             slack: None,
             tumblr: None,
+            salesforce: None,
+            zoho: None,
+            crm_api_url: String::new(),
             ipinfo_token: None,
         }
     }
