@@ -496,6 +496,8 @@ export interface DirectoryCompany {
   postcode: string | null;
   country_code: string;
   category: string | null;
+  /** The tools its tech scan found. Only companies some project has get scanned. */
+  tech: string[];
 }
 
 export interface DirectoryPage extends Paginated<DirectoryCompany> {
@@ -606,6 +608,37 @@ export interface LeadDetail extends Lead {
 
 export interface CompanyRow extends Company {
   hiring: string[];
+  /** The tools its last tech scan found, in catalogue order. */
+  tech: string[];
+}
+
+/** A tool Splee can spot on a company's site or DNS. `category` is one of `TechCatalogue.categories`' keys. */
+export interface TechTool {
+  name: string;
+  category: string;
+}
+
+/** A tool the project looks for: "uses" is a good sign, "competitor" a tool its product could replace. */
+export interface TechPick {
+  tech: string;
+  kind: "uses" | "competitor";
+}
+
+export interface TechCatalogue {
+  catalogue: TechTool[];
+  categories: { key: string; label: string }[];
+  picks: TechPick[];
+}
+
+/** A project company whose tech scan found some tools. `leads` counts the project's leads there. */
+export interface TechCompany {
+  id: UUID;
+  domain: string;
+  name: string;
+  segment_id: UUID | null;
+  leads: number;
+  techs: string[];
+  scanned_at: Ts | null;
 }
 
 export interface JobPost {

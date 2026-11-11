@@ -64,7 +64,7 @@ pub async fn undeliverable(resolver: &TokioResolver, domain: &str) -> bool {
     matches!(v4, Err(e) if e.is_no_records_found()) && matches!(v6, Err(e) if e.is_no_records_found())
 }
 
-async fn txt_records(resolver: &TokioResolver, name: &str) -> Vec<String> {
+pub async fn txt_records(resolver: &TokioResolver, name: &str) -> Vec<String> {
     let Ok(lookup) = resolver.txt_lookup(fqdn(name)).await else { return vec![] };
     lookup
         .answers()

@@ -15,6 +15,7 @@ mod directory;
 mod directory_queue;
 mod error;
 mod events;
+mod fingerprints;
 mod grist;
 mod hiring;
 mod hooks;
@@ -32,6 +33,7 @@ mod social;
 mod stackexchange;
 mod state;
 mod teable;
+mod tech;
 mod threads;
 mod unipile;
 mod verify;
@@ -99,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
     mail::spawn_workers(state.clone());
     directory_queue::spawn_worker(state.db.clone());
     hiring::spawn_worker(state.db.clone());
+    tech::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
 
     let app = Router::new()
