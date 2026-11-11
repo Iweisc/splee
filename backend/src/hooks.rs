@@ -23,12 +23,7 @@ use crate::state::AppState;
 pub async fn public_client(url: &Url) -> anyhow::Result<reqwest::Client> {
     anyhow::ensure!(matches!(url.scheme(), "http" | "https"), "only http and https URLs are allowed");
     let host = url.host_str().context("the URL has no host")?;
-    let port = url.port_or_known_default().context("the URL has no port")?;
-    let addrs: Vec<SocketAddr> = match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
-        Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => tokio::net::lookup_host((host, port)).await?.collect(),
-    };
-    anyhow::ensure!(!addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip())), "{host} is not a public address");
+    let addrs = public_addrs(url).await?;
     Ok(reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
@@ -53,6 +48,19 @@ pub async fn get_page(client: &reqwest::Client, url: &str, public_only: bool, us
         return res.status().is_success().then_some(res);
     }
     None
+}
+
+/// The addresses the URL's host resolves to now, when every one of them is public. Connect to these, not to the host again,
+/// so a second lookup can't point somewhere else.
+pub async fn public_addrs(url: &Url) -> anyhow::Result<Vec<SocketAddr>> {
+    let host = url.host_str().context("the URL has no host")?;
+    let port = url.port_or_known_default().context("the URL has no port")?;
+    let addrs: Vec<SocketAddr> = match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => tokio::net::lookup_host((host, port)).await?.collect(),
+    };
+    anyhow::ensure!(!addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip())), "{host} is not a public address");
+    Ok(addrs)
 }
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
@@ -212,6 +220,12 @@ pub enum Alert {
     Discourse,
     /// Matched on lemmy_password_enc.
     Lemmy,
+    /// Matched on nostr_key_enc.
+    Nostr,
+    /// Matched on tumblr_username, since the refresh token changes each time it's used.
+    Tumblr,
+    /// Matched on hashnode_token_enc.
+    Hashnode,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -237,6 +251,9 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::StackExchange => ("stackexchange", "stackexchange_token_enc".to_string()),
         Alert::Dev => ("dev", "dev_key_enc".to_string()),
         Alert::Lemmy => ("lemmy", "lemmy_password_enc".to_string()),
+        Alert::Nostr => ("nostr", "nostr_key_enc".to_string()),
+        Alert::Tumblr => ("tumblr", "tumblr_username".to_string()),
+        Alert::Hashnode => ("hashnode", "hashnode_token_enc".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

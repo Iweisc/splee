@@ -53,7 +53,7 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(provider): Path<S
     .bind(Utc::now() + Duration::minutes(STATE_MINUTES))
     .execute(&state.db)
     .await?;
-    let signed = oauth::sign_state(&state.cfg.app_secret, &nonce, auth.user_id, auth.org_id);
+    let signed = oauth::sign_state(&state.cfg.app_secret, oauth::MAILBOX, &nonce, auth.user_id, auth.org_id);
     let hint = body.email.as_deref().and_then(util_input::email);
     let url = oauth::authorize_url(&state.cfg, provider, &signed, &verifier, hint.as_deref()).map_err(AppError::Internal)?;
     Ok(Json(json!({ "url": url })))
@@ -104,7 +104,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     .await
     .map_err(|e| internal(&e))?
     .ok_or(START_AGAIN)?;
-    if !oauth::verify_state(&state.cfg.app_secret, signed, pending.user_id, pending.org_id) || pending.expires_at <= Utc::now() {
+    if !oauth::verify_state(&state.cfg.app_secret, oauth::MAILBOX, signed, pending.user_id, pending.org_id) || pending.expires_at <= Utc::now() {
         return Err(START_AGAIN.into());
     }
     let provider = Provider::parse(&pending.provider).ok_or(START_AGAIN)?;

@@ -28,6 +28,8 @@ export interface Me {
   operator: boolean;
   /** The providers the server has an OAuth app for, so the Mailboxes page offers to connect by signing in. */
   mailbox_sign_in: SignInProvider[];
+  /** The server has a Tumblr app, so the integrations page offers to connect Tumblr. */
+  tumblr_sign_in: boolean;
 }
 
 export type SignInProvider = "google" | "microsoft";
@@ -255,6 +257,26 @@ export interface ProjectSettings extends CrmStatus {
   lemmy_handle: string;
   lemmy_error: string | null;
   lemmy_failed_at: string | null;
+  /** The Nostr key notes go out as, by its npub, and the relays they go to. The secret key is write-only, through PUT /integrations/nostr. */
+  nostr_connected: boolean;
+  nostr_npub: string;
+  nostr_relays: string[];
+  nostr_error: string | null;
+  nostr_failed_at: string | null;
+  /** The Tumblr account, connected by signing in, its blogs and the one that posts. */
+  tumblr_connected: boolean;
+  tumblr_username: string;
+  tumblr_blogs: TumblrBlog[];
+  tumblr_blog: string;
+  tumblr_error: string | null;
+  tumblr_failed_at: string | null;
+  /** The Hashnode account, its publications and the one articles go in. The token is write-only, through PUT /integrations/hashnode. */
+  hashnode_connected: boolean;
+  hashnode_username: string;
+  hashnode_publications: HashnodePublication[];
+  hashnode_publication_id: string;
+  hashnode_error: string | null;
+  hashnode_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -970,22 +992,49 @@ export type RunKind =
   | "segment_from_prompt"
   | "social";
 
+export interface TumblrBlog {
+  name: string;
+  title: string;
+  url: string;
+  uuid: string;
+}
+
+export interface HashnodePublication {
+  id: string;
+  title: string;
+  url: string;
+}
+
 /** A reply or post for a social platform, drafted by a social run or written by hand, posted once approved. */
 export interface SocialPost {
   id: UUID;
   project_id: UUID;
   run_id: UUID | null;
   /** LinkedIn posts go out through the project's Unipile connection. */
-  platform: "x" | "reddit" | "bluesky" | "mastodon" | "linkedin" | "threads" | "youtube" | "stackexchange" | "dev" | "discourse" | "lemmy";
-  /** The link of the post or comment it answers, null for an original post. */
+  platform:
+    | "x"
+    | "reddit"
+    | "bluesky"
+    | "mastodon"
+    | "linkedin"
+    | "threads"
+    | "youtube"
+    | "stackexchange"
+    | "dev"
+    | "discourse"
+    | "lemmy"
+    | "nostr"
+    | "tumblr"
+    | "hashnode";
+  /** The link of the post or comment it answers, null for an original post. On Tumblr it's reblogged with the reply as its comment. */
   in_reply_to: string | null;
   /** The text it answers. */
   context: string;
   /** Where a Reddit post goes, or the subreddit of the thread it answers. The same for a Lemmy community, as name@instance. */
   subreddit: string;
-  /** Reddit, Lemmy and Discourse posts and DEV articles only. */
+  /** Reddit, Lemmy and Discourse posts and DEV and Hashnode articles only. */
   title: string;
-  /** DEV articles only, at most 4. */
+  /** DEV articles, at most 4, Hashnode articles, at most 5, and Tumblr posts, at most 10. */
   tags: string[];
   body: string;
   /** Why the agent picked the thread. */

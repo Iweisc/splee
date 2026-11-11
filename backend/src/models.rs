@@ -242,6 +242,26 @@ pub struct ProjectSettings {
     pub lemmy_handle: String,
     pub lemmy_error: Option<String>,
     pub lemmy_failed_at: Option<Ts>,
+    /// The Nostr key notes go out as, by its npub, and the relays they go to. The secret key stays out of this struct.
+    pub nostr_connected: bool,
+    pub nostr_npub: String,
+    pub nostr_relays: Vec<String>,
+    pub nostr_error: Option<String>,
+    pub nostr_failed_at: Option<Ts>,
+    /// The Tumblr account, its blogs as [{name, title, url, uuid}], and the one that posts. Its tokens stay out of this struct.
+    pub tumblr_connected: bool,
+    pub tumblr_username: String,
+    pub tumblr_blogs: Value,
+    pub tumblr_blog: String,
+    pub tumblr_error: Option<String>,
+    pub tumblr_failed_at: Option<Ts>,
+    /// The Hashnode account, its publications as [{id, title, url}], and the one articles go in. Its token stays out of this struct.
+    pub hashnode_connected: bool,
+    pub hashnode_username: String,
+    pub hashnode_publications: Value,
+    pub hashnode_publication_id: String,
+    pub hashnode_error: Option<String>,
+    pub hashnode_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -632,7 +652,8 @@ pub struct SocialPost {
     pub id: Uuid,
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
-    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse" or "lemmy".
+    /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr",
+    /// "tumblr" or "hashnode".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -640,9 +661,9 @@ pub struct SocialPost {
     pub context: String,
     /// Reddit: where an original post goes, or the thread's subreddit. Lemmy: the same for its community, as name@instance.
     pub subreddit: String,
-    /// Reddit, Lemmy and Discourse original posts and DEV articles only.
+    /// Reddit, Lemmy and Discourse original posts and DEV and Hashnode articles only.
     pub title: String,
-    /// DEV articles only, at most 4.
+    /// DEV articles, at most 4, Hashnode articles, at most 5, and Tumblr posts, at most 10.
     pub tags: Vec<String>,
     pub body: String,
     /// Why the agent picked the thread.
