@@ -7,6 +7,7 @@ import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/component
 import { Tabs } from "@/components/ui/misc";
 import { isUrl } from "@/components/app/settings/is-url";
 import type { Mailbox, MailboxInput } from "@/lib/types";
+import { SIGN_IN_LABEL } from "@/lib/mailbox";
 import { MicroLabel } from "@/components/app/work/states";
 
 type Preset = "google" | "microsoft" | "zoho" | "custom";
@@ -123,17 +124,16 @@ export function MailboxForm({
     setFound(provider);
   };
 
+  // The address and servers of a mailbox connected by signing in come from its provider, and the backend ignores them.
+  const signedIn = mailbox && mailbox.provider !== "password" ? SIGN_IN_LABEL[mailbox.provider] : null;
   const imapUser = separateImap ? m.imap_username : m.smtp_username;
   const imapPassword = separateImap ? m.imap_password : m.smtp_password;
+  const servers =
+    signedIn || (m.smtp_host && m.smtp_port > 0 && m.smtp_username && (mailbox || m.smtp_password) && m.imap_host && m.imap_port > 0);
   const valid =
     /^\S+@\S+\.\S+$/.test(m.email) &&
     (!m.booking_link || isUrl(m.booking_link)) &&
-    m.smtp_host &&
-    m.smtp_port > 0 &&
-    m.smtp_username &&
-    (mailbox || m.smtp_password) &&
-    m.imap_host &&
-    m.imap_port > 0 &&
+    servers &&
     m.daily_limit > 0 &&
     m.warmup_daily_cap >= 1 &&
     m.warmup_daily_cap <= 200 &&
@@ -150,31 +150,38 @@ export function MailboxForm({
         if (valid) onSubmit({ ...m, imap_username: imapUser, imap_password: imapPassword });
       }}
     >
-      <div>
-        {/* The four tabs don't fit one row on phones, and scrolling hid Zoho and Custom past the edge.
-            So phones get a 2x2 grid with shorter labels, and the note below still names the full product. */}
-        <Tabs
-          className="max-sm:grid max-sm:grid-cols-2"
-          value={preset}
-          onChange={(p) => {
-            lookup.current++;
-            setPickedByHand(true);
-            setFound(null);
-            pickPreset(p);
-          }}
-          options={[
-            { value: "google", label: <>Google<span className="max-sm:hidden"> Workspace</span></> },
-            { value: "microsoft", label: <>Microsoft<span className="max-sm:hidden"> 365</span></> },
-            { value: "zoho", label: "Zoho" },
-            { value: "custom", label: "Custom" },
-          ]}
-        />
-        <p className="mt-2 text-xs text-pretty text-muted-foreground">
-          {preset === "custom" && found
-            ? `Filled in with ${found}'s settings. With two-step login on, use an app password.`
-            : PRESET_NOTES[preset]}
+      {signedIn ? (
+        <p className="text-sm text-pretty text-muted-foreground">
+          Connected by signing in to {signedIn}. Splee sends and reads replies with that sign-in, so there are no server settings or passwords
+          to change.
         </p>
-      </div>
+      ) : (
+        <div>
+          {/* The four tabs don't fit one row on phones, and scrolling hid Zoho and Custom past the edge.
+              So phones get a 2x2 grid with shorter labels, and the note below still names the full product. */}
+          <Tabs
+            className="max-sm:grid max-sm:grid-cols-2"
+            value={preset}
+            onChange={(p) => {
+              lookup.current++;
+              setPickedByHand(true);
+              setFound(null);
+              pickPreset(p);
+            }}
+            options={[
+              { value: "google", label: <>Google<span className="max-sm:hidden"> Workspace</span></> },
+              { value: "microsoft", label: <>Microsoft<span className="max-sm:hidden"> 365</span></> },
+              { value: "zoho", label: "Zoho" },
+              { value: "custom", label: "Custom" },
+            ]}
+          />
+          <p className="mt-2 text-xs text-pretty text-muted-foreground">
+            {preset === "custom" && found
+              ? `Filled in with ${found}'s settings. With two-step login on, use an app password.`
+              : PRESET_NOTES[preset]}
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Email address">
@@ -189,7 +196,8 @@ export function MailboxForm({
             }}
             onBlur={(e) => lookUp(e.target.value.trim())}
             placeholder="alex@try-acme.com"
-            autoFocus
+            disabled={!!signedIn}
+            autoFocus={!signedIn}
           />
         </Field>
         <Field label="From name">
@@ -208,82 +216,86 @@ export function MailboxForm({
         <Input type="url" value={m.booking_link} onChange={(e) => set({ booking_link: e.target.value.trim() })} placeholder="https://cal.com/alex/intro" />
       </Field>
 
-      <fieldset className="grid gap-4">
-        <MicroLabel>Sending (SMTP)</MicroLabel>
-        {preset === "custom" && (
-          <div className="grid gap-4 sm:grid-cols-[1fr_6rem_8rem]">
-            <Field label="Host">
-              <Input value={m.smtp_host} onChange={(e) => set({ smtp_host: e.target.value.trim() })} placeholder="smtp.example.com" />
-            </Field>
-            <Field label="Port">
-              <NumberInput required value={m.smtp_port} onValueChange={(smtp_port) => set({ smtp_port })} />
-            </Field>
-            <Field label="Security">
-              <Select value={m.smtp_security} onChange={(e) => set({ smtp_security: e.target.value as MailboxInput["smtp_security"] })}>
-                <option value="starttls">STARTTLS</option>
-                <option value="tls">TLS</option>
-                <option value="none">None</option>
-              </Select>
-            </Field>
-          </div>
-        )}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Username">
-            <Input value={m.smtp_username} onChange={(e) => set({ smtp_username: e.target.value.trim() })} autoComplete="off" />
-          </Field>
-          <Field label={preset === "custom" ? "Password" : "App password"}>
-            <Input
-              type="password"
-              value={m.smtp_password}
-              onChange={(e) => set({ smtp_password: e.target.value })}
-              placeholder={mailbox ? "Leave empty to keep" : undefined}
-              autoComplete="new-password"
-            />
-          </Field>
-        </div>
-      </fieldset>
+      {!signedIn && (
+        <>
+          <fieldset className="grid gap-4">
+            <MicroLabel>Sending (SMTP)</MicroLabel>
+            {preset === "custom" && (
+              <div className="grid gap-4 sm:grid-cols-[1fr_6rem_8rem]">
+                <Field label="Host">
+                  <Input value={m.smtp_host} onChange={(e) => set({ smtp_host: e.target.value.trim() })} placeholder="smtp.example.com" />
+                </Field>
+                <Field label="Port">
+                  <NumberInput required value={m.smtp_port} onValueChange={(smtp_port) => set({ smtp_port })} />
+                </Field>
+                <Field label="Security">
+                  <Select value={m.smtp_security} onChange={(e) => set({ smtp_security: e.target.value as MailboxInput["smtp_security"] })}>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="tls">TLS</option>
+                    <option value="none">None</option>
+                  </Select>
+                </Field>
+              </div>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Username">
+                <Input value={m.smtp_username} onChange={(e) => set({ smtp_username: e.target.value.trim() })} autoComplete="off" />
+              </Field>
+              <Field label={preset === "custom" ? "Password" : "App password"}>
+                <Input
+                  type="password"
+                  value={m.smtp_password}
+                  onChange={(e) => set({ smtp_password: e.target.value })}
+                  placeholder={mailbox ? "Leave empty to keep" : undefined}
+                  autoComplete="new-password"
+                />
+              </Field>
+            </div>
+          </fieldset>
 
-      <fieldset className="grid gap-4">
-        {/* On the narrowest phones the checkbox drops under the heading, instead of both squeezing onto two lines each. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <MicroLabel className="whitespace-nowrap">Reading replies (IMAP)</MicroLabel>
-          <label className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground">
-            <input type="checkbox" checked={separateImap} onChange={(e) => setSeparateImap(e.target.checked)} className="accent-black" />
-            Different login than SMTP
-          </label>
-        </div>
-        {preset === "custom" && (
-          <div className="grid gap-4 sm:grid-cols-[1fr_6rem]">
-            <Field label="Host">
-              <Input value={m.imap_host} onChange={(e) => set({ imap_host: e.target.value.trim() })} placeholder="imap.example.com" />
-            </Field>
-            <Field label="Port">
-              <NumberInput required value={m.imap_port} onValueChange={(imap_port) => set({ imap_port })} />
-            </Field>
-          </div>
-        )}
-        {separateImap && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Username">
-              <Input value={m.imap_username} onChange={(e) => set({ imap_username: e.target.value.trim() })} autoComplete="off" />
-            </Field>
-            <Field label="Password">
-              <Input
-                type="password"
-                value={m.imap_password}
-                onChange={(e) => set({ imap_password: e.target.value })}
-                placeholder={mailbox ? "Leave empty to keep" : undefined}
-                autoComplete="new-password"
-              />
-            </Field>
-          </div>
-        )}
-        {preset !== "custom" && (
-          <p className="text-xs text-muted-foreground">
-            {m.smtp_host}:{m.smtp_port} · {m.imap_host}:{m.imap_port}
-          </p>
-        )}
-      </fieldset>
+          <fieldset className="grid gap-4">
+            {/* On the narrowest phones the checkbox drops under the heading, instead of both squeezing onto two lines each. */}
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <MicroLabel className="whitespace-nowrap">Reading replies (IMAP)</MicroLabel>
+              <label className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground">
+                <input type="checkbox" checked={separateImap} onChange={(e) => setSeparateImap(e.target.checked)} className="accent-black" />
+                Different login than SMTP
+              </label>
+            </div>
+            {preset === "custom" && (
+              <div className="grid gap-4 sm:grid-cols-[1fr_6rem]">
+                <Field label="Host">
+                  <Input value={m.imap_host} onChange={(e) => set({ imap_host: e.target.value.trim() })} placeholder="imap.example.com" />
+                </Field>
+                <Field label="Port">
+                  <NumberInput required value={m.imap_port} onValueChange={(imap_port) => set({ imap_port })} />
+                </Field>
+              </div>
+            )}
+            {separateImap && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Username">
+                  <Input value={m.imap_username} onChange={(e) => set({ imap_username: e.target.value.trim() })} autoComplete="off" />
+                </Field>
+                <Field label="Password">
+                  <Input
+                    type="password"
+                    value={m.imap_password}
+                    onChange={(e) => set({ imap_password: e.target.value })}
+                    placeholder={mailbox ? "Leave empty to keep" : undefined}
+                    autoComplete="new-password"
+                  />
+                </Field>
+              </div>
+            )}
+            {preset !== "custom" && (
+              <p className="text-xs text-muted-foreground">
+                {m.smtp_host}:{m.smtp_port} · {m.imap_host}:{m.imap_port}
+              </p>
+            )}
+          </fieldset>
+        </>
+      )}
 
       <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
         <NumberInput required min={1} value={m.daily_limit} onValueChange={(daily_limit) => set({ daily_limit })} className="w-28 tabular-nums" />

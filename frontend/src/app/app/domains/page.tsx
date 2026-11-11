@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -9,14 +9,15 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { DnsBadge } from "@/components/app/settings/dns-badge";
 import { LoadError, SectionsSkeleton } from "@/components/app/settings/layout";
 import { MailboxForm } from "@/components/app/settings/mailbox-form";
+import { ProviderLogo } from "@/components/app/settings/provider-logo";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Address, Badge, Card, EmptyState, Message, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { Switch } from "@/components/ui/form";
-import type { Mailbox, MailboxInput, MailboxStats, WarmupHealth } from "@/lib/types";
-import { bouncing, heldForWarmup, landingInSpam, todayLimit, warmupStatus, wholePercent } from "@/lib/mailbox";
+import type { Mailbox, MailboxInput, MailboxStats, SignInProvider, WarmupHealth } from "@/lib/types";
+import { SIGN_IN_LABEL, bouncing, heldForWarmup, landingInSpam, todayLimit, warmupStatus, wholePercent } from "@/lib/mailbox";
 import { dateTime, isPast, num, timeAgo } from "@/lib/utils";
 
 const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
@@ -26,6 +27,13 @@ const STATUS: Record<Mailbox["status"], { tone: BadgeTone; label: string }> = {
 };
 
 type TestResult = { ok: boolean; error?: string };
+
+/** Run right after a mailbox is added, so a problem shows now and not at the first send. */
+async function testAdded(id: string) {
+  const res = await api<TestResult>(`/mailboxes/${id}/test`, { method: "POST" }).catch((e: Error): TestResult => ({ ok: false, error: e.message }));
+  if (res.ok) toast.success("Mailbox connected");
+  else toast.warning(`Mailbox added, but the connection test failed: ${res.error || "unknown error"}`);
+}
 
 const isLoopback = (url: string) => {
   try {
@@ -60,6 +68,26 @@ export default function MailboxesPage() {
   const { data: warmup, mutate: mutateWarmup } = useSWR<WarmupHealth[]>("/mailboxes/warmup", fetcher, { refreshInterval: 60_000 });
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Mailbox | "new" | null>(null);
+  const { me } = useMe();
+  const signIn = me?.mailbox_sign_in ?? [];
+
+  // The sign-in callback comes back here with the mailbox it saved, or why it couldn't.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("connected");
+    const failed = params.get("mailbox_error");
+    if (!connected && !failed) return;
+    // Cleared first, so a reload or React's second dev run doesn't test it twice.
+    window.history.replaceState(null, "", window.location.pathname);
+    if (failed) toast.error(failed);
+    if (connected) testAdded(connected).then(() => Promise.all([mutate(), mutateWarmup()]));
+  }, [mutate, mutateWarmup]);
+
+  const startSignIn = (provider: SignInProvider, email?: string) =>
+    run(`signin:${provider}:${email ?? ""}`, async () => {
+      const { url } = await api<{ url: string }>(`/mailboxes/oauth/${provider}`, { body: { email } });
+      window.location.assign(url);
+    });
 
   const replace = (updated: Mailbox) => mutate((list) => list?.map((m) => (m.id === updated.id ? updated : m)), { revalidate: false });
 
@@ -98,13 +126,8 @@ export default function MailboxesPage() {
       async () => {
         if (editing === "new") {
           const created = await api<Mailbox>("/mailboxes", { body: { ...input } });
-          // Test right away so a wrong password shows up now, not at the first send.
-          const res = await api<TestResult>(`/mailboxes/${created.id}/test`, { method: "POST" }).catch(
-            (e: Error): TestResult => ({ ok: false, error: e.message }),
-          );
+          await testAdded(created.id);
           await Promise.all([mutate(), mutateWarmup()]);
-          if (res.ok) toast.success("Mailbox connected");
-          else toast.warning(`Mailbox added, but the connection test failed: ${res.error || "unknown error"}`);
         } else if (editing) {
           replace(await api<Mailbox>(`/mailboxes/${editing.id}`, { method: "PATCH", body: { ...input } }));
           await mutateWarmup();
@@ -115,10 +138,18 @@ export default function MailboxesPage() {
     if (ok) setEditing(null);
   };
 
+  // On phones the buttons wrap into rows they fill, instead of leaving one short button alone at the start of a row.
   const connect = (
-    <Button onClick={() => setEditing("new")}>
-      <Plus className="size-4" /> Connect mailbox
-    </Button>
+    <>
+      {signIn.map((p) => (
+        <Button key={p} variant="outline" className="max-sm:flex-1" onClick={() => startSignIn(p)} loading={pending === `signin:${p}:`}>
+          <ProviderLogo provider={p} /> Connect {SIGN_IN_LABEL[p]}
+        </Button>
+      ))}
+      <Button className="max-sm:flex-1" onClick={() => setEditing("new")}>
+        <Plus className="size-4" /> {signIn.length > 0 ? "Connect with SMTP" : "Connect mailbox"}
+      </Button>
+    </>
   );
 
   return (
@@ -145,7 +176,11 @@ export default function MailboxesPage() {
           <SectionsSkeleton />
         ) : data.length === 0 ? (
           <Card>
-            <EmptyState icon={<Server className="size-6" />} title="No mailboxes yet" action={connect}>
+            <EmptyState
+              icon={<Server className="size-6" />}
+              title="No mailboxes yet"
+              action={<div className="flex flex-wrap justify-center gap-2">{connect}</div>}
+            >
               Connect at least one mailbox to start sending. Google Workspace, Microsoft 365, Zoho and any SMTP/IMAP provider work.
             </EmptyState>
           </Card>
@@ -159,11 +194,15 @@ export default function MailboxesPage() {
                       <p className="min-w-0 font-medium">
                         <Address email={m.email} />
                       </p>
-                      <Badge tone={STATUS[m.status].tone}>{STATUS[m.status].label}</Badge>
+                      {m.needs_reconnect ? (
+                        <Badge tone="red">Signed out</Badge>
+                      ) : (
+                        <Badge tone={STATUS[m.status].tone}>{STATUS[m.status].label}</Badge>
+                      )}
                     </div>
                     <p className="mt-0.5 text-sm text-muted-foreground">
                       {m.from_name && `${m.from_name} · `}
-                      {m.smtp_host} ·{" "}
+                      {m.provider === "password" ? m.smtp_host : `${SIGN_IN_LABEL[m.provider]} sign-in`} ·{" "}
                       {todayLimit(m) < m.daily_limit ? `${todayLimit(m)} today, ramping up to ${m.daily_limit}/day` : `up to ${m.daily_limit}/day`}
                     </p>
                   </div>
@@ -231,12 +270,30 @@ export default function MailboxesPage() {
 
                 <Health stats={stats?.find((s) => s.mailbox_id === m.id)} />
 
-                {m.last_error && (
+                {/* A signed-out mailbox's error only says what the box below it does. A paused one keeps why it was paused. */}
+                {m.last_error && !(m.needs_reconnect && m.status === "error") && (
                   <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">
                     <Message text={m.last_error} />
                   </p>
                 )}
-                {m.status === "error" && <p className="mt-2 text-xs text-muted-foreground">{nextStep(m)}</p>}
+                {m.provider !== "password" && m.needs_reconnect ? (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                    <p className="min-w-0 flex-1 basis-64 text-pretty">
+                      {SIGN_IN_LABEL[m.provider]} signed Splee out of this mailbox. Sign in again as {m.email} to send and read replies.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="max-sm:grow"
+                      onClick={() => startSignIn(m.provider as SignInProvider, m.email)}
+                      loading={pending === `signin:${m.provider}:${m.email}`}
+                    >
+                      <ProviderLogo provider={m.provider} /> Reconnect
+                    </Button>
+                  </div>
+                ) : (
+                  m.status === "error" && <p className="mt-2 text-xs text-muted-foreground">{nextStep(m)}</p>
+                )}
               </Card>
             ))}
           </div>

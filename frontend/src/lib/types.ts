@@ -26,7 +26,11 @@ export interface Me {
   public_url: string;
   /** In the backend's OPERATOR_EMAILS, so the Companies page offers to load countries. */
   operator: boolean;
+  /** The providers the server has an OAuth app for, so the Mailboxes page offers to connect by signing in. */
+  mailbox_sign_in: SignInProvider[];
 }
+
+export type SignInProvider = "google" | "microsoft";
 
 export interface Member {
   user_id: UUID;
@@ -817,6 +821,10 @@ export interface Mailbox {
   total_daily_limit: number;
   /** No campaign emails in the first 14 days of warmup, or while its warmup emails land in spam. */
   hold_until_warm: boolean;
+  /** "password" for SMTP and IMAP with a password, or the provider it was connected to by signing in. */
+  provider: "password" | SignInProvider;
+  /** The provider signed Splee out, so it waits for someone to sign in again. */
+  needs_reconnect: boolean;
 }
 
 /** GET /mailboxes/warmup: one of the org's mailboxes with warmup on, over the last 14 days. */

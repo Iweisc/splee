@@ -11,10 +11,13 @@ use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    // A mailbox that stopped sending still gets replies to what it already sent, so it keeps being read.
-    let mailboxes = sqlx::query_as::<_, Mailbox>("select * from mailboxes where status in ('active', 'paused', 'error') and imap_host <> ''")
-        .fetch_all(&state.db)
-        .await?;
+    // A mailbox that stopped sending still gets replies to what it already sent, so it keeps being read. One whose sign-in
+    // was revoked can't log in until someone reconnects it.
+    let mailboxes = sqlx::query_as::<_, Mailbox>(
+        "select * from mailboxes where status in ('active', 'paused', 'error') and imap_host <> '' and not needs_reconnect",
+    )
+    .fetch_all(&state.db)
+    .await?;
     for mb in mailboxes {
         if let Err(e) = poll(state, &mb).await {
             // Reading replies failing doesn't stop sending, so only record it. A stopped or paused mailbox's last_error says
@@ -342,6 +345,8 @@ mod tests {
             public_agent: false,
             porkbun_api_url: String::new(),
             operator_emails: Vec::new(),
+            google: None,
+            microsoft: None,
         };
         let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();

@@ -50,6 +50,14 @@ pub async fn connect(state: &AppState, mb: &Mailbox) -> anyhow::Result<ImapSessi
 
     let mut client = async_imap::Client::new(stream);
     tokio::time::timeout(TIMEOUT, client.read_response()).await.map_err(|_| anyhow!("IMAP: no greeting"))??.context("IMAP: no greeting")?;
+    if mb.provider != "password" {
+        let token = super::oauth::access_token(state, mb).await?;
+        let session = tokio::time::timeout(TIMEOUT, client.authenticate("XOAUTH2", XOAuth2 { response: Some(super::oauth::xoauth2(&mb.email, &token)) }))
+            .await
+            .map_err(|_| anyhow!("IMAP: login timed out"))?
+            .map_err(|(e, _)| anyhow!("IMAP login failed: {e}"))?;
+        return Ok(session);
+    }
     let username = if mb.imap_username.trim().is_empty() { mb.smtp_username.trim() } else { mb.imap_username.trim() };
     let password_enc = if mb.imap_password_enc.is_empty() { &mb.smtp_password_enc } else { &mb.imap_password_enc };
     let password = crypto::decrypt(&state.cfg.app_secret, password_enc)?;
@@ -58,6 +66,20 @@ pub async fn connect(state: &AppState, mb: &Mailbox) -> anyhow::Result<ImapSessi
         .map_err(|_| anyhow!("IMAP: login timed out"))?
         .map_err(|(e, _)| anyhow!("IMAP login failed: {e}"))?;
     Ok(session)
+}
+
+/// Sends the XOAUTH2 response to the server's first, empty challenge. A second challenge is the server's error as JSON,
+/// which takes an empty answer before the server says NO.
+struct XOAuth2 {
+    response: Option<String>,
+}
+
+impl async_imap::Authenticator for XOAuth2 {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        self.response.take().unwrap_or_default()
+    }
 }
 
 pub async fn test(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {

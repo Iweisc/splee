@@ -119,12 +119,13 @@ function MailboxNotice() {
   // Polled like the reply poller (every minute), so a mailbox that breaks while this page is open shows up.
   const { data } = useSWR<Mailbox[]>("/mailboxes", fetcher, { refreshInterval: 60_000 });
   // The sender marks a mailbox "error" when SMTP fails. The reply poller only records last_error, and clears it on its next
-  // good poll. Without IMAP, an active mailbox's last_error is a stale SMTP error from before it was resumed.
-  const broken = data?.filter((m) => m.status === "error" || (m.status === "active" && m.imap_host && m.last_error)) ?? [];
+  // good poll. Without IMAP, an active mailbox's last_error is a stale SMTP error from before it was resumed. A signed-out
+  // mailbox is listed even when paused, since nobody reads its replies either.
+  const broken = data?.filter((m) => m.needs_reconnect || m.status === "error" || (m.status === "active" && m.imap_host && m.last_error)) ?? [];
   if (!data || broken.length === 0) return null;
   const sendingStopped = !data.some((m) => m.status === "active");
   // The sender tests a mailbox with recheck_at again itself. The rest wait for someone to fix them.
-  const needsFixing = broken.some((m) => m.status !== "error" || !m.recheck_at);
+  const needsFixing = broken.some((m) => m.needs_reconnect || m.status !== "error" || !m.recheck_at);
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <MailWarning className="size-4 text-red-600" />
@@ -135,14 +136,25 @@ function MailboxNotice() {
             <span className="font-medium">
               <Address email={m.email} />
             </span>{" "}
-            {m.status !== "error" ? "can't read replies" : m.recheck_at ? "can't send, and Splee tests it again on its own" : "can't send"}:{" "}
-            <span className="text-muted-foreground">{m.last_error}</span>
+            {m.needs_reconnect
+              ? "was signed out, so it can't send or read replies until you reconnect it."
+              : m.status !== "error"
+                ? "can't read replies"
+                : m.recheck_at
+                  ? "can't send, and Splee tests it again on its own"
+                  : "can't send"}
+            {!m.needs_reconnect && (
+              <>
+                :{" "}
+                <span className="text-muted-foreground">{m.last_error}</span>
+              </>
+            )}
           </p>
         ))}
         {sendingStopped && <p className="font-medium text-red-700">Nothing is going out until a mailbox works again.</p>}
       </div>
       <LinkButton href="/app/domains" variant="outline" size="sm" className="max-sm:grow">
-        {needsFixing ? "Fix mailbox" : "View mailboxes"}
+        {broken.every((m) => m.needs_reconnect) ? "Reconnect mailbox" : needsFixing ? "Fix mailbox" : "View mailboxes"}
       </LinkButton>
     </Card>
   );

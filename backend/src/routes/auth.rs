@@ -39,6 +39,8 @@ pub struct Me {
     public_url: String,
     /// In OPERATOR_EMAILS, so the Companies page offers to load countries.
     operator: bool,
+    /// "google" and "microsoft" when the server has their apps, so the Mailboxes page offers to connect by signing in.
+    mailbox_sign_in: Vec<&'static str>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -64,7 +66,8 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     .await?;
     let role = orgs.iter().find(|o| o.id == org_id).map(|o| o.role.clone()).ok_or(AppError::Unauthorized)?;
     let operator = state.cfg.is_operator(&user.email);
-    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator })
+    let mailbox_sign_in = crate::mail::oauth::configured(&state.cfg);
+    Ok(Me { user, org, role, orgs, public_url: state.cfg.public_url.clone(), operator, mailbox_sign_in })
 }
 
 #[derive(Deserialize)]

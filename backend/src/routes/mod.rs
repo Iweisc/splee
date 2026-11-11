@@ -25,6 +25,7 @@ pub mod leads;
 pub mod emails;
 pub mod inbox;
 pub mod mailboxes;
+mod mailbox_oauth;
 pub mod settings;
 pub mod materials;
 pub mod imports;
@@ -70,6 +71,7 @@ pub fn router() -> Router<AppState> {
         .merge(linkedin::router())
         .merge(social::router())
         .merge(mailboxes::router())
+        .merge(mailbox_oauth::router())
         .merge(sending_domains::router())
         .merge(settings::router())
         .merge(materials::router())
