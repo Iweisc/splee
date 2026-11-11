@@ -446,6 +446,39 @@ function endpoints(projectId: string): Endpoint[] {
   ]
 }`,
     },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/analytics`,
+      summary:
+        "What the Analytics page shows for a date range: totals with the same totals for the period before in previous, a series per day (per week past 90 days), and breakdowns by campaign, mailbox, step, send weekday and hour, and channel. Days and hours are in the project's time zone. Each thing counts on the day it happened, and a reply, bounce, meeting or won deal counts for the campaign, mailbox and step of the last email the lead got before it. Rates are by lead, out of contacted, except steps and the heatmap, which are out of the emails sent. claude_cost_micros leaves out runs when you filter by mailbox. won_value has one entry per currency, in cents.",
+      params: [
+        ["from", "optional first day, YYYY-MM-DD. 29 days before to by default"],
+        ["to", "optional last day, YYYY-MM-DD. Today by default. At most 365 days in all"],
+        ["segment_id", "optional campaign id"],
+        ["mailbox_id", "optional mailbox id"],
+      ],
+      response: `{
+  "from": "2026-10-13",
+  "to": "2026-11-11",
+  "previous_from": "2026-09-13",
+  "previous_to": "2026-10-12",
+  "timezone": "Europe/London",
+  "interval": "day",
+  "totals": {
+    "sent": 410, "contacted": 230, "delivered": 404, "replies": 19, "reply_rate": 0.083, "hot": 4, "hot_rate": 0.017,
+    "meetings": 2, "deals_won": 1, "won_value": [{ "currency": "USD", "value_cents": 1200000 }], "unsubscribes": 3,
+    "bounced": 6, "bounce_rate": 0.026, "claude_cost_micros": 8420000, "email_cost_micros": 410000,
+    "spend_micros": 8830000, "cost_per_hot_micros": 2207500, "cost_per_meeting_micros": 4415000
+  },
+  "previous": { "…": "…" },
+  "series": [{ "date": "2026-10-13", "sent": 14, "replies": 1, "hot": 0, "meetings": 0 }],
+  "campaigns": [{ "segment_id": "5d0a…", "name": "Design studios", "sent": 230, "replies": 12, "reply_rate": 0.1, "…": "…" }],
+  "mailboxes": [{ "mailbox_id": "8b2e…", "email": "alex@acme.com", "sent": 205, "bounce_rate": 0.02, "bouncing": false, "…": "…" }],
+  "steps": [{ "step": 0, "sent": 230, "replies": 13, "reply_rate": 0.057 }],
+  "heatmap": [{ "weekday": 2, "hour": 9, "sent": 40, "replies": 4 }],
+  "channels": [{ "channel": "email", "sent": 410, "leads": 230, "replies": 17, "reply_rate": 0.074 }]
+}`,
+    },
   ];
 }
 

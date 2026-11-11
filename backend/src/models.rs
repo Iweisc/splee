@@ -437,11 +437,15 @@ pub struct MailboxStats {
     pub replied: i64,
 }
 
+/// Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce crosses
+/// that, so it waits for enough sends to mean something. Keep in sync with bouncing in frontend/src/lib/mailbox.ts.
+pub fn bouncing(emailed: i64, bounced: i64) -> bool {
+    emailed >= 20 && bounced * 20 > emailed
+}
+
 impl MailboxStats {
-    /// Past about 5% bounced, mailbox providers start sending a domain's mail to spam. Under 20 leads a single bounce
-    /// crosses that, so it waits for enough sends to mean something. Keep in sync with bouncing in frontend/src/lib/mailbox.ts.
     pub fn bouncing(&self) -> bool {
-        self.emailed >= 20 && self.bounced * 20 > self.emailed
+        bouncing(self.emailed, self.bounced)
     }
 
     /// Past 10%, twice where `bouncing` warns, the mailbox is hurting its domain, so Splee stops sending from it.

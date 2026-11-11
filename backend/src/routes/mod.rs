@@ -39,6 +39,7 @@ pub mod materials;
 pub mod imports;
 pub mod suppressions;
 pub mod notifications;
+mod analytics;
 pub mod api_keys;
 pub mod api_v1;
 mod mcp;
@@ -95,6 +96,7 @@ pub fn router() -> Router<AppState> {
         .merge(mcp::router())
         .merge(oauth::router())
         .merge(stats::router())
+        .merge(analytics::router())
         .merge(demo::router())
         .merge(runs::router())
         .merge(support::router())

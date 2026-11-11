@@ -365,6 +365,81 @@ export interface ProjectStats {
   segments: SegmentWithStats[];
 }
 
+/** GET /projects/:id/analytics. Rates are null when nobody was emailed. Money is in micro-dollars, deal values in cents. */
+export interface AnalyticsTotals {
+  sent: number; // first emails and follow-ups
+  contacted: number; // leads emailed
+  delivered: number;
+  replies: number;
+  reply_rate: number | null; // replies / contacted
+  hot: number;
+  hot_rate: number | null;
+  meetings: number;
+  deals_won: number;
+  won_value: { currency: string; value_cents: number }[]; // the organization's currency first
+  unsubscribes: number;
+  bounced: number;
+  bounce_rate: number | null;
+  claude_cost_micros: number; // 0 with a mailbox filter, since runs don't belong to a mailbox
+  email_cost_micros: number;
+  spend_micros: number;
+  cost_per_hot_micros: number | null;
+  cost_per_meeting_micros: number | null;
+}
+
+export interface AnalyticsPoint {
+  date: string; // the day, or the Monday that starts the week
+  sent: number;
+  replies: number;
+  hot: number;
+  meetings: number;
+}
+
+export interface Analytics {
+  from: string;
+  to: string;
+  previous_from: string;
+  previous_to: string;
+  timezone: string;
+  interval: "day" | "week";
+  totals: AnalyticsTotals;
+  previous: AnalyticsTotals;
+  series: AnalyticsPoint[];
+  campaigns: {
+    segment_id: UUID | null;
+    name: string;
+    sent: number;
+    contacted: number;
+    replies: number;
+    reply_rate: number | null;
+    hot: number;
+    meetings: number;
+    deals_won: number;
+    bounced: number;
+    bounce_rate: number | null;
+    spend_micros: number;
+    cost_per_hot_micros: number | null;
+  }[];
+  mailboxes: {
+    mailbox_id: UUID | null;
+    email: string;
+    sent: number;
+    contacted: number;
+    replies: number;
+    reply_rate: number | null;
+    hot: number;
+    bounced: number;
+    bounce_rate: number | null;
+    bouncing: boolean;
+  }[];
+  /** Step 0 is the first email. The rate is out of the step's emails. */
+  steps: { step: number; sent: number; replies: number; reply_rate: number | null }[];
+  /** weekday 1 (Monday) to 7, hour 0 to 23, in the project's time zone. Empty cells are left out. */
+  heatmap: { weekday: number; hour: number; sent: number; replies: number }[];
+  /** null leads or replies are ones Splee doesn't record for the channel. */
+  channels: { channel: "email" | "linkedin" | "sms" | "whatsapp" | "social"; sent: number; leads: number | null; replies: number | null; reply_rate: number | null }[];
+}
+
 export interface WebhookDelivery {
   id: UUID;
   project_id: UUID;
