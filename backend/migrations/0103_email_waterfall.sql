@@ -14,3 +14,11 @@ alter table leads add column email_searched_at timestamptz;
 -- The worker's two questions: what's waiting, and how many an organization's projects searched in the last hour.
 create index leads_email_search_idx on leads (project_id, created_at) where email is null and email_search in ('', 'queued');
 create index leads_email_searched_idx on leads (project_id, email_searched_at) where email_searched_at is not null;
+
+-- One row per search the worker starts, which the hourly limit counts. A lead searched again counts again, and a deleted lead
+-- still counts, which the lead rows alone couldn't do.
+create table email_search_attempts (
+  org_id uuid not null references organizations(id) on delete cascade,
+  at timestamptz not null default now()
+);
+create index email_search_attempts_idx on email_search_attempts (org_id, at);

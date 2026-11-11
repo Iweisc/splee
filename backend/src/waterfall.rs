@@ -2,7 +2,7 @@
 //! no Claude run. The project's email finders go first, then the common address patterns, each checked with its verifier.
 //! A worker runs it on new leads by itself, and "Find emails" on the Leads page queues leads for it, ahead of the rest.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures::{StreamExt, stream};
@@ -66,15 +66,12 @@ pub async fn tick(state: &AppState, hourly: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Leads the organization's projects searched in the last hour.
+/// Searches the organization started in the last hour.
 pub async fn searched_last_hour(db: &PgPool, org_id: Uuid) -> sqlx::Result<i64> {
-    sqlx::query_scalar(
-        "select count(*) from leads l join projects p on p.id = l.project_id
-         where p.org_id = $1 and l.email_searched_at > now() - interval '1 hour'",
-    )
-    .bind(org_id)
-    .fetch_one(db)
-    .await
+    sqlx::query_scalar("select count(*) from email_search_attempts where org_id = $1 and at > now() - interval '1 hour'")
+        .bind(org_id)
+        .fetch_one(db)
+        .await
 }
 
 async fn search_org(state: &AppState, org_id: Uuid, hourly: i64) -> anyhow::Result<()> {
@@ -96,6 +93,13 @@ async fn search_org(state: &AppState, org_id: Uuid, hourly: i64) -> anyhow::Resu
     .bind(room)
     .fetch_all(&state.db)
     .await?;
+    // Counted before any call goes out, so the limit holds even when a search fails partway.
+    sqlx::query("delete from email_search_attempts where org_id = $1 and at < now() - interval '1 day'").bind(org_id).execute(&state.db).await?;
+    sqlx::query("insert into email_search_attempts (org_id) select $1 from generate_series(1, $2)")
+        .bind(org_id)
+        .bind(leads.len() as i32)
+        .execute(&state.db)
+        .await?;
     let mut done = stream::iter(leads).map(|lead| async move { (lead.id, search_and_save(state, &lead).await) }).buffer_unordered(PARALLEL);
     while let Some((lead, result)) = done.next().await {
         if let Err(e) = result {
@@ -181,8 +185,13 @@ pub async fn search(state: &AppState, lead: &Lead) -> anyhow::Result<Outcome> {
     }
 
     let outcome = match run.ask_finders(&person, &domain).await {
-        Some(found) => found,
-        None => run.guess(lead, &person, &domain).await?,
+        Some(found) if run.verifier.is_none() || found.email.as_ref().is_some_and(|(_, status)| *status == "verified") => found,
+        // A finder's unconfirmed address is kept only when no guess verifies.
+        Some(found) => match run.guess(org_id, lead, &person, &domain).await? {
+            guessed if guessed.email.is_some() => guessed,
+            _ => found,
+        },
+        None => run.guess(org_id, lead, &person, &domain).await?,
     };
     let outcome = match outcome.email.as_ref().map(|(email, _)| email.clone()) {
         Some(email) => settle(&state.db, org_id, lead, &email, outcome).await?,
@@ -223,6 +232,16 @@ async fn settle(db: &PgPool, org_id: Option<Uuid>, lead: &Lead, email: &str, out
     })
 }
 
+/// Whether another lead in the project has the address.
+async fn taken(db: &PgPool, lead: &Lead, email: &str) -> sqlx::Result<bool> {
+    sqlx::query_scalar("select exists (select 1 from leads where project_id = $1 and id <> $2 and lower(email::text) = $3)")
+        .bind(lead.project_id)
+        .bind(lead.id)
+        .bind(email.to_lowercase())
+        .fetch_one(db)
+        .await
+}
+
 struct Service<T> {
     service: T,
     key: String,
@@ -241,6 +260,8 @@ struct Run<'a> {
     credits: Option<i32>,
     /// The first service failure, which explains a search that found nothing.
     failure: Option<String>,
+    /// Verdicts so far, so an address the finders' turn checked isn't paid for again when guessing.
+    verdicts: HashMap<String, Verdict>,
 }
 
 impl<'a> Run<'a> {
@@ -264,7 +285,7 @@ impl<'a> Run<'a> {
             Some(service) => Some(Service { service, key: crypto::decrypt(secret, &verifier_enc)?, enc: verifier_enc, alert: Alert::Verifier }),
             None => None,
         };
-        Ok(Run { db: &state.db, project_id, finders, verifier, lookups: 0, credits: None, failure: None })
+        Ok(Run { db: &state.db, project_id, finders, verifier, lookups: 0, credits: None, failure: None, verdicts: HashMap::new() })
     }
 
     fn failed(&mut self, service: &str, e: &anyhow::Error) {
@@ -318,19 +339,24 @@ impl<'a> Run<'a> {
     /// The verifier's verdict, or None when there's no verifier or it failed. Every call is shown on the integrations page
     /// like a check before sending.
     async fn check(&mut self, email: &str) -> Option<Verdict> {
+        if let Some(verdict) = self.verdicts.get(email) {
+            return Some(*verdict);
+        }
         let Service { service, key, enc, alert } = self.verifier.as_ref()?;
         self.lookups += 1;
         let result = service.verify(key, email).await;
         let shown = result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"));
         hooks::record(self.db, self.project_id, *alert, enc, &shown).await;
         let label = service.label();
-        result.map_err(|e| self.failed(label, &e)).ok()
+        let verdict = result.map_err(|e| self.failed(label, &e)).ok()?;
+        self.verdicts.insert(email.to_string(), verdict);
+        Some(verdict)
     }
 
     /// The common patterns at `domain`, checked with the verifier, the pattern of the domain's verified leads first. A
     /// catch-all domain says yes to every address, so it's skipped: known from an earlier search, or found when an
     /// unsure answer comes back and a made-up address gets the same.
-    async fn guess(&mut self, lead: &Lead, person: &Person<'_>, domain: &str) -> anyhow::Result<Outcome> {
+    async fn guess(&mut self, org_id: Option<Uuid>, lead: &Lead, person: &Person<'_>, domain: &str) -> anyhow::Result<Outcome> {
         let finders: Vec<&str> = self.finders.iter().map(|f| f.service.label()).collect();
         let finders = finders.join(" and ");
         let Some(checker) = self.verifier.as_ref().map(|v| v.service.label()) else {
@@ -357,6 +383,10 @@ impl<'a> Run<'a> {
                 continue;
             }
             let email = format!("{local}@{domain}");
+            // Not worth a verification when it couldn't be used anyway.
+            if suppressed(self.db, org_id, &email).await? || taken(self.db, lead, &email).await? {
+                continue;
+            }
             match self.check(&email).await {
                 Some(Verdict::Valid) => {
                     let whose = if known == Some(pattern) { " colleagues use" } else { "" };
@@ -655,10 +685,23 @@ mod tests {
         assert_eq!((sam.email.as_deref(), sam.email_source.as_str()), (Some("sam.lee@beta.io"), "Hunter"));
         assert_eq!(fake.calls(), ["findymail beta.io", "hunter beta.io"]);
 
-        // An address the verifier can't confirm is kept when no finder does better, rather than guessing.
+        // An address the verifier can't confirm is kept when no guess verifies either. Guessing doesn't check it again.
         let ola = find(&s, &url, &lead(&db, s.project, "Ola Berg", "gamma.io").await).await;
         assert_eq!((ola.email.as_deref(), ola.email_status.as_str(), ola.email_search.as_str()), (Some("ola@gamma.io"), "found", "found"));
-        assert_eq!(fake.calls(), ["findymail gamma.io", "verify ola@gamma.io", "hunter gamma.io"]);
+        let calls = fake.calls();
+        assert_eq!(calls[..3], ["findymail gamma.io", "verify ola@gamma.io", "hunter gamma.io"]);
+        assert_eq!(calls.iter().filter(|c| *c == "verify ola@gamma.io").count(), 1, "{calls:?}");
+
+        // A guess the verifier confirms beats a finder's unconfirmed address.
+        {
+            let mut book = fake.book();
+            book.findymail.insert("delta.io".into(), "kim@delta.io".into());
+            book.mailboxes.insert("kim@delta.io".into(), "unknown");
+            book.mailboxes.insert("kim.ek@delta.io".into(), "ok");
+        }
+        let kim = find(&s, &url, &lead(&db, s.project, "Kim Ek", "delta.io").await).await;
+        assert_eq!((kim.email.as_deref(), kim.email_status.as_str(), kim.email_search.as_str()), (Some("kim.ek@delta.io"), "verified", "guessed"));
+        fake.calls();
     }
 
     #[sqlx::test]
@@ -741,6 +784,26 @@ mod tests {
 
     #[sqlx::test]
     #[ignore = "needs Postgres"]
+    async fn guesses_skip_addresses_that_could_not_be_used(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "", "millionverifier").await;
+        crate::routes::suppressions::insert(&db, s.org, ["jane@acme.io"]).await.unwrap();
+        sqlx::query("insert into leads (project_id, full_name, email) values ($1, 'Jane Dee', 'jane.doe@acme.io')")
+            .bind(s.project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let ok = ["jane@acme.io", "jane.doe@acme.io", "jdoe@acme.io"].map(|e| (e.to_string(), "ok"));
+        fake.book().mailboxes.extend(ok);
+
+        // The suppressed and the taken pattern aren't paid for, and the search goes on to the next.
+        let jane = find(&s, &url, &lead(&db, s.project, "Jane Doe", "acme.io").await).await;
+        assert_eq!((jane.email.as_deref(), jane.email_search.as_str()), (Some("jdoe@acme.io"), "guessed"));
+        assert_eq!(fake.calls(), ["verify jdoe@acme.io"]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn the_worker_keeps_to_the_hourly_limit_and_tries_each_lead_once(db: PgPool) {
         let (url, fake) = serve().await;
         let s = seed(&db, "findymail", "").await;
@@ -772,5 +835,8 @@ mod tests {
         tick(10).await.unwrap();
         assert_eq!(fake.calls(), ["findymail one.io"]);
         assert_eq!(reload(&db, &oldest).await.email_search, "not_found");
+        // A lead searched again counts again, and a deleted one still counts.
+        sqlx::query("delete from leads where id = $1").bind(middle.id).execute(&db).await.unwrap();
+        assert_eq!(searched_last_hour(&db, s.org).await.unwrap(), 4);
     }
 }
