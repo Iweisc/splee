@@ -24,6 +24,7 @@ pub(crate) mod write;
 pub mod x;
 mod youtube;
 
+pub use explore::Profile;
 pub use write::{leads_without_initial, signature};
 
 use std::sync::Arc;

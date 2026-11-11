@@ -728,7 +728,7 @@ export interface Lead extends Scored {
   company_domain: string | null;
   city: string;
   country_code: string;
-  source: "agent" | "import" | "api" | "form" | "linkedin";
+  source: "agent" | "import" | "api" | "form" | "linkedin" | "chat";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;
@@ -837,6 +837,60 @@ export interface VisitorSite {
   intent_paths: string[];
   last_hit_at: Ts | null;
   last_hit_path: string | null;
+}
+
+/** The website chat's settings. The domains it answers on are VisitorSite's. */
+export interface ChatSettings {
+  enabled: boolean;
+  accent: string;
+  greeting: string;
+  position: "right" | "left";
+  /** Pages it shows on, each with the pages under it. Empty for every page. */
+  paths: string[];
+  faq: string;
+  daily_messages: number;
+  monthly_budget_micros: number;
+}
+
+export interface ChatSettingsPage {
+  /** The name in the chat's header. */
+  title: string;
+  settings: ChatSettings;
+  /** Today's answers from the model and this month's spend, in UTC. */
+  usage: { today_messages: number; month_spend_micros: number };
+  site: VisitorSite;
+}
+
+/** A website chat conversation. `company` is what the visitor typed, else the visiting company's name. */
+export interface ChatConversation {
+  id: string;
+  project_id: string;
+  email: string | null;
+  name: string;
+  company: string;
+  domain: string | null;
+  lead_id: string | null;
+  page: string;
+  taken_over: boolean;
+  /** A message in the last 10 minutes. */
+  live: boolean;
+  messages: number;
+  last_message: string;
+  last_role: ChatRole;
+  last_message_at: Ts;
+  created_at: Ts;
+}
+
+/** visitor: typed on the site. bot: the assistant. team: someone on the team. notice: Splee's fixed text, like the thanks after an email. */
+export type ChatRole = "visitor" | "bot" | "team" | "notice";
+
+export interface ChatMessage {
+  id: number;
+  role: ChatRole;
+  body: string;
+  /** The teammate's name on team messages. */
+  who: string;
+  created_at: Ts;
 }
 
 export interface JobPost {

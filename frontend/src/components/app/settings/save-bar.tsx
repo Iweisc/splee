@@ -6,7 +6,8 @@ import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
 /** `problem` blocks saving and replaces the "Unsaved changes" text. */
-export function SaveBar({ form, problem }: { form: ProjectSettingsForm; problem?: string | null }) {
+/** Takes any form with these four, not only the project settings one. */
+export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "dirty" | "saving" | "save" | "reset">; problem?: string | null }) {
   useLeaveGuard(form.dirty);
   return (
     <div

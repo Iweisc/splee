@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod auth;
 pub(crate) mod bookings;
+mod chat;
 mod booking_pages;
 mod directory;
 mod endpoints;
@@ -117,6 +118,7 @@ pub fn router() -> Router<AppState> {
         .merge(texts::router())
         .merge(deals::router())
         .merge(outreach::router())
+        .merge(chat::router())
         .route("/health", get(health))
 }
 

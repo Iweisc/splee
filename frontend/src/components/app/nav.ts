@@ -19,6 +19,7 @@ import {
   Megaphone,
   MessageSquareReply,
   MessageSquareText,
+  MessagesSquare,
   Plug,
   Radio,
   Repeat,
@@ -71,6 +72,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Auto-replies", href: (p) => `/app/p/${p}/auto-replies`, icon: MessageSquareReply }, // D2
       { label: "Saved replies", href: (p) => `/app/p/${p}/saved-replies`, icon: MessageSquareText },
       { label: "Materials", href: (p) => `/app/p/${p}/materials`, icon: BookOpen }, // D2
+      { label: "Website chat", href: (p) => `/app/p/${p}/website-chat`, icon: MessagesSquare },
       { label: "Channels", href: (p) => `/app/p/${p}/channels`, icon: Radio }, // D2
       { label: "Integrations", href: (p) => `/app/p/${p}/integrations`, icon: Plug }, // D2
     ],
