@@ -20,6 +20,7 @@ import {
   MessageSquareText,
   MessagesSquare,
   Newspaper,
+  NotebookPen,
   PenLine,
   RefreshCw,
   Repeat2,
@@ -46,12 +47,14 @@ import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Badge, Host } from "@/components/ui/misc";
+import { Badge, Host, Tabs } from "@/components/ui/misc";
 import { Field, Input, Select, Switch, Textarea } from "@/components/ui/form";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
 import {
+  type Blog,
+  type BlogTest,
   CRM_NAMES,
   type CrmName,
   type DiscourseForum,
@@ -2117,6 +2120,312 @@ function DiscourseSection({ projectId }: { projectId: string }) {
   );
 }
 
+const BLOG_KINDS = { wordpress: "WordPress", ghost: "Ghost", webflow: "Webflow" } as const;
+type BlogKind = keyof typeof BLOG_KINDS;
+const WEEKLY_CAPS = [1, 2, 3, 4, 5, 6, 7];
+
+/** What a blog does with an approved article. */
+function PublishSelect({ kind, publish, onChange, disabled }: { kind: BlogKind; publish: boolean; onChange: (publish: boolean) => void; disabled?: boolean }) {
+  return (
+    <Select value={publish ? "publish" : "draft"} disabled={disabled} onChange={(e) => onChange(e.target.value === "publish")} aria-label="When approved">
+      <option value="draft">Save as a draft in {BLOG_KINDS[kind]}</option>
+      <option value="publish">Publish it</option>
+    </Select>
+  );
+}
+
+function CapSelect({ cap, onChange, disabled }: { cap: number; onChange: (cap: number) => void; disabled?: boolean }) {
+  return (
+    <Select value={cap} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))} aria-label="Articles a week">
+      {WEEKLY_CAPS.map((n) => (
+        <option key={n} value={n}>
+          {n === 1 ? "1 article a week" : `${n} articles a week`}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+/** A connected blog's settings, saved as they change. A paused blog says why and offers to connect it again. */
+function BlogRow({ blog: b, onChange, onReconnect }: { blog: Blog; onChange: () => Promise<unknown>; onReconnect: (b: Blog) => void }) {
+  const { pending, run } = useAction();
+  const save = (body: { publish?: boolean; weekly_cap?: number }) =>
+    run("save", async () => {
+      await api(`/blogs/${b.id}`, { method: "PATCH", body });
+      await onChange();
+    }, "Saved");
+  const remove = () => {
+    if (!confirm(`Remove ${b.name}? Approved articles for it go back to drafts.`)) return;
+    run("remove", async () => {
+      await api(`/blogs/${b.id}`, { method: "DELETE" });
+      await onChange();
+    }, `Removed ${b.name}`);
+  };
+  const where =
+    b.kind === "wordpress" ? `Writing as ${b.username}.` : b.kind === "webflow" ? `Articles go in the ${b.collection_name} collection.` : "Writing with the Admin API key.";
+  return (
+    <li className="flex flex-col gap-3 px-3 py-3">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">
+            {b.name} <Badge>{BLOG_KINDS[b.kind]}</Badge>
+          </p>
+          <p className="text-xs text-pretty text-muted-foreground">
+            <Host host={b.url.replace(/^https?:\/\//, "")} /> · {where}
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={remove} loading={pending === "remove"} aria-label={`Remove ${b.name}`}>
+          <Trash2 className="size-3.5" />
+        </Button>
+      </div>
+      {b.paused ? (
+        <div className="flex flex-col gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 sm:flex-row sm:items-center">
+          <p className="flex-1 text-pretty">
+            <span className="font-medium">Paused. </span>
+            {b.error ?? `${BLOG_KINDS[b.kind]} turned Splee down.`}
+          </p>
+          <Button size="sm" variant="outline" onClick={() => onReconnect(b)} className="self-start">
+            Connect again
+          </Button>
+        </div>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <PublishSelect kind={b.kind} publish={b.publish} onChange={(publish) => save({ publish })} disabled={pending === "save"} />
+          <CapSelect cap={b.weekly_cap} onChange={(weekly_cap) => save({ weekly_cap })} disabled={pending === "save"} />
+        </div>
+      )}
+      {!b.paused && <LastFailure error={b.error} at={b.failed_at} what="post" />}
+    </li>
+  );
+}
+
+const BLOG_STEPS: Record<BlogKind, string> = {
+  wordpress: "In WordPress, open Users, then Profile, and add an application password near the bottom. Self-hosted sites and WordPress.com Business plans have it.",
+  ghost: "In Ghost's admin, open Settings, then Integrations, add a custom integration and copy its Admin API key.",
+  webflow: "In your Webflow site's settings, open Apps & integrations and generate an API token that can read sites and read and write the CMS.",
+};
+
+type Fields = { title_field: string; body_field: string; tags_field: string; excerpt_field: string };
+type Collection = BlogTest["sites"][number]["collections"][number];
+
+/** The fields a collection's articles most likely go in: its name field for the title, its first rich text field for the
+ *  article, and plain text fields named like tags and a summary. */
+function guessFields(c: Collection | undefined): Fields {
+  const plain = (c?.fields ?? []).filter((f) => f.type === "PlainText");
+  const named = (...words: string[]) => plain.find((f) => words.some((w) => f.slug.includes(w)))?.slug ?? "";
+  return {
+    title_field: plain.some((f) => f.slug === "name") ? "name" : (plain[0]?.slug ?? ""),
+    body_field: c?.fields.find((f) => f.type === "RichText")?.slug ?? "",
+    tags_field: named("tag"),
+    excerpt_field: named("summary", "excerpt", "description"),
+  };
+}
+
+/** Picks a field of the collection of one type. Optional ones can be left out. */
+function FieldSelect({
+  label,
+  collection,
+  type,
+  value,
+  optional,
+  onChange,
+}: {
+  label: string;
+  collection: Collection;
+  type: "PlainText" | "RichText";
+  value: string;
+  optional?: boolean;
+  onChange: (slug: string) => void;
+}) {
+  const fields = collection.fields.filter((f) => f.type === type && f.slug !== "slug");
+  return (
+    <Field label={label}>
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        {(optional || !value) && <option value="">{optional ? "Leave it out" : "Pick a field"}</option>}
+        {fields.map((f) => (
+          <option key={f.slug} value={f.slug}>
+            {f.name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** Each blog is connected and removed on its own, not with the page's Save. Secrets are write-only. Testing reads the blog
+ *  with what was typed, and connecting reads it again before saving. Connecting the same blog again replaces its secret and
+ *  unpauses it. */
+function BlogSection({ projectId }: { projectId: string }) {
+  const key = `/projects/${projectId}/blogs`;
+  const { data, error, mutate } = useSWR<Blog[]>(key, fetcher);
+  const { pending, run } = useAction();
+  const [kind, setKind] = useState<BlogKind>("wordpress");
+  const empty = { url: "", username: "", secret: "" };
+  const [form, setForm] = useState(empty);
+  const [tested, setTested] = useState<BlogTest | null>(null);
+  const [siteId, setSiteId] = useState("");
+  const [collectionId, setCollectionId] = useState("");
+  const [fields, setFields] = useState<Fields>(guessFields(undefined));
+  const [publish, setPublish] = useState(false);
+  const [cap, setCap] = useState(2);
+  const site = tested?.sites.find((s) => s.id === siteId);
+  const collection = site?.collections.find((c) => c.id === collectionId);
+  // Typing anything new means the blog has to be read again.
+  const set = (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForm({ ...form, [field]: e.target.value });
+    setTested(null);
+  };
+  const pickKind = (k: BlogKind) => {
+    setKind(k);
+    setTested(null);
+  };
+  const pickCollection = (s: BlogTest["sites"][number] | undefined, id: string) => {
+    setCollectionId(id);
+    setFields(guessFields(s?.collections.find((c) => c.id === id)));
+  };
+  const pickSite = (found: BlogTest, id: string) => {
+    const s = found.sites.find((x) => x.id === id);
+    setSiteId(id);
+    pickCollection(s, s?.collections[0]?.id ?? "");
+  };
+  const body = () => ({ kind, url: form.url.trim(), username: form.username.trim(), secret: form.secret.trim() });
+  const test = () =>
+    run("test", async () => {
+      const found = await api<BlogTest>(`${key}/test`, { body: body() });
+      setTested(found);
+      if (kind === "webflow") pickSite(found, found.sites[0]?.id ?? "");
+    });
+  const connect = async () => {
+    const done = await run("connect", async () => {
+      const where = kind === "webflow" ? { site_id: siteId, collection_id: collectionId, ...fields } : {};
+      await api(key, { body: { ...body(), ...where, publish, weekly_cap: cap } });
+      await mutate();
+    }, `Connected ${kind === "webflow" ? (site?.name ?? "Webflow") : tested?.name}`);
+    if (done) {
+      setForm(empty);
+      setTested(null);
+    }
+  };
+  const reconnect = (b: Blog) => {
+    setKind(b.kind);
+    setForm({ url: b.kind === "webflow" ? "" : b.url, username: b.username, secret: "" });
+    setPublish(b.publish);
+    setCap(b.weekly_cap);
+    setTested(null);
+  };
+  const typed = !!form.secret.trim() && (kind === "webflow" || !!form.url.trim()) && (kind !== "wordpress" || !!form.username.trim());
+  const ready = !!tested && (kind !== "webflow" || (!!collection && !!fields.body_field && !!fields.title_field));
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2">
+          <NotebookPen className="size-4" /> Your blogs
+        </span>
+      }
+      description="Drafts articles for your own WordPress, Ghost or Webflow blog, and publishes the ones you approve on the Social page."
+    >
+      {error ? (
+        <LoadError error={error} what="your blogs" retry={() => mutate()} />
+      ) : (
+        <>
+          {!!data?.length && (
+            <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+              {data.map((b) => (
+                <BlogRow key={b.id} blog={b} onChange={() => mutate()} onReconnect={reconnect} />
+              ))}
+            </ul>
+          )}
+          <form onSubmit={submit(tested ? connect : test)} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-medium">{data?.length ? "Connect another blog" : "Connect a blog"}</p>
+              <Tabs
+                value={kind}
+                onChange={pickKind}
+                options={(Object.keys(BLOG_KINDS) as BlogKind[]).map((k) => ({ value: k, label: BLOG_KINDS[k] }))}
+                className="self-start"
+              />
+            </div>
+            <p className="text-sm text-pretty text-muted-foreground">{BLOG_STEPS[kind]}</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {kind !== "webflow" && (
+                // WordPress's three fields fill the grid with the site on a row of its own.
+                <Field label={kind === "ghost" ? "Admin address" : "Site"} className={kind === "wordpress" ? "sm:col-span-2" : undefined}>
+                  <Input autoComplete="off" placeholder={kind === "ghost" ? "example.ghost.io" : "example.com/blog"} value={form.url} onChange={set("url")} />
+                </Field>
+              )}
+              {kind === "wordpress" && (
+                <Field label="Username">
+                  <Input autoComplete="off" value={form.username} onChange={set("username")} />
+                </Field>
+              )}
+              <Field label={kind === "wordpress" ? "Application password" : kind === "ghost" ? "Admin API key" : "API token"} className={kind === "webflow" ? "sm:col-span-2" : undefined}>
+                <Input type="password" autoComplete="off" value={form.secret} onChange={set("secret")} />
+              </Field>
+            </div>
+            {tested && kind !== "webflow" && (
+              <p className="rounded-lg bg-muted/60 px-3 py-2 text-sm text-pretty">
+                Found <span className="font-medium">{tested.name}</span>
+                {tested.user ? `, signed in as ${tested.user}.` : "."}
+              </p>
+            )}
+            {tested && kind === "webflow" && (
+              <div className="grid gap-4 rounded-lg border border-border p-3 sm:grid-cols-2">
+                <Field label="Site">
+                  <Select value={siteId} onChange={(e) => pickSite(tested, e.target.value)}>
+                    {tested.sites.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Collection">
+                  <Select value={collectionId} onChange={(e) => pickCollection(site, e.target.value)}>
+                    {site?.collections.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {collection && (
+                  <>
+                    <FieldSelect label="Title goes in" collection={collection} type="PlainText" value={fields.title_field} onChange={(title_field) => setFields({ ...fields, title_field })} />
+                    <FieldSelect label="Article goes in" collection={collection} type="RichText" value={fields.body_field} onChange={(body_field) => setFields({ ...fields, body_field })} />
+                    <FieldSelect label="Tags go in" collection={collection} type="PlainText" value={fields.tags_field} optional onChange={(tags_field) => setFields({ ...fields, tags_field })} />
+                    <FieldSelect label="Excerpt goes in" collection={collection} type="PlainText" value={fields.excerpt_field} optional onChange={(excerpt_field) => setFields({ ...fields, excerpt_field })} />
+                  </>
+                )}
+              </div>
+            )}
+            {tested && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="When you approve an article">
+                  <PublishSelect kind={kind} publish={publish} onChange={setPublish} />
+                </Field>
+                <Field label="At most">
+                  <CapSelect cap={cap} onChange={setCap} />
+                </Field>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {tested ? (
+                <Button type="submit" loading={pending === "connect"} disabled={!ready}>
+                  Connect blog
+                </Button>
+              ) : (
+                <Button type="submit" loading={pending === "test"} disabled={!typed}>
+                  Test connection
+                </Button>
+              )}
+            </div>
+          </form>
+        </>
+      )}
+    </Section>
+  );
+}
+
 /** The password is write-only. Connecting signs in to the instance and reads the account back. */
 function LemmySection({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
   const [form, setForm] = useState({ url: "", username: "", password: "" });
@@ -2923,6 +3232,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <StackExchangeSection projectId={projectId} settings={s} />
           <DevSection projectId={projectId} settings={s} />
           <DiscourseSection projectId={projectId} />
+          <BlogSection projectId={projectId} />
           <LemmySection projectId={projectId} settings={s} />
           <NostrSection projectId={projectId} settings={s} />
           <TumblrSection projectId={projectId} settings={s} />

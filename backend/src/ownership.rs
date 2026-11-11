@@ -522,6 +522,7 @@ mod tests {
             zoho: None,
             crm_api_url: String::new(),
             payments_api_url: String::new(),
+            webflow_api_url: String::new(),
             ipinfo_token: None,
         }
     }

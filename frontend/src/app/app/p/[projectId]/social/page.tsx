@@ -11,7 +11,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Host, Message, Skeleton, Tabs, type BadgeTone } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { DiscourseForum, ProjectSettings, SocialChannel, SocialPost } from "@/lib/types";
+import type { Blog, DiscourseForum, ProjectSettings, SocialChannel, SocialPost } from "@/lib/types";
 import { cn, dateTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -38,7 +38,9 @@ const PLATFORMS: Record<Platform, string> = {
   telegram: "Telegram",
   facebook: "Facebook",
   instagram: "Instagram",
+  blog: "Blog",
 };
+const BLOG_KINDS: Record<Blog["kind"], string> = { wordpress: "WordPress", ghost: "Ghost", webflow: "Webflow" };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
   { value: "approved", label: "Approved", statuses: ["approved", "posting"] },
@@ -49,17 +51,19 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
   approved: {
     title: "Nothing waiting to post",
-    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy, Tumblr, Discord and Telegram take 10, LinkedIn, Stack Exchange and each Discourse forum 5, each Facebook Page and Instagram account 5 posts, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy, Tumblr, Discord and Telegram take 10, LinkedIn, Stack Exchange and each Discourse forum 5, each Facebook Page and Instagram account 5 posts, DEV 2 articles, Hashnode 2 articles and 10 comments, and each blog the articles a week you set for it.",
   },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
 /** LinkedIn goes out through the Unipile connection for LinkedIn sending, Discourse through each forum the project joined, the
- *  Discord and Telegram bots in the channels picked for them, and Facebook and Instagram from the picked Pages and accounts. */
-function isConnected(s: ProjectSettings, forums: DiscourseForum[], channels: SocialChannel[], p: Platform) {
+ *  Discord and Telegram bots in the channels picked for them, Facebook and Instagram from the picked Pages and accounts, and
+ *  articles to each blog that isn't paused. */
+function isConnected(s: ProjectSettings, forums: DiscourseForum[], channels: SocialChannel[], blogs: Blog[], p: Platform) {
   if (p === "linkedin") return s.unipile_connected;
   if (p === "discourse") return forums.length > 0;
+  if (p === "blog") return blogs.some((b) => !b.paused);
   if (p === "discord" || p === "telegram") return s[`${p}_connected`] && channels.some((c) => c.platform === p && c.picked);
   if (isMeta(p)) return s.meta_connected && channels.some((c) => c.platform === p && c.picked);
   return s[`${p}_connected`];
@@ -100,9 +104,12 @@ const takesPosts = (p: Platform) => p !== "youtube" && p !== "stackexchange";
 /** Stack Exchange and Discourse turn down short ones, like social::min_length on the backend. */
 const minLength = (p: Platform) => (p === "stackexchange" ? 30 : p === "discourse" ? 20 : 1);
 /** Like dev::TITLE_CHARS, hashnode::TITLE_CHARS, lemmy::TITLE_CHARS and discourse's title limits on the backend. */
-const ARTICLE_TITLE_CHARS: Partial<Record<Platform, number>> = { dev: 128, hashnode: 250 };
-/** Like dev::MAX_TAGS, hashnode::MAX_TAGS and tumblr::MAX_TAGS on the backend. */
-const MAX_TAGS: Partial<Record<Platform, number>> = { dev: 4, hashnode: 5, tumblr: 10 };
+const ARTICLE_TITLE_CHARS: Partial<Record<Platform, number>> = { dev: 128, hashnode: 250, blog: 200 };
+/** Like dev::MAX_TAGS, hashnode::MAX_TAGS, blog::MAX_TAGS and tumblr::MAX_TAGS on the backend. */
+const MAX_TAGS: Partial<Record<Platform, number>> = { dev: 4, hashnode: 5, blog: 5, tumblr: 10 };
+/** Like blog::EXCERPT_CHARS on the backend. */
+const EXCERPT_CHARS = 300;
+const isArticle = (p: Platform) => p === "dev" || p === "hashnode" || p === "blog";
 const LEMMY_TITLE_CHARS = 200;
 const TOPIC_TITLE_CHARS = [15, 255] as const;
 /** Discourse forums only take new topics once a category is picked for them. */
@@ -112,7 +119,7 @@ const forumHost = (f: DiscourseForum) => f.url.replace(/^https:\/\//, "");
 function titleReady(p: Platform, title: string, community: string, forum: DiscourseForum | undefined) {
   const n = [...title.trim()].length;
   if (p === "reddit" || p === "lemmy") return n > 0 && n <= (p === "lemmy" ? LEMMY_TITLE_CHARS : 300) && !!community.trim();
-  if (p === "dev" || p === "hashnode") return n > 0 && n <= ARTICLE_TITLE_CHARS[p]!;
+  if (isArticle(p)) return n > 0 && n <= ARTICLE_TITLE_CHARS[p]!;
   if (p === "discourse") return !!forum?.category_id && n >= TOPIC_TITLE_CHARS[0] && n <= TOPIC_TITLE_CHARS[1];
   return true;
 }
@@ -144,6 +151,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
   const { data, error, mutate } = useSWR<SocialPost[]>(`/projects/${projectId}/social`, fetcher);
   const { data: forums, error: forumsError } = useSWR<DiscourseForum[]>(`/projects/${projectId}/discourse-forums`, fetcher);
   const { data: channels, error: channelsError } = useSWR<SocialChannel[]>(`/projects/${projectId}/social-channels`, fetcher);
+  const { data: blogs, error: blogsError } = useSWR<Blog[]>(`/projects/${projectId}/blogs`, fetcher);
   const { runs, mutate: refreshRuns } = useProjectRuns(projectId);
   const run = runs?.find((r) => r.kind === "social" && isActive(r)) ?? null;
   const [tab, setTab] = useState<Tab>("draft");
@@ -160,7 +168,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
   });
 
   const connected =
-    settings && forums && channels ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, channels, p)) : [];
+    settings && forums && channels && blogs ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, channels, blogs, p)) : [];
   // Discourse takes topics only on forums with a category, Hashnode articles only once a publication is picked, and the bots,
   // Pages and Instagram accounts only post where they may.
   const posting = connected.filter(
@@ -190,7 +198,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, comments on your Facebook Pages and Instagram posts, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, comments on your Facebook Pages and Instagram posts, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles, including ones for your own blog. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -200,11 +208,11 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
         }
       />
       <PageBody className="flex flex-col gap-5">
-        {settingsError || error || forumsError || channelsError ? (
+        {settingsError || error || forumsError || channelsError || blogsError ? (
           <Card>
-            <LoadError error={settingsError ?? error ?? forumsError ?? channelsError} retry={() => mutate()} />
+            <LoadError error={settingsError ?? error ?? forumsError ?? channelsError ?? blogsError} retry={() => mutate()} />
           </Card>
-        ) : !settings || !data || !forums || !channels ? (
+        ) : !settings || !data || !forums || !channels || !blogs ? (
           <div className="flex flex-col gap-3">
             {Array.from({ length: 3 }, (_, i) => (
               <Skeleton key={i} className="h-40 rounded-2xl" />
@@ -222,8 +230,8 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
               }
             >
               Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV,
-              Lemmy, Nostr, Tumblr, Hashnode, a Discourse forum, a Discord or Telegram bot, a Facebook Page, an Instagram account or LinkedIn
-              sending, on the integrations page.
+              Lemmy, Nostr, Tumblr, Hashnode, a Discourse forum, a Discord or Telegram bot, a Facebook Page, an Instagram account, your blog or
+              LinkedIn sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
@@ -235,6 +243,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                 platforms={posting}
                 forums={topicForums(forums)}
                 channels={channels}
+                blogs={blogs.filter((b) => !b.paused)}
                 mastodonChars={settings.mastodon_max_chars}
                 onAdded={() => mutate()}
               />
@@ -264,6 +273,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
                     post={p}
                     forum={forums.find((f) => f.id === p.forum_id)}
                     channel={channels.find((c) => c.id === p.channel_id)}
+                    blog={blogs.find((b) => b.id === p.blog_id)}
                     mastodonChars={settings.mastodon_max_chars}
                     onChange={() => mutate()}
                   />
@@ -283,6 +293,7 @@ function Composer({
   platforms,
   forums,
   channels,
+  blogs,
   mastodonChars,
   onAdded,
 }: {
@@ -291,6 +302,8 @@ function Composer({
   /** The Discourse forums with a category for new topics. */
   forums: DiscourseForum[];
   channels: SocialChannel[];
+  /** The blogs that aren't paused. */
+  blogs: Blog[];
   mastodonChars: number;
   onAdded: () => Promise<unknown>;
 }) {
@@ -304,10 +317,13 @@ function Composer({
   const [tags, setTags] = useState("");
   const [link, setLink] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [blogId, setBlogId] = useState("");
+  const [excerpt, setExcerpt] = useState("");
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
-  const dev = on === "dev" || on === "hashnode";
+  const dev = isArticle(on);
+  const blog = blogs.find((b) => b.id === blogId) ?? blogs[0];
   const lemmy = on === "lemmy";
   const discourse = on === "discourse";
   const forum = forums.find((f) => f.id === forumId) ?? forums[0];
@@ -320,7 +336,8 @@ function Composer({
     [...body.trim()].length >= minLength(on) &&
     (max === null || length(on, body) <= max) &&
     titleReady(on, title, lemmy ? community : subreddit, forum) &&
-    mediaReady(on, link, imageUrl);
+    mediaReady(on, link, imageUrl) &&
+    (on !== "blog" || (!!blog && [...excerpt.trim()].length <= EXCERPT_CHARS));
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,14 +345,19 @@ function Composer({
     try {
       const where = { subreddit: lemmy ? community : subreddit, forum_id: discourse ? forum?.id : undefined, channel_id: bot ? channel?.id : undefined };
       const media = { link: on === "facebook" ? link : "", image_url: on === "instagram" ? imageUrl : "" };
-      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, ...where, ...media, tags: tagList(tags), status: "approved" } });
+      const article = on === "blog" ? { blog_id: blog?.id, excerpt } : {};
+      await api(`/projects/${projectId}/social`, {
+        method: "POST",
+        body: { platform: on, body, title, ...where, ...media, ...article, tags: tagList(tags), status: "approved" },
+      });
       await onAdded();
       setBody("");
       setTitle("");
       setTags("");
       setLink("");
       setImageUrl("");
-      toast.success(`Queued for ${PLATFORMS[on]}`);
+      setExcerpt("");
+      toast.success(`Queued for ${on === "blog" && blog ? blog.name : PLATFORMS[on]}`);
     } catch (e) {
       toastError(e);
     } finally {
@@ -389,7 +411,19 @@ function Composer({
             <TopicTitle title={title} setTitle={setTitle} />
           </div>
         )}
+        {on === "blog" && blogs.length > 1 && (
+          <Field label="Blog" className="sm:w-72">
+            <Select value={blog?.id} onChange={(e) => setBlogId(e.target.value)}>
+              {blogs.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         {dev && <ArticleFields platform={on} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+        {on === "blog" && <ExcerptField excerpt={excerpt} setExcerpt={setExcerpt} />}
         {on === "tumblr" && <TagsField platform={on} tags={tags} setTags={setTags} />}
         {bot && botChannels.length > 1 && (
           <Field label={on === "discord" ? "Channel" : on === "facebook" ? "Page" : on === "instagram" ? "Account" : "Group or channel"} className="sm:w-72">
@@ -429,6 +463,8 @@ function Composer({
             )}
             {discourse && forum
               ? `Goes in ${forum.category_name}, up to ${dailyCap(on)} a day.`
+              : on === "blog" && blog
+                ? `${blog.publish ? "Goes out" : `Goes in as a draft on ${BLOG_KINDS[blog.kind]}`} within ten minutes, up to ${blog.weekly_cap} a week.`
               : bot && channel
                 ? `Goes to ${channelLabel(channel)} within ten minutes, up to ${dailyCap(on)} a day.`
                 : `Goes out within ten minutes, up to ${dailyCap(on)} a day.`}
@@ -466,13 +502,24 @@ function ArticleFields({
   );
 }
 
-/** Tags for a DEV or Hashnode article or a Tumblr post, which is how people find posts on Tumblr. */
+/** A blog article's excerpt, which the blog shows in lists of its articles. */
+function ExcerptField({ excerpt, setExcerpt }: { excerpt: string; setExcerpt: (s: string) => void }) {
+  return (
+    <Field label="Excerpt, optional">
+      <Input autoComplete="off" maxLength={EXCERPT_CHARS} value={excerpt} onChange={(e) => setExcerpt(e.target.value)} />
+    </Field>
+  );
+}
+
+/** Tags for a DEV, Hashnode or blog article or a Tumblr post, which is how people find posts on Tumblr. */
 function TagsField({ platform, tags, setTags, className }: { platform: Platform; tags: string; setTags: (s: string) => void; className?: string }) {
   return (
     <Field label={`Up to ${MAX_TAGS[platform]} tags`} className={className}>
       <Input
         autoComplete="off"
-        placeholder={platform === "tumblr" ? "small business, marketing" : platform === "hashnode" ? "devops, startup" : "webdev, productivity"}
+        placeholder={
+          platform === "tumblr" ? "small business, marketing" : platform === "hashnode" ? "devops, startup" : platform === "blog" ? "cold email, sales" : "webdev, productivity"
+        }
         value={tags}
         onChange={(e) => setTags(e.target.value)}
       />
@@ -592,6 +639,7 @@ function PostCard({
   post: p,
   forum,
   channel,
+  blog,
   mastodonChars,
   onChange,
 }: {
@@ -600,6 +648,8 @@ function PostCard({
   forum: DiscourseForum | undefined;
   /** The Discord or Telegram channel it goes to, while the bot still sees it, or the Page or Instagram account. */
   channel: SocialChannel | undefined;
+  /** The blog an article goes to, while it's still connected. */
+  blog: Blog | undefined;
   mastodonChars: number;
   onChange: () => Promise<unknown>;
 }) {
@@ -609,12 +659,13 @@ function PostCard({
   const [tags, setTags] = useState(p.tags.join(", "));
   const [link, setLink] = useState(p.link);
   const [imageUrl, setImageUrl] = useState(p.image_url);
+  const [excerpt, setExcerpt] = useState(p.excerpt);
   const [saving, setSaving] = useState<string | null>(null);
   const reply = !!p.in_reply_to;
   const redditPost = p.platform === "reddit" && !reply;
   const lemmyPost = p.platform === "lemmy" && !reply;
   const topic = p.platform === "discourse" && !reply;
-  const article = p.platform === "dev" || (p.platform === "hashnode" && !reply);
+  const article = isArticle(p.platform) && !reply;
   const tumblrPost = p.platform === "tumblr" && !reply;
   const posted = p.status === "posted";
   const metaPost = isMeta(p.platform) && !reply;
@@ -624,7 +675,8 @@ function PostCard({
     subreddit !== p.subreddit ||
     tagList(tags).join(",") !== p.tags.join(",") ||
     link !== p.link ||
-    imageUrl !== p.image_url;
+    imageUrl !== p.image_url ||
+    excerpt !== p.excerpt;
   const max = maxLength(p.platform, reply, mastodonChars);
   const n = length(p.platform, body.trim());
   // What the backend turns down for an approved post, so those buttons stay off until it fits.
@@ -636,6 +688,7 @@ function PostCard({
     (p.platform === "discourse" && !forum) ||
     (isBot(p.platform) && !(channel?.picked && channel.can_send)) ||
     (isMeta(p.platform) && !(channel?.picked && (reply ? channel.can_read : channel.can_send))) ||
+    (p.platform === "blog" && (!blog || blog.paused || [...excerpt.trim()].length > EXCERPT_CHARS)) ||
     (!reply && !mediaReady(p.platform, link, imageUrl));
   // LinkedIn, YouTube, Lemmy, Hashnode and Tumblr call a reply a comment, Stack Exchange an answer, DEV and Hashnode a post an
   // article, Discourse a topic, Nostr a post a note, and Discord and Telegram a post a message.
@@ -675,7 +728,7 @@ function PostCard({
     try {
       const fresh = await api<SocialPost>(`/social/${p.id}`, {
         method: "PATCH",
-        body: { body, title, subreddit, tags: tagList(tags), link, image_url: imageUrl, status },
+        body: { body, title, subreddit, tags: tagList(tags), link, image_url: imageUrl, excerpt, status },
       });
       // The backend trims the text, writes "r/sales" as "sales" and "Web Dev" as "webdev", which would otherwise leave the card
       // looking unsaved.
@@ -685,6 +738,7 @@ function PostCard({
       setTags(fresh.tags.join(", "));
       setLink(fresh.link);
       setImageUrl(fresh.image_url);
+      setExcerpt(fresh.excerpt);
       await onChange();
     } catch (e) {
       toastError(e);
@@ -716,6 +770,20 @@ function PostCard({
               {forum ? <Host host={topic ? `${forumHost(forum)} · ${forum.category_name}` : forumHost(forum)} /> : "Forum removed"}
             </span>
           )}
+          {p.platform === "blog" && (
+            <span className="text-sm text-muted-foreground">
+              {blog ? (
+                <>
+                  {blog.name}
+                  {/* The blog's platform doesn't fit beside the rest on a phone. */}
+                  <span className="max-sm:hidden"> on {BLOG_KINDS[blog.kind]}</span>
+                  {blog.paused && " (paused)"}
+                </>
+              ) : (
+                "Blog removed"
+              )}
+            </span>
+          )}
           {hasChannel(p.platform) && (
             <span className="text-sm text-muted-foreground">
               {!channel ? (
@@ -731,9 +799,13 @@ function PostCard({
             </span>
           )}
           <span className="text-xs text-muted-foreground" title={dateTime(p.posted_at ?? p.created_at)}>
-            {posted ? `Posted ${timeAgo(p.posted_at ?? p.created_at)}` : timeAgo(p.created_at)}
+            {posted ? `${p.saved_as_draft ? "Saved" : "Posted"} ${timeAgo(p.posted_at ?? p.created_at)}` : timeAgo(p.created_at)}
           </span>
-          {p.status !== "draft" && <Badge tone={STATUS[p.status].tone} className="ml-auto">{STATUS[p.status].label}</Badge>}
+          {p.status !== "draft" && (
+            <Badge tone={STATUS[p.status].tone} className="ml-auto">
+              {posted && p.saved_as_draft ? "Saved as a draft" : STATUS[p.status].label}
+            </Badge>
+          )}
         </div>
 
         {reply && (
@@ -755,6 +827,7 @@ function PostCard({
           <>
             {p.title && <p className="font-medium">{p.title}</p>}
             {p.tags.length > 0 && <p className="text-xs text-muted-foreground">{p.tags.map((t) => `#${t}`).join(" ")}</p>}
+            {p.excerpt && <p className="text-sm text-pretty text-muted-foreground">{p.excerpt}</p>}
             {p.image_url ? (
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                 <Picture url={p.image_url} />
@@ -770,7 +843,12 @@ function PostCard({
             )}
             {p.url && (
               <a href={p.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 self-start text-sm hover:underline">
-                View on {PLATFORMS[p.platform]} <ExternalLink className="size-3.5" />
+                {p.platform !== "blog"
+                  ? `View on ${PLATFORMS[p.platform]}`
+                  : p.saved_as_draft
+                    ? `Open the draft${blog ? ` in ${BLOG_KINDS[blog.kind]}` : ""}`
+                    : `View on ${blog?.name ?? "the blog"}`}{" "}
+                <ExternalLink className="size-3.5" />
               </a>
             )}
           </>
@@ -789,6 +867,7 @@ function PostCard({
             {lemmyPost && <CommunityFields community={subreddit} title={title} setCommunity={setSubreddit} setTitle={setTitle} />}
             {topic && <TopicTitle title={title} setTitle={setTitle} />}
             {article && <ArticleFields platform={p.platform} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
+            {p.platform === "blog" && <ExcerptField excerpt={excerpt} setExcerpt={setExcerpt} />}
             {tumblrPost && <TagsField platform={p.platform} tags={tags} setTags={setTags} />}
             {metaPost && p.platform === "instagram" ? (
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start">

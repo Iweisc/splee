@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::state::AppState;
 
 pub mod auth;
+mod blogs;
 pub(crate) mod bookings;
 mod chat;
 mod booking_pages;
@@ -92,6 +93,7 @@ pub fn router() -> Router<AppState> {
         .merge(endpoints::router())
         .merge(linkedin::router())
         .merge(social::router())
+        .merge(blogs::router())
         .merge(mailboxes::router())
         .merge(mailbox_oauth::router())
         .merge(deliverability::router())

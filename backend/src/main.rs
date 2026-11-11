@@ -4,6 +4,7 @@ mod airtable;
 mod auth;
 mod autopilot;
 mod baserow;
+mod blog;
 mod bluesky;
 mod booking;
 mod chat;

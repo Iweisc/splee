@@ -825,7 +825,7 @@ pub struct SocialPost {
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
     /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr",
-    /// "tumblr", "hashnode", "discord", "telegram", "facebook" or "instagram".
+    /// "tumblr", "hashnode", "discord", "telegram", "facebook", "instagram" or "blog".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -833,9 +833,9 @@ pub struct SocialPost {
     pub context: String,
     /// Reddit: where an original post goes, or the thread's subreddit. Lemmy: the same for its community, as name@instance.
     pub subreddit: String,
-    /// Reddit, Lemmy and Discourse original posts and DEV and Hashnode articles only.
+    /// Reddit, Lemmy and Discourse original posts and DEV, Hashnode and blog articles only.
     pub title: String,
-    /// DEV articles, at most 4, Hashnode articles, at most 5, and Tumblr posts, at most 10.
+    /// DEV articles, at most 4, Hashnode and blog articles, at most 5, and Tumblr posts, at most 10.
     pub tags: Vec<String>,
     pub body: String,
     /// Why the agent picked the thread.
@@ -859,6 +859,11 @@ pub struct SocialPost {
     pub image_url: String,
     #[serde(skip)]
     pub container_id: String,
+    /// Blog articles only: the blog it goes to, None once that blog is removed, and its excerpt.
+    pub blog_id: Option<Uuid>,
+    pub excerpt: String,
+    /// The article went in as a draft on the blog, for the user to publish there.
+    pub saved_as_draft: bool,
 }
 
 /// A Discord text channel or a Telegram group or channel the project's bot can see, or a Facebook Page or Instagram account the
@@ -923,6 +928,42 @@ pub struct DiscourseForum {
     pub failed_at: Option<Ts>,
     /// Posting waits until then, after the forum answered 429 with a Retry-After.
     pub held_until: Option<Ts>,
+    pub created_at: Ts,
+}
+
+/// One of the company's own blogs, which articles are published on. Its secret stays out of the JSON.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Blog {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    /// "wordpress", "ghost" or "webflow".
+    pub kind: String,
+    /// The WordPress site, Ghost's admin address, or the Webflow site's public address.
+    pub url: String,
+    /// The site's title.
+    pub name: String,
+    /// WordPress only: the user the application password belongs to.
+    pub username: String,
+    #[serde(skip)]
+    pub secret_enc: String,
+    /// What the weekly cap counts by, in any project.
+    pub account: String,
+    /// Webflow only: the site, the CMS collection articles go in, and the collection's field slugs for each part.
+    pub site_id: String,
+    pub collection_id: String,
+    pub collection_name: String,
+    pub collection_slug: String,
+    pub title_field: String,
+    pub body_field: String,
+    pub tags_field: String,
+    pub excerpt_field: String,
+    /// False saves articles as drafts on the blog.
+    pub publish: bool,
+    pub weekly_cap: i32,
+    /// The blog turned the credentials down, and nothing goes out until it's connected again.
+    pub paused: bool,
+    pub error: Option<String>,
+    pub failed_at: Option<Ts>,
     pub created_at: Ts,
 }
 

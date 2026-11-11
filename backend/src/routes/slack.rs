@@ -767,6 +767,7 @@ mod tests {
             graph_api_url: String::new(),
             crm_api_url: String::new(),
             payments_api_url: String::new(),
+            webflow_api_url: String::new(),
             ipinfo_token: None,
             slack: Some(SlackApp { client_id: "123.456".into(), client_secret: "shh".into(), signing_secret: "signing".into(), api_url: fake_url.into() }),
         }

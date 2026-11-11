@@ -41,6 +41,7 @@ fn config(fake_url: &str) -> Config {
         graph_api_url: String::new(),
         crm_api_url: String::new(),
         payments_api_url: String::new(),
+        webflow_api_url: String::new(),
         ipinfo_token: None,
         slack: None,
     }
