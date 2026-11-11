@@ -276,7 +276,7 @@ async fn record_row(db: &sqlx::PgPool, table: &str, column: &str, project_id: Uu
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 11] = [
+pub const EVENTS: [&str; 15] = [
     "hot_lead",
     "lead_replied",
     "meeting_booked",
@@ -288,10 +288,15 @@ pub const EVENTS: [&str; 11] = [
     "follow_up_due",
     "form_submitted",
     "status_changed",
+    "deal.created",
+    "deal.stage_changed",
+    "deal.won",
+    "deal.lost",
 ];
 
-/// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder, a form's answers or
-/// a moved call's old time or status. Its key is "reply", "email", "reminder", "form", "previous_meeting_at" or "previous_status", and "reply" stays in every payload, null when there's none.
+/// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder, a form's answers,
+/// a moved call's old time or status, or a deal. Its key is "reply", "email", "reminder", "form", "previous_meeting_at",
+/// "previous_status" or "deal", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;
 
 /// The endpoint URLs, secret and payload for a lead event, or None when the project has no endpoint or doesn't send it.
@@ -721,10 +726,12 @@ pub async fn team_set_status(state: &AppState, before: &str, lead: &Lead) {
     }
 }
 
-/// Sends meeting_booked to chat and the webhook when someone in the app moves a lead there. The API only posts to chat
-/// (see api_v1::update_lead).
+/// Sends meeting_booked to chat and the webhook when someone in the app or a scheduling tool moves a lead there, and moves
+/// its deal along. The API only posts to chat (see api_v1::update_lead).
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
     if booked(before, lead) {
+        // First, so the CRM note announce_booked sends has the deal's new stage.
+        crate::deals::booked(state, lead).await;
         announce_booked(state, lead);
         send_lead_event(state, lead.project_id, "meeting_booked", lead, None).await;
     }

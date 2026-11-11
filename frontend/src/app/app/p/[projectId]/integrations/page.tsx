@@ -123,6 +123,10 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "follow_up_due", label: "Follow-up due", hint: "A reminder you set in the inbox came due." },
   { value: "form_submitted", label: "Form submitted", hint: "Someone filled in your website form and became a lead." },
   { value: "status_changed", label: "Status changed", hint: "Someone on your team changed a lead's status in Splee." },
+  { value: "deal.created", label: "Deal opened", hint: "A deal opened on the pipeline, from a hot reply, a booking or by hand." },
+  { value: "deal.stage_changed", label: "Deal moved", hint: "A deal moved to another stage of the pipeline." },
+  { value: "deal.won", label: "Deal won", hint: "A deal closed as won, with its final value." },
+  { value: "deal.lost", label: "Deal lost", hint: "A deal closed as lost, with the reason given." },
 ];
 
 
@@ -2194,7 +2198,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>&quot;reply&quot;: null</code> and the old time as <code>previous_meeting_at</code>. <code>form_submitted</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and a <code>form</code> whose <code>answers</code> each have a <code>question</code> and an{" "}
                   <code>answer</code>. <code>status_changed</code> sends <code>&quot;reply&quot;: null</code> and the old status as{" "}
-                  <code>previous_status</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
+                  <code>previous_status</code>. The deal events send <code>&quot;reply&quot;: null</code> and a <code>deal</code> with its <code>id</code>,{" "}
+                  <code>stage</code>, <code>previous_stage</code>, <code>status</code> (open, won or lost), <code>value</code>, <code>currency</code>,{" "}
+                  <code>close_date</code>, <code>owner</code>, <code>lost_reason</code> and <code>url</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
                   <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once
                   their scheduling tool sent it.
                 </p>

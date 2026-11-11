@@ -240,6 +240,8 @@ pub struct LeadDetail {
     pub texts: Vec<TextMessage>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,
+    /// Their open deal, or else the one that closed last.
+    pub deal: Option<crate::deals::Deal>,
 }
 
 /// Lead with its company and every email in both directions, oldest first. The caller checks org access.
@@ -264,7 +266,8 @@ pub async fn detail(db: &PgPool, lead: Lead) -> AppResult<LeadDetail> {
         Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
         None => vec![],
     };
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring })
+    let deal = crate::deals::for_lead(db, lead.id).await?;
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring, deal })
 }
 
 async fn get_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {

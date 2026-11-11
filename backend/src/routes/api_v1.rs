@@ -20,6 +20,7 @@ use super::util_input::{self, LEAD_STATUSES};
 use super::util_scope;
 use crate::ab_test::{self, AbTest};
 use crate::auth::ApiKeyAuth;
+use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
@@ -45,6 +46,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/emails/{id}/approve", post(approve_email))
         .route("/v1/emails/{id}/skip", post(skip_email))
         .route("/v1/inbox", get(list_inbox))
+        .route("/v1/deals", get(list_deals).post(create_deal))
+        .route("/v1/deals/{id}/move", post(move_deal))
+        .route("/v1/deal-stages", get(list_stages))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -233,6 +237,7 @@ async fn update_lead(
         .await?;
     // No meeting_booked webhook here: it would echo a booking straight back to the tool that sent it.
     if hooks::booked(&before, &lead) {
+        crate::deals::booked(&state, &lead).await;
         hooks::announce_booked(&state, &lead);
     }
     Ok(Json(leads::detail(&state.db, lead).await?))
@@ -534,4 +539,33 @@ pub(super) async fn list_inbox(
 ) -> AppResult<Json<Paginated<Thread>>> {
     let Paginated { items, total } = inbox::page_of(&state.db, auth.org_id, q, &page).await?;
     Ok(Json(Paginated { items: items.into_iter().map(Thread::from).collect(), total }))
+}
+
+/// The pipeline's stages in board order, with how many deals each holds.
+pub(super) async fn list_stages(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<Stage>>> {
+    Ok(Json(deals::stages(&state.db, auth.org_id).await?))
+}
+
+/// The organization's deals, the latest first: status is open, won or lost.
+pub(super) async fn list_deals(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(f): Query<DealFilter>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<Deal>>> {
+    if let Some(project_id) = f.project_id {
+        check_project(&state.db, project_id, auth.org_id).await?;
+    }
+    let (items, total) = deals::list(&state.db, auth.org_id, &f, page.limit(), page.offset()).await?;
+    Ok(Json(Paginated { items, total }))
+}
+
+/// A lead has at most one open deal, so a second one for it is a 409.
+pub(super) async fn create_deal(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<NewDeal>) -> AppResult<Json<Deal>> {
+    Ok(Json(deals::create(&state, auth.org_id, None, "api", body).await?))
+}
+
+/// Moves a deal to a stage by stage_id or stage name. A won stage takes the final value, a lost one the reason.
+pub(super) async fn move_deal(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<Move>) -> AppResult<Json<Deal>> {
+    Ok(Json(deals::move_to(&state, auth.org_id, id, body).await?))
 }

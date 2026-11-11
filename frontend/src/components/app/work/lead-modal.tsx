@@ -13,6 +13,7 @@ import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
+import { LeadDeal } from "./deal-dialog";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
 
@@ -182,6 +183,11 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           </Detail>
         )}
       </dl>
+
+      <div className="text-sm">
+        <MicroLabel className="mb-2">Deal</MicroLabel>
+        <LeadDeal leadId={lead.id} deal={lead.deal} onChange={() => mutate()} />
+      </div>
 
       <div>
         <MicroLabel className="mb-2">Notes</MicroLabel>

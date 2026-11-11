@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import useSWR, { SWRConfig } from "swr";
-import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, X } from "lucide-react";
+import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, SquareKanban, X } from "lucide-react";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
@@ -150,6 +150,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="px-2 pb-1 font-mono text-[11px] tracking-wide text-muted-foreground uppercase">All projects</p>
             <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<NeedsReplyCount />} />
             <NavLink href="/app/emails" icon={Mail} label="Emails" active={pathname === "/app/emails"} />
+            <NavLink href="/app/pipeline" icon={SquareKanban} label="Pipeline" active={pathname === "/app/pipeline"} />
           </div>
 
           <div className="mt-4">
@@ -193,7 +194,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 /** "Leads · Acme" for project pages, "Team · Splee" for the rest. */
 // Project pages that aren't in the sidebar.
 const EXTRA_PROJECT_PAGES: Record<string, string> = { new: "New campaign", docs: "API docs" };
-const EXTRA_ORG_PAGES: Record<string, string> = { "/app/inbox": "Inbox", "/app/emails": "Emails", "/app/onboarding": "New project" };
+const EXTRA_ORG_PAGES: Record<string, string> = {
+  "/app/inbox": "Inbox",
+  "/app/emails": "Emails",
+  "/app/pipeline": "Pipeline",
+  "/app/onboarding": "New project",
+};
 
 function titleFor(pathname: string, projectId: string | null, project?: ProjectSummary): string {
   if (projectId && pathname.startsWith(`/app/p/${projectId}`)) {

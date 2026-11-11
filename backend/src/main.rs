@@ -8,6 +8,7 @@ mod bluesky;
 mod config;
 mod crm;
 mod crypto;
+mod deals;
 mod dev;
 mod discourse;
 mod domains;

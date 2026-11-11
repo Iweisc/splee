@@ -41,7 +41,8 @@ const CACHE_MS: u64 = 3_600_000;
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
-so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule.";
+so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule. Hot replies open \
+deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -227,6 +228,11 @@ const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"
 const LEAD_FIELDS: &[&str] =
     &["id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status"];
 const RUN_FIELDS: &[&str] = &["id", "kind", "status", "message", "error", "cost_usd", "created_at", "finished_at"];
+const DEAL_FIELDS: &[&str] = &[
+    "id", "project_name", "lead_id", "lead_name", "company_name", "stage", "status", "value", "currency", "close_date", "owner_name", "lost_reason",
+    "stage_changed_at",
+];
+const STAGE_FIELDS: &[&str] = &["name", "kind", "probability", "deals"];
 
 /// None for a tool that doesn't exist.
 async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) -> Option<AppResult<Value>> {
@@ -266,6 +272,14 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "approve_email" => async { value(v1::approve_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "skip_email" => async { value(v1::skip_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "list_replies" => async { value(v1::list_inbox(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "list_deals" => async {
+            let stages = value(v1::list_stages(st(), auth.clone()).await?)?;
+            let page = value(v1::list_deals(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?)?;
+            Ok(json!({ "stages": pick(stages, STAGE_FIELDS), "items": pick(page["items"].clone(), DEAL_FIELDS), "total": page["total"] }))
+        }
+        .await,
+        "create_deal" => async { Ok(pick(value(v1::create_deal(st(), auth, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
+        "move_deal" => async { Ok(pick(value(v1::move_deal(st(), auth, id(a, "deal_id")?, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
         _ => return None,
     })
 }
@@ -453,7 +467,7 @@ fn tools() -> Vec<Value> {
             "Cancels a draft so it's never sent. approve_email can still send it later.",
             json!({ "email_id": id_prop("An id from list_emails_to_approve") }),
             &["email_id"],
-            adds,
+            adds.clone(),
         ),
         tool(
             "list_replies",
@@ -466,7 +480,49 @@ fn tools() -> Vec<Value> {
                 "q": { "type": "string", "description": "Optional. Matches the lead's name, email or company" },
             })),
             &[],
+            read.clone(),
+        ),
+        tool(
+            "list_deals",
+            "List deals",
+            "The pipeline's stages in order, and its deals, the latest first, with the lead, stage, value in the currency's main unit \
+             and owner. A hot reply opens a deal and a booked meeting moves it to the booked stage by itself.",
+            page_props(json!({
+                "project_id": id_prop("Optional. Only this project"),
+                "status": { "type": "string", "enum": ["open", "won", "lost"], "description": "Optional. Only deals with this status" },
+                "lead_id": id_prop("Optional. Only this lead's deals"),
+            })),
+            &[],
             read,
+        ),
+        tool(
+            "create_deal",
+            "Create deal",
+            "Opens a deal for a lead, in the first stage unless you name one. A lead can have only one open deal.",
+            json!({
+                "lead_id": id_prop("A lead id from list_leads or list_replies"),
+                "stage": { "type": "string", "description": "Optional. A stage name from list_deals" },
+                "value": { "type": "number", "minimum": 0, "description": "Optional. In the currency's main unit, like 12000" },
+                "currency": { "type": "string", "description": "Optional. A three-letter code. The organization's currency by default" },
+                "close_date": { "type": "string", "format": "date", "description": "Optional. When it should close, as YYYY-MM-DD" },
+                "notes": { "type": "string", "description": "Optional" },
+            }),
+            &["lead_id"],
+            adds.clone(),
+        ),
+        tool(
+            "move_deal",
+            "Move deal",
+            "Moves a deal to another stage, forward or back. Moving it to a won stage closes it as won, a lost stage as lost, and an \
+             open stage reopens it.",
+            json!({
+                "deal_id": id_prop("A deal id from list_deals"),
+                "stage": { "type": "string", "description": "A stage name from list_deals" },
+                "value": { "type": "number", "minimum": 0, "description": "Optional. The final value, when it's won" },
+                "lost_reason": { "type": "string", "description": "Optional. Why it was lost" },
+            }),
+            &["deal_id", "stage"],
+            adds,
         ),
     ]
 }
@@ -517,7 +573,7 @@ mod tests {
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/api/mcp", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", super::router()).with_state(state);
+            let app = Router::new().nest("/api", super::router().merge(super::v1::router())).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { url, client: reqwest::Client::new() }
         }
@@ -591,7 +647,8 @@ mod tests {
         let tools = body["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
-                     "list_leads", "list_emails_to_approve", "approve_email", "skip_email", "list_replies"] {
+                     "list_leads", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals", "create_deal",
+                     "move_deal"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -685,6 +742,78 @@ mod tests {
 
         let (is_error, text) = server.call(KEY, "list_campaigns", json!({})).await;
         assert_eq!((is_error, text.as_str()), (true, "Pass project_id as an id"));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn deals_are_listed_created_and_moved_for_the_keys_organization(db: PgPool) {
+        let [(project, segment), (other_project, _)] = seed(&db).await;
+        let lead = |project: Uuid, name: &str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, segment_id, full_name, email) values ($1, $2, $3, $4) returning id")
+                .bind(project)
+                .bind(Some(segment).filter(|_| project != other_project))
+                .bind(name.to_string())
+                .bind(format!("{name}@x.example"))
+                .fetch_one(&db)
+        };
+        let (sarah, bo) = (lead(project, "sarah").await.unwrap(), lead(other_project, "bo").await.unwrap());
+        let other_org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(other_project).fetch_one(&db).await.unwrap();
+        crate::deals::ensure_stages(&db, other_org).await.unwrap();
+        let their_deal: Uuid = sqlx::query_scalar(
+            "insert into deals (org_id, project_id, lead_id, stage_id) select $1, $2, $3, id from deal_stages where org_id = $1 and name = 'Proposal' returning id",
+        )
+        .bind(other_org)
+        .bind(other_project)
+        .bind(bo)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let server = Server::start(db.clone()).await;
+
+        let (is_error, text) = server.call(KEY, "create_deal", json!({ "lead_id": sarah, "value": 12000, "close_date": "2026-12-01" })).await;
+        assert!(!is_error, "{text}");
+        let deal: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((deal["stage"].clone(), deal["value"].clone(), deal["currency"].clone()), (json!("Interested"), json!(12000.0), json!("USD")));
+        let (is_error, text) = server.call(KEY, "create_deal", json!({ "lead_id": sarah })).await;
+        assert!(is_error && text.contains("already has an open deal"), "{text}");
+
+        let (is_error, text) = server.call(KEY, "move_deal", json!({ "deal_id": deal["id"], "stage": "won", "value": 15000 })).await;
+        assert!(!is_error, "{text}");
+        let won: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((won["status"].clone(), won["value"].clone()), (json!("won"), json!(15000.0)));
+
+        let (_, text) = server.call(KEY, "list_deals", json!({ "status": "won" })).await;
+        let listed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((listed["total"].clone(), listed["items"][0]["lead_name"].clone()), (json!(1), json!("sarah")));
+        let stages: Vec<&str> = listed["stages"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert_eq!(stages, ["Interested", "Meeting booked", "Proposal", "Negotiation", "Won", "Lost"]);
+        let (_, text) = server.call(KEY, "list_deals", json!({ "status": "open" })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["total"], 0);
+
+        // The other organization's deal, lead and project look like ids that don't exist.
+        for (tool, args) in [
+            ("move_deal", json!({ "deal_id": their_deal, "stage": "Won" })),
+            ("create_deal", json!({ "lead_id": bo })),
+            ("list_deals", json!({ "project_id": other_project })),
+        ] {
+            assert_eq!(server.call(KEY, tool, args).await, (true, "Not found".into()), "{tool}");
+        }
+        let (stage, status): (String, String) =
+            sqlx::query_as("select s.name, d.status from deals d join deal_stages s on s.id = d.stage_id where d.id = $1").bind(their_deal).fetch_one(&db).await.unwrap();
+        assert_eq!((stage.as_str(), status.as_str()), ("Proposal", "open"));
+
+        // The same through the REST API.
+        let api = server.url.replace("/api/mcp", "/api/v1");
+        let res = server.client.get(format!("{api}/deals?project_id={project}")).bearer_auth(KEY).send().await.unwrap();
+        let page: Value = res.json().await.unwrap();
+        assert_eq!((page["total"].clone(), page["items"][0]["stage"].clone()), (json!(1), json!("Won")));
+        let res = server.client.post(format!("{api}/deals/{}/move", deal["id"].as_str().unwrap())).bearer_auth(KEY);
+        let moved: Value = res.json(&json!({ "stage": "Lost", "lost_reason": "No budget" })).send().await.unwrap().json().await.unwrap();
+        assert_eq!((moved["status"].clone(), moved["lost_reason"].clone()), (json!("lost"), json!("No budget")));
+        let res = server.client.get(format!("{api}/deal-stages")).bearer_auth(KEY).send().await.unwrap();
+        assert_eq!(res.json::<Value>().await.unwrap().as_array().unwrap().len(), 6);
+        let res = server.client.get(format!("{api}/deals")).bearer_auth("splee_wrong").send().await.unwrap();
+        assert_eq!(res.status(), 401);
     }
 
     #[sqlx::test]
