@@ -1,0 +1,12 @@
+[
+    {
+        "name": "value",
+        "type": "text",
+        "label": "Value"
+    },
+    {
+        "name": "added",
+        "type": "boolean",
+        "label": "Added"
+    }
+]

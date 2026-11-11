@@ -1,0 +1,10 @@
+{
+    "url": "/projects",
+    "response": {
+        "iterate": "{{body}}",
+        "output": {
+            "label": "{{item.name}}",
+            "value": "{{item.id}}"
+        }
+    }
+}

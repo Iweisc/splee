@@ -1,0 +1,42 @@
+[
+    {
+        "name": "event",
+        "type": "select",
+        "label": "Event",
+        "required": true,
+        "options": [
+            {
+                "label": "New hot reply",
+                "value": "hot_lead"
+            },
+            {
+                "label": "Lead replied",
+                "value": "lead_replied"
+            },
+            {
+                "label": "Meeting booked",
+                "value": "meeting_booked"
+            },
+            {
+                "label": "Lead status changed",
+                "value": "status_changed"
+            },
+            {
+                "label": "Deal won",
+                "value": "deal.won"
+            },
+            {
+                "label": "New lead added",
+                "value": "lead_added"
+            }
+        ]
+    },
+    {
+        "name": "project_id",
+        "type": "select",
+        "label": "Project",
+        "required": false,
+        "options": "rpc://listProjects",
+        "help": "Leave it empty for every project."
+    }
+]

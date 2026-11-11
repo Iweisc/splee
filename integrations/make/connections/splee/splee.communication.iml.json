@@ -1,0 +1,20 @@
+{
+    "url": "{{parameters.baseUrl}}/me",
+    "headers": {
+        "Authorization": "Bearer {{parameters.apiKey}}"
+    },
+    "response": {
+        "metadata": {
+            "type": "text",
+            "value": "{{body.organization.name}}"
+        },
+        "error": {
+            "message": "[{{statusCode}}] {{body.error}}"
+        }
+    },
+    "log": {
+        "sanitize": [
+            "request.headers.authorization"
+        ]
+    }
+}

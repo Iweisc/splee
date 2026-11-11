@@ -1,0 +1,15 @@
+{
+    "url": "/hooks",
+    "method": "POST",
+    "body": {
+        "event": "{{parameters.event}}",
+        "target_url": "{{webhook.url}}",
+        "project_id": "{{parameters.project_id}}"
+    },
+    "type": "json",
+    "response": {
+        "data": {
+            "externalHookId": "{{body.id}}"
+        }
+    }
+}

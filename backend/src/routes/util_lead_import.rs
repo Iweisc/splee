@@ -12,6 +12,8 @@ const MAX_ERRORS: usize = 200;
 /// A lead from a CSV row or the public API, before validation.
 #[derive(Debug, Default, Deserialize)]
 pub struct NewLead {
+    /// Defaulted so a lead without one gets "Missing email" like any other bad row.
+    #[serde(default)]
     pub email: String,
     #[serde(default)]
     pub full_name: String,
@@ -34,6 +36,7 @@ pub struct NewLead {
     /// Kept in E.164, read by the lead's country or else the project's. One that can't be read is left out, not the lead.
     #[serde(default)]
     pub phone: String,
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
     pub segment_id: Option<Uuid>,
     /// Only LinkedIn people search sets it.
     #[serde(skip)]
@@ -213,7 +216,7 @@ pub(super) fn profile_key(url: &str) -> Option<String> {
 
 /// An ISO 3166-1 alpha-2 code like "GB", or "" for anything else, such as a country's full name, so imported leads
 /// hold the same kind of code as the ones the agent finds.
-fn country_code(raw: &str) -> String {
+pub fn country_code(raw: &str) -> String {
     let code = raw.trim().to_ascii_uppercase();
     if code.len() == 2 && code.bytes().all(|b| b.is_ascii_uppercase()) { code } else { String::new() }
 }

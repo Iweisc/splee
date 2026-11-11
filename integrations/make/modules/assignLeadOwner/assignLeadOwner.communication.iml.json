@@ -1,0 +1,29 @@
+[
+    {
+        "url": "/leads",
+        "qs": {
+            "email": "{{parameters.email}}",
+            "project_id": "{{parameters.project_id}}"
+        },
+        "response": {
+            "valid": "{{length(body) > 0}}",
+            "error": {
+                "message": "No lead in that project has the email {{parameters.email}}"
+            },
+            "temp": {
+                "lead_id": "{{body[1].id}}"
+            }
+        }
+    },
+    {
+        "url": "/leads/{{temp.lead_id}}/assign",
+        "method": "POST",
+        "body": {
+            "owner": "{{parameters.owner}}"
+        },
+        "type": "json",
+        "response": {
+            "output": "{{body}}"
+        }
+    }
+]

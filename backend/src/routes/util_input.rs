@@ -27,6 +27,15 @@ fn domain_like(host: &str) -> bool {
         && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
 }
 
+/// An optional id, where "" means none, since Zapier, Make and n8n send that for a field left empty.
+pub fn blank_as_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<uuid::Uuid>, D::Error> {
+    let raw: Option<String> = serde::Deserialize::deserialize(d)?;
+    match raw.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(id) => id.parse().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
 /// ILIKE pattern for a free-text `q` filter. None when the filter is empty.
 pub fn like_pattern(q: Option<&str>) -> Option<String> {
     let q = q.map(str::trim).filter(|q| !q.is_empty())?;

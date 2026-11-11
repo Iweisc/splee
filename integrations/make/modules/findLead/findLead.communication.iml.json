@@ -1,0 +1,11 @@
+{
+    "url": "/leads",
+    "qs": {
+        "email": "{{parameters.email}}",
+        "project_id": "{{parameters.project_id}}"
+    },
+    "response": {
+        "iterate": "{{body}}",
+        "output": "{{item}}"
+    }
+}

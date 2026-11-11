@@ -1,0 +1,170 @@
+[
+    {
+        "name": "event",
+        "type": "text",
+        "label": "Event"
+    },
+    {
+        "name": "project",
+        "type": "collection",
+        "label": "Project",
+        "spec": [
+            {
+                "name": "id",
+                "type": "text",
+                "label": "ID"
+            },
+            {
+                "name": "name",
+                "type": "text",
+                "label": "Name"
+            }
+        ]
+    },
+    {
+        "name": "lead",
+        "type": "collection",
+        "label": "Lead",
+        "spec": [
+            {
+                "name": "id",
+                "type": "text",
+                "label": "ID"
+            },
+            {
+                "name": "full_name",
+                "type": "text",
+                "label": "Full name"
+            },
+            {
+                "name": "email",
+                "type": "email",
+                "label": "Email"
+            },
+            {
+                "name": "title",
+                "type": "text",
+                "label": "Job title"
+            },
+            {
+                "name": "status",
+                "type": "text",
+                "label": "Status"
+            },
+            {
+                "name": "company_name",
+                "type": "text",
+                "label": "Company"
+            },
+            {
+                "name": "company_domain",
+                "type": "text",
+                "label": "Company website"
+            },
+            {
+                "name": "linkedin_url",
+                "type": "url",
+                "label": "LinkedIn URL"
+            },
+            {
+                "name": "x_url",
+                "type": "url",
+                "label": "X URL"
+            },
+            {
+                "name": "meeting_at",
+                "type": "date",
+                "label": "Meeting at"
+            }
+        ]
+    },
+    {
+        "name": "reply",
+        "type": "collection",
+        "label": "Reply",
+        "spec": [
+            {
+                "name": "id",
+                "type": "text",
+                "label": "ID"
+            },
+            {
+                "name": "subject",
+                "type": "text",
+                "label": "Subject"
+            },
+            {
+                "name": "body",
+                "type": "text",
+                "label": "Body"
+            },
+            {
+                "name": "classification",
+                "type": "text",
+                "label": "Classification"
+            },
+            {
+                "name": "reason",
+                "type": "text",
+                "label": "Reason"
+            }
+        ]
+    },
+    {
+        "name": "previous_status",
+        "type": "text",
+        "label": "Previous status"
+    },
+    {
+        "name": "deal",
+        "type": "collection",
+        "label": "Deal",
+        "spec": [
+            {
+                "name": "id",
+                "type": "text",
+                "label": "ID"
+            },
+            {
+                "name": "stage",
+                "type": "text",
+                "label": "Stage"
+            },
+            {
+                "name": "status",
+                "type": "text",
+                "label": "Status"
+            },
+            {
+                "name": "value",
+                "type": "number",
+                "label": "Value"
+            },
+            {
+                "name": "currency",
+                "type": "text",
+                "label": "Currency"
+            },
+            {
+                "name": "close_date",
+                "type": "date",
+                "label": "Close date"
+            },
+            {
+                "name": "owner",
+                "type": "text",
+                "label": "Owner"
+            },
+            {
+                "name": "url",
+                "type": "url",
+                "label": "URL"
+            }
+        ]
+    },
+    {
+        "name": "url",
+        "type": "url",
+        "label": "Open in Splee"
+    }
+]

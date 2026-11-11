@@ -1,0 +1,9 @@
+{
+    "url": "/projects/{{parameters.project_id}}/leads/upsert",
+    "method": "POST",
+    "body": "{{omit(parameters, 'project_id')}}",
+    "type": "json",
+    "response": {
+        "output": "{{body}}"
+    }
+}

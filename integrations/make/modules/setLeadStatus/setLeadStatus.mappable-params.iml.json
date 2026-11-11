@@ -1,0 +1,64 @@
+[
+    {
+        "name": "project_id",
+        "type": "select",
+        "label": "Project",
+        "required": true,
+        "options": "rpc://listProjects"
+    },
+    {
+        "name": "email",
+        "type": "email",
+        "label": "Email",
+        "required": true
+    },
+    {
+        "name": "status",
+        "type": "select",
+        "label": "Status",
+        "required": true,
+        "options": [
+            {
+                "label": "New",
+                "value": "new"
+            },
+            {
+                "label": "Queued",
+                "value": "queued"
+            },
+            {
+                "label": "Contacted",
+                "value": "contacted"
+            },
+            {
+                "label": "Replied",
+                "value": "replied"
+            },
+            {
+                "label": "Hot",
+                "value": "hot"
+            },
+            {
+                "label": "Meeting booked",
+                "value": "meeting_booked"
+            },
+            {
+                "label": "Not interested",
+                "value": "not_interested"
+            },
+            {
+                "label": "Bounced",
+                "value": "bounced"
+            },
+            {
+                "label": "Unsubscribed",
+                "value": "unsubscribed"
+            },
+            {
+                "label": "Do not contact",
+                "value": "do_not_contact"
+            }
+        ],
+        "help": "Any status but Contacted stops the lead's follow-ups."
+    }
+]
