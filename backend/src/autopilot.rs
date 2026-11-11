@@ -411,6 +411,7 @@ pub(crate) mod tests {
             operator_emails: Vec::new(),
             google: None,
             microsoft: None,
+            slack: None,
         };
         AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
     }

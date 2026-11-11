@@ -1,4 +1,5 @@
-//! Emails to the team itself (not to leads), driven by notification_prefs, and the weekly report in each project's chat.
+//! Emails to the team itself (not to leads), driven by notification_prefs, the weekly report in each project's chat and the
+//! Slack app's list of emails waiting for approval.
 //! Hot-lead emails live in agent::replies next to the webhook and Slack alerts.
 
 use chrono::{Datelike, Timelike, Utc, Weekday};
@@ -17,7 +18,10 @@ pub async fn digests(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     // Each step runs whatever the one before did, so one organization's broken mailbox doesn't stop the chat reports.
-    let mut results = vec![("daily digests", send_digests(state, "daily_digest", 1).await)];
+    let mut results = vec![
+        ("daily digests", send_digests(state, "daily_digest", 1).await),
+        ("Slack approval digests", crate::slack::post_digests(state).await),
+    ];
     if now.weekday() == Weekday::Mon {
         results.push(("weekly reports", send_digests(state, "weekly_report", 7).await));
         results.push(("weekly chat reports", post_weekly_reports(state).await));

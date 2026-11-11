@@ -509,6 +509,7 @@ mod tests {
                 operator_emails: Vec::new(),
                 google: None,
                 microsoft: None,
+                slack: None,
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

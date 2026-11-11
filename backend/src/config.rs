@@ -30,6 +30,19 @@ pub struct Config {
     /// The Google and Microsoft apps people sign in with to connect a mailbox. None hides that provider's button.
     pub google: Option<OAuthApp>,
     pub microsoft: Option<OAuthApp>,
+    /// The Splee Slack app. None hides Add to Slack.
+    pub slack: Option<SlackApp>,
+}
+
+/// The Slack app an organization adds to its workspace. See slack.rs.
+#[derive(Clone, Debug)]
+pub struct SlackApp {
+    pub client_id: String,
+    pub client_secret: String,
+    /// Checks that a request to /api/slack/interactions came from Slack.
+    pub signing_secret: String,
+    /// Slack's Web API. Only tests and sandboxes point it elsewhere, at a fake.
+    pub api_url: String,
 }
 
 /// An OAuth app registered with Google or Microsoft. See mail::oauth.
@@ -46,6 +59,18 @@ impl OAuthApp {
     fn from_env(prefix: &str, authorize_url: String, token_url: String) -> Option<Self> {
         let var = |name: &str| env::var(format!("{prefix}_{name}")).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         Some(Self { client_id: var("CLIENT_ID")?, client_secret: var("CLIENT_SECRET")?, authorize_url, token_url })
+    }
+}
+
+impl SlackApp {
+    fn from_env() -> Option<Self> {
+        let var = |name: &str| env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        Some(Self {
+            client_id: var("SLACK_CLIENT_ID")?,
+            client_secret: var("SLACK_CLIENT_SECRET")?,
+            signing_secret: var("SLACK_SIGNING_SECRET")?,
+            api_url: var("SLACK_API_URL").unwrap_or_else(|| crate::slack::API_URL.into()),
+        })
     }
 }
 
@@ -72,6 +97,7 @@ impl Config {
                 let base = format!("https://login.microsoftonline.com/{}/oauth2/v2.0", tenant.trim());
                 OAuthApp::from_env("MICROSOFT", format!("{base}/authorize"), format!("{base}/token"))
             },
+            slack: SlackApp::from_env(),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -123,6 +149,7 @@ mod tests {
             operator_emails: emails(" Ops@Example.com,, admin@example.org "),
             google: None,
             microsoft: None,
+            slack: None,
         }
     }
 

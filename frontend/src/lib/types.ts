@@ -80,6 +80,30 @@ export interface NotificationPrefs {
   weekly_report: boolean;
 }
 
+/** The organization's Slack workspace and the channel each project posts to. `available` is false without a Slack app on the server. */
+export interface SlackStatus {
+  available: boolean;
+  workspace: { team_id: string; team_name: string; installed_by: string | null; created_at: Ts } | null;
+  projects: SlackProjectChannel[];
+}
+
+export interface SlackProjectChannel {
+  project_id: UUID;
+  project_name: string;
+  channel_id: string | null;
+  channel_name: string | null;
+  /** Why the last post to the channel failed, cleared by the next one that works. */
+  error: string | null;
+  failed_at: Ts | null;
+}
+
+/** Public channels, and the private ones Splee was invited to. */
+export interface SlackChannel {
+  id: string;
+  name: string;
+  private: boolean;
+}
+
 export interface CompanyProfile {
   name?: string;
   description?: string;

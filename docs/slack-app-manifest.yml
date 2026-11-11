@@ -1,0 +1,31 @@
+# The Splee Slack app. At https://api.slack.com/apps, choose Create New App, From a manifest, pick a workspace to develop it
+# in, and paste this with https://splee.example.com replaced by your PUBLIC_URL. See "Running it for real" in the README.
+display_information:
+  name: Splee
+  description: Send hot replies and approve emails from Slack.
+  background_color: "#18181b"
+features:
+  bot_user:
+    display_name: Splee
+    always_online: true
+oauth_config:
+  redirect_urls:
+    - https://splee.example.com/api/slack/oauth/callback
+  scopes:
+    # Keep in sync with SCOPES in backend/src/slack.rs. users:read.email tells Splee which member pressed a button.
+    bot:
+      - chat:write
+      - chat:write.public
+      - channels:read
+      - groups:read
+      - commands
+      - users:read
+      - users:read.email
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://splee.example.com/api/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  # Splee keeps one bot token per workspace and doesn't refresh it.
+  token_rotation_enabled: false
