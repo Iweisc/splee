@@ -516,6 +516,8 @@ mod tests {
             microsoft: None,
             slack: None,
             tumblr: None,
+            meta: None,
+            graph_api_url: String::new(),
             salesforce: None,
             zoho: None,
             crm_api_url: String::new(),

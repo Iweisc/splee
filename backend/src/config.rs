@@ -49,6 +49,11 @@ pub struct Config {
     /// integrations page. Dynamics 365 signs in with the Microsoft app above.
     pub salesforce: Option<OAuthApp>,
     pub zoho: Option<OAuthApp>,
+    /// The Meta app projects sign in with Facebook through to post on their Pages and Instagram accounts, from META_APP_ID and
+    /// META_APP_SECRET. None hides Facebook and Instagram on the integrations page.
+    pub meta: Option<OAuthApp>,
+    /// Meta's Graph API, with its version. Only tests and sandboxes point it elsewhere, at a fake.
+    pub graph_api_url: String,
     /// Only tests and sandboxes set it, to a fake Dynamics 365 org, which the org address check would otherwise turn down.
     pub crm_api_url: String,
     /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
@@ -66,7 +71,7 @@ pub struct SlackApp {
     pub api_url: String,
 }
 
-/// An OAuth app registered with Google, Microsoft, Tumblr, Salesforce or Zoho. See mail::oauth, tumblr and crm::signin.
+/// An OAuth app registered with Google, Microsoft, Tumblr, Salesforce, Zoho or Meta. See mail::oauth, tumblr and crm::signin.
 #[derive(Clone, Debug)]
 pub struct OAuthApp {
     pub client_id: String,
@@ -98,6 +103,8 @@ impl SlackApp {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let public_url = env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3333".into());
+        let graph_api_url = env::var("GRAPH_API_URL").ok().map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty());
+        let graph_api_url = graph_api_url.unwrap_or_else(|| crate::meta::API.into());
         let cfg = Self {
             database_url: env::var("DATABASE_URL")?,
             app_secret: env::var("APP_SECRET")?,
@@ -126,6 +133,20 @@ impl Config {
             tumblr: OAuthApp::from_env("TUMBLR", crate::tumblr::AUTHORIZE_URL.into(), crate::tumblr::TOKEN_URL.into()),
             salesforce: OAuthApp::from_env("SALESFORCE", crate::crm::signin::SALESFORCE_AUTHORIZE.into(), crate::crm::signin::SALESFORCE_TOKEN.into()),
             zoho: OAuthApp::from_env("ZOHO", crate::crm::signin::ZOHO_AUTHORIZE.into(), crate::crm::signin::ZOHO_TOKEN.into()),
+            // Meta calls them the app id and secret. The code is traded on the Graph API itself, see meta::Graph::exchange_code.
+            meta: {
+                let var = |name: &str| env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+                match (var("META_APP_ID"), var("META_APP_SECRET")) {
+                    (Some(client_id), Some(client_secret)) => Some(OAuthApp {
+                        client_id,
+                        client_secret,
+                        authorize_url: crate::meta::AUTHORIZE_URL.into(),
+                        token_url: format!("{graph_api_url}/oauth/access_token"),
+                    }),
+                    _ => None,
+                }
+            },
+            graph_api_url,
             crm_api_url: env::var("CRM_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         };
@@ -187,6 +208,8 @@ mod tests {
             tumblr: None,
             salesforce: None,
             zoho: None,
+            meta: None,
+            graph_api_url: String::new(),
             crm_api_url: String::new(),
             ipinfo_token: None,
         }

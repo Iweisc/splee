@@ -1,8 +1,9 @@
 //! The Social page: replies and posts for X, Reddit, Bluesky, Mastodon, Threads, Discourse forums, Lemmy, Nostr, Discord,
-//! Telegram and LinkedIn, reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles
+//! Telegram, Facebook Pages, Instagram and LinkedIn, reblogs with a comment and posts for Tumblr, comments for YouTube, answers for Stack Exchange, articles
 //! for DEV, and comments and articles for Hashnode, that a social run drafted or the user wrote, which crate::social posts once
 //! approved, and connecting the accounts they go out from. LinkedIn goes out through the project's Unipile connection, see
-//! routes::linkedin, Tumblr connects by signing in, see routes::tumblr, and the Discord and Telegram bots in routes::bots.
+//! routes::linkedin, Tumblr connects by signing in, see routes::tumblr, Facebook and Instagram too, see routes::meta, and the
+//! Discord and Telegram bots in routes::bots.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, patch, post, put};
@@ -99,6 +100,7 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
         ("discourse", false) => "Topics",
         ("nostr", _) => "Notes",
         ("discord" | "telegram", _) => "Messages",
+        ("instagram", false) => "Captions",
         ("tumblr", true) => "Reblog comments",
         ("linkedin" | "youtube" | "lemmy" | "hashnode", true) => "Comments",
         (_, true) => "Replies",
@@ -138,6 +140,22 @@ fn check(platform: &str, reply: bool, subreddit: &str, title: &str, body: &str, 
         return Err(AppError::BadRequest("Reddit titles are at most 300 characters".into()));
     }
     Ok(())
+}
+
+/// A Facebook post's link and an Instagram post's picture, which have to be links anyone can open. The picture is required.
+fn check_media(platform: &str, reply: bool, link: &str, image_url: &str) -> AppResult<()> {
+    let public = crate::meta::public_link;
+    match (platform, reply) {
+        ("facebook", false) if !link.is_empty() && !public(link) => Err(AppError::BadRequest("The link has to start with https://".into())),
+        ("instagram", false) if image_url.is_empty() => Err(AppError::BadRequest("An Instagram post needs a picture. Add a link to a JPEG".into())),
+        ("instagram", false) if !public(image_url) => Err(AppError::BadRequest("The picture's link has to start with https://".into())),
+        _ => Ok(()),
+    }
+}
+
+/// The channel a post goes to: a bot's channel or group, a Page or an Instagram account.
+fn has_channel(platform: &str) -> bool {
+    matches!(platform, "discord" | "telegram" | "facebook" | "instagram")
 }
 
 /// Reddit, Lemmy and Discourse original posts and DEV and Hashnode articles have a title.
@@ -197,8 +215,9 @@ async fn require_forum(state: &AppState, project_id: Uuid, forum_id: Option<Uuid
     }
 }
 
-/// A Discord or Telegram post goes to a picked channel the bot can post in.
-async fn require_channel(state: &AppState, project_id: Uuid, platform: &str, channel_id: Option<Uuid>) -> AppResult<()> {
+/// A Discord or Telegram post goes to a picked channel the bot can post in, and a Facebook or Instagram one to a picked Page or
+/// account the user who signed in may post on, or answer comments on for a reply.
+async fn require_channel(state: &AppState, project_id: Uuid, platform: &str, channel_id: Option<Uuid>, reply: bool) -> AppResult<()> {
     let channel: Option<SocialChannel> = match channel_id {
         Some(id) => {
             let sql = "select * from social_channels where id = $1 and project_id = $2 and platform = $3";
@@ -206,9 +225,16 @@ async fn require_channel(state: &AppState, project_id: Uuid, platform: &str, cha
         }
         None => None,
     };
+    let meta = matches!(platform, "facebook" | "instagram");
     match channel {
+        None if platform == "facebook" => Err(AppError::BadRequest("Pick a Facebook Page on the integrations page first".into())),
+        None if platform == "instagram" => Err(AppError::BadRequest("Pick an Instagram account on the integrations page first".into())),
         None => Err(AppError::BadRequest(format!("Pick a {} channel on the integrations page first", social::name(platform)))),
         Some(c) if !c.picked => Err(AppError::BadRequest(format!("Pick {} on the integrations page first", c.label()))),
+        Some(c) if meta && c.token_enc.is_empty() => Err(AppError::BadRequest("Facebook signed Splee out. Sign in with Facebook again on the integrations page".into())),
+        Some(c) if meta && reply && !c.can_read => Err(AppError::BadRequest(format!("Your role on {} doesn't let you answer comments there", c.label()))),
+        Some(c) if meta && !reply && !c.can_send => Err(AppError::BadRequest(format!("Your role on {} doesn't let you post there", c.label()))),
+        Some(_) if meta => Ok(()),
         Some(c) if !c.can_send => {
             Err(AppError::BadRequest(format!("The bot can't post in {}. Check its permissions there, then refresh the list on the integrations page", c.label())))
         }
@@ -243,8 +269,14 @@ struct CreateBody {
     tags: Vec<String>,
     /// Discourse only: the forum the topic goes to.
     forum_id: Option<Uuid>,
-    /// Discord and Telegram only: the channel the post goes to.
+    /// Discord and Telegram only: the channel the post goes to. Facebook and Instagram: the Page or account.
     channel_id: Option<Uuid>,
+    /// Facebook only, optional.
+    #[serde(default)]
+    link: String,
+    /// Instagram only, required.
+    #[serde(default)]
+    image_url: String,
     /// "draft" (the default) or "approved".
     status: Option<String>,
 }
@@ -259,20 +291,23 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     let title = if titled(&b.platform, false) { b.title.trim() } else { "" };
     let tags = tags(&b.platform, false, &b.tags).unwrap_or_default();
     let forum_id = if b.platform == "discourse" { b.forum_id } else { None };
-    let channel_id = if matches!(b.platform.as_str(), "discord" | "telegram") { b.channel_id } else { None };
+    let channel_id = if has_channel(&b.platform) { b.channel_id } else { None };
+    let link = if b.platform == "facebook" { b.link.trim() } else { "" };
+    let image_url = if b.platform == "instagram" { b.image_url.trim() } else { "" };
     check(&b.platform, false, &subreddit, title, &b.body, mastodon_chars(&state, id).await?)?;
+    check_media(&b.platform, false, link, image_url)?;
     if b.platform == "discourse" {
         require_forum(&state, id, forum_id, false).await?;
     }
-    if matches!(b.platform.as_str(), "discord" | "telegram") {
-        require_channel(&state, id, &b.platform, channel_id).await?;
+    if has_channel(&b.platform) {
+        require_channel(&state, id, &b.platform, channel_id, false).await?;
     }
     if status == "approved" {
         require_account(&state, id, &b.platform, false).await?;
     }
     let post = sqlx::query_as::<_, SocialPost>(
-        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id, channel_id)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *",
+        "insert into social_posts (project_id, platform, subreddit, title, tags, body, status, forum_id, channel_id, link, image_url)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning *",
     )
     .bind(id)
     .bind(&b.platform)
@@ -283,6 +318,8 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(status)
     .bind(forum_id)
     .bind(channel_id)
+    .bind(link)
+    .bind(image_url)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(post))
@@ -294,6 +331,8 @@ struct UpdateBody {
     title: Option<String>,
     subreddit: Option<String>,
     tags: Option<Vec<String>>,
+    link: Option<String>,
+    image_url: Option<String>,
     status: Option<String>,
 }
 
@@ -314,19 +353,29 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     };
     let title = if titled(&post.platform, reply) { b.title.map(|t| t.trim().to_string()).unwrap_or(post.title) } else { post.title };
     let tags = b.tags.and_then(|raw| tags(&post.platform, reply, &raw)).unwrap_or(post.tags);
+    let link = match (post.platform.as_str(), b.link, reply) {
+        ("facebook", Some(l), false) => l.trim().to_string(),
+        _ => post.link,
+    };
+    let image_url = match (post.platform.as_str(), b.image_url, reply) {
+        ("instagram", Some(l), false) => l.trim().to_string(),
+        _ => post.image_url,
+    };
     if status == "approved" {
         check(&post.platform, reply, &subreddit, &title, &body, mastodon_chars(&state, post.project_id).await?)?;
+        check_media(&post.platform, reply, &link, &image_url)?;
         if post.platform == "discourse" {
             require_forum(&state, post.project_id, post.forum_id, reply).await?;
         }
-        if matches!(post.platform.as_str(), "discord" | "telegram") {
-            require_channel(&state, post.project_id, &post.platform, post.channel_id).await?;
+        if has_channel(&post.platform) {
+            require_channel(&state, post.project_id, &post.platform, post.channel_id, reply).await?;
         }
         require_account(&state, post.project_id, &post.platform, reply).await?;
     }
     let updated = sqlx::query_as::<_, SocialPost>(
-        "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6,
-           error = case when $6 = status then error end, updated_at = now()
+        "update social_posts set body = $2, title = $3, subreddit = $4, tags = $5, status = $6, link = $7, image_url = $8,
+           error = case when $6 = status then error end, updated_at = now(),
+           container_id = case when body = $2 and image_url = $8 then container_id else '' end
          where id = $1 and status not in ('posting', 'posted') returning *",
     )
     .bind(id)
@@ -335,6 +384,8 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(subreddit)
     .bind(tags)
     .bind(&status)
+    .bind(link)
+    .bind(image_url)
     .fetch_optional(&state.db)
     .await?
     // The poster took it in the meantime.
@@ -356,7 +407,7 @@ async fn start_run(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     if social::accounts(&state.db, id).await?.is_none_or(|a| a.connected().is_empty()) {
         return Err(AppError::BadRequest(
             "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, Hashnode, Discord, \
-             Telegram or LinkedIn sending on the integrations page first"
+             Telegram, Facebook, Instagram or LinkedIn sending on the integrations page first"
                 .into(),
         ));
     }

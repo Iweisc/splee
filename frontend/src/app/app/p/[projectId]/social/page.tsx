@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { Check, ExternalLink, Megaphone, Send, SkipForward, Sparkles, Trash2, Undo2 } from "lucide-react";
+import { Check, ExternalLink, ImageOff, Megaphone, Send, SkipForward, Sparkles, Trash2, Undo2 } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -36,6 +36,8 @@ const PLATFORMS: Record<Platform, string> = {
   hashnode: "Hashnode",
   discord: "Discord",
   telegram: "Telegram",
+  facebook: "Facebook",
+  instagram: "Instagram",
 };
 const TABS: { value: Tab; label: string; statuses: SocialPost["status"][] }[] = [
   { value: "draft", label: "Drafts", statuses: ["draft"] },
@@ -47,28 +49,46 @@ const EMPTY: Record<Tab, { title: string; text: string }> = {
   draft: { title: "No drafts", text: "Find threads to join, and the agent's replies and posts land here for you to check." },
   approved: {
     title: "Nothing waiting to post",
-    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy, Tumblr, Discord and Telegram take 10, LinkedIn, Stack Exchange and each Discourse forum 5, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
+    text: "Approved replies and posts go out from your accounts every ten minutes, up to 15 a day each. Lemmy, Tumblr, Discord and Telegram take 10, LinkedIn, Stack Exchange and each Discourse forum 5, each Facebook Page and Instagram account 5 posts, DEV 2 articles, and Hashnode 2 articles and 10 comments.",
   },
   posted: { title: "Nothing posted yet", text: "Posts show up here with a link once they're live." },
   closed: { title: "Nothing failed or skipped", text: "Posts you skip, and ones a platform turns down, end up here." },
 };
 
-/** LinkedIn goes out through the Unipile connection for LinkedIn sending, Discourse through each forum the project joined, and
- *  the Discord and Telegram bots in the channels picked for them. */
+/** LinkedIn goes out through the Unipile connection for LinkedIn sending, Discourse through each forum the project joined, the
+ *  Discord and Telegram bots in the channels picked for them, and Facebook and Instagram from the picked Pages and accounts. */
 function isConnected(s: ProjectSettings, forums: DiscourseForum[], channels: SocialChannel[], p: Platform) {
   if (p === "linkedin") return s.unipile_connected;
   if (p === "discourse") return forums.length > 0;
   if (p === "discord" || p === "telegram") return s[`${p}_connected`] && channels.some((c) => c.platform === p && c.picked);
+  if (isMeta(p)) return s.meta_connected && channels.some((c) => c.platform === p && c.picked);
   return s[`${p}_connected`];
 }
 const isBot = (p: Platform): p is "discord" | "telegram" => p === "discord" || p === "telegram";
-/** The picked channels a bot can post in. */
+const isMeta = (p: Platform): p is "facebook" | "instagram" => p === "facebook" || p === "instagram";
+/** Posts that go to a channel, Page or account picked on the integrations page. */
+const hasChannel = (p: Platform) => isBot(p) || isMeta(p);
+/** The picked channels, Pages or accounts that take posts. */
 const postable = (channels: SocialChannel[], p: Platform) => channels.filter((c) => c.platform === p && c.picked && c.can_send);
 /** Like SocialChannel::label on the backend. */
-const channelLabel = (c: SocialChannel) => (c.platform === "discord" ? `#${c.name} in ${c.guild_name}` : c.name);
-/** Original posts a day, like social::daily_cap on the backend. Discourse's is per forum. */
+const channelLabel = (c: SocialChannel) =>
+  c.platform === "discord" ? `#${c.name} in ${c.guild_name}` : c.platform === "instagram" ? `@${c.username}` : c.name;
+/** Like meta::public_link on the backend: a Facebook post's link and an Instagram post's picture are https links. */
+const isPublicLink = (s: string) => {
+  try {
+    const url = new URL(s.trim());
+    return url.protocol === "https:" && url.hostname.includes(".");
+  } catch {
+    return false;
+  }
+};
+/** An Instagram post needs a picture, and a Facebook post's link is optional. */
+const mediaReady = (p: Platform, link: string, imageUrl: string) =>
+  p === "instagram" ? isPublicLink(imageUrl) : p === "facebook" ? !link.trim() || isPublicLink(link) : true;
+/** Original posts a day, like social::daily_cap on the backend. Discourse's is per forum, and Facebook's and Instagram's per Page
+ *  or account. */
 const dailyCap = (p: Platform) =>
-  p === "linkedin" || p === "stackexchange" || p === "discourse"
+  p === "linkedin" || p === "stackexchange" || p === "discourse" || isMeta(p)
     ? 5
     : p === "lemmy" || p === "tumblr" || isBot(p)
       ? 10
@@ -109,6 +129,7 @@ function maxLength(p: Platform, reply: boolean, mastodonChars: number): number |
   if (p === "nostr") return 5000;
   if (p === "tumblr" || p === "telegram") return 4096;
   if (p === "discord") return 2000;
+  if (p === "instagram") return 2200;
   if (p === "linkedin") return reply ? 1250 : 3000;
   return null;
 }
@@ -140,14 +161,14 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
 
   const connected =
     settings && forums && channels ? (Object.keys(PLATFORMS) as Platform[]).filter((p) => isConnected(settings, forums, channels, p)) : [];
-  // Discourse takes topics only on forums with a category, Hashnode articles only once a publication is picked, and the bots
-  // only post where they may.
+  // Discourse takes topics only on forums with a category, Hashnode articles only once a publication is picked, and the bots,
+  // Pages and Instagram accounts only post where they may.
   const posting = connected.filter(
     (p) =>
       takesPosts(p) &&
       (p !== "discourse" || topicForums(forums ?? []).length > 0) &&
       (p !== "hashnode" || !!settings?.hashnode_publication_id) &&
-      (!isBot(p) || postable(channels ?? [], p).length > 0),
+      (!hasChannel(p) || postable(channels ?? [], p).length > 0),
   );
   const start = async () => {
     setStarting(true);
@@ -169,7 +190,7 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
     <>
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, comments on your Facebook Pages and Instagram posts, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles. Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
@@ -201,7 +222,8 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
               }
             >
               Splee searches, drafts and posts as your own accounts. Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV,
-              Lemmy, Nostr, Tumblr, Hashnode, a Discourse forum, a Discord or Telegram bot, or LinkedIn sending, on the integrations page.
+              Lemmy, Nostr, Tumblr, Hashnode, a Discourse forum, a Discord or Telegram bot, a Facebook Page, an Instagram account or LinkedIn
+              sending, on the integrations page.
             </EmptyState>
           </Card>
         ) : (
@@ -280,6 +302,8 @@ function Composer({
   const [forumId, setForumId] = useState("");
   const [channelId, setChannelId] = useState("");
   const [tags, setTags] = useState("");
+  const [link, setLink] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const on = platforms.includes(platform) ? platform : platforms[0]!;
   const reddit = on === "reddit";
@@ -287,7 +311,7 @@ function Composer({
   const lemmy = on === "lemmy";
   const discourse = on === "discourse";
   const forum = forums.find((f) => f.id === forumId) ?? forums[0];
-  const bot = isBot(on);
+  const bot = hasChannel(on);
   const botChannels = postable(channels, on);
   const channel = botChannels.find((c) => c.id === channelId) ?? botChannels[0];
   const max = maxLength(on, false, mastodonChars);
@@ -295,18 +319,22 @@ function Composer({
     !!body.trim() &&
     [...body.trim()].length >= minLength(on) &&
     (max === null || length(on, body) <= max) &&
-    titleReady(on, title, lemmy ? community : subreddit, forum);
+    titleReady(on, title, lemmy ? community : subreddit, forum) &&
+    mediaReady(on, link, imageUrl);
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
       const where = { subreddit: lemmy ? community : subreddit, forum_id: discourse ? forum?.id : undefined, channel_id: bot ? channel?.id : undefined };
-      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, ...where, tags: tagList(tags), status: "approved" } });
+      const media = { link: on === "facebook" ? link : "", image_url: on === "instagram" ? imageUrl : "" };
+      await api(`/projects/${projectId}/social`, { method: "POST", body: { platform: on, body, title, ...where, ...media, tags: tagList(tags), status: "approved" } });
       await onAdded();
       setBody("");
       setTitle("");
       setTags("");
+      setLink("");
+      setImageUrl("");
       toast.success(`Queued for ${PLATFORMS[on]}`);
     } catch (e) {
       toastError(e);
@@ -364,7 +392,7 @@ function Composer({
         {dev && <ArticleFields platform={on} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
         {on === "tumblr" && <TagsField platform={on} tags={tags} setTags={setTags} />}
         {bot && botChannels.length > 1 && (
-          <Field label={on === "discord" ? "Channel" : "Group or channel"} className="sm:w-72">
+          <Field label={on === "discord" ? "Channel" : on === "facebook" ? "Page" : on === "instagram" ? "Account" : "Group or channel"} className="sm:w-72">
             <Select value={channel?.id} onChange={(e) => setChannelId(e.target.value)}>
               {botChannels.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -374,17 +402,20 @@ function Composer({
             </Select>
           </Field>
         )}
+        {isMeta(on) && <MediaField platform={on} value={on === "facebook" ? link : imageUrl} onChange={on === "facebook" ? setLink : setImageUrl} thumbnail />}
         <Textarea
-          aria-label={dev ? "Article" : discourse ? "Topic" : "Post"}
+          aria-label={dev ? "Article" : discourse ? "Topic" : on === "instagram" ? "Caption" : "Post"}
           rows={dev ? 6 : 3}
           placeholder={
             reddit || lemmy || discourse
               ? "What you want to share or ask"
               : dev
                 ? "Your article, in Markdown"
-                : on === "linkedin"
+                : on === "linkedin" || on === "facebook"
                   ? "What you want to share"
-                  : "What's happening"
+                  : on === "instagram"
+                    ? "The caption under the picture"
+                    : "What's happening"
           }
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -482,6 +513,48 @@ function TopicTitle({ title, setTitle }: { title: string; setTitle: (s: string) 
   );
 }
 
+/** A Facebook post's optional link, or an Instagram post's picture, with a small preview of it in the composer once it's a link
+ *  Instagram can fetch. A draft shows the picture large instead, see Picture. */
+function MediaField({
+  platform,
+  value,
+  onChange,
+  thumbnail,
+}: {
+  platform: "facebook" | "instagram";
+  value: string;
+  onChange: (s: string) => void;
+  thumbnail?: boolean;
+}) {
+  const picture = platform === "instagram";
+  return (
+    <div className="flex items-end gap-3">
+      <Field label={picture ? "Picture" : "Link, optional"} hint={picture ? "A link to a JPEG that anyone can open." : undefined} className="min-w-0 flex-1">
+        <Input type="url" inputMode="url" autoComplete="off" placeholder="https://" value={value} onChange={(e) => onChange(e.target.value)} />
+      </Field>
+      {thumbnail && picture && isPublicLink(value) && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={value.trim()} alt="The picture" className="size-16 shrink-0 rounded-lg border border-border bg-muted object-cover" />
+      )}
+    </div>
+  );
+}
+
+/** An Instagram post's picture, square like Instagram crops it, beside its caption from a tablet up. */
+function Picture({ url }: { url: string }) {
+  const box = "aspect-square w-full shrink-0 rounded-lg border border-border bg-muted sm:w-56";
+  if (!isPublicLink(url)) {
+    return (
+      <div className={cn(box, "flex flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground")}>
+        <ImageOff className="size-5" />
+        Add a picture link
+      </div>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url.trim()} alt="The picture" className={cn(box, "object-cover")} />;
+}
+
 function CharCount({ n, max }: { n: number; max: number }) {
   return (
     <span className={cn("tabular-nums", n > max && "font-medium text-danger")}>
@@ -509,6 +582,7 @@ function replyingTo(p: SocialPost): string {
   if (p.platform === "tumblr") return "Reblogging this post with your comment";
   if (p.platform === "hashnode") return "Commenting on this article";
   if (isBot(p.platform)) return "Replying to this message";
+  if (isMeta(p.platform)) return "Replying to this comment";
   if (p.platform === "youtube") return p.in_reply_to?.includes("&lc=") ? "Replying to this comment" : "Commenting on this video";
   return "Replying to this thread";
 }
@@ -524,7 +598,7 @@ function PostCard({
   post: SocialPost;
   /** The Discourse forum it goes to, while the project still joins it. */
   forum: DiscourseForum | undefined;
-  /** The Discord or Telegram channel it goes to, while the bot still sees it. */
+  /** The Discord or Telegram channel it goes to, while the bot still sees it, or the Page or Instagram account. */
   channel: SocialChannel | undefined;
   mastodonChars: number;
   onChange: () => Promise<unknown>;
@@ -533,6 +607,8 @@ function PostCard({
   const [title, setTitle] = useState(p.title);
   const [subreddit, setSubreddit] = useState(p.subreddit);
   const [tags, setTags] = useState(p.tags.join(", "));
+  const [link, setLink] = useState(p.link);
+  const [imageUrl, setImageUrl] = useState(p.image_url);
   const [saving, setSaving] = useState<string | null>(null);
   const reply = !!p.in_reply_to;
   const redditPost = p.platform === "reddit" && !reply;
@@ -541,7 +617,14 @@ function PostCard({
   const article = p.platform === "dev" || (p.platform === "hashnode" && !reply);
   const tumblrPost = p.platform === "tumblr" && !reply;
   const posted = p.status === "posted";
-  const dirty = body !== p.body || title !== p.title || subreddit !== p.subreddit || tagList(tags).join(",") !== p.tags.join(",");
+  const metaPost = isMeta(p.platform) && !reply;
+  const dirty =
+    body !== p.body ||
+    title !== p.title ||
+    subreddit !== p.subreddit ||
+    tagList(tags).join(",") !== p.tags.join(",") ||
+    link !== p.link ||
+    imageUrl !== p.image_url;
   const max = maxLength(p.platform, reply, mastodonChars);
   const n = length(p.platform, body.trim());
   // What the backend turns down for an approved post, so those buttons stay off until it fits.
@@ -551,7 +634,9 @@ function PostCard({
     tooShort ||
     (!reply && !titleReady(p.platform, title, subreddit, forum)) ||
     (p.platform === "discourse" && !forum) ||
-    (isBot(p.platform) && !(channel?.picked && channel.can_send));
+    (isBot(p.platform) && !(channel?.picked && channel.can_send)) ||
+    (isMeta(p.platform) && !(channel?.picked && (reply ? channel.can_read : channel.can_send))) ||
+    (!reply && !mediaReady(p.platform, link, imageUrl));
   // LinkedIn, YouTube, Lemmy, Hashnode and Tumblr call a reply a comment, Stack Exchange an answer, DEV and Hashnode a post an
   // article, Discourse a topic, Nostr a post a note, and Discord and Telegram a post a message.
   const kind = reply
@@ -570,16 +655,36 @@ function PostCard({
             ? "message"
             : "post";
 
+  // The text box. On an Instagram post it sits under the picture's link, beside the picture.
+  const editor = (
+    <div className="flex flex-col gap-1">
+      <MicroLabel>Your {kind}</MicroLabel>
+      {/* Grows with the text, so a long reply can be read without scrolling inside the box. */}
+      <Textarea aria-label={`Your ${kind}`} rows={3} value={body} onChange={(e) => setBody(e.target.value)} className="field-sizing-content" />
+      {max !== null && (
+        <p className="text-right text-xs text-muted-foreground">
+          <CharCount n={length(p.platform, body)} max={max} />
+        </p>
+      )}
+      {tooShort && n > 0 && <p className="text-right text-xs text-muted-foreground">Needs at least {minLength(p.platform)} characters</p>}
+    </div>
+  );
+
   const save = async (status?: SocialPost["status"]) => {
     setSaving(status ?? "save");
     try {
-      const fresh = await api<SocialPost>(`/social/${p.id}`, { method: "PATCH", body: { body, title, subreddit, tags: tagList(tags), status } });
+      const fresh = await api<SocialPost>(`/social/${p.id}`, {
+        method: "PATCH",
+        body: { body, title, subreddit, tags: tagList(tags), link, image_url: imageUrl, status },
+      });
       // The backend trims the text, writes "r/sales" as "sales" and "Web Dev" as "webdev", which would otherwise leave the card
       // looking unsaved.
       setBody(fresh.body);
       setTitle(fresh.title);
       setSubreddit(fresh.subreddit);
       setTags(fresh.tags.join(", "));
+      setLink(fresh.link);
+      setImageUrl(fresh.image_url);
       await onChange();
     } catch (e) {
       toastError(e);
@@ -611,13 +716,13 @@ function PostCard({
               {forum ? <Host host={topic ? `${forumHost(forum)} · ${forum.category_name}` : forumHost(forum)} /> : "Forum removed"}
             </span>
           )}
-          {isBot(p.platform) && (
+          {hasChannel(p.platform) && (
             <span className="text-sm text-muted-foreground">
               {!channel ? (
-                "Channel removed"
+                p.platform === "facebook" ? "Page removed" : p.platform === "instagram" ? "Account removed" : "Channel removed"
               ) : (
                 <>
-                  {channel.platform === "discord" ? `#${channel.name}` : channel.name}
+                  {channel.platform === "discord" ? `#${channel.name}` : channelLabel(channel)}
                   {/* The server's name doesn't fit beside the rest on a phone. */}
                   {channel.platform === "discord" && <span className="max-sm:hidden"> in {channel.guild_name}</span>}
                   {!channel.picked && " (not picked)"}
@@ -650,7 +755,19 @@ function PostCard({
           <>
             {p.title && <p className="font-medium">{p.title}</p>}
             {p.tags.length > 0 && <p className="text-xs text-muted-foreground">{p.tags.map((t) => `#${t}`).join(" ")}</p>}
-            <p className="text-sm whitespace-pre-wrap">{p.body}</p>
+            {p.image_url ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                <Picture url={p.image_url} />
+                <p className="min-w-0 flex-1 text-sm whitespace-pre-wrap">{p.body}</p>
+              </div>
+            ) : (
+              <p className="text-sm whitespace-pre-wrap">{p.body}</p>
+            )}
+            {p.link && (
+              <a href={p.link} target="_blank" rel="noreferrer" className="self-start text-sm text-muted-foreground hover:underline">
+                <Message text={p.link} />
+              </a>
+            )}
             {p.url && (
               <a href={p.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 self-start text-sm hover:underline">
                 View on {PLATFORMS[p.platform]} <ExternalLink className="size-3.5" />
@@ -673,23 +790,20 @@ function PostCard({
             {topic && <TopicTitle title={title} setTitle={setTitle} />}
             {article && <ArticleFields platform={p.platform} title={title} tags={tags} setTitle={setTitle} setTags={setTags} />}
             {tumblrPost && <TagsField platform={p.platform} tags={tags} setTags={setTags} />}
-            <div className="flex flex-col gap-1">
-              <MicroLabel>Your {kind}</MicroLabel>
-              {/* Grows with the text, so a long reply can be read without scrolling inside the box. */}
-              <Textarea
-                aria-label={`Your ${kind}`}
-                rows={3}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                className="field-sizing-content"
-              />
-              {max !== null && (
-                <p className="text-right text-xs text-muted-foreground">
-                  <CharCount n={length(p.platform, body)} max={max} />
-                </p>
-              )}
-              {tooShort && n > 0 && <p className="text-right text-xs text-muted-foreground">Needs at least {minLength(p.platform)} characters</p>}
-            </div>
+            {metaPost && p.platform === "instagram" ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                <Picture url={imageUrl} />
+                <div className="flex min-w-0 flex-1 flex-col gap-3">
+                  <MediaField platform="instagram" value={imageUrl} onChange={setImageUrl} />
+                  {editor}
+                </div>
+              </div>
+            ) : (
+              <>
+                {metaPost && <MediaField platform="facebook" value={link} onChange={setLink} />}
+                {editor}
+              </>
+            )}
           </>
         )}
 

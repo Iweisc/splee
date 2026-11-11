@@ -230,6 +230,9 @@ pub enum Alert {
     Discord,
     /// The Telegram bot the agent posts as, matched on telegram_token_enc. Alerts to a Telegram chat are Chat.
     Telegram,
+    /// A Facebook Page or Instagram account, matched on meta_user_id, since each Page has its own token. See meta.rs.
+    Facebook,
+    Instagram,
     /// Matched on bcc_email, the address the copy went to.
     Bcc,
 }
@@ -260,6 +263,8 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Hashnode => ("hashnode", "hashnode_token_enc".to_string()),
         Alert::Discord => ("discord", "discord_token_enc".to_string()),
         Alert::Telegram => ("telegram", "telegram_token_enc".to_string()),
+        Alert::Facebook => ("facebook", "meta_user_id".to_string()),
+        Alert::Instagram => ("instagram", "meta_user_id".to_string()),
         Alert::Bcc => ("bcc", "bcc_email".to_string()),
     };
     let sql = format!(

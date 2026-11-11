@@ -126,6 +126,7 @@ pub fn authorize_url(cfg: &Config, provider: Provider, scope: &str, state: &str,
 /// What a sign-in is for, so a state made for one can't finish another.
 pub const MAILBOX: &str = "mailbox-oauth";
 pub const TUMBLR: &str = "tumblr-oauth";
+pub const META: &str = "meta-oauth";
 pub const POSTMASTER: &str = "postmaster-oauth";
 pub const CRM: &str = "crm-oauth";
 
@@ -396,6 +397,8 @@ pub(crate) mod tests {
             tumblr: None,
             salesforce: None,
             zoho: None,
+            meta: None,
+            graph_api_url: String::new(),
             crm_api_url: String::new(),
             ipinfo_token: None,
         }

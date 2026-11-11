@@ -11,6 +11,7 @@ mod hiring;
 mod lemmy;
 mod linkedin;
 mod mastodon;
+mod meta;
 mod nostr;
 mod prospect;
 mod reddit;

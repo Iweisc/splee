@@ -200,6 +200,8 @@ fn state(db: PgPool) -> AppState {
         tumblr: None,
         salesforce: None,
         zoho: None,
+        meta: None,
+        graph_api_url: String::new(),
         crm_api_url: String::new(),
         ipinfo_token: None,
     };
