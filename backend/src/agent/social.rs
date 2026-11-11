@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::{Ctx, Outcome, bluesky, channels, discourse, hashnode, lemmy, linkedin, mastodon, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
+use super::{Ctx, Outcome, bluesky, channels, discourse, hashnode, lemmy, linkedin, mastodon, meta, nostr, reddit, stackexchange, threads, tumblr, x, youtube};
 use crate::bluesky::{Bluesky, PostRef};
 use crate::discourse::{Topic, forum_url};
 use crate::hooks::{self, Alert};
@@ -77,6 +77,10 @@ struct Post {
     community: String,
     #[serde(default)]
     channel: String,
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    image_url: String,
     reason: String,
     body: String,
 }
@@ -97,10 +101,12 @@ fn schema() -> Value {
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "DEV, Hashnode and Tumblr only. Empty for the others."},
                 "forum": {"type": "string", "description": "Discourse only, the forum's address as listed. Empty for the others."},
                 "community": {"type": "string", "description": "Lemmy only, as name@instance. Empty for the others."},
-                "channel": {"type": "string", "description": "Discord and Telegram only, the channel's id as listed. Empty for the others."},
+                "channel": {"type": "string", "description": "Discord, Telegram, Facebook and Instagram only, the channel's, Page's or account's id as listed. Empty for the others."},
+                "link": {"type": "string", "description": "Facebook only, an https link the post shares, or empty. Empty for the others."},
+                "image_url": {"type": "string", "description": "Instagram only, the https link of the JPEG picture the post shows. Empty for the others."},
                 "reason": {"type": "string", "description": "One sentence: who it's for and why they'd care."},
                 "body": {"type": "string"}
-            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "channel", "reason", "body"]}}
+            }, "required": ["platform", "subreddit", "title", "tags", "forum", "community", "channel", "link", "image_url", "reason", "body"]}}
         },
         "required": ["replies", "posts"]
     })
@@ -121,6 +127,7 @@ pub fn canonical(link: &str) -> Option<String> {
         .or_else(|| crate::nostr::note_id(link).map(|id| crate::nostr::link(&id)))
         .or_else(|| crate::discord::parse_link(link).map(|(g, c, m)| crate::discord::message_link(&g, &c, &m)))
         .or_else(|| crate::telegram::parse_link(link).map(|(chat, m)| crate::telegram::message_link(&chat, &m)))
+        .or_else(|| crate::meta::comment_url(link))
         // Before Discourse and Lemmy, since an article on its own domain can have a path that looks like theirs.
         .or_else(|| crate::hashnode::post_id(link).and_then(|id| crate::hashnode::post_link(link, &id)))
         .or_else(|| Topic::parse(link).map(|t| t.url()))
@@ -141,7 +148,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let project_id = ctx.project_id()?;
     let (project, profile) = load_project(ctx, project_id).await?;
     const CONNECT: &str = "Connect X, Reddit, Bluesky, Mastodon, Threads, YouTube, Stack Exchange, DEV, a Discourse forum, Lemmy, Nostr, Tumblr, \
-                           Hashnode, Discord, Telegram or LinkedIn on the integrations page first";
+                           Hashnode, Discord, Telegram, Facebook, Instagram or LinkedIn on the integrations page first";
     let accounts = social::accounts(ctx.db(), project_id).await?.ok_or_else(|| anyhow::anyhow!(CONNECT))?;
     let secret = &ctx.state.cfg.app_secret;
 
@@ -355,6 +362,53 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         ));
         platforms.push(platform);
     }
+    // Facebook and Instagram only take part with a Page or account picked, and sit out a run while Meta asked Splee to wait.
+    let mut graphs = Vec::new();
+    for platform in ["facebook", "instagram"] {
+        let picked = accounts.meta_accounts(platform);
+        if accounts.meta_user_id.is_empty() || picked.is_empty() {
+            continue;
+        }
+        if accounts.meta_held {
+            ctx.log(format!("left out {}, since Meta asked Splee to wait", name(platform))).await?;
+            continue;
+        }
+        let mut clients = Vec::new();
+        for c in picked {
+            match accounts.graph(&ctx.state, c) {
+                Ok(g) => clients.push((c.clone(), Arc::new(g))),
+                Err(e) => unavailable(platform, if platform == "facebook" { Alert::Facebook } else { Alert::Instagram }, e).await?,
+            }
+        }
+        if clients.is_empty() {
+            continue;
+        }
+        let readable: Vec<meta::Account> = clients.iter().filter(|(c, _)| c.can_read).cloned().collect();
+        if !readable.is_empty() {
+            call.servers.insert(platform.into(), meta::server(platform, ctx.db().clone(), project_id, readable, seen.clone()));
+            call.server_tools.push(if platform == "facebook" { meta::FACEBOOK_COMMENTS } else { meta::INSTAGRAM_COMMENTS }.to_string());
+        }
+        let list: Vec<String> = clients
+            .iter()
+            .map(|(c, _)| {
+                let can = match (c.can_read, c.can_send) {
+                    (true, true) => "answers to comments and posts",
+                    (false, true) => "posts only",
+                    _ => "answers to comments only",
+                };
+                format!("- {} (id {}): {can}", c.label(), c.chat_id)
+            })
+            .collect();
+        tools.push(format!(
+            "On {} you post as these {}:\n{}\nRead the latest comments on their recent posts with mcp__{platform}__comments, and answer only \
+             comments it shows.",
+            name(platform),
+            if platform == "facebook" { "Pages" } else { "accounts" },
+            list.join("\n")
+        ));
+        graphs.extend(clients.into_iter().map(|(_, g)| g));
+        platforms.push(platform);
+    }
     if !accounts.unipile_token_enc.is_empty() {
         match accounts.unipile(secret) {
             Ok(u) => {
@@ -419,8 +473,10 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let name = &profile.name;
     let list = |items: Vec<String>| if items.is_empty() { "none yet".to_string() } else { items.join("\n") };
     let earlier = list(earlier.into_iter().map(|(p, t, b)| format!("- {p}: {}", x::clip(&format!("{t} {b}").trim().replace('\n', " "), 200))).collect());
-    // A bot replies where it can read and posts where it can post.
-    let bots = |p: &str, can: fn(&SocialChannel) -> bool| !matches!(p, "discord" | "telegram") || accounts.channels.iter().any(|c| c.platform == p && c.picked && can(c));
+    // A bot replies where it can read and posts where it can post, and so does a Page or Instagram account.
+    let bots = |p: &str, can: fn(&SocialChannel) -> bool| {
+        !matches!(p, "discord" | "telegram" | "facebook" | "instagram") || accounts.channels.iter().any(|c| c.platform == p && c.picked && can(c))
+    };
     let replying: Vec<&str> = platforms.iter().copied().filter(|p| takes_replies(p) && bots(p, |c| c.can_read)).collect();
     // Discourse only takes new topics on forums with a category picked for them, and Hashnode articles need a publication.
     let topics = accounts.forums.iter().any(|f| f.category_id.is_some());
@@ -494,7 +550,12 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     call.timeout = Duration::from_secs(12 * 60);
 
     ctx.begin_step(1, "Find threads to join").await?;
-    let drafts: Drafts = ctx.ask(&call).await?;
+    let drafts = ctx.ask::<Drafts>(&call).await;
+    // Saved whatever the run did, since a comment read may have been the call Meta signed Splee out or near its limits on.
+    for g in &graphs {
+        crate::meta::settle(ctx.db(), project_id, g).await;
+    }
+    let drafts = drafts?;
     let seen = std::mem::take(&mut *seen.lock().unwrap());
     let (replies, posts) = save(ctx.db(), project_id, ctx.run.id, &platforms, &accounts, drafts, &seen).await?;
     let message = format!("Drafted {} and {}", count(replies, "reply", "replies"), count(posts, "post", "posts"));
@@ -566,6 +627,19 @@ fn rules(platform: &str, company: &str, a: &Accounts) -> String {
              group has its own norms, and don't mention {company} where a group bans self-promotion. Reply to one person's message by \
              its link. A post needs `channel`, the id of a listed group or channel that takes posts."
         ),
+        "facebook" => format!(
+            "Facebook: you post as the Page, so write like a person on {company}'s team, warm and plain. An answer to a comment is \
+             at most 8,000 characters, but keep it to a few sentences and answer what they asked. Answer comments by their link, and \
+             only ones that aren't answered yet. A post needs `channel`, the id of a listed Page that takes posts, and may share one \
+             https `link`. Keep posts under 500 characters, with no hashtags."
+        ),
+        "instagram" => format!(
+            "Instagram: answers to comments and captions are at most 2,200 characters, but keep answers to a sentence or two and \
+             start them with the @username you answer. Answer comments by their link, and only ones that aren't answered yet. A post \
+             needs `channel`, the id of a listed account that takes posts, and `image_url`, the https link of a JPEG picture that fits \
+             it, like one on {company}'s website you looked at. Leave Instagram posts out when you found no picture. A caption may end \
+             with up to 5 hashtags."
+        ),
         "dev" => "DEV: no replies, only original articles in Markdown, with a title of at most 128 characters and up to 4 tags of \
                   lowercase letters and digits, like webdev or productivity. Write a full article of 600 to 1500 words that teaches \
                   something specific, like a how-to, a lesson learned or a walkthrough with code where it fits."
@@ -605,7 +679,7 @@ async fn save(
         }
         let forum_id = Topic::parse(&link).filter(|_| thread.platform == "discourse").and_then(|t| forum(&t.forum)).map(|f| f.id);
         let channel_id = match thread.platform {
-            "discord" | "telegram" => match channels::channel_of(&a.channels, thread.platform, &link) {
+            "discord" | "telegram" | "facebook" | "instagram" => match channels::channel_of(&a.channels, thread.platform, &link) {
                 Some(c) => Some(c.id),
                 None => continue,
             },
@@ -637,6 +711,8 @@ async fn save(
         }
         let title = p.title.trim();
         let titles = |min: usize, max: usize| (min..=max).contains(&title.chars().count());
+        let link = if p.platform == "facebook" && crate::meta::public_link(p.link.trim()) { p.link.trim() } else { "" };
+        let image_url = if p.platform == "instagram" { p.image_url.trim() } else { "" };
         let (sr, title, tags, forum_id, channel_id) = match p.platform.as_str() {
             "reddit" => match subreddit(&p.subreddit) {
                 Some(sr) if titles(1, 300) => (sr, title, Vec::new(), None, None),
@@ -659,12 +735,17 @@ async fn save(
                 Some(c) => (String::new(), "", Vec::new(), None, Some(c.id)),
                 None => continue,
             },
+            "facebook" | "instagram" => match a.meta_accounts(&p.platform).into_iter().find(|c| c.chat_id == p.channel.trim() && c.can_send) {
+                Some(_) if p.platform == "instagram" && !crate::meta::public_link(image_url) => continue,
+                Some(c) => (String::new(), "", Vec::new(), None, Some(c.id)),
+                None => continue,
+            },
             "dev" | "hashnode" => continue,
             _ => (String::new(), "", Vec::new(), None, None),
         };
         sqlx::query(
-            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id, channel_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "insert into social_posts (project_id, run_id, platform, subreddit, title, tags, body, reason, forum_id, channel_id, link, image_url)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(project_id)
         .bind(run_id)
@@ -676,6 +757,8 @@ async fn save(
         .bind(p.reason.trim())
         .bind(forum_id)
         .bind(channel_id)
+        .bind(link)
+        .bind(image_url)
         .execute(db)
         .await?;
         posts += 1;
@@ -752,6 +835,8 @@ mod tests {
             forum: String::new(),
             community: String::new(),
             channel: channel.into(),
+            link: String::new(),
+            image_url: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };
@@ -809,6 +894,8 @@ mod tests {
             forum: String::new(),
             community: String::new(),
             channel: String::new(),
+            link: String::new(),
+            image_url: String::new(),
             reason: "Useful".into(),
             body: "A lesson".into(),
         };

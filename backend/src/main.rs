@@ -29,6 +29,7 @@ mod jobs;
 mod lemmy;
 mod mail;
 mod mastodon;
+mod meta;
 mod models;
 mod nocodb;
 mod nostr;

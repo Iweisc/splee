@@ -30,6 +30,8 @@ export interface Me {
   mailbox_sign_in: SignInProvider[];
   /** The server has a Tumblr app, so the integrations page offers to connect Tumblr. */
   tumblr_sign_in: boolean;
+  /** The server has a Meta app, so the integrations page offers to sign in with Facebook for Pages and Instagram. */
+  meta_sign_in: boolean;
   /** The CRMs that sign in which the server has an app for, so the integrations page offers them. */
   crm_sign_in: SignInCrm[];
   /** Round robin skips you while it's on. */
@@ -316,6 +318,15 @@ export interface ProjectSettings extends CrmStatus {
   telegram_reads_all: boolean;
   telegram_error: string | null;
   telegram_failed_at: string | null;
+  /** Who signed in with Facebook for the Pages and Instagram accounts. meta_reconnect is when Facebook signed Splee out and they
+   *  have to sign in again. The Pages' tokens never leave the backend. */
+  meta_connected: boolean;
+  meta_reconnect: boolean;
+  meta_name: string;
+  facebook_error: string | null;
+  facebook_failed_at: string | null;
+  instagram_error: string | null;
+  instagram_failed_at: string | null;
   /** Keeps working campaigns stocked with written emails within the monthly budget and lead cap. */
   autopilot: boolean;
   /** Claude spend a calendar month (UTC) may reach, counting runs started by hand. */
@@ -1579,7 +1590,9 @@ export interface SocialPost {
     | "tumblr"
     | "hashnode"
     | "discord"
-    | "telegram";
+    | "telegram"
+    | "facebook"
+    | "instagram";
   /** The link of the post or comment it answers, null for an original post. On Tumblr it's reblogged with the reply as its comment. */
   in_reply_to: string | null;
   /** The text it answers. */
@@ -1603,24 +1616,30 @@ export interface SocialPost {
   updated_at: Ts;
   /** Discourse only: the forum it goes to, null once that forum is removed. */
   forum_id: UUID | null;
-  /** Discord and Telegram only: the channel it goes to, null once the bot can't see it anymore. */
+  /** Discord, Telegram, Facebook and Instagram only: the channel, Page or account it goes to, null once it's gone. */
   channel_id: UUID | null;
+  /** A Facebook post's link, shown as a preview under it. Empty for none. */
+  link: string;
+  /** An Instagram post's picture. */
+  image_url: string;
 }
 
-/** A Discord text channel or a Telegram group or channel the project's bot can see. Picked ones are read and posted in. */
+/** A Discord text channel or a Telegram group or channel the project's bot can see, or a Facebook Page or Instagram account the
+ *  user who signed in with Facebook manages. Picked ones are read and posted in. */
 export interface SocialChannel {
   id: UUID;
   project_id: UUID;
-  platform: "discord" | "telegram";
-  /** Discord's channel id, or Telegram's chat id. */
+  platform: "discord" | "telegram" | "facebook" | "instagram";
+  /** Discord's channel id, Telegram's chat id, the Page's id or the Instagram account's. */
   chat_id: string;
-  /** The Discord server. Empty on Telegram. */
+  /** The Discord server, or the Page an Instagram account is linked to. Empty on Telegram and for a Page. */
   guild_id: string;
   guild_name: string;
   name: string;
-  kind: "text" | "announcement" | "group" | "supergroup" | "channel";
-  /** A public Telegram chat's @username. */
+  kind: "text" | "announcement" | "group" | "supergroup" | "channel" | "page" | "instagram";
+  /** A public Telegram chat's @username, a Page's or an Instagram account's. */
   username: string;
+  /** On Facebook and Instagram, whether the user may answer comments (can_read) and post (can_send). */
   can_read: boolean;
   can_send: boolean;
   picked: boolean;

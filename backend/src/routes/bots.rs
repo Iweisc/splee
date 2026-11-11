@@ -1,4 +1,5 @@
-//! Connecting the Discord and Telegram bots the agent posts as, testing them, and picking the channels they read and post in.
+//! Connecting the Discord and Telegram bots the agent posts as, testing them, and picking the channels they read and post in,
+//! and the Facebook Pages and Instagram accounts too, which routes::meta lists.
 //! The posts themselves go through the Social page like every other platform's, see routes::social.
 
 use axum::extract::{Path, State};
@@ -219,6 +220,13 @@ struct PickBody {
 /// from its latest messages when it's picked again.
 async fn pick(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(b): Json<PickBody>) -> AppResult<Json<SocialChannel>> {
     let c: SocialChannel = util_scope::load(&state.db, "social_channels", id, auth.org_id).await?;
+    let meta = matches!(c.platform.as_str(), "facebook" | "instagram");
+    if b.picked && meta && c.token_enc.is_empty() {
+        return Err(AppError::BadRequest("Facebook signed Splee out. Sign in with Facebook again first".into()));
+    }
+    if b.picked && meta && !c.can_read && !c.can_send {
+        return Err(AppError::BadRequest(format!("Your role on {} doesn't let you post or answer comments there. Ask a Page admin for more", c.label())));
+    }
     if b.picked && !c.can_read && !c.can_send {
         return Err(AppError::BadRequest(format!("The bot can't read or post in {}. Check its permissions there, then refresh the list", c.label())));
     }

@@ -294,6 +294,15 @@ pub struct ProjectSettings {
     pub telegram_reads_all: bool,
     pub telegram_error: Option<String>,
     pub telegram_failed_at: Option<Ts>,
+    /// Who signed in with Facebook for the Pages and Instagram accounts, by name. meta_reconnect is when Meta signed Splee out
+    /// and the user has to sign in again. The Pages' tokens stay out of this struct, and the user's own aren't kept.
+    pub meta_connected: bool,
+    pub meta_reconnect: bool,
+    pub meta_name: String,
+    pub facebook_error: Option<String>,
+    pub facebook_failed_at: Option<Ts>,
+    pub instagram_error: Option<String>,
+    pub instagram_failed_at: Option<Ts>,
     /// "neverbounce", "millionverifier", "hunter", "kickbox", "bouncer", "emailable", "clearout", "reoon", "debounce" or "" for none. Its key (verifier_key_enc) stays out of this struct.
     pub verifier: String,
     pub verifier_error: Option<String>,
@@ -816,7 +825,7 @@ pub struct SocialPost {
     pub project_id: Uuid,
     pub run_id: Option<Uuid>,
     /// "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr",
-    /// "tumblr", "hashnode", "discord" or "telegram".
+    /// "tumblr", "hashnode", "discord", "telegram", "facebook" or "instagram".
     pub platform: String,
     /// The link of the post or comment it answers, None for an original post.
     pub in_reply_to: Option<String>,
@@ -842,39 +851,54 @@ pub struct SocialPost {
     pub updated_at: Ts,
     /// Discourse only: the forum it goes to. None once that forum is removed.
     pub forum_id: Option<Uuid>,
-    /// Discord and Telegram only: the channel it goes to. None once the bot can't see it anymore.
+    /// Discord, Telegram, Facebook and Instagram only: the channel, Page or account it goes to. None once it's gone.
     pub channel_id: Option<Uuid>,
+    /// A Facebook post's link, shown as a preview under it. Empty for none.
+    pub link: String,
+    /// An Instagram post's picture, which Instagram downloads when it's published.
+    pub image_url: String,
+    #[serde(skip)]
+    pub container_id: String,
 }
 
-/// A Discord text channel or a Telegram group or channel the project's bot can see. Picked ones are read and posted in.
+/// A Discord text channel or a Telegram group or channel the project's bot can see, or a Facebook Page or Instagram account the
+/// user who signed in with Facebook manages. Picked ones are read and posted in.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SocialChannel {
     pub id: Uuid,
     pub project_id: Uuid,
-    /// "discord" or "telegram".
+    /// "discord", "telegram", "facebook" or "instagram".
     pub platform: String,
-    /// Discord's channel id, or Telegram's chat id.
+    /// Discord's channel id, Telegram's chat id, the Page's id or the Instagram account's.
     pub chat_id: String,
-    /// The Discord server. Empty on Telegram.
+    /// The Discord server, or the Page an Instagram account is linked to. Empty on Telegram and for a Page.
     pub guild_id: String,
     pub guild_name: String,
     pub name: String,
-    /// "text" or "announcement" on Discord, "group", "supergroup" or "channel" on Telegram.
+    /// "text" or "announcement" on Discord, "group", "supergroup" or "channel" on Telegram, "page" or "instagram".
     pub kind: String,
-    /// A public Telegram chat's @username.
+    /// A public Telegram chat's @username, a Page's or an Instagram account's.
     pub username: String,
+    /// On Facebook and Instagram, whether the user may answer comments, for can_read, and post, for can_send.
     pub can_read: bool,
     pub can_send: bool,
     pub picked: bool,
     #[serde(skip)]
     pub last_message_id: String,
     pub created_at: Ts,
+    /// The Page's access token, encrypted, which its Instagram account uses too. Empty once Meta signed Splee out.
+    #[serde(skip)]
+    pub token_enc: String,
 }
 
 impl SocialChannel {
-    /// "#general in Acme" on Discord, the chat's title on Telegram.
+    /// "#general in Acme" on Discord, @acme on Instagram, the chat's title on Telegram and the Page's name on Facebook.
     pub fn label(&self) -> String {
-        if self.platform == "discord" { format!("#{} in {}", self.name, self.guild_name) } else { self.name.clone() }
+        match self.platform.as_str() {
+            "discord" => format!("#{} in {}", self.name, self.guild_name),
+            "instagram" => format!("@{}", self.username),
+            _ => self.name.clone(),
+        }
     }
 }
 

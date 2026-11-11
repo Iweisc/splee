@@ -36,10 +36,12 @@ pub fn link(c: &SocialChannel, message: &str) -> String {
     if c.platform == "discord" { discord::message_link(&c.guild_id, &c.chat_id, message) } else { telegram::message_link(&c.chat_id, message) }
 }
 
-/// The picked channel a message link points at, by its platform's chat id.
+/// The picked channel a message link points at, by its platform's chat id, or the Page or Instagram account a comment is on.
 pub fn channel_of<'a>(channels: &'a [SocialChannel], platform: &str, link: &str) -> Option<&'a SocialChannel> {
     let chat = match platform {
         "discord" => discord::parse_link(link)?.1,
+        "facebook" => crate::meta::facebook_comment(link)?.0,
+        "instagram" => crate::meta::instagram_comment(link)?.0,
         _ => telegram::parse_link(link)?.0,
     };
     channels.iter().find(|c| c.platform == platform && c.chat_id == chat && c.picked)

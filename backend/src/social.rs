@@ -17,6 +17,7 @@ use crate::hashnode::Hashnode;
 use crate::hooks::{self, Alert};
 use crate::lemmy::{self, Lemmy};
 use crate::mastodon::Mastodon;
+use crate::meta::{self, Graph, Published};
 use crate::models::{DiscourseForum, SocialChannel, SocialPost};
 use crate::nostr::{self, Nostr};
 use crate::reddit::{Login, Reddit, Target};
@@ -28,9 +29,9 @@ use crate::tumblr::{self, Tumblr};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 16] = [
+pub const PLATFORMS: [&str; 18] = [
     "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode", "discord",
-    "telegram",
+    "telegram", "facebook", "instagram",
 ];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
@@ -38,10 +39,11 @@ const STUCK_MINUTES: i32 = 15;
 /// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most. A
 /// Stack Exchange answer and a DEV or Hashnode article take far longer to read and judge than a reply, so they get fewer, and
 /// so does each Discourse forum, Lemmy, Tumblr and the Discord and Telegram bots, whose communities are small enough that a
-/// company replying often stands out. Hashnode's articles and comments each have their own cap.
+/// company replying often stands out. Hashnode's articles and comments each have their own cap, and so do a Facebook Page's
+/// and an Instagram account's posts and answers to comments, since followers see every post but only the commenter an answer.
 pub fn daily_cap(platform: &str, reply: bool) -> i64 {
     match (platform, reply) {
-        ("linkedin" | "stackexchange" | "discourse", _) => 5,
+        ("linkedin" | "stackexchange" | "discourse", _) | ("facebook" | "instagram", false) => 5,
         ("lemmy" | "tumblr" | "discord" | "telegram", _) | ("hashnode", true) => 10,
         ("dev" | "hashnode", _) => 2,
         _ => 15,
@@ -70,6 +72,8 @@ pub fn name(platform: &str) -> &'static str {
         "hashnode" => "Hashnode",
         "discord" => "Discord",
         "telegram" => "Telegram",
+        "facebook" => "Facebook",
+        "instagram" => "Instagram",
         _ => "LinkedIn",
     }
 }
@@ -99,6 +103,9 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("tumblr", _) => tumblr::CHARS,
         ("discord", _) => discord::CHARS,
         ("telegram", _) => telegram::CHARS,
+        ("facebook", true) => meta::COMMENT_CHARS,
+        ("facebook", false) => meta::POST_CHARS,
+        ("instagram", _) => meta::CAPTION_CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -191,13 +198,18 @@ pub struct Accounts {
     pub telegram_bot: String,
     pub telegram_reads_all: bool,
     pub telegram_offset: i64,
+    /// Who signed in with Facebook, empty when nobody is. Each Page's token is on its channel.
+    pub meta_user_id: String,
+    /// Meta's usage headers asked to wait, see meta::settle.
+    pub meta_held: bool,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
     /// Each forum is an account of its own. Loaded with `load_forums`.
     #[sqlx(skip)]
     pub forums: Vec<DiscourseForum>,
-    /// The Discord and Telegram channels the bots can see. Loaded with `load_forums` too.
+    /// The Discord and Telegram channels the bots can see, and the Facebook Pages and Instagram accounts. Loaded with
+    /// `load_forums` too.
     #[sqlx(skip)]
     pub channels: Vec<SocialChannel>,
 }
@@ -210,8 +222,8 @@ pub(crate) const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_
                                s.lemmy_url, s.lemmy_username, s.lemmy_password_enc, s.lemmy_jwt_enc, s.lemmy_handle, s.nostr_key_enc,
                                s.nostr_npub, s.nostr_relays, s.tumblr_username, s.tumblr_blog, s.hashnode_token_enc, s.hashnode_username,
                                s.hashnode_publication_id, s.discord_token_enc, s.discord_bot_id, s.discord_bot, s.telegram_token_enc,
-                               s.telegram_bot_id, s.telegram_bot, s.telegram_reads_all, s.telegram_offset, s.unipile_dsn, s.unipile_token_enc,
-                               s.unipile_account_id
+                               s.telegram_bot_id, s.telegram_bot, s.telegram_reads_all, s.telegram_offset, s.meta_user_id,
+                               coalesce(s.meta_held_until > now(), false) as meta_held, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
@@ -240,6 +252,8 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "hashnode" => ("hashnode_username", "hashnode_failed_at"),
         "discord" => ("discord_bot_id", "discord_failed_at"),
         "telegram" => ("telegram_bot_id", "telegram_failed_at"),
+        "facebook" => ("meta_user_id", "facebook_failed_at"),
+        "instagram" => ("meta_user_id", "instagram_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -261,13 +275,15 @@ fn alert(platform: &str) -> Alert {
         "hashnode" => Alert::Hashnode,
         "discord" => Alert::Discord,
         "telegram" => Alert::Telegram,
+        "facebook" => Alert::Facebook,
+        "instagram" => Alert::Instagram,
         _ => Alert::Unipile,
     }
 }
 
 impl Accounts {
     /// The account's name and its encrypted secret, which hooks::record matches on. The secret is empty when it isn't connected.
-    /// Discourse has one account per forum, see `forums`.
+    /// Discourse has one account per forum, see `forums`, and Facebook and Instagram one per Page or account, see `meta_accounts`.
     pub fn account(&self, platform: &str) -> (&str, &str) {
         match platform {
             "x" => (&self.x_handle, &self.x_auth_token_enc),
@@ -285,6 +301,7 @@ impl Accounts {
             "hashnode" => (&self.hashnode_username, &self.hashnode_token_enc),
             "discord" => (&self.discord_bot_id, &self.discord_token_enc),
             "telegram" => (&self.telegram_bot_id, &self.telegram_token_enc),
+            "facebook" | "instagram" => (&self.meta_user_id, &self.meta_user_id),
             "discourse" => ("", ""),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
@@ -298,6 +315,17 @@ impl Accounts {
         self.forums = sqlx::query_as("select * from discourse_forums where project_id = $1 order by created_at").bind(self.project_id).fetch_all(db).await?;
         self.channels = crate::social_channels::list(db, self.project_id).await?;
         Ok(())
+    }
+
+    /// The picked Pages or Instagram accounts that still have a token.
+    pub fn meta_accounts(&self, platform: &str) -> Vec<&SocialChannel> {
+        self.channels.iter().filter(|c| c.platform == platform && c.picked && !c.token_enc.is_empty()).collect()
+    }
+
+    /// A client with the Page's token, which is its Instagram account's too.
+    pub fn graph(&self, state: &AppState, c: &SocialChannel) -> Result<Graph, Failure> {
+        let token = decrypt(&state.cfg.app_secret, &c.token_enc).map_err(|_| Failure::Account(format!("Couldn't read the saved token for {}. Sign in with Facebook again", c.label())))?;
+        Graph::new(&state.cfg.graph_api_url, &token)
     }
 
     /// The Lemmy home instance's host, which a community's bare name is on.
@@ -445,6 +473,8 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         for platform in a.connected() {
             let accounts = match platform {
                 "discourse" => a.forums.iter().map(|f| (f.account.as_str(), f.key_enc.as_str(), Some(f))).collect(),
+                // Each Page and Instagram account has its own daily cap, while a failure holds them all, since they share a sign-in.
+                "facebook" | "instagram" => a.meta_accounts(platform).into_iter().map(|c| (c.chat_id.as_str(), a.meta_user_id.as_str(), None)).collect(),
                 _ => vec![(a.account(platform).0, a.account(platform).1, None)],
             };
             for (account, enc, forum) in accounts {
@@ -492,6 +522,8 @@ async fn publish_next(
         "hashnode" => post_hashnode(state, a, &post).await,
         "discord" => post_discord(state, a, &post).await,
         "telegram" => post_telegram(state, a, &post).await,
+        "facebook" => post_facebook(state, a, &post).await,
+        "instagram" => post_instagram(state, a, &post).await,
         "discourse" => match forum {
             Some(forum) => post_discourse(state, forum, &post).await,
             None => Err(Failure::Post("The forum isn't connected anymore".into())),
@@ -505,14 +537,20 @@ async fn publish_next(
 
 /// The project's longest-approved post on the platform, unless the account (in any project) is at the platform's daily cap,
 /// had a failure in the last hour or, on Stack Exchange and Discourse, is waiting out the wait the API asked for. A Discourse
-/// forum is its own account, which only posts what's for that forum. On Hashnode, articles wait at their cap while comments
-/// still go out, and the other way around.
+/// forum is its own account, which only posts what's for that forum, and so is a Page or an Instagram account, which also
+/// waits out Meta's usage. On Hashnode, Facebook and Instagram, posts wait at their cap while comments still go out, and the
+/// other way around.
 async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) -> sqlx::Result<Option<SocialPost>> {
     let held = match platform {
         "discourse" => "and sp.forum_id in (select f.id from discourse_forums f where f.project_id = $1 and f.account = $3)
            and not exists (select 1 from discourse_forums f
                            where f.account = $3 and (f.failed_at > now() - interval '1 hour' or f.held_until > now()))"
             .to_string(),
+        "facebook" | "instagram" => format!(
+            "and sp.channel_id in (select c.id from social_channels c where c.project_id = $1 and c.platform = $2 and c.chat_id = $3)
+             and not exists (select 1 from project_settings s
+                             where s.project_id = $1 and (s.{platform}_failed_at > now() - interval '1 hour' or s.meta_held_until > now()))"
+        ),
         _ => {
             let (name, failed_at) = columns(platform);
             // The wait Stack Exchange, Discord or Telegram asked for.
@@ -679,10 +717,15 @@ async fn post_hashnode(state: &AppState, a: &Accounts, post: &SocialPost) -> Res
     }
 }
 
-/// The picked channel a Discord or Telegram post goes to.
+/// The picked channel a Discord or Telegram post goes to, or the Page or Instagram account.
 fn channel<'a>(a: &'a Accounts, post: &SocialPost) -> Result<&'a SocialChannel, Failure> {
     let channel = a.channels.iter().find(|c| Some(c.id) == post.channel_id && c.platform == post.platform);
-    let channel = channel.ok_or_else(|| Failure::Post(format!("The bot can't see that {} channel anymore", name(&post.platform))))?;
+    let gone = match post.platform.as_str() {
+        "facebook" => "The Page isn't one you manage anymore".to_string(),
+        "instagram" => "The Instagram account isn't linked to a Page you manage anymore".to_string(),
+        p => format!("The bot can't see that {} channel anymore", name(p)),
+    };
+    let channel = channel.ok_or(Failure::Post(gone))?;
     if !channel.picked {
         return Err(Failure::Post(format!("Pick {} on the integrations page again to post there", channel.label())));
     }
@@ -717,6 +760,60 @@ async fn post_telegram(state: &AppState, a: &Accounts, post: &SocialPost) -> Res
         crate::social_channels::hold(&state.db, a.project_id, "telegram", wait).await;
     }
     sent
+}
+
+/// A Page post, or an answer to a comment on one of the Page's posts.
+async fn post_facebook(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let c = channel(a, post)?;
+    let graph = a.graph(state, c)?;
+    let sent = match post.in_reply_to.as_deref() {
+        Some(link) => match meta::facebook_comment(link) {
+            Some((_, comment)) => graph.reply_facebook(&comment, &post.body).await,
+            None => Err(Failure::Post("That isn't a link to a comment on your Page".into())),
+        },
+        None => graph.page_post(&c.chat_id, &post.body, &post.link).await,
+    };
+    meta::settle(&state.db, a.project_id, &graph).await;
+    sent
+}
+
+/// An answer to a comment, or a post, which Instagram makes in two steps: a media container for the picture, then publishing
+/// it once it's ready. The container is saved first, so a try that finds it still processing leaves it for the next one, and
+/// one that published it without hearing back finds it published. It's dropped only when Instagram rejects the container.
+async fn post_instagram(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let c = channel(a, post)?;
+    let graph = a.graph(state, c)?;
+    let sent = match post.in_reply_to.as_deref() {
+        Some(link) => match meta::instagram_comment(link) {
+            Some((_, comment)) => graph.reply_instagram(&comment, &post.body, link).await,
+            None => Err(Failure::Post("That isn't a link to a comment on your Instagram account".into())),
+        },
+        None => publish_instagram(&state.db, &graph, c, post).await,
+    };
+    meta::settle(&state.db, a.project_id, &graph).await;
+    sent
+}
+
+async fn publish_instagram(db: &PgPool, graph: &Graph, c: &SocialChannel, post: &SocialPost) -> Result<String, Failure> {
+    let container = match post.container_id.as_str() {
+        "" => {
+            let made = graph.container(&c.chat_id, &post.image_url, &post.body).await?;
+            let saved = sqlx::query("update social_posts set container_id = $2 where id = $1").bind(post.id).bind(&made).execute(db).await;
+            saved.map_err(|e| Failure::Post(e.to_string()))?;
+            made
+        }
+        made => made.to_string(),
+    };
+    match graph.publish(&c.chat_id, &container).await? {
+        Published::Live(url) => Ok(url),
+        Published::Processing => Err(Failure::Account("Instagram is still getting the picture ready. The post goes out on the next try".into())),
+        Published::Rejected(why) => {
+            if let Err(e) = sqlx::query("update social_posts set container_id = '' where id = $1").bind(post.id).execute(db).await {
+                tracing::warn!(error = %e, "couldn't drop a container Instagram turned down");
+            }
+            Err(Failure::Post(why))
+        }
+    }
 }
 
 async fn post_discourse(state: &AppState, forum: &DiscourseForum, post: &SocialPost) -> Result<String, Failure> {

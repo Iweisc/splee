@@ -43,6 +43,8 @@ pub struct Me {
     mailbox_sign_in: Vec<&'static str>,
     /// The server has a Tumblr app, so the integrations page offers to connect Tumblr.
     tumblr_sign_in: bool,
+    /// The server has a Meta app, so the integrations page offers to sign in with Facebook for Pages and Instagram.
+    meta_sign_in: bool,
     /// The CRMs that sign in which the server has an app for, so the integrations page offers them.
     crm_sign_in: Vec<&'static str>,
     /// Round robin skips this member while it's on.
@@ -81,6 +83,7 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
     let operator = state.cfg.is_operator(&user.email);
     let mailbox_sign_in = crate::mail::oauth::configured(&state.cfg);
     let tumblr_sign_in = state.cfg.tumblr.is_some();
+    let meta_sign_in = state.cfg.meta.is_some();
     let crm_sign_in = crate::crm::signin::configured(&state.cfg);
     Ok(Me {
         user,
@@ -91,6 +94,7 @@ pub async fn me(state: &AppState, user_id: Uuid, org_id: Uuid) -> AppResult<Me> 
         operator,
         mailbox_sign_in,
         tumblr_sign_in,
+        meta_sign_in,
         crm_sign_in,
         away,
         owner_filters,
