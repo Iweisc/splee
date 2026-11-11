@@ -11,6 +11,7 @@ mod config;
 mod crm;
 mod crypto;
 mod deals;
+mod deliverability;
 mod dev;
 mod discord;
 mod discourse;
@@ -114,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
     }
     agent::spawn_workers(state.clone());
     mail::spawn_workers(state.clone());
+    deliverability::spawn_worker(state.clone());
     directory_queue::spawn_worker(state.db.clone());
     hiring::spawn_worker(state.db.clone());
     tech::spawn_worker(state.db.clone());

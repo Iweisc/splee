@@ -26,6 +26,7 @@ import {
   Rocket,
   Server,
   ShieldBan,
+  ShieldCheck,
   Smartphone,
   Swords,
   Target,
@@ -82,6 +83,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
 export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
   { label: "Domains", href: "/app/sending-domains", icon: Globe },
   { label: "Mailboxes", href: "/app/domains", icon: Server }, // D2
+  { label: "Deliverability", href: "/app/deliverability", icon: ShieldCheck },
   { label: "Booking pages", href: "/app/booking-pages", icon: CalendarCheck },
   { label: "Do-not-contact", href: "/app/dedup", icon: ShieldBan }, // D2
   { label: "Team", href: "/app/organization", icon: Users }, // D2

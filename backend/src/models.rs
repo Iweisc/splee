@@ -547,6 +547,8 @@ pub struct Mailbox {
     pub provider: String,
     /// The provider signed Splee out, so it waits for someone to sign in again.
     pub needs_reconnect: bool,
+    /// Set while the Deliverability check holds it (status paused, why in last_error). See crate::deliverability.
+    pub health_held_at: Option<Ts>,
 }
 
 /// A mailbox's booking page at /book/{slug}. See crate::booking.

@@ -163,7 +163,11 @@ export default function MailboxesPage() {
             <Link href="/app/sending-domains" className="font-medium text-foreground underline-offset-4 hover:underline">
               buy and set one up
             </Link>{" "}
-            for you.
+            for you, and{" "}
+            <Link href="/app/deliverability" className="font-medium text-foreground underline-offset-4 hover:underline">
+              Deliverability
+            </Link>{" "}
+            shows whether any of them is landing in trouble.
           </>
         }
         actions={data && data.length > 0 && connect}
@@ -196,6 +200,8 @@ export default function MailboxesPage() {
                       </p>
                       {m.needs_reconnect ? (
                         <Badge tone="red">Signed out</Badge>
+                      ) : isHeld(m) ? (
+                        <Badge tone="red">Held</Badge>
                       ) : (
                         <Badge tone={STATUS[m.status].tone}>{STATUS[m.status].label}</Badge>
                       )}
@@ -270,8 +276,18 @@ export default function MailboxesPage() {
 
                 <Health stats={stats?.find((s) => s.mailbox_id === m.id)} />
 
+                {isHeld(m) && (
+                  <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-pretty text-red-800">
+                    <p>{m.last_error}</p>
+                    <p className="mt-1">
+                      <Link href="/app/deliverability" className="font-medium underline underline-offset-2">
+                        See what to do on the Deliverability page
+                      </Link>
+                    </p>
+                  </div>
+                )}
                 {/* A signed-out mailbox's error only says what the box below it does. A paused one keeps why it was paused. */}
-                {m.last_error && !(m.needs_reconnect && m.status === "error") && (
+                {m.last_error && !isHeld(m) && !(m.needs_reconnect && m.status === "error") && (
                   <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 font-mono text-xs wrap-anywhere text-red-700">
                     <Message text={m.last_error} />
                   </p>
@@ -318,6 +334,9 @@ export default function MailboxesPage() {
     </>
   );
 }
+
+/** Paused by the Deliverability check, not by someone. */
+const isHeld = (m: Mailbox) => m.status === "paused" && m.health_held_at !== null;
 
 /** What happens next to a stopped mailbox. The sender tests an unreachable server or a used-up daily limit again itself. */
 function nextStep(m: Mailbox): string {

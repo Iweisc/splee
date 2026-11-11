@@ -450,7 +450,7 @@ pub struct Received {
 /// the spam pass already found it in spam. Anything else, a lookalike code included, is ordinary mail.
 pub async fn received(db: &sqlx::PgPool, mb: &Mailbox, raw: &[u8]) -> sqlx::Result<Option<Received>> {
     let Some(token) = token_in(raw) else { return Ok(None) };
-    sqlx::query_as::<_, Received>(
+    let found = sqlx::query_as::<_, Received>(
         "update warmup_emails set landed = coalesce(landed, 'inbox'), landed_at = coalesce(landed_at, now())
          where token = $1 and to_mailbox_id = $2
          returning id, from_mailbox_id, parent_id, subject",
@@ -458,7 +458,12 @@ pub async fn received(db: &sqlx::PgPool, mb: &Mailbox, raw: &[u8]) -> sqlx::Resu
     .bind(token)
     .bind(mb.id)
     .fetch_optional(db)
-    .await
+    .await?;
+    // Its Received headers name the server the sending mailbox's mail goes out from, for the IP blocklist checks.
+    if let Some(r) = &found {
+        crate::deliverability::note_received_ip(db, r.from_mailbox_id, raw).await?;
+    }
+    Ok(found)
 }
 
 /// Answers some of the new warmup emails in `found` (UID, email), then marks them all read, flags some and archives them.

@@ -33,6 +33,8 @@ pub struct Config {
     /// Instantly's, Smartlead's and lemlist's APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that
     /// answers for each tool under /instantly, /smartlead and /lemlist.
     pub outreach_api_url: String,
+    /// Google Postmaster Tools' API. Empty for Google's. Only tests and sandboxes set it, to a fake.
+    pub postmaster_api_url: String,
     /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
     /// which every organization shares.
     pub operator_emails: Vec<String>,
@@ -106,6 +108,7 @@ impl Config {
             twilio_api_url: env::var("TWILIO_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             bots_api_url: env::var("BOTS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             outreach_api_url: env::var("OUTREACH_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            postmaster_api_url: env::var("POSTMASTER_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             operator_emails: env::var("OPERATOR_EMAILS").map(|v| emails(&v)).unwrap_or_default(),
             google: OAuthApp::from_env("GOOGLE", "https://accounts.google.com/o/oauth2/v2/auth".into(), "https://oauth2.googleapis.com/token".into()),
             microsoft: {
@@ -167,6 +170,7 @@ mod tests {
             twilio_api_url: String::new(),
             bots_api_url: String::new(),
             outreach_api_url: String::new(),
+            postmaster_api_url: String::new(),
             operator_emails: emails(" Ops@Example.com,, admin@example.org "),
             google: None,
             microsoft: None,

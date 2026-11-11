@@ -20,6 +20,7 @@ mod visitors;
 pub mod linkedin;
 pub(crate) mod calendar;
 mod deals;
+mod deliverability;
 mod outreach;
 mod saved_replies;
 mod scores;
@@ -88,6 +89,7 @@ pub fn router() -> Router<AppState> {
         .merge(social::router())
         .merge(mailboxes::router())
         .merge(mailbox_oauth::router())
+        .merge(deliverability::router())
         .merge(tumblr::router())
         .merge(bots::router())
         .merge(sending_domains::router())

@@ -29,6 +29,7 @@ fn config(fake_url: &str) -> Config {
         porkbun_api_url: String::new(),
         twilio_api_url: String::new(),
         outreach_api_url: fake_url.into(),
+        postmaster_api_url: String::new(),
         bots_api_url: String::new(),
         operator_emails: Vec::new(),
         google: None,
