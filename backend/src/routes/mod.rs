@@ -19,6 +19,7 @@ mod visitors;
 pub mod linkedin;
 pub(crate) mod calendar;
 mod deals;
+mod outreach;
 mod saved_replies;
 mod scores;
 mod slack;
@@ -115,6 +116,7 @@ pub fn router() -> Router<AppState> {
         .merge(slack::router())
         .merge(texts::router())
         .merge(deals::router())
+        .merge(outreach::router())
         .route("/health", get(health))
 }
 

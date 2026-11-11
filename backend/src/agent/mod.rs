@@ -20,7 +20,7 @@ pub mod social;
 mod stackexchange;
 mod threads;
 mod tumblr;
-mod write;
+pub(crate) mod write;
 pub mod x;
 mod youtube;
 

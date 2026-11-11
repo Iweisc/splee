@@ -6,7 +6,7 @@ mod inbound;
 mod notify;
 pub mod oauth;
 pub mod providers;
-mod sender;
+pub(crate) mod sender;
 pub(crate) mod smtp;
 pub mod warmup;
 

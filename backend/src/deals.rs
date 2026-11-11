@@ -818,6 +818,7 @@ mod tests {
             porkbun_api_url: String::new(),
             twilio_api_url: String::new(),
             bots_api_url: String::new(),
+            outreach_api_url: String::new(),
             operator_emails: Vec::new(),
             google: None,
             microsoft: None,
