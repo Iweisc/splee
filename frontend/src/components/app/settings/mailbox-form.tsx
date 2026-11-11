@@ -1,14 +1,18 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
+import useSWR from "swr";
+import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
 import { isUrl } from "@/components/app/settings/is-url";
-import type { Mailbox, MailboxInput } from "@/lib/types";
+import type { BookingPage, Mailbox, MailboxInput } from "@/lib/types";
 import { SIGN_IN_LABEL } from "@/lib/mailbox";
 import { MicroLabel } from "@/components/app/work/states";
+import { toastError } from "@/components/app/settings/use-action";
 
 type Preset = "google" | "microsoft" | "zoho" | "custom";
 
@@ -208,13 +212,7 @@ export function MailboxForm({
       <Field label="Signature" hint="Signs the emails Splee writes when this mailbox sends them. Leave empty to use the project's.">
         <Textarea value={m.signature} onChange={(e) => set({ signature: e.target.value })} placeholder={"Alex Morgan\nFounder, Acme"} rows={2} />
       </Field>
-      <Field
-        label="Booking link"
-        hint="Replaces the project's booking link in those emails, so calls land on this person's calendar."
-        error={m.booking_link && !isUrl(m.booking_link) ? "Enter a full URL, e.g. https://cal.com/alex/intro" : null}
-      >
-        <Input type="url" value={m.booking_link} onChange={(e) => set({ booking_link: e.target.value.trim() })} placeholder="https://cal.com/alex/intro" />
-      </Field>
+      <BookingLinkField mailbox={mailbox} value={m.booking_link} onChange={(booking_link) => set({ booking_link })} />
 
       {!signedIn && (
         <>
@@ -386,5 +384,79 @@ export function MailboxForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** The mailbox's own scheduling link, or its Splee booking page, made with the defaults the first time it's picked. */
+function BookingLinkField({ mailbox, value, onChange }: { mailbox?: Mailbox; value: string; onChange: (link: string) => void }) {
+  const { data: pages, mutate } = useSWR<BookingPage[]>(mailbox ? "/booking-pages" : null, fetcher);
+  const page = pages?.find((p) => p.mailbox_id === mailbox?.id);
+  const [mode, setMode] = useState<"own" | "page" | null>(null);
+  const [own, setOwn] = useState(value);
+  const [loading, setLoading] = useState(false);
+  const shown = mode ?? (page && value === page.url ? "page" : "own");
+
+  const pick = async (next: "own" | "page") => {
+    setMode(next);
+    if (next === "own") return onChange(own === page?.url ? "" : own);
+    if (!mailbox) return;
+    if (page) return onChange(page.url);
+    setLoading(true);
+    try {
+      const created = await api<BookingPage>("/booking-pages", { body: { mailbox_id: mailbox.id } });
+      await mutate((all) => [...(all ?? []), created], { revalidate: false });
+      onChange(created.url);
+    } catch (e) {
+      toastError(e);
+      setMode("own");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Field
+      label="Booking link"
+      group
+      hint={shown === "own" ? "Replaces the project's booking link in those emails, so calls land on this person's calendar." : undefined}
+      error={shown === "own" && value && !isUrl(value) ? "Enter a full URL, e.g. https://cal.com/alex/intro" : null}
+    >
+      <Tabs
+        className="self-start"
+        value={shown}
+        onChange={pick}
+        options={[
+          { value: "own", label: "Your own link" },
+          { value: "page", label: "Splee booking page" },
+        ]}
+      />
+      {shown === "own" ? (
+        <Input
+          type="url"
+          aria-label="Booking link"
+          value={value}
+          onChange={(e) => {
+            setOwn(e.target.value.trim());
+            onChange(e.target.value.trim());
+          }}
+          placeholder="https://cal.com/alex/intro"
+        />
+      ) : !mailbox ? (
+        <p className="text-sm text-pretty text-muted-foreground">Connect the mailbox first. Then edit it and pick this to make its booking page.</p>
+      ) : loading || !page ? (
+        <p className="text-sm text-muted-foreground">Making the booking page…</p>
+      ) : (
+        <div className="grid gap-1.5">
+          <code className="rounded-lg border border-border-strong bg-muted px-3 py-2 font-mono text-sm break-all">{page.url}</code>
+          <p className="text-xs text-pretty text-muted-foreground">
+            Leads pick a free time and the call lands in both calendars. Set its hours and calendar on{" "}
+            <Link href="/app/booking-pages" className="underline underline-offset-2">
+              Booking pages
+            </Link>
+            .
+          </p>
+        </div>
+      )}
+    </Field>
   );
 }

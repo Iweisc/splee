@@ -511,6 +511,44 @@ pub struct Mailbox {
     pub needs_reconnect: bool,
 }
 
+/// A mailbox's booking page at /book/{slug}. See crate::booking.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct BookingPage {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub mailbox_id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub duration_minutes: i32,
+    pub timezone: String,
+    /// Monday first: None for a day off, else [start, end] in minutes after midnight.
+    pub hours: sqlx::types::Json<Vec<Option<[i32; 2]>>>,
+    pub buffer_minutes: i32,
+    pub notice_minutes: i32,
+    pub days_ahead: i32,
+    pub location: String,
+    #[serde(skip)]
+    pub calendar_url_enc: String,
+    pub calendar_error: String,
+    pub created_at: Ts,
+}
+
+/// A call booked on a booking page. Its token_hash and ip columns are left out.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Booking {
+    pub id: Uuid,
+    pub page_id: Uuid,
+    pub starts_at: Ts,
+    pub ends_at: Ts,
+    pub name: String,
+    pub email: String,
+    pub note: String,
+    pub timezone: String,
+    pub sequence: i32,
+    pub cancelled_at: Option<Ts>,
+    pub created_at: Ts,
+}
+
 /// A domain bought through the org's registrar to send from. `mailboxes` and `warming` count the org's mailboxes on it
 /// and those with warmup on. See crate::domains.
 #[derive(Debug, Clone, Serialize, FromRow)]

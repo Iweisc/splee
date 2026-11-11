@@ -7,7 +7,7 @@ mod notify;
 pub mod oauth;
 pub mod providers;
 mod sender;
-mod smtp;
+pub(crate) mod smtp;
 pub mod warmup;
 
 pub use notify::notify_team;
@@ -119,6 +119,13 @@ pub async fn send_system_email(state: &AppState, org_id: Uuid, to: &str, subject
     )?;
     smtp::send(&smtp::transport(state, &mb).await?, message).await?;
     Ok(true)
+}
+
+/// A calendar invite or cancellation from `mb`. See smtp::build_invite.
+pub async fn send_invite(state: &AppState, mb: &Mailbox, to: (&str, &str), subject: &str, body: &str, ics: &str, method: &str) -> anyhow::Result<()> {
+    let message = smtp::build_invite(mb, to.0, to.1, subject, body, ics, method)?;
+    smtp::send(&smtp::transport(state, mb).await?, message).await?;
+    Ok(())
 }
 
 /// An email as its lead would get it, sent to `to` from the org's first active mailbox. Returns false without one.
