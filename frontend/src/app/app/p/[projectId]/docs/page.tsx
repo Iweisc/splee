@@ -11,7 +11,7 @@ import { Badge, type BadgeTone } from "@/components/ui/misc";
 import { useOrigin } from "@/hooks/use-origin";
 
 interface Endpoint {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   summary: string;
   params?: [name: string, description: string][];
@@ -51,7 +51,7 @@ const LEAD = `{
   "scored_at": "2026-11-11T08:20:00Z"
 }`;
 
-const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PATCH: "amber" };
+const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PATCH: "amber", DELETE: "red" };
 
 const indent = (json: string, spaces: number) => json.replaceAll("\n", `\n${" ".repeat(spaces)}`);
 
@@ -229,6 +229,14 @@ function endpoints(projectId: string): Endpoint[] {
   "skipped": 1,
   "errors": [{ "row": 1, "error": "Duplicate: sarah@northwind.studio" }]
 }`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/leads/upsert`,
+      summary:
+        "Add one lead, or update the project's lead with that email. Fields you leave out or send empty keep what the lead has, and segment_id moves it into that campaign. created says which happened. 400 for a missing or invalid email, one on your do-not-contact list, or a campaign of another project.",
+      body: `{ "email": "sarah@northwind.studio", "title": "CEO", "segment_id": "5d0a…" }`,
+      response: `{ "created": false, "id": "c42e…", "email": "sarah@northwind.studio", "title": "CEO", "…": "…" }`,
     },
     {
       method: "POST",
@@ -527,6 +535,103 @@ function endpoints(projectId: string): Endpoint[] {
   ];
 }
 
+/** The REST hook endpoints Zapier, Make and n8n call. Keep the events in sync with rest_hooks::EVENTS in backend/src/rest_hooks.rs. */
+function hookEndpoints(projectId: string): Endpoint[] {
+  return [
+    {
+      method: "GET",
+      path: "/me",
+      summary: "The organization, key and projects your API key belongs to, for a tool's connection test.",
+      response: `{
+  "organization": { "id": "4e7c…", "name": "Acme" },
+  "api_key": { "id": "0b9d…", "name": "Zapier", "prefix": "splee_k3Rt9x" },
+  "projects": [{ "id": "${projectId}", "name": "Acme" }]
+}`,
+    },
+    {
+      method: "POST",
+      path: "/hooks",
+      summary:
+        "Subscribe a URL to one event. Leave out project_id to hear about every project. 400 for an unknown event or a URL Splee can't reach, like one on a private network.",
+      body: `{ "event": "hot_lead", "target_url": "https://hooks.zapier.com/hooks/standard/…", "project_id": "${projectId}" }`,
+      response: `{
+  "id": "e81f…",
+  "project_id": "${projectId}",
+  "event": "hot_lead",
+  "target_url": "https://hooks.zapier.com/hooks/standard/…",
+  "disabled_at": null,
+  "created_at": "2026-11-12T09:30:00Z",
+  "…": "…"
+}`,
+    },
+    {
+      method: "DELETE",
+      path: "/hooks/e81f…",
+      summary: "Unsubscribe, when the zap, scenario or workflow is turned off.",
+      response: `{ "ok": true }`,
+    },
+    {
+      method: "GET",
+      path: `/hooks/samples/hot_lead?project_id=${projectId}`,
+      summary:
+        "Up to 3 recent payloads of an event, the newest first, for a trigger's setup screen. With none yet, lead_added gives your newest leads and the others give one example.",
+      params: [["project_id", "optional, only this project's"]],
+      response: `[
+  {
+    "event": "hot_lead",
+    "project": { "id": "${projectId}", "name": "Acme" },
+    "lead": { "id": "c42e…", "full_name": "Sarah Chen", "email": "sarah@northwind.studio", "…": "…" },
+    "reply": { "id": "71aa…", "body": "Sounds interesting, can you send times for next week?", "classification": "hot", "…": "…" },
+    "url": "…"
+  }
+]`,
+    },
+  ];
+}
+
+const HOOK_EVENTS: [event: string, description: string][] = [
+  ["hot_lead", "a reply that shows interest, with the reply"],
+  ["lead_replied", "any reply a person wrote, with how Splee classified it"],
+  ["meeting_booked", "the lead booked a call, or your team marked them Meeting booked"],
+  ["status_changed", "someone on your team changed the lead's status, with previous_status"],
+  ["deal.won", "a deal closed as won, with the deal"],
+  ["lead_added", "a new lead in the project, from any source, within about a minute"],
+];
+
+function EndpointSection({ e, base }: { e: Endpoint; base: string }) {
+  const curl = [
+    `curl${e.method === "GET" ? "" : ` -X ${e.method}`} "${base}${e.path}"`,
+    `  -H "Authorization: Bearer $SPLEE_API_KEY"`,
+    ...(e.body ? [`  -H "Content-Type: application/json"`, `  -d '${e.body}'`] : []),
+  ].join(" \\\n");
+  return (
+    <Section
+      title={
+        <span className="flex items-center gap-2 font-mono text-sm">
+          <Badge tone={METHOD_TONES[e.method]}>{e.method}</Badge>
+          {/* Wraps on a phone, filling each line like the code below it. Firefox doesn't break it at the slashes, so
+              without this it widened the page. */}
+          <span className="min-w-0 break-all">{e.path.split("?")[0]}</span>
+        </span>
+      }
+      description={e.summary}
+    >
+      {e.params && (
+        <ul className="mb-4 space-y-1 text-sm">
+          {e.params.map(([name, description]) => (
+            <li key={name}>
+              <code className="font-mono">{name}</code> <span className="text-muted-foreground">{description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="grid gap-3">
+        <CodeBlock label="Request" code={curl} />
+        <CodeBlock label="Response" code={e.response} />
+      </div>
+    </Section>
+  );
+}
 
 export default function DocsPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -559,41 +664,26 @@ export default function DocsPage() {
             </div>
           </Section>
 
-          {endpoints(projectId).map((e) => {
-            const curl = [
-              `curl${e.method === "GET" ? "" : ` -X ${e.method}`} "${base}${e.path}"`,
-              `  -H "Authorization: Bearer $SPLEE_API_KEY"`,
-              ...(e.body ? [`  -H "Content-Type: application/json"`, `  -d '${e.body}'`] : []),
-            ].join(" \\\n");
-            return (
-              <Section
-                key={e.method + e.path}
-                title={
-                  <span className="flex items-center gap-2 font-mono text-sm">
-                    <Badge tone={METHOD_TONES[e.method]}>{e.method}</Badge>
-                    {/* Wraps on a phone, filling each line like the code below it. Firefox doesn't break it at the slashes, so
-                        without this it widened the page. */}
-                    <span className="min-w-0 break-all">{e.path.split("?")[0]}</span>
-                  </span>
-                }
-                description={e.summary}
-              >
-                {e.params && (
-                  <ul className="mb-4 space-y-1 text-sm">
-                    {e.params.map(([name, description]) => (
-                      <li key={name}>
-                        <code className="font-mono">{name}</code> <span className="text-muted-foreground">{description}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <div className="grid gap-3">
-                  <CodeBlock label="Request" code={curl} />
-                  <CodeBlock label="Response" code={e.response} />
-                </div>
-              </Section>
-            );
-          })}
+          {endpoints(projectId).map((e) => (
+            <EndpointSection key={e.method + e.path} e={e} base={base} />
+          ))}
+
+          <Section
+            title="Subscriptions for Zapier, Make and n8n"
+            description="Subscribe a URL to a lead event and Splee posts each one to it as it happens, with the same JSON and signature as the webhooks on the Integrations page. A post that gets 410 Gone turns the subscription off, and revoking the key stops all of its subscriptions."
+          >
+            <MicroLabel>Events</MicroLabel>
+            <ul className="mt-2 space-y-1 text-sm">
+              {HOOK_EVENTS.map(([event, description]) => (
+                <li key={event}>
+                  <code className="font-mono">{event}</code> <span className="text-muted-foreground">{description}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+          {hookEndpoints(projectId).map((e) => (
+            <EndpointSection key={e.method + e.path} e={e} base={base} />
+          ))}
         </SettingsColumn>
       </PageBody>
     </>

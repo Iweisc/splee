@@ -1,0 +1,69 @@
+[
+    {
+        "name": "project_id",
+        "type": "select",
+        "label": "Project",
+        "required": true,
+        "options": "rpc://listProjects"
+    },
+    {
+        "name": "segment_id",
+        "type": "select",
+        "label": "Campaign",
+        "options": "rpc://listCampaigns",
+        "help": "Puts the lead in this campaign."
+    },
+    {
+        "name": "email",
+        "type": "email",
+        "label": "Email",
+        "required": true
+    },
+    {
+        "name": "full_name",
+        "type": "text",
+        "label": "Full name"
+    },
+    {
+        "name": "first_name",
+        "type": "text",
+        "label": "First name"
+    },
+    {
+        "name": "last_name",
+        "type": "text",
+        "label": "Last name"
+    },
+    {
+        "name": "title",
+        "type": "text",
+        "label": "Job title"
+    },
+    {
+        "name": "company_name",
+        "type": "text",
+        "label": "Company"
+    },
+    {
+        "name": "company_domain",
+        "type": "text",
+        "label": "Company website",
+        "help": "Like northwind.example."
+    },
+    {
+        "name": "linkedin_url",
+        "type": "url",
+        "label": "LinkedIn URL"
+    },
+    {
+        "name": "city",
+        "type": "text",
+        "label": "City"
+    },
+    {
+        "name": "phone",
+        "type": "text",
+        "label": "Phone",
+        "help": "With the country code, like +44 20 7946 0000."
+    }
+]

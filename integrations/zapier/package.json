@@ -1,0 +1,17 @@
+{
+  "name": "splee-zapier",
+  "version": "1.0.0",
+  "description": "Splee for Zapier: start zaps from hot replies, bookings, won deals and new leads, and add or update leads from other apps.",
+  "main": "index.js",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "zapier-platform-core": "19.3.0"
+  }
+}

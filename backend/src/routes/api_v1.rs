@@ -33,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
+        .route("/v1/projects/{id}/leads/upsert", post(upsert_lead))
         .route("/v1/projects/{id}/companies", get(list_companies))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
@@ -204,10 +205,93 @@ async fn add_leads(
     Ok(Json(json!({ "imported": outcome.imported, "skipped": outcome.skipped, "errors": outcome.errors })))
 }
 
+#[derive(Serialize)]
+struct Upserted {
+    /// False when a lead with the email was already in the project and got updated.
+    created: bool,
+    #[serde(flatten)]
+    lead: Lead,
+}
+
+/// Adds one lead by email, or updates the project's lead with that email, for Zapier, Make and n8n steps. Empty fields keep
+/// what the lead has, and segment_id moves it into that campaign.
+async fn upsert_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<NewLead>) -> AppResult<Json<Upserted>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let Some(email) = util_input::email(&body.email) else {
+        let error = if body.email.trim().is_empty() { "Send the lead's email".to_string() } else { format!("Invalid email: {}", body.email.trim()) };
+        return Err(AppError::BadRequest(error));
+    };
+    if let Some(segment_id) = body.segment_id {
+        sqlx::query("select 1 from segments where id = $1 and project_id = $2")
+            .bind(segment_id)
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("That campaign isn't in this project".into()))?;
+    }
+    if let Some(lead) = update_by_email(&state.db, id, &email, &body).await? {
+        return Ok(Json(Upserted { created: false, lead }));
+    }
+    let outcome = util_lead_import::insert(&state.db, auth.org_id, id, "api", vec![(1, body)]).await?;
+    match (outcome.ids.first(), outcome.errors.into_iter().next()) {
+        (Some(&lead_id), _) => {
+            let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead_id).fetch_one(&state.db).await?;
+            Ok(Json(Upserted { created: true, lead }))
+        }
+        (None, Some(e)) => Err(AppError::BadRequest(e.error)),
+        // Another request added the same email in between, so the lead was updated by neither.
+        (None, None) => Err(AppError::Conflict("The lead was added by another request at the same moment. Try again".into())),
+    }
+}
+
+/// Updates the fields the body fills in on the project's lead with this email, or None when there's no such lead.
+async fn update_by_email(db: &PgPool, project_id: Uuid, email: &str, body: &NewLead) -> AppResult<Option<Lead>> {
+    let country: Option<String> = sqlx::query_scalar(
+        "select coalesce(nullif(l.country_code, ''), p.company ->> 'country_code') from leads l join projects p on p.id = l.project_id
+         where l.project_id = $1 and l.email = $2::citext",
+    )
+    .bind(project_id)
+    .bind(email)
+    .fetch_optional(db)
+    .await?
+    .flatten();
+    let supplied = util_lead_import::country_code(&body.country_code);
+    let phone = crate::phone::normalize(&body.phone, if supplied.is_empty() { country.as_deref().unwrap_or_default() } else { &supplied });
+    let text = |v: &str| v.trim().to_string();
+    Ok(sqlx::query_as::<_, Lead>(
+        "update leads set
+           full_name = coalesce(nullif($3, ''), full_name),
+           first_name = coalesce(nullif($4, ''), first_name), last_name = coalesce(nullif($5, ''), last_name),
+           title = coalesce(nullif($6, ''), title), company_name = coalesce(nullif($7, ''), company_name),
+           company_domain = coalesce($8, company_domain), linkedin_url = coalesce(nullif($9, ''), linkedin_url),
+           city = coalesce(nullif($10, ''), city), phone = coalesce($11, phone), segment_id = coalesce($12, segment_id),
+           country_code = coalesce(nullif($13, ''), country_code)
+         where project_id = $1 and email = $2::citext returning *",
+    )
+    .bind(project_id)
+    .bind(email)
+    .bind(text(&body.full_name))
+    .bind(text(&body.first_name))
+    .bind(text(&body.last_name))
+    .bind(text(&body.title))
+    .bind(text(&body.company_name))
+    .bind(util_input::domain(&body.company_domain))
+    .bind(text(&body.linkedin_url))
+    .bind(text(&body.city))
+    .bind(phone)
+    .bind(body.segment_id)
+    .bind(&supplied)
+    .fetch_optional(db)
+    .await?)
+}
+
 #[derive(Deserialize)]
 struct FindQuery {
     #[serde(default)]
     email: String,
+    /// Only this project's lead.
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    project_id: Option<Uuid>,
 }
 
 /// Calendars and CRMs know a person by email, not by lead id. The same person can be a lead in several projects, so this is a list.
@@ -218,10 +302,11 @@ async fn find_leads(State(state): State<AppState>, auth: ApiKeyAuth, Query(q): Q
     }
     let leads = sqlx::query_as::<_, Lead>(
         "select l.* from leads l join projects p on p.id = l.project_id
-         where p.org_id = $1 and l.email = $2::citext order by l.created_at desc limit 100",
+         where p.org_id = $1 and l.email = $2::citext and ($3::uuid is null or l.project_id = $3) order by l.created_at desc limit 100",
     )
     .bind(auth.org_id)
     .bind(email)
+    .bind(q.project_id)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(leads))

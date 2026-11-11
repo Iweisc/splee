@@ -40,6 +40,7 @@ mod phone;
 mod porkbun;
 mod reddit;
 mod reports;
+mod rest_hooks;
 mod routes;
 mod score;
 mod slack;

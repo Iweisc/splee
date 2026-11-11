@@ -1,0 +1,92 @@
+[
+    {
+        "name": "created",
+        "type": "boolean",
+        "label": "Created"
+    },
+    {
+        "name": "id",
+        "type": "text",
+        "label": "Lead ID"
+    },
+    {
+        "name": "project_id",
+        "type": "text",
+        "label": "Project ID"
+    },
+    {
+        "name": "segment_id",
+        "type": "text",
+        "label": "Campaign ID"
+    },
+    {
+        "name": "email",
+        "type": "email",
+        "label": "Email"
+    },
+    {
+        "name": "full_name",
+        "type": "text",
+        "label": "Full name"
+    },
+    {
+        "name": "first_name",
+        "type": "text",
+        "label": "First name"
+    },
+    {
+        "name": "last_name",
+        "type": "text",
+        "label": "Last name"
+    },
+    {
+        "name": "title",
+        "type": "text",
+        "label": "Job title"
+    },
+    {
+        "name": "company_name",
+        "type": "text",
+        "label": "Company"
+    },
+    {
+        "name": "company_domain",
+        "type": "text",
+        "label": "Company website"
+    },
+    {
+        "name": "linkedin_url",
+        "type": "url",
+        "label": "LinkedIn URL"
+    },
+    {
+        "name": "phone",
+        "type": "text",
+        "label": "Phone"
+    },
+    {
+        "name": "city",
+        "type": "text",
+        "label": "City"
+    },
+    {
+        "name": "status",
+        "type": "text",
+        "label": "Status"
+    },
+    {
+        "name": "owner_id",
+        "type": "text",
+        "label": "Owner ID"
+    },
+    {
+        "name": "meeting_at",
+        "type": "date",
+        "label": "Meeting at"
+    },
+    {
+        "name": "created_at",
+        "type": "date",
+        "label": "Created at"
+    }
+]

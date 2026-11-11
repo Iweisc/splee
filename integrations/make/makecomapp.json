@@ -1,0 +1,143 @@
+{
+    "fileVersion": 1,
+    "generalCodeFiles": {
+        "base": "general/base.iml.json",
+        "common": "general/common.json",
+        "readme": "README.md",
+        "groups": "general/groups.json"
+    },
+    "components": {
+        "connection": {
+            "splee": {
+                "label": "Splee",
+                "connectionType": "basic",
+                "codeFiles": {
+                    "communication": "connections/splee/splee.communication.iml.json",
+                    "params": "connections/splee/splee.params.iml.json"
+                }
+            }
+        },
+        "webhook": {
+            "splee": {
+                "label": "Splee lead events",
+                "webhookType": "web",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "webhooks/splee/splee.communication.iml.json",
+                    "params": "webhooks/splee/splee.params.iml.json",
+                    "attach": "webhooks/splee/splee.attach.iml.json",
+                    "detach": "webhooks/splee/splee.detach.iml.json"
+                }
+            }
+        },
+        "module": {
+            "watchEvents": {
+                "label": "Watch events",
+                "description": "Starts when a lead replies, books, changes status, wins a deal or is added.",
+                "moduleType": "instant_trigger",
+                "connection": "splee",
+                "webhook": "splee",
+                "codeFiles": {
+                    "communication": "modules/watchEvents/watchEvents.communication.iml.json",
+                    "staticParams": "modules/watchEvents/watchEvents.static-params.iml.json",
+                    "mappableParams": "modules/watchEvents/watchEvents.mappable-params.iml.json",
+                    "interface": "modules/watchEvents/watchEvents.interface.iml.json",
+                    "samples": "modules/watchEvents/watchEvents.samples.iml.json"
+                }
+            },
+            "upsertLead": {
+                "label": "Add or update a lead",
+                "description": "Adds a lead to a project, or updates the one with that email.",
+                "moduleType": "action",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "modules/upsertLead/upsertLead.communication.iml.json",
+                    "staticParams": "modules/upsertLead/upsertLead.static-params.iml.json",
+                    "mappableParams": "modules/upsertLead/upsertLead.mappable-params.iml.json",
+                    "interface": "modules/upsertLead/upsertLead.interface.iml.json",
+                    "samples": "modules/upsertLead/upsertLead.samples.iml.json"
+                }
+            },
+            "addToDoNotContact": {
+                "label": "Add to the do-not-contact list",
+                "description": "Stops Splee from ever emailing or texting this address, domain or phone number.",
+                "moduleType": "action",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "modules/addToDoNotContact/addToDoNotContact.communication.iml.json",
+                    "staticParams": "modules/addToDoNotContact/addToDoNotContact.static-params.iml.json",
+                    "mappableParams": "modules/addToDoNotContact/addToDoNotContact.mappable-params.iml.json",
+                    "interface": "modules/addToDoNotContact/addToDoNotContact.interface.iml.json",
+                    "samples": "modules/addToDoNotContact/addToDoNotContact.samples.iml.json"
+                }
+            },
+            "setLeadStatus": {
+                "label": "Set a lead's status",
+                "description": "Finds the lead by email in a project and changes its status.",
+                "moduleType": "action",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "modules/setLeadStatus/setLeadStatus.communication.iml.json",
+                    "staticParams": "modules/setLeadStatus/setLeadStatus.static-params.iml.json",
+                    "mappableParams": "modules/setLeadStatus/setLeadStatus.mappable-params.iml.json",
+                    "interface": "modules/setLeadStatus/setLeadStatus.interface.iml.json",
+                    "samples": "modules/setLeadStatus/setLeadStatus.samples.iml.json"
+                }
+            },
+            "assignLeadOwner": {
+                "label": "Assign a lead's owner",
+                "description": "Finds the lead by email in a project and gives it to someone on your team.",
+                "moduleType": "action",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "modules/assignLeadOwner/assignLeadOwner.communication.iml.json",
+                    "staticParams": "modules/assignLeadOwner/assignLeadOwner.static-params.iml.json",
+                    "mappableParams": "modules/assignLeadOwner/assignLeadOwner.mappable-params.iml.json",
+                    "interface": "modules/assignLeadOwner/assignLeadOwner.interface.iml.json",
+                    "samples": "modules/assignLeadOwner/assignLeadOwner.samples.iml.json"
+                }
+            },
+            "findLead": {
+                "label": "Find a lead",
+                "description": "Finds leads by email, in one project or all.",
+                "moduleType": "search",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "modules/findLead/findLead.communication.iml.json",
+                    "staticParams": "modules/findLead/findLead.static-params.iml.json",
+                    "mappableParams": "modules/findLead/findLead.mappable-params.iml.json",
+                    "interface": "modules/findLead/findLead.interface.iml.json",
+                    "samples": "modules/findLead/findLead.samples.iml.json"
+                }
+            }
+        },
+        "rpc": {
+            "listProjects": {
+                "label": "List projects",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "rpcs/listProjects/listProjects.communication.iml.json",
+                    "params": "rpcs/listProjects/listProjects.params.iml.json"
+                }
+            },
+            "listCampaigns": {
+                "label": "List campaigns",
+                "connection": "splee",
+                "codeFiles": {
+                    "communication": "rpcs/listCampaigns/listCampaigns.communication.iml.json",
+                    "params": "rpcs/listCampaigns/listCampaigns.params.iml.json"
+                }
+            }
+        },
+        "function": {}
+    },
+    "origins": [
+        {
+            "label": "Make",
+            "baseUrl": "https://eu1.make.com/api",
+            "appId": "splee",
+            "appVersion": 1,
+            "apikeyFile": ".secrets/apikey"
+        }
+    ]
+}

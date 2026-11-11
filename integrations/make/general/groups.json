@@ -1,0 +1,23 @@
+[
+    {
+        "label": "Triggers",
+        "modules": [
+            "watchEvents"
+        ]
+    },
+    {
+        "label": "Leads",
+        "modules": [
+            "upsertLead",
+            "setLeadStatus",
+            "assignLeadOwner",
+            "findLead"
+        ]
+    },
+    {
+        "label": "Do-not-contact list",
+        "modules": [
+            "addToDoNotContact"
+        ]
+    }
+]

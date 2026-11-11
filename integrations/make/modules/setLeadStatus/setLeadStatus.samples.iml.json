@@ -1,0 +1,10 @@
+{
+    "id": "c42e7a10-0000-4000-8000-000000000002",
+    "project_id": "9b1f6c2e-0000-4000-8000-000000000001",
+    "email": "sarah@northwind.example",
+    "full_name": "Sarah Chen",
+    "title": "Founder",
+    "company_name": "Northwind Studio",
+    "company_domain": "northwind.example",
+    "status": "meeting_booked"
+}

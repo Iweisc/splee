@@ -153,19 +153,42 @@ impl FromRequestParts<AppState> for ApiKeyAuth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let KeyAuth { org_id, .. } = KeyAuth::from_request_parts(parts, state).await?;
+        Ok(ApiKeyAuth { org_id })
+    }
+}
+
+/// Like ApiKeyAuth, with the key too, for what belongs to a key rather than the organization: the REST hook subscriptions
+/// Zapier, Make and n8n make, which stop when their key is revoked.
+#[derive(Debug, Clone)]
+pub struct KeyAuth {
+    pub org_id: Uuid,
+    pub key_id: Uuid,
+}
+
+impl FromRequestParts<AppState> for KeyAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let key = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or(AppError::Unauthorized)?;
-        Ok(ApiKeyAuth { org_id: api_key_org(&state.db, key).await?.ok_or(AppError::Unauthorized)? })
+        let (org_id, key_id) = api_key(&state.db, key).await?.ok_or(AppError::Unauthorized)?;
+        Ok(KeyAuth { org_id, key_id })
     }
 }
 
 /// The organization of a live API key.
 pub async fn api_key_org(db: &PgPool, key: &str) -> sqlx::Result<Option<Uuid>> {
-    sqlx::query_scalar("update api_keys set last_used_at = now() where key_hash = $1 and revoked_at is null returning org_id")
+    Ok(api_key(db, key).await?.map(|(org_id, _)| org_id))
+}
+
+/// The organization and id of a live API key.
+async fn api_key(db: &PgPool, key: &str) -> sqlx::Result<Option<(Uuid, Uuid)>> {
+    sqlx::query_as("update api_keys set last_used_at = now() where key_hash = $1 and revoked_at is null returning org_id, id")
         .bind(sha256_hex(key))
         .fetch_optional(db)
         .await

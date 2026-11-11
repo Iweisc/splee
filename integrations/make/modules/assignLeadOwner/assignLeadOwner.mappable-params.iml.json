@@ -1,0 +1,21 @@
+[
+    {
+        "name": "project_id",
+        "type": "select",
+        "label": "Project",
+        "required": true,
+        "options": "rpc://listProjects"
+    },
+    {
+        "name": "email",
+        "type": "email",
+        "label": "Email",
+        "required": true
+    },
+    {
+        "name": "owner",
+        "type": "email",
+        "label": "Owner's email",
+        "help": "Someone on your Splee team. Leave it empty to unassign."
+    }
+]

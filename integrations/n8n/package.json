@@ -1,0 +1,27 @@
+{
+  "name": "n8n-nodes-splee",
+  "version": "1.0.0",
+  "description": "Splee for n8n: start workflows from hot replies, bookings, won deals and new leads, and add or update leads.",
+  "keywords": ["n8n-community-node-package", "splee", "outbound", "leads"],
+  "license": "AGPL-3.0-only",
+  "repository": { "type": "git", "url": "https://github.com/Iweisc/splee.git", "directory": "integrations/n8n" },
+  "main": "index.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc && cp nodes/Splee/splee.svg dist/nodes/Splee/ && cp nodes/SpleeTrigger/splee.svg dist/nodes/SpleeTrigger/",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": ["dist/credentials/SpleeApi.credentials.js"],
+    "nodes": ["dist/nodes/Splee/Splee.node.js", "dist/nodes/SpleeTrigger/SpleeTrigger.node.js"]
+  },
+  "devDependencies": {
+    "n8n-workflow": "^2.16.0",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

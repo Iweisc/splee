@@ -1,0 +1,11 @@
+{
+    "url": "/projects/{{parameters.project_id}}/campaigns",
+    "condition": "{{parameters.project_id}}",
+    "response": {
+        "iterate": "{{body}}",
+        "output": {
+            "label": "{{item.name}}",
+            "value": "{{item.id}}"
+        }
+    }
+}

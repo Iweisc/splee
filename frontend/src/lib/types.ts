@@ -568,6 +568,22 @@ export interface Endpoint {
   created_at: Ts;
 }
 
+/** What a REST hook subscription can be for. Keep in sync with rest_hooks::EVENTS in backend/src/rest_hooks.rs. */
+export type HookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "status_changed" | "deal.won" | "lead_added";
+
+/** A Zapier, Make or n8n trigger listening for one lead event (GET /projects/{id}/hook-subscriptions), made with an API key. */
+export interface HookSubscription {
+  id: UUID;
+  /** Null for every project of the organization. */
+  project_id: UUID | null;
+  event: HookEvent;
+  target_url: string;
+  key_name: string;
+  error: string | null;
+  failed_at: Ts | null;
+  created_at: Ts;
+}
+
 /** A Discourse forum the project joins, as one user. Its key is write-only, through POST /projects/:id/discourse-forums. */
 export interface DiscourseForum {
   id: UUID;

@@ -1,0 +1,19 @@
+[
+    {
+        "name": "baseUrl",
+        "type": "url",
+        "label": "Base URL",
+        "required": true,
+        "help": "The base URL on the Integrations page in Splee, like https://splee.example.com/api/v1.",
+        "validate": {
+            "pattern": "^https?://.+/api/v1$"
+        }
+    },
+    {
+        "name": "apiKey",
+        "type": "password",
+        "label": "API key",
+        "required": true,
+        "help": "Create one on the API keys page in Splee."
+    }
+]

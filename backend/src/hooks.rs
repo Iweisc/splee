@@ -56,12 +56,19 @@ pub async fn public_addrs(url: &Url) -> anyhow::Result<Vec<SocketAddr>> {
     let host = url.host_str().context("the URL has no host")?;
     let port = url.port_or_known_default().context("the URL has no port")?;
     let addrs: Vec<SocketAddr> = match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        #[cfg(test)]
+        Ok(ip) if ip.is_loopback() && TEST_RECEIVERS.lock().unwrap().contains(&port) => return Ok(vec![SocketAddr::new(ip, port)]),
         Ok(ip) => vec![SocketAddr::new(ip, port)],
         Err(_) => tokio::net::lookup_host((host, port)).await?.collect(),
     };
     anyhow::ensure!(!addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip())), "{host} is not a public address");
     Ok(addrs)
 }
+
+/// The ports of receivers tests run on this machine, which are let through as if public. Everything else on loopback is
+/// still refused, so the tests of the refusal keep their meaning. Only test builds have this.
+#[cfg(test)]
+pub(crate) static TEST_RECEIVERS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
     let url = Url::parse(raw.trim())?;
@@ -177,6 +184,11 @@ pub async fn post_json_retrying(raw: &str, body: &Value, secret: Option<&str>) -
         }
         result => result,
     }
+}
+
+/// Whether the endpoint answered 410 Gone, which is how Zapier says a hook's zap was turned off or deleted.
+pub fn gone(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Refused>().is_some_and(|r| r.status == reqwest::StatusCode::GONE)
 }
 
 fn transient(e: &anyhow::Error) -> bool {
@@ -310,15 +322,22 @@ pub const EVENTS: [&str; 15] = [
 /// "previous_status" or "deal", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;
 
-/// The endpoint URLs, secret and payload for a lead event, or None when the project has no endpoint or doesn't send it.
-async fn lead_event(
-    db: &sqlx::PgPool,
-    public_url: &str,
-    project_id: Uuid,
-    event: &str,
-    lead: &Lead,
-    detail: Detail,
-) -> sqlx::Result<Option<(Vec<String>, String, Value)>> {
+/// Where a lead event goes: the project's webhook endpoints when it sends that event, and the REST hook subscriptions to it,
+/// each with the signing secret and payload.
+struct Recipients {
+    urls: Vec<String>,
+    subscriptions: Vec<crate::rest_hooks::Target>,
+    secret: String,
+    payload: Value,
+}
+
+/// The recipients of a lead event, or None when nothing gets it.
+async fn lead_event(db: &sqlx::PgPool, public_url: &str, project_id: Uuid, event: &str, lead: &Lead, detail: Detail) -> sqlx::Result<Option<Recipients>> {
+    let subscriptions = crate::rest_hooks::targets(db, project_id, event).await?;
+    if !subscriptions.is_empty() {
+        // Subscriptions are signed with the project's secret too, and an older project may have no settings yet.
+        sqlx::query("insert into project_settings (project_id) values ($1) on conflict do nothing").bind(project_id).execute(db).await?;
+    }
     let settings: Option<(String, Vec<String>, String)> = sqlx::query_as(
         "select s.webhook_secret, s.webhook_events, p.name from project_settings s join projects p on p.id = s.project_id where s.project_id = $1",
     )
@@ -326,20 +345,23 @@ async fn lead_event(
     .fetch_optional(db)
     .await?;
     let Some((secret, events, name)) = settings else { return Ok(None) };
-    if !events.iter().any(|e| e == event) {
+    let urls: Vec<String> = if events.iter().any(|e| e == event) {
+        sqlx::query_scalar("select url from webhook_endpoints where project_id = $1 order by created_at").bind(project_id).fetch_all(db).await?
+    } else {
+        Vec::new()
+    };
+    if urls.is_empty() && subscriptions.is_empty() {
         return Ok(None);
     }
-    let urls: Vec<String> = sqlx::query_scalar("select url from webhook_endpoints where project_id = $1 order by created_at")
-        .bind(project_id)
-        .fetch_all(db)
-        .await?;
-    if urls.is_empty() {
-        return Ok(None);
-    }
-    // Keep in sync with PAYLOAD on the integrations page.
+    let payload = payload(public_url, project_id, &name, event, lead, detail);
+    Ok(Some(Recipients { urls, subscriptions, secret, payload }))
+}
+
+/// The JSON every lead event posts. Keep in sync with PAYLOAD on the integrations page.
+pub fn payload(public_url: &str, project_id: Uuid, project_name: &str, event: &str, lead: &Lead, detail: Detail) -> Value {
     let mut payload = json!({
         "event": event,
-        "project": {"id": project_id, "name": name},
+        "project": {"id": project_id, "name": project_name},
         "lead": {
             "id": lead.id, "full_name": lead.full_name, "email": lead.email, "title": lead.title, "status": lead.status,
             "company_name": lead.company_name, "company_domain": lead.company_domain,
@@ -351,15 +373,19 @@ async fn lead_event(
     if let Some((key, value)) = detail {
         payload[key] = value;
     }
-    Ok(Some((urls, secret, payload)))
+    payload
 }
 
-/// Posts a lead event to each of the project's webhook endpoints when it sends that event. Delivery runs in the
-/// background, one task per endpoint, so a slow receiver never holds up a run, a request or the other endpoints.
-/// Failures are logged and shown on the integrations page.
+/// Posts a lead event to each of the project's webhook endpoints when it sends that event, and to each REST hook
+/// subscription to it. Delivery runs in the background, one task per URL, so a slow receiver never holds up a run, a
+/// request or the other URLs. Failures are logged and shown on the integrations page.
 pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, detail: Detail) {
     match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, detail).await {
-        Ok(Some((urls, secret, payload))) => {
+        Ok(Some(Recipients { urls, subscriptions, secret, payload })) => {
+            for target in subscriptions {
+                let (db, secret, payload) = (state.db.clone(), secret.clone(), payload.clone());
+                tokio::spawn(async move { crate::rest_hooks::deliver(&db, project_id, event, &target, &payload, &secret).await });
+            }
             for url in urls {
                 let (db, secret, payload) = (state.db.clone(), secret.clone(), payload.clone());
                 tokio::spawn(async move {
@@ -1034,7 +1060,7 @@ mod tests {
             .unwrap();
         let event = |name: &'static str| lead_event(&db, "https://app.test", project, name, &lead, None);
 
-        let (urls, _, payload) = event("hot_lead").await.unwrap().unwrap();
+        let Recipients { urls, payload, .. } = event("hot_lead").await.unwrap().unwrap();
         assert_eq!(urls, ["https://crm.example/hook", "https://hooks.zapier.example/1"]);
         assert_eq!(payload["event"], "hot_lead");
         assert_eq!(payload["project"]["name"], "Acme");
@@ -1050,10 +1076,10 @@ mod tests {
             .await
             .unwrap();
         assert!(event("hot_lead").await.unwrap().is_none());
-        assert_eq!(event("lead_bounced").await.unwrap().unwrap().2["reply"], Value::Null);
+        assert_eq!(event("lead_bounced").await.unwrap().unwrap().payload["reply"], Value::Null);
 
         sqlx::query("update project_settings set webhook_events = '{email_sent}' where project_id = $1").bind(project).execute(&db).await.unwrap();
-        let sent = lead_event(&db, "https://app.test", project, "email_sent", &lead, Some(("email", json!({"subject": "Hi Sarah"})))).await.unwrap().unwrap().2;
+        let sent = lead_event(&db, "https://app.test", project, "email_sent", &lead, Some(("email", json!({"subject": "Hi Sarah"})))).await.unwrap().unwrap().payload;
         assert_eq!(sent["email"]["subject"], "Hi Sarah");
         assert_eq!(sent["reply"], Value::Null);
 

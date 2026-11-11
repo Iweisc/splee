@@ -1,0 +1,24 @@
+{
+    "event": "hot_lead",
+    "project": {
+        "id": "9b1f6c2e-0000-4000-8000-000000000001",
+        "name": "Acme"
+    },
+    "lead": {
+        "id": "c42e7a10-0000-4000-8000-000000000002",
+        "email": "sarah@northwind.example",
+        "full_name": "Sarah Chen",
+        "title": "Founder",
+        "company_name": "Northwind Studio",
+        "company_domain": "northwind.example",
+        "status": "hot"
+    },
+    "reply": {
+        "id": "71aa3d4b-0000-4000-8000-000000000003",
+        "subject": "Re: Northwind Studio x Acme",
+        "body": "Sounds interesting, can you send times for next week?",
+        "classification": "hot",
+        "reason": "Asks to schedule a call"
+    },
+    "url": "https://splee.example.com/app/p/9b1f6c2e-0000-4000-8000-000000000001/inbox?lead=c42e7a10-0000-4000-8000-000000000002"
+}

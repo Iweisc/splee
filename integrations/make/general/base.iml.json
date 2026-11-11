@@ -1,0 +1,16 @@
+{
+    "baseUrl": "{{connection.baseUrl}}",
+    "headers": {
+        "Authorization": "Bearer {{connection.apiKey}}"
+    },
+    "response": {
+        "error": {
+            "message": "[{{statusCode}}] {{body.error}}"
+        }
+    },
+    "log": {
+        "sanitize": [
+            "request.headers.authorization"
+        ]
+    }
+}

@@ -1,0 +1,16 @@
+{
+    "url": "/suppressions",
+    "method": "POST",
+    "body": {
+        "values": [
+            "{{trim(parameters.value)}}"
+        ]
+    },
+    "type": "json",
+    "response": {
+        "output": {
+            "value": "{{trim(parameters.value)}}",
+            "added": "{{body.added > 0}}"
+        }
+    }
+}

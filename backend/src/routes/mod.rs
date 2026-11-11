@@ -50,6 +50,7 @@ pub(crate) mod analytics;
 pub mod api_keys;
 pub mod api_v1;
 mod mcp;
+mod rest_hooks;
 pub mod oauth;
 pub mod stats;
 pub mod demo;
@@ -107,6 +108,7 @@ pub fn router() -> Router<AppState> {
         .merge(api_v1::router())
         .merge(extension::router())
         .merge(mcp::router())
+        .merge(rest_hooks::router())
         .merge(oauth::router())
         .merge(stats::router())
         .merge(analytics::router())

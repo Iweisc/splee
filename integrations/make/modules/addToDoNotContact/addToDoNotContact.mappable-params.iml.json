@@ -1,0 +1,9 @@
+[
+    {
+        "name": "value",
+        "type": "text",
+        "label": "Email, domain or phone",
+        "required": true,
+        "help": "A phone number needs its country code, like +44 20 7946 0000."
+    }
+]
