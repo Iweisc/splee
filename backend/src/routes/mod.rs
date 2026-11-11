@@ -20,6 +20,7 @@ mod calendar;
 mod saved_replies;
 mod slack;
 mod sending_domains;
+mod texts;
 mod social;
 pub mod org;
 pub mod projects;
@@ -103,6 +104,7 @@ pub fn router() -> Router<AppState> {
         .merge(calendar::router())
         .merge(directory::router())
         .merge(slack::router())
+        .merge(texts::router())
         .route("/health", get(health))
 }
 

@@ -9,7 +9,7 @@ import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply } from "@/lib/types";
+import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
@@ -197,11 +197,18 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
 
   const messages = data?.messages ?? [];
   const pendingDraft = messages.find((m) => m.kind === "auto_reply" && m.status === "draft");
-  const conversation = messages.filter((m) => m !== pendingDraft && m.status !== "cancelled");
+  // Texts Splee sent sit among the emails by time. Drafts and cancelled ones are on the Texts page.
+  const texts = (data?.lead.texts ?? []).filter((t) => !["draft", "cancelled"].includes(t.status));
+  const conversation: (EmailMessage | TextMessage)[] = [...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"), ...texts].sort(
+    (a, b) => new Date(at(a)).getTime() - new Date(at(b)).getTime(),
+  );
+  // They last wrote by text, so the reply box answers on that channel.
+  const textChannel = messages.findLast((m) => m.direction === "inbound")?.channel;
+  const byText = textChannel === "sms" || textChannel === "whatsapp" ? textChannel : null;
   // The lead wrote last and nobody has dealt with it yet.
   const last = conversation.at(-1);
   const reminderDue = !!data?.lead.remind_at && isPast(data.lead.remind_at);
-  const awaiting = (last?.direction === "inbound" && !last.handled_at) || reminderDue;
+  const awaiting = (!!last && "direction" in last && last.direction === "inbound" && !last.handled_at) || reminderDue;
 
   const [marking, setMarking] = useState(false);
   const markDone = async () => {
@@ -267,12 +274,12 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     }
   };
   // Bounces aren't replies, so there's nothing to answer.
-  const canDraft = !pendingDraft && !activeRun && messages.some((m) => m.direction === "inbound" && m.classification !== "bounce");
+  const canDraft = !byText && !pendingDraft && !activeRun && messages.some((m) => m.direction === "inbound" && m.classification !== "bounce");
 
   const send = async () => {
     setSending(true);
     try {
-      await api(`/inbox/threads/${leadId}/reply`, { body: { body: reply.trim() } });
+      await api(`/inbox/threads/${leadId}/${byText ? "text" : "reply"}`, { body: { body: reply.trim() } });
       // Cleared here too: if you opened another thread while it sent, this pane is gone and its effect won't run.
       sessionStorage.removeItem(draftKey);
       setReply("");
@@ -366,9 +373,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       </div>
 
       <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5 focus-visible:-outline-offset-2">
-        {conversation.map((m) => (
-          <Bubble key={m.id} message={m} />
-        ))}
+        {conversation.map((m) => ("direction" in m ? <Bubble key={m.id} message={m} /> : <TextBubble key={m.id} text={m} />))}
         {pendingDraft && <PendingReply key={pendingDraft.id} draft={pendingDraft} onDone={refresh} />}
         {activeRun && (
           <li className="flex items-center gap-2 self-end rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
@@ -389,7 +394,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim()) send();
           }}
-          placeholder={`Reply to ${lead.first_name || lead.full_name || "lead"}…`}
+          placeholder={`${byText === "whatsapp" ? "Reply on WhatsApp to" : byText ? "Text" : "Reply to"} ${lead.first_name || lead.full_name || "lead"}…`}
           className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @xs:flex-1"
         />
         <SavedReplyMenu
@@ -522,6 +527,28 @@ function ReminderBadge({ at }: { at: string }) {
   );
 }
 
+/** When a message or text happened, for ordering the thread. */
+function at(m: EmailMessage | TextMessage) {
+  return m.sent_at ?? ("scheduled_for" in m ? m.scheduled_for : m.due_at) ?? m.created_at;
+}
+
+const CHANNEL = { sms: "Text", whatsapp: "WhatsApp" } as const;
+
+function TextBubble({ text: t }: { text: TextMessage }) {
+  const failed = t.status === "failed";
+  return (
+    <li className="flex max-w-[min(80%,36rem)] flex-col items-end gap-1 self-end">
+      <div className={cn("max-w-full rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", failed ? "bg-red-50" : "bg-sky-100/70")}>
+        <Message text={t.body} />
+      </div>
+      <span className="flex flex-wrap items-center justify-end gap-1.5 px-1 text-[11px] text-muted-foreground">
+        {CHANNEL[t.channel]} ·{failed ? <span className="text-red-700">{t.error || "Failed"}</span> : t.status === "approved" || t.status === "sending" ? " Sending ·" : ""}{" "}
+        {dateTime(at(t))}
+      </span>
+    </li>
+  );
+}
+
 function Bubble({ message: m }: { message: EmailMessage }) {
   const inbound = m.direction === "inbound";
   return (
@@ -534,6 +561,7 @@ function Bubble({ message: m }: { message: EmailMessage }) {
       </div>
       <span className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
         {inbound && m.classification && <ClassificationBadge value={m.classification} />}
+        {m.channel !== "email" && `${CHANNEL[m.channel]} · `}
         {!inbound && m.kind === "auto_reply" && "Auto-reply · "}
         {!inbound && m.status !== "sent" && <EmailStatusBadge status={m.status} />}
         {dateTime(m.sent_at ?? m.scheduled_for ?? m.created_at)}

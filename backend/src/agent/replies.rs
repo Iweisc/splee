@@ -139,6 +139,11 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
                 .bind(back)
                 .execute(db)
                 .await?;
+            sqlx::query("update text_messages set due_at = greatest(due_at, $2) where lead_id = $1 and status in ('draft', 'approved')")
+                .bind(lead_id)
+                .bind(back)
+                .execute(db)
+                .await?;
             return Ok(());
         }
         "unsubscribe" => {
@@ -171,6 +176,7 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
         .execute(db)
         .await?;
     sqlx::query(mail::STOP_LINKEDIN).bind(lead_id).execute(db).await?;
+    sqlx::query(crate::twilio::STOP_TEXTS).bind(lead_id).bind("They replied").execute(db).await?;
 
     let reply = |classification: &str| {
         json!({
@@ -188,7 +194,8 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
             .bind(t.project.id)
             .fetch_optional(db)
             .await?;
-        if mode.as_deref().is_some_and(|m| m != "off") {
+        // Drafts are emails, which would answer a text on the wrong channel.
+        if mode.as_deref().is_some_and(|m| m != "off") && t.inbound.channel == "email" {
             super::enqueue(db, kind::DRAFT_REPLY, Some(t.project.id), t.project.org_id, json!({"message_id": t.inbound.id})).await?;
         }
         // In approve mode the Slack message waits for the draft, so it can offer to send it. draft_run posts it then.

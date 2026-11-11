@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Trash2 } from "lucide-react";
+import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Smartphone, Trash2 } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -143,6 +143,13 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
             <p className="text-xs text-muted-foreground">{[lead.email_search_note, searchCost(lead)].filter(Boolean).join(" ")}</p>
           )}
         </Detail>
+        {lead.phone && (
+          <Detail label="Phone" icon={<Smartphone className="size-3.5" />}>
+            <a href={`tel:${lead.phone}`} className="tabular-nums hover:underline">
+              {lead.phone}
+            </a>
+          </Detail>
+        )}
         {lead.linkedin_url && (
           <Detail label="LinkedIn" icon={<Link2 className="size-3.5" />}>
             <a href={lead.linkedin_url} target="_blank" rel="noreferrer" className="hover:underline">
@@ -236,6 +243,7 @@ const FORM_FIELDS = [
   { key: "email", label: "Email", type: "email" },
   { key: "linkedin_url", label: "LinkedIn profile", type: "url", placeholder: "https://www.linkedin.com/in/…" },
   { key: "x_url", label: "X profile", placeholder: "@handle or https://x.com/…" },
+  { key: "phone", label: "Phone", type: "tel", placeholder: "+44 7700 900123" },
 ] as const;
 
 type FormKey = (typeof FORM_FIELDS)[number]["key"];

@@ -73,18 +73,21 @@ async fn add(State(state): State<AppState>, auth: Auth, Json(body): Json<AddBody
     Ok(Json(json!({ "added": added })))
 }
 
-/// Adds emails and domains to the org's suppression list and returns how many were new.
-/// One value that is neither an email nor a domain rejects the whole batch, naming it.
+/// Adds emails, domains and phone numbers to the org's suppression list and returns how many were new. A phone number has to
+/// start with + or 00, since nothing says which country it's in. One value that is none of these rejects the whole batch,
+/// naming it.
 pub async fn insert<'a>(db: &sqlx::PgPool, org_id: Uuid, raws: impl IntoIterator<Item = &'a str>) -> AppResult<u64> {
     let mut values = Vec::new();
     let mut kinds = Vec::new();
     for raw in raws {
         let parsed = if raw.contains('@') {
             util_input::email(raw).map(|v| (v, "email"))
+        } else if raw.starts_with('+') || raw.starts_with("00") {
+            crate::phone::normalize(raw, "").map(|v| (v, "phone"))
         } else {
             util_input::domain(raw).map(|v| (v, "domain"))
         };
-        let (value, kind) = parsed.ok_or_else(|| AppError::BadRequest(format!("\"{raw}\" is not an email or a domain")))?;
+        let (value, kind) = parsed.ok_or_else(|| AppError::BadRequest(format!("\"{raw}\" is not an email, a domain or a phone number with its country code")))?;
         values.push(value);
         kinds.push(kind);
     }

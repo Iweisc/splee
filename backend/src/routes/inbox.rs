@@ -274,14 +274,17 @@ struct ApproveBody {
 /// Has the agent draft an answer to the lead's last reply, as auto-replies do. The draft waits for approval in the thread.
 async fn draft(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
-    let inbound: Uuid = sqlx::query_scalar(
-        "select id from email_messages where lead_id = $1 and direction = 'inbound' and classification is distinct from 'bounce'
+    let (inbound, channel): (Uuid, String) = sqlx::query_as(
+        "select id, channel from email_messages where lead_id = $1 and direction = 'inbound' and classification is distinct from 'bounce'
          order by created_at desc limit 1",
     )
     .bind(lead.id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
+    if channel != "email" {
+        return Err(AppError::BadRequest("Splee drafts email replies, and they last wrote by text. Answer them by text instead".into()));
+    }
     // Locking the lead makes two quick requests take turns, so the second sees the first one's run.
     let mut tx = state.db.begin().await?;
     sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;

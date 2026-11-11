@@ -1,4 +1,4 @@
-//! Step 6 (first emails), follow-ups and LinkedIn sequences.
+//! Step 6 (first emails), follow-ups, LinkedIn sequences and text steps.
 
 use std::collections::HashMap;
 
@@ -707,6 +707,78 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     }
     tx.commit().await?;
     Ok(Outcome::new("LinkedIn sequence ready"))
+}
+
+#[derive(Deserialize)]
+struct TextsInput {
+    lead_ids: Vec<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct WrittenText {
+    text: String,
+}
+
+/// Writes each lead's next SMS step that's due, from the sender loop (twilio::schedule). The code adds the sender's name and the
+/// STOP line where they're missing, and keeps it to twilio::SMS_MAX_CHARS.
+pub async fn texts_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
+    let input: TextsInput = ctx.input()?;
+    let project_id = ctx.project_id()?;
+    let (project, profile) = load_project(ctx, project_id).await?;
+    let settings = WriterSettings::load(ctx, project_id).await?;
+    let mut written = 0;
+    for step in crate::twilio::due_steps(ctx.db(), Some(&input.lead_ids)).await? {
+        if step.project_id != project_id || step.channel != "sms" {
+            continue;
+        }
+        let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(step.lead_id).fetch_one(ctx.db()).await?;
+        let emails: Vec<String> = sqlx::query_scalar(
+            "select body from email_messages where lead_id = $1 and direction = 'outbound' and kind in ('initial', 'follow_up') and status = 'sent'
+             order by step",
+        )
+        .bind(lead.id)
+        .fetch_all(ctx.db())
+        .await?;
+        let texts: Vec<String> =
+            sqlx::query_scalar("select body from text_messages where lead_id = $1 and status in ('sent', 'delivered') order by sent_at")
+                .bind(lead.id)
+                .fetch_all(ctx.db())
+                .await?;
+        let earlier = emails
+            .iter()
+            .enumerate()
+            .map(|(i, b)| format!("--- email {} ---\n{b}", i + 1))
+            .chain(texts.iter().enumerate().map(|(i, b)| format!("--- text {} ---\n{b}", i + 1)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let who = if settings.sender_name.trim().is_empty() { format!("the team at {}", profile.name) } else { settings.sender_name.trim().to_string() };
+        let extra = [settings.email_instructions.trim(), step.instructions.trim()].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+        let prompt = format!(
+            "Write text message number {n} to the lead below, from {sender}. They got these and have not replied:\n{earlier}\n\n\
+             Lead:\n{lead}\n\nAbout us:\n{brief}\n\n\
+             Rules: a text, not an email, so at most 260 characters, plain words, no subject, no links, no emoji and no sign-off. Start with \
+             their first name{intro}. One short reason to talk, then one easy question. Tone: {tone}. {language}{extra}",
+            n = step.step,
+            sender = settings.sender(&profile),
+            lead = serde_json::to_string_pretty(&lead_brief(&lead, &company_signals(ctx, &[&lead]).await?))?,
+            brief = profile.brief(project.domain.as_deref()),
+            intro = if step.step == 1 { format!(", then say it's {who}, since this is the first text they get from us") } else { String::new() },
+            tone = settings.tone,
+            language = settings.language_rule(),
+            extra = if extra.is_empty() { String::new() } else { format!(" Also: {extra}") },
+        );
+        ctx.log(format!("writing text {} to {}…", step.step, lead.first_name)).await?;
+        let schema = json!({ "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] });
+        let draft: WrittenText = ctx.ask(&Call::writing(WRITER, prompt, schema)).await?;
+        if draft.text.trim().is_empty() || has_placeholder(&draft.text) {
+            continue;
+        }
+        let body = crate::twilio::finish_sms(&draft.text, &settings.sender_name, &profile.name, &lead.phone, step.first);
+        if crate::twilio::insert_step(ctx.db(), &step, &lead, &body, None).await? {
+            written += 1;
+        }
+    }
+    Ok(Outcome::new(format!("Wrote {written} texts")))
 }
 
 #[cfg(test)]

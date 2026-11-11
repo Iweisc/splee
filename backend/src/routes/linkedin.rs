@@ -140,13 +140,14 @@ pub async fn mark(db: &PgPool, message: &LinkedinMessage, status: &str, body: Op
 
 async fn replied(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    let updated = stop_for_reply(&state.db, &lead).await?;
+    let updated = stop_for_reply(&state.db, &lead, "They replied on LinkedIn").await?;
     hooks::team_set_status(&state, &lead.status, &updated).await;
     Ok(Json(json!({ "ok": true })))
 }
 
-/// They answered on LinkedIn, which Splee can't see: the lead moves to Replied and both sequences stop, like an email reply.
-pub async fn stop_for_reply(db: &PgPool, lead: &Lead) -> sqlx::Result<Lead> {
+/// They answered somewhere other than email, like LinkedIn or a text: the lead moves to Replied and every sequence stops, like
+/// an email reply. `why` is shown on the emails and texts it cancels.
+pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result<Lead> {
     let mut tx = db.begin().await?;
     let updated = sqlx::query_as::<_, Lead>(
         "update leads set status = case when status in ('new', 'queued', 'contacted') then 'replied' else status end where id = $1 returning *",
@@ -155,13 +156,15 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead) -> sqlx::Result<Lead> {
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query(
-        "update email_messages set status = 'cancelled', error = 'They replied on LinkedIn'
+        "update email_messages set status = 'cancelled', error = $2
          where lead_id = $1 and kind in ('initial', 'follow_up') and status in ('draft', 'approved', 'scheduled')",
     )
     .bind(lead.id)
+    .bind(why)
     .execute(&mut *tx)
     .await?;
     sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
+    sqlx::query(crate::twilio::STOP_TEXTS).bind(lead.id).bind(why).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(updated)
 }
@@ -254,7 +257,7 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(stop_for_reply(&db, &lead).await.unwrap().status, "replied");
+        assert_eq!(stop_for_reply(&db, &lead, "They replied on LinkedIn").await.unwrap().status, "replied");
         let statuses: Vec<String> = steps(&db, lead.id).await.into_iter().map(|m| m.status).collect();
         assert_eq!(statuses, ["done", "skipped", "skipped"]);
         let emails: Vec<(String, String)> = sqlx::query_as("select kind, status from email_messages where lead_id = $1 order by kind")

@@ -465,7 +465,7 @@ pub async fn on_event(db: &PgPool, project: Uuid, account: &str, body: &Value) -
             if !["new", "queued", "contacted"].contains(&lead.status.as_str()) {
                 return Ok(None);
             }
-            let stopped = crate::routes::linkedin::stop_for_reply(db, &lead).await?;
+            let stopped = crate::routes::linkedin::stop_for_reply(db, &lead, "They replied on LinkedIn").await?;
             Ok(Some((stopped, body["message"].as_str().unwrap_or_default().to_string())))
         }
         Some("new_relation") => {
