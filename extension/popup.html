@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Splee</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand"><img src="icons/icon.svg" alt="" width="18" height="18" />splee</span>
+      <button id="sign-out" class="link" type="button" hidden>Sign out</button>
+    </header>
+
+    <form id="sign-in" hidden>
+      <p class="muted">Sign in with your Splee address and an API key. Admins create keys under API keys in Splee.</p>
+      <label>Splee address<input id="url" type="url" placeholder="https://splee.example.com" required /></label>
+      <label>API key<input id="key" type="password" placeholder="splee_…" autocomplete="off" required /></label>
+      <p id="sign-in-error" class="error" hidden></p>
+      <button id="sign-in-button" type="submit">Sign in</button>
+    </form>
+
+    <form id="add" hidden>
+      <label>Project<select id="project"></select></label>
+      <label>Campaign<select id="campaign"></select></label>
+
+      <p id="source" class="source"></p>
+      <p id="unreadable" class="muted" hidden>
+        Open a LinkedIn profile, a LinkedIn company page or a company's website, then open Splee again.
+      </p>
+
+      <div id="person" class="fields" hidden>
+        <label>Name<input id="full_name" /></label>
+        <label>Title<input id="title" /></label>
+        <label>Company<input id="company_name" /></label>
+        <label>Company website<input id="company_domain" placeholder="fieldnote.com" /></label>
+        <label>Email<input id="person_email" type="email" placeholder="Leave empty if you don't know it" /></label>
+        <label class="check" id="find-email-row"><input id="find_email" type="checkbox" /> Find their email after adding them</label>
+      </div>
+
+      <div id="company" class="fields" hidden>
+        <label>Company<input id="name" /></label>
+        <label>Website<input id="domain" /></label>
+        <label id="size-row">Size<input id="size" placeholder="11-50" /></label>
+        <label id="emails-row">Email<select id="company_email"></select></label>
+      </div>
+
+      <div id="notes"></div>
+      <p id="error" class="error" hidden></p>
+      <p id="done" class="done" hidden><span id="done-text"></span> <button id="open" class="link" type="button">Open in Splee</button></p>
+      <button id="submit" type="submit">Add lead</button>
+    </form>
+
+    <p id="loading" class="muted">Loading…</p>
+    <script src="popup.js"></script>
+  </body>
+</html>

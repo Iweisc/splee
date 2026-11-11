@@ -1,0 +1,14 @@
+{
+  "name": "splee-extension",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.15"
+  }
+}

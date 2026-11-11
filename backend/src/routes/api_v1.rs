@@ -51,7 +51,7 @@ const MAX_LEADS_PER_REQUEST: usize = 1000;
 const MAX_MESSAGES: i64 = 500;
 const MAX_SUPPRESSIONS_PER_REQUEST: usize = 1000;
 
-async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
+pub(super) async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
     sqlx::query("select 1 from projects where id = $1 and org_id = $2")
         .bind(id)
         .bind(org_id)

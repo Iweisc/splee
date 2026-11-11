@@ -45,6 +45,8 @@ pub struct RowError {
 
 pub struct Outcome {
     pub imported: i64,
+    /// The new leads, in no particular order.
+    pub ids: Vec<Uuid>,
     pub skipped: i64,
     pub errors: Vec<RowError>,
 }
@@ -166,12 +168,12 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
         cols.linkedin_provider_id.push(lead.linkedin_provider_id.trim().to_string());
     }
 
-    let imported = sqlx::query(
+    let ids: Vec<Uuid> = sqlx::query_scalar(
         "insert into leads (project_id, source, email, full_name, first_name, last_name, title, company_name,
            company_domain, linkedin_url, city, country_code, segment_id, linkedin_provider_id)
          select $1, $2, * from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
            $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[], $14::text[])
-         on conflict (project_id, email) do nothing",
+         on conflict (project_id, email) do nothing returning id",
     )
     .bind(project_id)
     .bind(source)
@@ -187,15 +189,15 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     .bind(&cols.country_code)
     .bind(&cols.segment_id)
     .bind(&cols.linkedin_provider_id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected() as i64;
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(Outcome { imported, skipped: total - imported, errors })
+    let imported = ids.len() as i64;
+    Ok(Outcome { imported, ids, skipped: total - imported, errors })
 }
 
 /// A LinkedIn profile's public id, lowercased, which tells two links to the same person apart from others.
-fn profile_key(url: &str) -> Option<String> {
+pub(super) fn profile_key(url: &str) -> Option<String> {
     crate::unipile::profile_id(url).map(str::to_lowercase)
 }
 

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { BookOpen, KeyRound, Plus, TriangleAlert } from "lucide-react";
+import { BookOpen, KeyRound, Plus, Puzzle, TriangleAlert } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { CopyField } from "@/components/app/settings/copy-button";
@@ -21,7 +21,8 @@ export default function ApiKeysPage() {
   const { data, error, mutate } = useSWR<ApiKey[]>("/organization/api-keys", fetcher);
   const { data: projects } = useSWR<ProjectSummary[]>("/projects", fetcher);
   const { pending, run } = useAction();
-  const [open, setOpen] = useState(false);
+  // The name the new key starts with, or null when the dialog is closed.
+  const [creating, setCreating] = useState<string | null>(null);
   const docsProject = projects?.[0]?.id;
 
   const revoke = (k: ApiKey) => {
@@ -33,7 +34,7 @@ export default function ApiKeysPage() {
   };
 
   const create = (
-    <Button onClick={() => setOpen(true)}>
+    <Button onClick={() => setCreating("")}>
       <Plus className="size-4" /> Create key
     </Button>
   );
@@ -91,11 +92,12 @@ export default function ApiKeysPage() {
           )}
           <ConnectedApps />
           <ConnectAssistant />
+          <BrowserExtension onCreateKey={() => setCreating("Browser extension")} />
         </SettingsColumn>
       </PageBody>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Create API key">
-        {open && <CreateKey onCreated={() => mutate()} onDone={() => setOpen(false)} />}
+      <Modal open={creating !== null} onClose={() => setCreating(null)} title="Create API key">
+        {creating !== null && <CreateKey initialName={creating} onCreated={() => mutate()} onDone={() => setCreating(null)} />}
       </Modal>
     </>
   );
@@ -194,8 +196,49 @@ function ConnectAssistant() {
   );
 }
 
-function CreateKey({ onCreated, onDone }: { onCreated: () => void; onDone: () => void }) {
-  const [name, setName] = useState("");
+/** The extension lives in the repository's extension/ folder. Install steps were checked against Chrome, Edge and Firefox in November 2026. */
+function BrowserExtension({ onCreateKey }: { onCreateKey: () => void }) {
+  const { me } = useMe();
+  if (!me) return null;
+  return (
+    <Section
+      title="Browser extension"
+      description="Add the person or company you're looking at as a lead, from a LinkedIn profile, a LinkedIn company page or any company's website."
+      actions={
+        <Button variant="outline" onClick={onCreateKey}>
+          <Puzzle className="size-4" /> Create a key for the extension
+        </Button>
+      }
+    >
+      <div className="grid gap-4 text-sm">
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">Chrome or Edge:</span> open <code className="font-mono">chrome://extensions</code> or{" "}
+          <code className="font-mono">edge://extensions</code>, turn on Developer mode, select Load unpacked and pick the{" "}
+          <code className="font-mono">extension</code> folder of the Splee repository.
+        </p>
+        <p className="text-muted-foreground">
+          <span className="font-medium text-foreground">Firefox:</span> open <code className="font-mono">about:debugging</code>, select This Firefox,
+          then Load Temporary Add-on, and pick <code className="font-mono">extension/manifest.json</code>. Firefox removes it when it restarts.
+        </p>
+        <p className="text-muted-foreground">
+          To hand it to someone without the repository, run <code className="font-mono">npm run -s package</code> in{" "}
+          <code className="font-mono">extension/</code>. It writes <code className="font-mono">dist/splee-extension.zip</code>, which they unzip
+          and load the same way.
+        </p>
+        <div>
+          <MicroLabel>Splee address</MicroLabel>
+          <div className="mt-1">
+            <CopyField value={me.public_url.replace(/\/+$/, "")} />
+          </div>
+        </div>
+        <p className="text-muted-foreground">Open the extension on any page and sign in with this address and an API key.</p>
+      </div>
+    </Section>
+  );
+}
+
+function CreateKey({ initialName, onCreated, onDone }: { initialName: string; onCreated: () => void; onDone: () => void }) {
+  const [name, setName] = useState(initialName);
   const [secret, setSecret] = useState<string | null>(null);
   const { pending, run } = useAction();
 
