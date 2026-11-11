@@ -11,34 +11,38 @@ use crate::agent::x::{self, Cookies};
 use crate::bluesky::{self, Bluesky};
 use crate::crypto::{decrypt, encrypt};
 use crate::dev::Dev;
+use crate::discord;
 use crate::discourse::{self, Discourse, Topic};
 use crate::hashnode::Hashnode;
 use crate::hooks::{self, Alert};
 use crate::lemmy::{self, Lemmy};
 use crate::mastodon::Mastodon;
-use crate::models::{DiscourseForum, SocialPost};
+use crate::models::{DiscourseForum, SocialChannel, SocialPost};
 use crate::nostr::{self, Nostr};
 use crate::reddit::{Login, Reddit, Target};
 use crate::stackexchange::{self, Question, StackExchange};
 use crate::state::AppState;
+use crate::telegram;
 use crate::threads::{self, Threads};
 use crate::tumblr::{self, Tumblr};
 use crate::unipile::{self, Unipile};
 use crate::youtube::{self, YouTube};
 
-pub const PLATFORMS: [&str; 14] =
-    ["x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode"];
+pub const PLATFORMS: [&str; 16] = [
+    "x", "reddit", "bluesky", "mastodon", "linkedin", "threads", "youtube", "stackexchange", "dev", "discourse", "lemmy", "nostr", "tumblr", "hashnode", "discord",
+    "telegram",
+];
 /// A post still `posting` after this long was cut off mid-send, by a crash or a restart.
 const STUCK_MINUTES: i32 = 15;
 
 /// Posts per account a day. New accounts that post more get flagged as spam, and LinkedIn restricts automation the most. A
 /// Stack Exchange answer and a DEV or Hashnode article take far longer to read and judge than a reply, so they get fewer, and
-/// so does each Discourse forum, Lemmy and Tumblr, whose communities are small enough that a company replying often stands out.
-/// Hashnode's articles and comments each have their own cap.
+/// so does each Discourse forum, Lemmy, Tumblr and the Discord and Telegram bots, whose communities are small enough that a
+/// company replying often stands out. Hashnode's articles and comments each have their own cap.
 pub fn daily_cap(platform: &str, reply: bool) -> i64 {
     match (platform, reply) {
         ("linkedin" | "stackexchange" | "discourse", _) => 5,
-        ("lemmy" | "tumblr", _) | ("hashnode", true) => 10,
+        ("lemmy" | "tumblr" | "discord" | "telegram", _) | ("hashnode", true) => 10,
         ("dev" | "hashnode", _) => 2,
         _ => 15,
     }
@@ -64,6 +68,8 @@ pub fn name(platform: &str) -> &'static str {
         "nostr" => "Nostr",
         "tumblr" => "Tumblr",
         "hashnode" => "Hashnode",
+        "discord" => "Discord",
+        "telegram" => "Telegram",
         _ => "LinkedIn",
     }
 }
@@ -91,6 +97,8 @@ pub fn max_length(platform: &str, reply: bool, mastodon_chars: usize) -> usize {
         ("lemmy", _) => lemmy::CHARS,
         ("nostr", _) => nostr::CHARS,
         ("tumblr", _) => tumblr::CHARS,
+        ("discord", _) => discord::CHARS,
+        ("telegram", _) => telegram::CHARS,
         ("linkedin", true) => 1250,
         ("linkedin", false) => 3000,
         (_, true) => 10_000,
@@ -175,22 +183,35 @@ pub struct Accounts {
     pub hashnode_token_enc: String,
     pub hashnode_username: String,
     pub hashnode_publication_id: String,
+    pub discord_token_enc: String,
+    pub discord_bot_id: String,
+    pub discord_bot: String,
+    pub telegram_token_enc: String,
+    pub telegram_bot_id: String,
+    pub telegram_bot: String,
+    pub telegram_reads_all: bool,
+    pub telegram_offset: i64,
     pub unipile_dsn: String,
     pub unipile_token_enc: String,
     pub unipile_account_id: String,
     /// Each forum is an account of its own. Loaded with `load_forums`.
     #[sqlx(skip)]
     pub forums: Vec<DiscourseForum>,
+    /// The Discord and Telegram channels the bots can see. Loaded with `load_forums` too.
+    #[sqlx(skip)]
+    pub channels: Vec<SocialChannel>,
 }
 
-const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
+pub(crate) const ACCOUNTS: &str = "select s.project_id, s.x_auth_token_enc, s.x_ct0_enc, s.x_handle, s.reddit_client_id, s.reddit_secret_enc, s.reddit_username,
                                s.reddit_password_enc, s.bluesky_handle, s.bluesky_password_enc, s.mastodon_url, s.mastodon_token_enc,
                                s.mastodon_handle, s.mastodon_max_chars, s.threads_token_enc, s.threads_user_id, s.threads_username,
                                s.youtube_client_id, s.youtube_secret_enc, s.youtube_token_enc, s.youtube_channel_id, s.stackexchange_key,
                                s.stackexchange_token_enc, s.stackexchange_site, s.stackexchange_account, s.dev_key_enc, s.dev_username,
                                s.lemmy_url, s.lemmy_username, s.lemmy_password_enc, s.lemmy_jwt_enc, s.lemmy_handle, s.nostr_key_enc,
                                s.nostr_npub, s.nostr_relays, s.tumblr_username, s.tumblr_blog, s.hashnode_token_enc, s.hashnode_username,
-                               s.hashnode_publication_id, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id
+                               s.hashnode_publication_id, s.discord_token_enc, s.discord_bot_id, s.discord_bot, s.telegram_token_enc,
+                               s.telegram_bot_id, s.telegram_bot, s.telegram_reads_all, s.telegram_offset, s.unipile_dsn, s.unipile_token_enc,
+                               s.unipile_account_id
                         from project_settings s";
 
 pub async fn accounts(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Accounts>> {
@@ -217,6 +238,8 @@ fn columns(platform: &str) -> (&'static str, &'static str) {
         "nostr" => ("nostr_npub", "nostr_failed_at"),
         "tumblr" => ("tumblr_username", "tumblr_failed_at"),
         "hashnode" => ("hashnode_username", "hashnode_failed_at"),
+        "discord" => ("discord_bot_id", "discord_failed_at"),
+        "telegram" => ("telegram_bot_id", "telegram_failed_at"),
         _ => ("unipile_account_id", "unipile_failed_at"),
     }
 }
@@ -236,6 +259,8 @@ fn alert(platform: &str) -> Alert {
         "nostr" => Alert::Nostr,
         "tumblr" => Alert::Tumblr,
         "hashnode" => Alert::Hashnode,
+        "discord" => Alert::Discord,
+        "telegram" => Alert::Telegram,
         _ => Alert::Unipile,
     }
 }
@@ -258,6 +283,8 @@ impl Accounts {
             // Its refresh token changes each time it's used, so the username, set only while connected, stands in for it.
             "tumblr" => (&self.tumblr_username, &self.tumblr_username),
             "hashnode" => (&self.hashnode_username, &self.hashnode_token_enc),
+            "discord" => (&self.discord_bot_id, &self.discord_token_enc),
+            "telegram" => (&self.telegram_bot_id, &self.telegram_token_enc),
             "discourse" => ("", ""),
             _ => (&self.unipile_account_id, &self.unipile_token_enc),
         }
@@ -269,6 +296,7 @@ impl Accounts {
 
     pub async fn load_forums(&mut self, db: &PgPool) -> sqlx::Result<()> {
         self.forums = sqlx::query_as("select * from discourse_forums where project_id = $1 order by created_at").bind(self.project_id).fetch_all(db).await?;
+        self.channels = crate::social_channels::list(db, self.project_id).await?;
         Ok(())
     }
 
@@ -462,6 +490,8 @@ async fn publish_next(
         "nostr" => post_nostr(state, a, &post).await,
         "tumblr" => post_tumblr(state, a, &post).await,
         "hashnode" => post_hashnode(state, a, &post).await,
+        "discord" => post_discord(state, a, &post).await,
+        "telegram" => post_telegram(state, a, &post).await,
         "discourse" => match forum {
             Some(forum) => post_discourse(state, forum, &post).await,
             None => Err(Failure::Post("The forum isn't connected anymore".into())),
@@ -485,8 +515,11 @@ async fn next_due(db: &PgPool, project_id: Uuid, platform: &str, account: &str) 
             .to_string(),
         _ => {
             let (name, failed_at) = columns(platform);
+            // The wait Stack Exchange, Discord or Telegram asked for.
             let backoff = match platform {
                 "stackexchange" => "and not exists (select 1 from project_settings s where s.stackexchange_account = $3 and s.stackexchange_backoff_until > now())",
+                "discord" => "and not exists (select 1 from project_settings s where s.discord_bot_id = $3 and s.discord_held_until > now())",
+                "telegram" => "and not exists (select 1 from project_settings s where s.telegram_bot_id = $3 and s.telegram_held_until > now())",
                 _ => "",
             };
             format!("and not exists (select 1 from project_settings s where s.{name} = $3 and s.{failed_at} > now() - interval '1 hour') {backoff}")
@@ -644,6 +677,46 @@ async fn post_hashnode(state: &AppState, a: &Accounts, post: &SocialPost) -> Res
         None if a.hashnode_publication_id.is_empty() => Err(Failure::Account("Pick a Hashnode publication for articles first".into())),
         None => hashnode.publish(&a.hashnode_publication_id, &post.title, &post.body, &post.tags).await,
     }
+}
+
+/// The picked channel a Discord or Telegram post goes to.
+fn channel<'a>(a: &'a Accounts, post: &SocialPost) -> Result<&'a SocialChannel, Failure> {
+    let channel = a.channels.iter().find(|c| Some(c.id) == post.channel_id && c.platform == post.platform);
+    let channel = channel.ok_or_else(|| Failure::Post(format!("The bot can't see that {} channel anymore", name(&post.platform))))?;
+    if !channel.picked {
+        return Err(Failure::Post(format!("Pick {} on the integrations page again to post there", channel.label())));
+    }
+    Ok(channel)
+}
+
+async fn post_discord(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let c = channel(a, post)?;
+    let reply = match post.in_reply_to.as_deref() {
+        Some(link) => Some(discord::parse_link(link).ok_or_else(|| Failure::Post("That isn't a link to a Discord message".into()))?.2),
+        None => None,
+    };
+    let discord = a.discord(state)?;
+    // The post's id, cut to Discord's 25 characters, so a second send of it within a few minutes is dropped.
+    let nonce: String = post.id.simple().to_string().chars().take(25).collect();
+    let sent = discord.send(&c.guild_id, &c.chat_id, &post.body, reply.as_deref(), &nonce).await;
+    if let Some(wait) = discord.retry_after() {
+        crate::social_channels::hold(&state.db, a.project_id, "discord", wait).await;
+    }
+    sent
+}
+
+async fn post_telegram(state: &AppState, a: &Accounts, post: &SocialPost) -> Result<String, Failure> {
+    let c = channel(a, post)?;
+    let reply = match post.in_reply_to.as_deref() {
+        Some(link) => Some(telegram::parse_link(link).ok_or_else(|| Failure::Post("That isn't a link to a Telegram message".into()))?.1),
+        None => None,
+    };
+    let tg = a.telegram(state)?;
+    let sent = tg.send(&c.chat_id, &post.body, reply.as_deref()).await;
+    if let Some(wait) = tg.retry_after() {
+        crate::social_channels::hold(&state.db, a.project_id, "telegram", wait).await;
+    }
+    sent
 }
 
 async fn post_discourse(state: &AppState, forum: &DiscourseForum, post: &SocialPost) -> Result<String, Failure> {
@@ -909,6 +982,32 @@ mod tests {
         assert_eq!(failed.as_deref(), Some("signed out"));
     }
 
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_bots_stop_at_ten_a_day_and_wait_out_a_429(db: PgPool) {
+        let project: Uuid = sqlx::query_scalar("insert into projects (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        sqlx::query(
+            "insert into project_settings (project_id, discord_token_enc, discord_bot_id, telegram_token_enc, telegram_bot_id) values ($1, 'x', '900', 'x', '777')",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let a = accounts(&db, project).await.unwrap().unwrap();
+        assert_eq!(a.connected(), ["discord", "telegram"]);
+        let posted = "insert into social_posts (project_id, platform, body, status, account, posted_at) select $1, $2, 'Hi', 'posted', $3, now() from generate_series(1, $4)";
+        for (platform, bot) in [("discord", "900"), ("telegram", "777")] {
+            approved(&db, project, platform).await;
+            sqlx::query(posted).bind(project).bind(platform).bind(bot).bind(9).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, bot).await.unwrap().is_some(), "{platform}");
+            crate::social_channels::hold(&db, project, platform, 60.0).await;
+            assert!(next_due(&db, project, platform, bot).await.unwrap().is_none(), "{platform}");
+            sqlx::query(&format!("update project_settings set {platform}_held_until = null where project_id = $1")).bind(project).execute(&db).await.unwrap();
+            sqlx::query(posted).bind(project).bind(platform).bind(bot).bind(1).execute(&db).await.unwrap();
+            assert!(next_due(&db, project, platform, bot).await.unwrap().is_none(), "{platform}");
+        }
+    }
+
     #[test]
     fn each_platform_has_its_own_limit() {
         assert!(fits("x", true, &"a".repeat(280), 500) && !fits("x", true, &"a".repeat(281), 500));
@@ -925,5 +1024,7 @@ mod tests {
         assert!(fits("lemmy", false, &"a".repeat(10_000), 500) && !fits("lemmy", true, &"a".repeat(10_001), 500));
         assert!(fits("nostr", true, &"a".repeat(5_000), 500) && !fits("nostr", false, &"a".repeat(5_001), 500));
         assert!(fits("tumblr", true, &"a".repeat(4_096), 500) && !fits("tumblr", false, &"a".repeat(4_097), 500));
+        assert!(fits("discord", true, &"a".repeat(2_000), 500) && !fits("discord", false, &"a".repeat(2_001), 500));
+        assert!(fits("telegram", true, &"a".repeat(4_096), 500) && !fits("telegram", false, &"a".repeat(4_097), 500));
     }
 }

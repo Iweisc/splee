@@ -27,6 +27,9 @@ pub struct Config {
     /// Twilio's APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that answers for both
     /// api.twilio.com and content.twilio.com.
     pub twilio_api_url: String,
+    /// Discord's and Telegram's bot APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that answers for
+    /// both, since Discord's paths start with /api/v10 and Telegram's with /bot.
+    pub bots_api_url: String,
     /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
     /// which every organization shares.
     pub operator_emails: Vec<String>,
@@ -98,6 +101,7 @@ impl Config {
             public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
             porkbun_api_url: env::var("PORKBUN_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| crate::porkbun::API_URL.into()),
             twilio_api_url: env::var("TWILIO_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            bots_api_url: env::var("BOTS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             operator_emails: env::var("OPERATOR_EMAILS").map(|v| emails(&v)).unwrap_or_default(),
             google: OAuthApp::from_env("GOOGLE", "https://accounts.google.com/o/oauth2/v2/auth".into(), "https://oauth2.googleapis.com/token".into()),
             microsoft: {
@@ -157,6 +161,7 @@ mod tests {
             public_agent: true,
             porkbun_api_url: String::new(),
             twilio_api_url: String::new(),
+            bots_api_url: String::new(),
             operator_emails: emails(" Ops@Example.com,, admin@example.org "),
             google: None,
             microsoft: None,

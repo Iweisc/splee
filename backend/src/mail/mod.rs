@@ -52,6 +52,8 @@ pub fn spawn_workers(state: AppState) {
         // One post per account a tick, so 15 approved posts go out over a couple of hours.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(600), || crate::social_channels::poll(&s), "discord and telegram reader").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });
