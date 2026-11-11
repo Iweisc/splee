@@ -40,6 +40,7 @@ fn config(fake_url: &str) -> Config {
         meta: None,
         graph_api_url: String::new(),
         crm_api_url: String::new(),
+        payments_api_url: String::new(),
         ipinfo_token: None,
         slack: None,
     }

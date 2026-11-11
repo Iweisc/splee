@@ -74,6 +74,8 @@ pub struct Deal {
     pub notes: String,
     pub lost_reason: String,
     pub source: String,
+    /// The provider of the lead's first payment, which won a deal that's won. See payments/.
+    pub paid_through: Option<String>,
     pub stage_changed_at: Ts,
     pub closed_at: Option<Ts>,
     pub created_at: Ts,
@@ -82,6 +84,8 @@ pub struct Deal {
 const DEAL_SELECT: &str = "select d.id, d.project_id, p.name as project_name, d.lead_id, l.full_name as lead_name, l.email::text as lead_email,
        l.title as lead_title, l.company_name, l.company_domain::text as company_domain, d.stage_id, s.name as stage, d.status, d.value_cents,
        d.currency, d.close_date, l.owner_id, coalesce(nullif(u.name, ''), u.email::text) as owner_name, d.notes, d.lost_reason, d.source,
+       case when d.status = 'won' then (select p.provider from payments p where p.lead_id = d.lead_id and p.kind = 'payment' order by p.paid_at limit 1)
+       end as paid_through,
        d.stage_changed_at, d.closed_at, d.created_at
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
      left join users u on u.id = l.owner_id";
@@ -623,6 +627,75 @@ async fn advance_for_booking(state: &AppState, lead: &Lead) -> AppResult<()> {
     Ok(())
 }
 
+/// A deal event to send once the transaction that made it commits: the deal, the event and the stage it left.
+pub type Announcement = (Deal, &'static str, Option<String>);
+
+/// The lead paid for the first time, through `source`. Their open deal is won with the amount, or else a new won deal is
+/// made, and either closes on the day they paid. A lead whose deal was already won keeps it as it is. The caller holds the
+/// lead's row and ran ensure_stages.
+pub async fn win_for_payment(
+    tx: &mut PgConnection,
+    org_id: Uuid,
+    lead_id: Uuid,
+    cents: i64,
+    currency: &str,
+    paid_at: Ts,
+    source: &str,
+) -> AppResult<Vec<Announcement>> {
+    let won: Option<Uuid> = sqlx::query_scalar("select id from deal_stages where org_id = $1 and kind = 'won' order by position limit 1")
+        .bind(org_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(won) = won else { return Ok(vec![]) };
+    if lock_stage(tx, org_id, won).await? != "won" {
+        return Ok(vec![]);
+    }
+    let open: Option<(Uuid, String)> = sqlx::query_as(
+        "select d.id, s.name from deals d join deal_stages s on s.id = d.stage_id where d.lead_id = $1 and d.status = 'open' for update of d",
+    )
+    .bind(lead_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((id, from)) = open {
+        sqlx::query(
+            "update deals set stage_id = $2, status = 'won', stage_changed_at = now(), closed_at = $3, value_cents = $4, currency = $5 where id = $1",
+        )
+        .bind(id)
+        .bind(won)
+        .bind(paid_at)
+        .bind(cents)
+        .bind(currency)
+        .execute(&mut *tx)
+        .await?;
+        let deal = get_in(tx, org_id, id).await?;
+        return Ok(vec![(deal.clone(), "deal.stage_changed", Some(from.clone())), (deal, "deal.won", Some(from))]);
+    }
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "insert into deals (org_id, project_id, lead_id, stage_id, status, value_cents, currency, source, closed_at)
+         select $1, l.project_id, l.id, $3, 'won', $4, $5, $6, $7 from leads l
+         where l.id = $2 and not exists (select 1 from deals where lead_id = $2 and status = 'won')
+         returning id",
+    )
+    .bind(org_id)
+    .bind(lead_id)
+    .bind(won)
+    .bind(cents)
+    .bind(currency)
+    .bind(source)
+    .bind(paid_at)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(id) = id else { return Ok(vec![]) };
+    let deal = get_in(tx, org_id, id).await?;
+    Ok(vec![(deal.clone(), "deal.created", None), (deal, "deal.won", None)])
+}
+
+pub async fn announce_all(state: &AppState, events: Vec<Announcement>) {
+    for (deal, event, from) in events {
+        announce(state, &deal, event, from.as_deref()).await;
+    }
+}
+
 /// Sends a deal event to the project's webhooks, with the lead like the lead events and the deal under "deal".
 async fn announce(state: &AppState, deal: &Deal, event: &'static str, previous_stage: Option<&str>) {
     let lead: Option<Lead> = sqlx::query_as("select * from leads where id = $1").bind(deal.lead_id).fetch_optional(&state.db).await.unwrap_or_default();
@@ -839,6 +912,7 @@ mod tests {
             meta: None,
             graph_api_url: String::new(),
             crm_api_url: String::new(),
+            payments_api_url: String::new(),
             ipinfo_token: None,
         };
         AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }

@@ -476,6 +476,7 @@ pub(crate) mod tests {
                 zoho: Some(app("/oauth/v2/auth", "/oauth/v2/token")),
                 microsoft: Some(app("/dynamics/authorize", "/dynamics/token")),
                 crm_api_url: self.base.clone(),
+                payments_api_url: String::new(),
                 ..config(&unused)
             }
         }

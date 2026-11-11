@@ -176,7 +176,7 @@ async fn an_expired_link_opens_nothing(db: PgPool) {
     assert!(list.is_empty(), "the list only has live links");
 }
 
-const SPEND_KEYS: [&str; 5] = ["claude_cost_micros", "email_cost_micros", "spend_micros", "cost_per_hot_micros", "cost_per_meeting_micros"];
+const SPEND_KEYS: [&str; 6] = ["claude_cost_micros", "email_cost_micros", "spend_micros", "cost_per_hot_micros", "cost_per_meeting_micros", "return_on_spend"];
 
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
@@ -195,7 +195,7 @@ async fn the_page_leaves_out_spend_mailboxes_and_leads_unless_ticked(db: PgPool)
     for key in SPEND_KEYS {
         assert!(a["totals"].get(key).is_none() && a["previous"].get(key).is_none(), "{key}");
     }
-    assert!(a["campaigns"].as_array().unwrap().iter().all(|c| c.get("spend_micros").is_none() && c.get("cost_per_hot_micros").is_none()));
+    assert!(a["campaigns"].as_array().unwrap().iter().all(|c| ["spend_micros", "cost_per_hot_micros", "return_on_spend"].iter().all(|k| c.get(*k).is_none())));
     assert!(a.get("mailboxes").is_none());
     assert!(page["meetings"].is_null() && page["hot_replies"].is_null());
     // Nothing on the page is an address: not the mailbox, not a lead's.

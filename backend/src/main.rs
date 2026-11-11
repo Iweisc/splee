@@ -36,6 +36,7 @@ mod nostr;
 mod notion;
 mod outreach;
 mod ownership;
+mod payments;
 mod phone;
 mod porkbun;
 mod reddit;
@@ -126,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
     score::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
+    payments::spawn_worker(state.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

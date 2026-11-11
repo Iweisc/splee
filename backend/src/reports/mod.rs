@@ -152,7 +152,7 @@ pub struct SharedReport {
     pub hot_replies: Option<Vec<Person>>,
 }
 
-const SPEND: [&str; 5] = ["claude_cost_micros", "email_cost_micros", "spend_micros", "cost_per_hot_micros", "cost_per_meeting_micros"];
+const SPEND: [&str; 6] = ["claude_cost_micros", "email_cost_micros", "spend_micros", "cost_per_hot_micros", "cost_per_meeting_micros", "return_on_spend"];
 
 /// Takes out what a client shouldn't see unless the link says so. Analytics has no lead addresses to begin with.
 pub fn redact(mut analytics: Value, link: &ReportLink) -> Value {
