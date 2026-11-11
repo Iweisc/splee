@@ -109,6 +109,7 @@ const FIELDS: { key: string; label: string }[] = [
   { key: "linkedin_url", label: "LinkedIn URL" },
   { key: "city", label: "City" },
   { key: "country_code", label: "Country code" },
+  { key: "phone", label: "Phone" },
 ];
 
 export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/import">) {

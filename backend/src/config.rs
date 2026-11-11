@@ -24,6 +24,9 @@ pub struct Config {
     pub public_agent: bool,
     /// Porkbun's API. Only tests and sandboxes point it elsewhere, at a fake.
     pub porkbun_api_url: String,
+    /// Twilio's APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that answers for both
+    /// api.twilio.com and content.twilio.com.
+    pub twilio_api_url: String,
     /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
     /// which every organization shares.
     pub operator_emails: Vec<String>,
@@ -94,6 +97,7 @@ impl Config {
             open_signup: env::var("OPEN_SIGNUP").map(|v| v != "false").unwrap_or(true),
             public_agent: env::var("PUBLIC_AGENT").map(|v| v != "false").unwrap_or(true),
             porkbun_api_url: env::var("PORKBUN_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| crate::porkbun::API_URL.into()),
+            twilio_api_url: env::var("TWILIO_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             operator_emails: env::var("OPERATOR_EMAILS").map(|v| emails(&v)).unwrap_or_default(),
             google: OAuthApp::from_env("GOOGLE", "https://accounts.google.com/o/oauth2/v2/auth".into(), "https://oauth2.googleapis.com/token".into()),
             microsoft: {
@@ -152,6 +156,7 @@ mod tests {
             open_signup: true,
             public_agent: true,
             porkbun_api_url: String::new(),
+            twilio_api_url: String::new(),
             operator_emails: emails(" Ops@Example.com,, admin@example.org "),
             google: None,
             microsoft: None,

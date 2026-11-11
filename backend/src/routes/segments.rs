@@ -333,6 +333,10 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         .bind(&lead_ids)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("update text_messages set status = 'approved' where segment_id = $1 and kind = 'sequence' and status = 'draft'")
+        .bind(segment.id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -352,6 +356,10 @@ async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     .await?;
     sqlx::query("update leads set status = 'new' where id = any($1) and status = 'queued'")
         .bind(&lead_ids)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("update text_messages set status = 'draft' where segment_id = $1 and kind = 'sequence' and status = 'approved'")
+        .bind(segment.id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;

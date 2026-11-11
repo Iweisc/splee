@@ -31,6 +31,9 @@ pub struct NewLead {
     pub city: String,
     #[serde(default)]
     pub country_code: String,
+    /// Kept in E.164, read by the lead's country or else the project's. One that can't be read is left out, not the lead.
+    #[serde(default)]
+    pub phone: String,
     pub segment_id: Option<Uuid>,
     /// Only LinkedIn people search sets it.
     #[serde(skip)]
@@ -63,6 +66,7 @@ struct Columns {
     linkedin_url: Vec<String>,
     city: Vec<String>,
     country_code: Vec<String>,
+    phone: Vec<String>,
     segment_id: Vec<Option<Uuid>>,
     linkedin_provider_id: Vec<String>,
 }
@@ -99,6 +103,8 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
             .await?;
         profiles.extend(links.iter().filter_map(|l| profile_key(l)));
     }
+    let project_country: Option<String> =
+        sqlx::query_scalar("select company ->> 'country_code' from projects where id = $1").bind(project_id).fetch_one(&mut *tx).await?;
     let segments: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>("select id from segments where project_id = $1")
         .bind(project_id)
         .fetch_all(&mut *tx)
@@ -163,16 +169,19 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
         cols.company_domain.push(company_domain);
         cols.linkedin_url.push(lead.linkedin_url.trim().to_string());
         cols.city.push(lead.city.trim().to_string());
-        cols.country_code.push(country_code(&lead.country_code));
+        let country = country_code(&lead.country_code);
+        let read_by = if country.is_empty() { project_country.as_deref().unwrap_or_default() } else { &country };
+        cols.phone.push(crate::phone::normalize(&lead.phone, read_by).unwrap_or_default());
+        cols.country_code.push(country);
         cols.segment_id.push(lead.segment_id);
         cols.linkedin_provider_id.push(lead.linkedin_provider_id.trim().to_string());
     }
 
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "insert into leads (project_id, source, email, full_name, first_name, last_name, title, company_name,
-           company_domain, linkedin_url, city, country_code, segment_id, linkedin_provider_id)
+           company_domain, linkedin_url, city, country_code, segment_id, linkedin_provider_id, phone)
          select $1, $2, * from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
-           $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[], $14::text[])
+           $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[], $14::text[], $15::text[])
          on conflict (project_id, email) do nothing returning id",
     )
     .bind(project_id)
@@ -189,6 +198,7 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     .bind(&cols.country_code)
     .bind(&cols.segment_id)
     .bind(&cols.linkedin_provider_id)
+    .bind(&cols.phone)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;

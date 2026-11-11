@@ -76,6 +76,28 @@ struct SettingsBody {
     autopilot_budget_micros: Option<i64>,
     autopilot_lead_cap: Option<i32>,
     autopilot_auto_send: Option<bool>,
+    text_steps: Option<Value>,
+    daily_text_limit: Option<i32>,
+}
+
+/// Up to 5 texts, each SMS or WhatsApp, 1 to 30 days after the one before.
+fn check_text_steps(steps: &Value) -> Result<(), &'static str> {
+    let steps = steps.as_array().ok_or("text_steps must be a list")?;
+    if steps.len() > 5 {
+        return Err("A sequence can have up to 5 texts");
+    }
+    for step in steps {
+        if !matches!(step["channel"].as_str(), Some("sms" | "whatsapp")) {
+            return Err("Each text is SMS or WhatsApp");
+        }
+        if !step["delay_days"].as_i64().is_some_and(|d| (1..=30).contains(&d)) {
+            return Err("Each text's delay must be 1 to 30 days");
+        }
+        if step["instructions"].as_str().is_some_and(|i| i.chars().count() > 1000) {
+            return Err("Keep each text's instructions under 1,000 characters");
+        }
+    }
+    Ok(())
 }
 
 async fn update_settings(
@@ -110,6 +132,12 @@ async fn update_settings(
     }
     if body.follow_ups.as_ref().is_some_and(|f| !f.is_array()) {
         return bad("follow_ups must be a list");
+    }
+    if let Some(Err(m)) = body.text_steps.as_ref().map(check_text_steps) {
+        return bad(m);
+    }
+    if body.daily_text_limit.is_some_and(|n| !(1..=1000).contains(&n)) {
+        return bad("Daily text limit must be between 1 and 1,000");
     }
     if body.channels.as_ref().is_some_and(|c| !c.is_object()) || body.targeting.as_ref().is_some_and(|t| !t.is_object()) {
         return bad("channels and targeting must be objects");
@@ -166,7 +194,9 @@ async fn update_settings(
            autopilot = coalesce($23, autopilot),
            autopilot_budget_micros = coalesce($24, autopilot_budget_micros),
            autopilot_lead_cap = coalesce($25, autopilot_lead_cap),
-           autopilot_auto_send = coalesce($26, autopilot_auto_send)
+           autopilot_auto_send = coalesce($26, autopilot_auto_send),
+           text_steps = coalesce($27, text_steps),
+           daily_text_limit = coalesce($28, daily_text_limit)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -195,6 +225,8 @@ async fn update_settings(
     .bind(body.autopilot_budget_micros)
     .bind(body.autopilot_lead_cap)
     .bind(body.autopilot_auto_send)
+    .bind(body.text_steps)
+    .bind(body.daily_text_limit)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

@@ -16,7 +16,7 @@ use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::hiring;
-use crate::models::{Company, EmailMessage, Lead};
+use crate::models::{Company, EmailMessage, Lead, TextMessage};
 use crate::state::AppState;
 use crate::waterfall;
 
@@ -198,8 +198,8 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
         .await?;
 
     let header = [
-        "full_name", "first_name", "last_name", "title", "email", "email_status", "company_name", "company_domain", "linkedin_url",
-        "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
+        "full_name", "first_name", "last_name", "title", "email", "email_status", "phone", "company_name", "company_domain",
+        "linkedin_url", "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
     ];
     let records = rows.iter().map(|r| {
         let l = &r.lead;
@@ -210,6 +210,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
             l.title.clone(),
             l.email.clone().unwrap_or_default(),
             l.email_status.clone(),
+            l.phone.clone(),
             l.company_name.clone(),
             l.company_domain.clone().unwrap_or_default(),
             l.linkedin_url.clone(),
@@ -235,6 +236,8 @@ pub struct LeadDetail {
     pub segment_name: Option<String>,
     pub company: Option<Company>,
     pub emails: Vec<EmailMessage>,
+    /// Texts Splee wrote or sent them, oldest first. Their answers are in `emails`, with a channel.
+    pub texts: Vec<TextMessage>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,
 }
@@ -253,11 +256,15 @@ pub async fn detail(db: &PgPool, lead: Lead) -> AppResult<LeadDetail> {
         .bind(lead.id)
         .fetch_all(db)
         .await?;
+    let texts = sqlx::query_as::<_, TextMessage>("select * from text_messages where lead_id = $1 order by coalesce(sent_at, due_at, created_at)")
+        .bind(lead.id)
+        .fetch_all(db)
+        .await?;
     let hiring = match &lead.company_domain {
         Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
         None => vec![],
     };
-    Ok(LeadDetail { lead, segment_name, company, emails, hiring })
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, hiring })
 }
 
 async fn get_lead(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {
@@ -275,8 +282,19 @@ struct LeadBody {
     last_name: Option<String>,
     linkedin_url: Option<String>,
     x_url: Option<String>,
+    /// Blank clears it. Anything else is read as E.164, or by the lead's or the project's country.
+    phone: Option<String>,
     company_name: Option<String>,
     notes: Option<String>,
+}
+
+/// The country a lead's number is read by when it has no + in front: theirs, else the project's own.
+pub(super) async fn phone_country(db: &PgPool, project_id: Uuid, lead_country: &str) -> sqlx::Result<String> {
+    if !lead_country.trim().is_empty() {
+        return Ok(lead_country.trim().to_string());
+    }
+    let project: Option<String> = sqlx::query_scalar("select company ->> 'country_code' from projects where id = $1").bind(project_id).fetch_one(db).await?;
+    Ok(project.unwrap_or_default())
 }
 
 async fn update_lead(
@@ -305,6 +323,15 @@ async fn update_lead(
         None => None,
     };
     let notes = util_input::notes(body.notes.as_deref())?;
+    let phone = match body.phone.as_deref().map(str::trim) {
+        Some("") => Some(String::new()),
+        Some(raw) => {
+            let country = phone_country(&state.db, lead.project_id, &lead.country_code).await?;
+            let phone = crate::phone::normalize(raw, &country);
+            Some(phone.ok_or_else(|| AppError::BadRequest("Enter the phone number with its country code, like +44 7700 900123".into()))?)
+        }
+        None => None,
+    };
     let before = lead.status;
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
@@ -318,7 +345,8 @@ async fn update_lead(
            linkedin_url = coalesce($8, linkedin_url),
            company_name = coalesce($9, company_name),
            x_url = coalesce($10, x_url),
-           notes = coalesce($12, notes)
+           notes = coalesce($12, notes),
+           phone = coalesce($13, phone)
          where id = $1 returning *",
     )
     .bind(lead.id)
@@ -333,6 +361,7 @@ async fn update_lead(
     .bind(x_url)
     .bind(clear_email)
     .bind(notes)
+    .bind(phone)
     .fetch_one(&state.db)
     .await?;
     crate::hooks::team_set_status(&state, &before, &lead).await;

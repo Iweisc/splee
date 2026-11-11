@@ -285,6 +285,10 @@ export interface ProjectSettings extends CrmStatus {
   autopilot_lead_cap: number;
   /** Autopilot's emails go out without approval. */
   autopilot_auto_send: boolean;
+  /** Texts after the first email, through the organization's Twilio account. */
+  text_steps: TextStep[];
+  /** Texts sent in any 24 hours. Replies count toward it but are never held back. */
+  daily_text_limit: number;
 }
 
 /** GET /projects/:id/autopilot. Spend and leads count the current calendar month (UTC). */
@@ -603,6 +607,8 @@ export interface Lead {
   email_status: "unknown" | "found" | "guessed" | "verified" | "invalid";
   linkedin_url: string;
   x_url: string;
+  /** In E.164, like +447700900123, or "" for none. */
+  phone: string;
   company_name: string;
   company_domain: string | null;
   city: string;
@@ -649,6 +655,8 @@ export interface LeadDetail extends Lead {
   segment_name: string | null;
   company: Company | null;
   emails: EmailMessage[];
+  /** Texts Splee wrote or sent them. Their answers are in emails, with a text channel. */
+  texts: TextMessage[];
   hiring: JobPost[];
 }
 
@@ -780,6 +788,57 @@ export interface EmailMessage {
   deferrals: number; // times the receiving server said to try again later
   /** The A/B test variant it was written for. Follow-ups keep the first email's. */
   variant_id: UUID | null;
+  /** "sms" or "whatsapp" for a lead's answer to a text. */
+  channel: "email" | TextChannel;
+}
+
+export type TextChannel = "sms" | "whatsapp";
+
+/** A text Splee sends through the organization's Twilio account: a sequence step, or a reply typed in the inbox. */
+export interface TextMessage {
+  id: UUID;
+  project_id: UUID;
+  lead_id: UUID;
+  segment_id: UUID | null;
+  channel: TextChannel;
+  kind: "sequence" | "reply";
+  step: number;
+  to_number: string;
+  /** For a WhatsApp template, its text with the lead's details filled in. */
+  body: string;
+  template_sid: string;
+  template_vars: Record<string, string>;
+  status: "draft" | "approved" | "sending" | "sent" | "delivered" | "failed" | "cancelled";
+  due_at: Ts | null;
+  sent_at: Ts | null;
+  twilio_sid: string | null;
+  error: string;
+  created_at: Ts;
+}
+
+export interface TextStep {
+  channel: TextChannel;
+  delay_days: number;
+  instructions: string;
+}
+
+/** GET /organization/twilio. */
+export interface TwilioStatus {
+  connection: {
+    account_sid: string;
+    account_name: string;
+    api_key_sid: string;
+    sms_from: string;
+    whatsapp_from: string;
+    whatsapp_template_sid: string;
+    whatsapp_template_body: string;
+    whatsapp_template_vars: Record<string, string>;
+    error: string | null;
+    failed_at: Ts | null;
+    created_at: Ts;
+  } | null;
+  /** Where the number's incoming messages webhook should point. */
+  inbound_url: string;
 }
 
 export interface EmailRow extends EmailMessage {

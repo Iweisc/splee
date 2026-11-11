@@ -23,7 +23,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps and social posts wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts and social posts wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -40,6 +40,15 @@ pub fn spawn_workers(state: AppState) {
         // Every 10 minutes, one step per project, which keeps the profile lookups under LinkedIn's daily limit too.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::unipile::tick(&s), "linkedin sender").await });
+        let s = state.clone();
+        tokio::spawn(async move {
+            // Unlike an email, a text cut off by a restart may have reached Twilio, so it isn't sent again.
+            let why = "Splee restarted while sending this, so it may or may not have gone out";
+            if let Err(e) = sqlx::query("update text_messages set status = 'failed', error = $1 where status = 'sending'").bind(why).execute(&s.db).await {
+                tracing::error!(error = ?e, "could not settle interrupted texts");
+            }
+            every(Duration::from_secs(60), || crate::twilio::tick(&s), "text sender").await;
+        });
         // One post per account a tick, so 15 approved posts go out over a couple of hours.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
@@ -145,8 +154,8 @@ pub async fn pause_if_bouncing(db: &sqlx::PgPool, mailbox_id: Uuid) -> sqlx::Res
 /// Takes a lead's unsent LinkedIn steps off the to-do list, for a reply or a suppression. $1 is the lead.
 pub const STOP_LINKEDIN: &str = "update linkedin_messages set status = 'skipped' where lead_id = $1 and status = 'todo'";
 
-/// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails and
-/// LinkedIn steps.
+/// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails, LinkedIn
+/// steps and texts.
 pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {
     let mut tx = state.db.begin().await?;
     // Only a lead this changes gets a webhook event, so an unsubscribe link clicked twice sends one.
@@ -168,6 +177,11 @@ pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, 
     .execute(&mut *tx)
     .await?;
     sqlx::query(STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
+    sqlx::query("update text_messages set status = 'cancelled', error = $2 where lead_id = $1 and status in ('draft', 'approved')")
+        .bind(lead.id)
+        .bind(format!("Lead {status}"))
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     let event = match status {
         "unsubscribed" => Some("lead_unsubscribed"),

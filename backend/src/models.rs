@@ -279,6 +279,10 @@ pub struct ProjectSettings {
     pub autopilot_lead_cap: i32,
     /// Autopilot's emails go out without approval.
     pub autopilot_auto_send: bool,
+    /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
+    pub text_steps: Value,
+    /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.
+    pub daily_text_limit: i32,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -395,6 +399,8 @@ pub struct Lead {
     pub email_status: String,
     pub linkedin_url: String,
     pub x_url: String,
+    /// In E.164, or "" for none. See phone.rs.
+    pub phone: String,
     pub company_name: String,
     pub company_domain: Option<String>,
     pub city: String,
@@ -590,6 +596,32 @@ pub struct EmailMessage {
     pub deferrals: i32,
     /// The A/B test variant it was written for. Follow-ups keep the first email's.
     pub variant_id: Option<Uuid>,
+    /// "email", or "sms" or "whatsapp" for a lead's answer to a text. Splee's own texts are in text_messages.
+    pub channel: String,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct TextMessage {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub lead_id: Uuid,
+    pub segment_id: Option<Uuid>,
+    pub channel: String,
+    /// "sequence" for a step of the project's text_steps, "reply" for one typed in the inbox.
+    pub kind: String,
+    pub step: i32,
+    pub to_number: String,
+    /// The text, or for a WhatsApp template its text with the lead's details filled in, as a preview.
+    pub body: String,
+    /// A WhatsApp template's Content SID and its variables, sent instead of the body.
+    pub template_sid: String,
+    pub template_vars: Value,
+    pub status: String,
+    pub due_at: Option<Ts>,
+    pub sent_at: Option<Ts>,
+    pub twilio_sid: Option<String>,
+    pub error: String,
+    pub created_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

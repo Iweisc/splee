@@ -51,6 +51,7 @@ pub mod kind {
     pub const EXPLORER: &str = "explorer";
     pub const SEGMENT_FROM_PROMPT: &str = "segment_from_prompt";
     pub const SOCIAL: &str = "social";
+    pub const WRITE_TEXTS: &str = "write_texts";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -302,6 +303,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::EXPLORER => prospect::explorer_run(ctx).await,
         kind::SEGMENT_FROM_PROMPT => explore::segment_from_prompt_run(ctx).await,
         kind::SOCIAL => social::run(ctx).await,
+        kind::WRITE_TEXTS => write::texts_run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }
