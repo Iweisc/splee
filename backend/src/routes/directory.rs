@@ -19,6 +19,7 @@ use crate::auth::Auth;
 use crate::directory::{self, Country, Listing, Search};
 use crate::directory_queue::{self, DirectoryImport};
 use crate::error::{AppError, AppResult};
+use crate::fingerprints;
 use crate::social::{self, Failure};
 use crate::state::AppState;
 use crate::unipile::{PeopleSearch, Person, Unipile, any_title};
@@ -45,6 +46,8 @@ pub(super) struct SearchQuery {
     has_email: bool,
     #[serde(default)]
     has_phone: bool,
+    /// A tool's name or a category's key from the tech catalogue.
+    tech: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -61,8 +64,12 @@ async fn search(State(state): State<AppState>, _auth: Auth, Query(q): Query<Sear
 }
 
 pub(super) async fn page_of(db: &PgPool, q: &SearchQuery, page: &PageQuery) -> AppResult<Page> {
-    let search = Search::new(q.q.as_deref(), q.country.as_deref(), q.city.as_deref(), q.category.as_deref(), q.has_email, q.has_phone)
+    let mut search = Search::new(q.q.as_deref(), q.country.as_deref(), q.city.as_deref(), q.category.as_deref(), q.has_email, q.has_phone)
         .map_err(AppError::BadRequest)?;
+    if let Some(filter) = q.tech.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let names = fingerprints::named(filter).ok_or_else(|| AppError::BadRequest(format!("Splee can't detect {filter} yet. Pass a tool's name or a category.")))?;
+        search.tech = Some(names.into_iter().map(String::from).collect());
+    }
     let total = directory::count(db, &search, COUNT_CAP).await?;
     let items = directory::search(db, &search, page.limit(), page.offset()).await?;
     Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })

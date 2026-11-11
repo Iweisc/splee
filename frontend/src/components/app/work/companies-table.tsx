@@ -12,6 +12,7 @@ import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced } from "./states";
 import { HiringBadge } from "./hiring";
 import { SearchField } from "./search-field";
+import { TechBadges, useTech } from "./tech";
 import { FitScore } from "./status";
 
 const STATUS_LABEL: Record<Company["status"], string> = {
@@ -38,11 +39,12 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
   const query = useDebounced(q);
   const key = `/projects/${projectId}/companies${qs({ segment_id: segmentId, q: query, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<CompanyRow>>(key, fetcher, { keepPreviousData: true });
+  const { data: tech } = useTech(projectId);
 
   const toggleExcluded = async (c: CompanyRow) => {
     try {
       const updated = await api<Company>(`/companies/${c.id}`, { method: "PATCH", body: { status: c.status === "excluded" ? "new" : "excluded" } });
-      // The PATCH answers with the plain company, so the row keeps its hiring roles.
+      // The PATCH answers with the plain company, so the row keeps its hiring roles and tools.
       mutate((d) => d && { ...d, items: d.items.map((x) => (x.id === c.id ? { ...x, ...updated } : x)) }, { revalidate: false });
     } catch (e) {
       toastError(e);
@@ -104,6 +106,7 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                           </span>
                         </a>
                         <HiringBadge roles={c.hiring} className="mt-1 pl-6" />
+                        <TechBadges techs={c.tech} picks={tech?.picks ?? []} className="mt-1 pl-6" />
                       </Td>
                       <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>
                       <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap")}>{[c.city, c.country_code].filter(Boolean).join(", ") || "—"}</Td>

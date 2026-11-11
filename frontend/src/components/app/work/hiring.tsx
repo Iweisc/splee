@@ -70,7 +70,7 @@ export function HiringSignals({ projectId }: { projectId: string }) {
   return (
     <Card className="overflow-hidden">
       {picked.size > 0 ? (
-        <AddBar
+        <AddToCampaignBar
           projectId={projectId}
           ids={[...picked]}
           segments={segments ?? []}
@@ -184,8 +184,8 @@ function Row({ signal: s, picked, onToggle }: { signal: HiringSignal; picked: bo
   );
 }
 
-/** Replaces the filters while companies are ticked. */
-function AddBar({
+/** Replaces the filters while companies are ticked. Moves the ones without leads into the campaign and finds people there. */
+export function AddToCampaignBar({
   projectId,
   ids,
   segments,

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::explore::{self, Profile, load_project};
 use super::sdk::Call;
 use super::{Ctx, Outcome};
-use crate::hiring;
+use crate::{hiring, tech};
 use crate::models::{EmailMessage, Lead, Project, Segment, Variant};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
@@ -103,21 +103,29 @@ async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
         .join("\n"))
 }
 
-/// Open roles at each lead's company that match the project's hiring signals, by lowercase domain. Two at most, newest first.
-async fn job_posts(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<HashMap<String, Vec<Value>>> {
-    let Some(project_id) = leads.first().map(|l| l.project_id) else { return Ok(HashMap::new()) };
-    let domains: Vec<String> = leads.iter().filter_map(|l| l.company_domain.clone()).collect();
-    let mut by_domain: HashMap<String, Vec<Value>> = HashMap::new();
-    for post in hiring::open_at(ctx.db(), project_id, &domains).await? {
-        let posts = by_domain.entry(post.domain.to_lowercase()).or_default();
-        if posts.len() < 2 {
-            posts.push(json!({"role": post.title, "url": post.url, "excerpt": post.excerpt}));
-        }
-    }
-    Ok(by_domain)
+/// What's known about each lead's company beyond the lead itself, by lowercase domain.
+#[derive(Default)]
+struct CompanySignals {
+    /// Open roles that match the project's hiring signals. Two at most, newest first.
+    posts: HashMap<String, Vec<Value>>,
+    /// "Uses HubSpot and Intercom", naming only the project's tech picks.
+    tech: HashMap<String, String>,
 }
 
-fn lead_brief(lead: &Lead, posts: &HashMap<String, Vec<Value>>) -> Value {
+async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
+    let Some(project_id) = leads.first().map(|l| l.project_id) else { return Ok(CompanySignals::default()) };
+    let domains: Vec<String> = leads.iter().filter_map(|l| l.company_domain.clone()).collect();
+    let mut posts: HashMap<String, Vec<Value>> = HashMap::new();
+    for post in hiring::open_at(ctx.db(), project_id, &domains).await? {
+        let found = posts.entry(post.domain.to_lowercase()).or_default();
+        if found.len() < 2 {
+            found.push(json!({"role": post.title, "url": post.url, "excerpt": post.excerpt}));
+        }
+    }
+    Ok(CompanySignals { posts, tech: tech::fact_lines(ctx.db(), project_id, &domains).await? })
+}
+
+fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     let location = [lead.city.as_str(), lead.country_code.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
     let mut brief = json!({
         "lead_id": lead.id,
@@ -130,8 +138,12 @@ fn lead_brief(lead: &Lead, posts: &HashMap<String, Vec<Value>>) -> Value {
         "hook": lead.personalization["hook"],
         "facts": lead.personalization["facts"],
     });
-    if let Some(posts) = lead.company_domain.as_ref().and_then(|d| posts.get(&d.to_lowercase())) {
+    let domain = lead.company_domain.as_ref().map(|d| d.to_lowercase()).unwrap_or_default();
+    if let Some(posts) = signals.posts.get(&domain) {
         brief["hiring"] = json!(posts);
+    }
+    if let Some(line) = signals.tech.get(&domain) {
+        brief["tech"] = json!(line);
     }
     brief
 }
@@ -176,8 +188,8 @@ async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: boo
         if missing.is_empty() {
             break;
         }
-        let posts = job_posts(ctx, &missing).await?;
-        let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l, &posts)).collect::<Vec<_>>())?;
+        let signals = company_signals(ctx, &missing).await?;
+        let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l, &signals)).collect::<Vec<_>>())?;
         let retry = if attempt > 0 { "\nWrite every email in full, with real names, and no placeholders." } else { "" };
         let drafts: Drafts =
             ctx.ask(&Call::writing(WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject))).await?;
@@ -346,6 +358,8 @@ fn initial_prompt(
          - First sentence: one specific observation about their business from the lead's hook or facts. No flattery, no \"I hope this finds you well\", no \"I came across\".\n\
          - A lead's \"hiring\" lists roles their company has open right now, from its job board. When one is a role our offer helps \
          with, it usually makes the best first observation: name the role in plain words and tie it to what we do. Never paste the link.\n\
+         - A lead's \"tech\" names tools their company uses that matter to our offer, like \"Uses HubSpot\". When no job post fits, it can \
+         make the first observation: name the tool plainly and tie it to what we do. Never say how we know.\n\
          - Then one or two sentences that tie that observation to a concrete problem and how we solve it.\n\
          - End with one short question as the call to action: {cta}.{booking}\n\
          - At most {max_words} words. Tone: {tone}. {language}\n\
@@ -661,7 +675,7 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          - message_2: sent a few days later if no answer, at most 350 characters, a different angle and an easy yes/no question.\n\
          Tone: {tone}. {language} Start each with their first name.",
         sender = settings.sender(&profile),
-        lead = serde_json::to_string_pretty(&lead_brief(&lead, &job_posts(ctx, &[&lead]).await?))?,
+        lead = serde_json::to_string_pretty(&lead_brief(&lead, &company_signals(ctx, &[&lead]).await?))?,
         brief = profile.brief(project.domain.as_deref()),
         campaign = segment.map(|s| format!("Campaign angle: {}", s.angle)).unwrap_or_default(),
         tone = settings.tone,
@@ -702,9 +716,9 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{Ctx, insert_follow_up, save_initial, variant_rule};
+    use super::{Ctx, company_signals, insert_follow_up, lead_brief, save_initial, variant_rule};
     use crate::ab_test::{self, tests::{add_leads, seed}};
-    use crate::models::{AgentRun, EmailMessage, Variant};
+    use crate::models::{AgentRun, EmailMessage, Lead, Variant};
 
     async fn ctx(db: &PgPool, project: Uuid) -> Ctx {
         let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (project_id, kind) values ($1, 'write_emails') returning *")
@@ -780,5 +794,31 @@ mod tests {
         let (status, variant): (String, Option<Uuid>) =
             sqlx::query_as("select status, variant_id from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
         assert_eq!((status.as_str(), variant), ("approved", None));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn briefs_say_which_picked_tools_the_company_uses(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let ctx = ctx(&db, c.project).await;
+        let leads = add_leads(&db, &c, 2).await;
+        for (lead, domain) in leads.iter().zip(["Acme.com", "plain.com"]) {
+            sqlx::query("update leads set company_domain = $2 where id = $1").bind(lead.id).bind(domain).execute(&db).await.unwrap();
+        }
+        sqlx::query("insert into tech_scans (domain, techs, scanned_at) values ('acme.com', '{HubSpot,Intercom,Cloudflare}', now()), ('plain.com', '{Cloudflare}', now())")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into project_tech_picks (project_id, tech, kind, position) values ($1, 'HubSpot', 'competitor', 0), ($1, 'Intercom', 'uses', 1)")
+            .bind(c.project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let leads: Vec<Lead> =
+            sqlx::query_as("select * from leads where id = any($1) order by company_domain").bind(leads.iter().map(|l| l.id).collect::<Vec<_>>()).fetch_all(&db).await.unwrap();
+        let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
+        assert_eq!(lead_brief(&leads[0], &signals)["tech"], "Uses HubSpot and Intercom");
+        assert!(lead_brief(&leads[1], &signals).get("tech").is_none());
     }
 }

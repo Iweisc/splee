@@ -352,7 +352,9 @@ fn tools() -> Vec<Value> {
             "search_companies",
             "Search company database",
             "Searches the company database (businesses with a website from Overture Maps), the most reliable listings first. q matches \
-             words at the start of words in the name or category. total stops counting at 10,000, and capped says there are more.",
+             words at the start of words in the name or category. Each company's tech lists the tools its website and DNS show it \
+             uses, once Splee has scanned it, which it does for every project's companies. total stops counting at 10,000, and capped \
+             says there are more.",
             page_props(json!({
                 "q": { "type": "string", "description": "Words in the name or category, like \"dental\"" },
                 "country": { "type": "string", "description": "Two-letter country code, like GB" },
@@ -360,6 +362,9 @@ fn tools() -> Vec<Value> {
                 "category": { "type": "string", "description": "Exact category, like dental_clinic" },
                 "has_email": { "type": "boolean", "description": "Only companies that list an email" },
                 "has_phone": { "type": "boolean", "description": "Only companies that list a phone" },
+                "tech": { "type": "string", "description": "Only companies that use this tool, like HubSpot, or a tool of this category: crm, \
+                    marketing, email_sending, support, analytics, sales_intelligence, advertising, ecommerce, cms, payments, hosting, \
+                    scheduling, email or workplace" },
             })),
             &[],
             read.clone(),
@@ -628,6 +633,25 @@ mod tests {
 
         let (is_error, text) = server.call(KEY, "search_companies", json!({ "q": "dental", "city": "leeds" })).await;
         assert!(!is_error && text.contains("smile.co.uk"), "{text}");
+        // A scanned company carries its tools, and the tech filter takes a tool or a category.
+        sqlx::query(
+            "insert into directory_companies (domain, name, website, city, country_code, category, source_id, release)
+             values ('grin.co.uk', 'Grin Dental', 'https://grin.co.uk', 'Leeds', 'GB', 'dental_clinic', 'y', 'r')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("insert into tech_scans (domain, techs, scanned_at) values ('smile.co.uk', '{HubSpot,Cloudflare}', now())").execute(&db).await.unwrap();
+        for filter in ["crm", "hubspot"] {
+            let (is_error, text) = server.call(KEY, "search_companies", json!({ "q": "dental", "tech": filter })).await;
+            let found: Value = serde_json::from_str(&text).unwrap();
+            assert!(!is_error, "{text}");
+            assert_eq!((found["total"].clone(), found["items"][0]["tech"].clone()), (json!(1), json!(["HubSpot", "Cloudflare"])), "{filter}");
+        }
+        let (_, text) = server.call(KEY, "search_companies", json!({ "q": "dental", "tech": "Stripe" })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["total"], 0);
+        let (is_error, text) = server.call(KEY, "search_companies", json!({ "q": "dental", "tech": "Nope" })).await;
+        assert!(is_error && text.contains("can't detect"), "{text}");
         let (is_error, text) = server.call(KEY, "add_companies", json!({ "campaign_id": segment, "domains": ["smile.co.uk"] })).await;
         assert!(!is_error, "{text}");
         assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["added"], 1);

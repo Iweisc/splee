@@ -55,6 +55,8 @@ pub struct CompanyRow {
     pub company: Company,
     /// The watched roles that open posts at the company match, newest first, each once.
     pub hiring: Vec<String>,
+    /// The tools its last tech scan found, in catalogue order.
+    pub tech: Vec<String>,
 }
 
 async fn list_companies(
@@ -76,7 +78,8 @@ async fn list_companies(
         .await?;
     let items = sqlx::query_as::<_, CompanyRow>(&format!(
         "select c.*, array(select j.role from job_openings j where j.project_id = c.project_id and j.domain = c.domain and j.closed_at is null
-                           group by j.role order by max(j.first_seen) desc, j.role) as hiring
+                           group by j.role order by max(j.first_seen) desc, j.role) as hiring,
+                coalesce((select t.techs from tech_scans t where t.domain = c.domain), '{{}}') as tech
          {COMPANY_FILTER} order by fit_score desc, created_at desc limit $5 offset $6"
     ))
     .bind(id)

@@ -129,6 +129,8 @@ pub struct Search {
     has_phone: bool,
     /// Leaves out the companies this project already has, so an agent searching again sees new ones.
     pub skip_project: Option<Uuid>,
+    /// Only companies whose tech scan found one of these tools. Only domains in some project have been scanned.
+    pub tech: Option<Vec<String>>,
 }
 
 impl Search {
@@ -156,6 +158,7 @@ impl Search {
             has_email,
             has_phone,
             skip_project: None,
+            tech: None,
         })
     }
 
@@ -168,6 +171,7 @@ impl Search {
             .bind(self.has_email)
             .bind(self.has_phone)
             .bind(self.skip_project)
+            .bind(&self.tech)
     }
 }
 
@@ -178,7 +182,8 @@ const FILTER: &str = "from directory_companies d
       and ($4::text is null or categories @> array[$4])
       and (not $5 or email is not null)
       and (not $6 or phone is not null)
-      and ($7::uuid is null or not exists (select 1 from companies c where c.project_id = $7 and c.domain = d.domain::citext))";
+      and ($7::uuid is null or not exists (select 1 from companies c where c.project_id = $7 and c.domain = d.domain::citext))
+      and ($8::text[] is null or d.domain in (select lower(t.domain::text) from tech_scans t where t.techs && $8))";
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Listing {
@@ -193,13 +198,17 @@ pub struct Listing {
     pub postcode: Option<String>,
     pub country_code: String,
     pub category: Option<String>,
+    /// The tools its tech scan found, empty when it hasn't been scanned.
+    pub tech: Vec<String>,
 }
 
 /// The matches, the most reliable listings first.
 pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sqlx::Result<Vec<Listing>> {
     let sql = format!(
-        "select domain, name, website, phone, email, address, city, region, postcode, country_code, category {FILTER}
-         order by confidence desc, domain limit $8 offset $9"
+        "select domain, name, website, phone, email, address, city, region, postcode, country_code, category,
+                coalesce((select t.techs from tech_scans t where t.domain = d.domain::citext), '{{}}') as tech
+         {FILTER}
+         order by confidence desc, domain limit $9 offset $10"
     );
     let rows = search.bind(&sql).bind(limit).bind(offset).fetch_all(db).await?;
     rows.iter().map(Listing::from_row).collect()

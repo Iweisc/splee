@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, X } from "lucide-react";
 import { ChipInput } from "@/components/app/settings/chip-input";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
-import { LoadError, MicroLabel } from "@/components/app/work/states";
-import { Field } from "@/components/ui/form";
-import { Skeleton } from "@/components/ui/misc";
+import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
+import { useTech } from "@/components/app/work/tech";
+import { Button } from "@/components/ui/button";
+import { Field, Select } from "@/components/ui/form";
+import { Skeleton, Tabs } from "@/components/ui/misc";
+import { api } from "@/lib/api";
 import { fetcher } from "@/hooks/use-me";
-import type { CompanyProfile, ProjectDetail, Targeting } from "@/lib/types";
+import type { CompanyProfile, ProjectDetail, Targeting, TechPick } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Same buckets the agent writes into companies.employees.
@@ -66,6 +69,8 @@ export default function TargetingPage() {
 
             <HiringRoles roles={s.targeting.hiring_roles} onChange={(v) => set("hiring_roles", v)} />
 
+            <TechPicks />
+
             <ResearchProfile />
           </>
         );
@@ -86,6 +91,81 @@ function HiringRoles({ roles, onChange }: { roles: string[] | undefined; onChang
       <ChipInput value={roles ?? data?.default_roles ?? []} onChange={onChange} placeholder="e.g. SDR, sales development, account executive" label="Roles to watch" />
       {roles === undefined && !!data?.default_roles.length && (
         <p className="mt-2 text-xs text-muted-foreground">Suggested from the roles your campaigns target.</p>
+      )}
+    </Section>
+  );
+}
+
+/** Saved on every change rather than with the page's Save button, since picks are their own list on the server. */
+function TechPicks() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const { data, error, mutate } = useTech(projectId);
+  const picks = data?.picks ?? [];
+  const categoryOf = new Map(data?.catalogue.map((t) => [t.name, data.categories.find((c) => c.key === t.category)?.label ?? ""]));
+
+  const save = async (next: TechPick[]) => {
+    if (!data) return;
+    mutate({ ...data, picks: next }, { revalidate: false });
+    try {
+      await api(`/projects/${projectId}/tech/picks`, { method: "PUT", body: { picks: next } });
+    } catch (e) {
+      mutate(data, { revalidate: false });
+      toastError(e);
+    }
+  };
+
+  return (
+    <Section
+      title="Tech stack"
+      description="Splee checks your companies' websites and DNS for the tools they use. Companies with the ones you pick show them first, and the agent can open their emails with them. Picks save as you make them."
+    >
+      {error ? (
+        <LoadError error={error} what="the tool list" retry={() => mutate()} />
+      ) : !data ? (
+        <Skeleton className="h-10 w-full" />
+      ) : (
+        <div className="space-y-3">
+          {picks.length > 0 && (
+            <ul className="divide-y divide-border rounded-xl border border-border">
+              {picks.map((p) => (
+                // On phones the toggle takes a row of its own at full width, with the remove button up beside the name.
+                <li key={p.tech} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 py-2 pr-2 pl-4 sm:grid-cols-[1fr_auto_auto]">
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{p.tech}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{categoryOf.get(p.tech)}</span>
+                  </span>
+                  <Tabs
+                    value={p.kind}
+                    onChange={(kind) => save(picks.map((x) => (x.tech === p.tech ? { ...x, kind } : x)))}
+                    options={[
+                      { value: "uses", label: "Good sign" },
+                      { value: "competitor", label: "Competitor" },
+                    ]}
+                    className="order-last col-span-2 flex *:flex-1 sm:order-none sm:col-span-1 sm:inline-flex"
+                  />
+                  <Button variant="ghost" size="icon" onClick={() => save(picks.filter((x) => x.tech !== p.tech))} aria-label={`Stop looking for ${p.tech}`} className="size-9">
+                    <X className="size-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <Select value="" onChange={(e) => e.target.value && save([...picks, { tech: e.target.value, kind: "uses" }])} aria-label="Add a tool" className="h-9 sm:w-72">
+            <option value="">Add a tool…</option>
+            {data.categories.map((c) => (
+              <optgroup key={c.key} label={c.label}>
+                {data.catalogue
+                  .filter((t) => t.category === c.key && !picks.some((p) => p.tech === t.name))
+                  .map((t) => (
+                    <option key={t.name} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
+              </optgroup>
+            ))}
+          </Select>
+          <p className="text-xs text-muted-foreground">Competitor means your product can replace it.</p>
+        </div>
       )}
     </Section>
   );

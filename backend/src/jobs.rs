@@ -160,24 +160,11 @@ impl Boards {
         None
     }
 
-    /// A page of the company's site. Each hop of a redirect is checked to be a public address before it's fetched, so a lead's
-    /// domain can't point the server at its own network.
+    /// A page of the company's site.
     async fn page(&self, url: &str) -> Option<String> {
-        let mut url = reqwest::Url::parse(url).ok()?;
-        for _ in 0..4 {
-            let client = if self.public_only { crate::hooks::public_client(&url).await.ok()? } else { self.client.clone() };
-            let res = client.get(url.clone()).header(reqwest::header::USER_AGENT, USER_AGENT).timeout(TIMEOUT).send().await.ok()?;
-            if res.status().is_redirection() {
-                url = url.join(res.headers().get(reqwest::header::LOCATION)?.to_str().ok()?).ok()?;
-                continue;
-            }
-            if !res.status().is_success() {
-                return None;
-            }
-            let body = read_capped(res, MAX_PAGE_BYTES).await.ok()?;
-            return Some(String::from_utf8_lossy(&body).into_owned());
-        }
-        None
+        let res = crate::hooks::get_page(&self.client, url, self.public_only, USER_AGENT, TIMEOUT).await?;
+        let body = read_capped(res, MAX_PAGE_BYTES).await.ok()?;
+        Some(String::from_utf8_lossy(&body).into_owned())
     }
 }
 
