@@ -79,6 +79,8 @@ pub struct Config {
     /// Where the websites of businesses added from Google Maps are read for a contact address. Empty for their real sites.
     /// Only tests and sandboxes set it, to a fake that serves each site under /site/{domain}.
     pub local_sites_url: String,
+    /// Google's Sheets API. Only tests and sandboxes point it elsewhere, at a fake. Sheets signs in with the Google app above.
+    pub sheets_api_url: String,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -179,6 +181,7 @@ impl Config {
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
             places_api_url: env::var("PLACES_API_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| crate::places::API_URL.into()),
             local_sites_url: env::var("LOCAL_SITES_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            sheets_api_url: env::var("SHEETS_API_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| crate::sheets::API.into()),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -250,6 +253,7 @@ mod tests {
             ipinfo_token: None,
             places_api_url: String::new(),
             local_sites_url: String::new(),
+            sheets_api_url: String::new(),
         }
     }
 

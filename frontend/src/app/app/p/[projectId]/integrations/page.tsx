@@ -47,6 +47,7 @@ import { CodeBlock } from "@/components/app/settings/code-block";
 import { CampaignField } from "@/components/app/settings/campaign-field";
 import { ChipInput } from "@/components/app/settings/chip-input";
 import { CopyField } from "@/components/app/settings/copy-button";
+import { GoogleSheetsSection } from "@/components/app/settings/google-sheets";
 import { isUrl } from "@/components/app/settings/is-url";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
@@ -3891,6 +3892,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <ChatSection projectId={projectId} weekly={s.chat_weekly_report} setWeekly={(chat_weekly_report) => update({ chat_weekly_report })} />
 
           <CrmSection projectId={projectId} settings={s} />
+          <GoogleSheetsSection projectId={projectId} />
           <PaymentsSection projectId={projectId} />
           <MeetingsSection projectId={projectId} />
           <AdAudiencesSection projectId={projectId} />

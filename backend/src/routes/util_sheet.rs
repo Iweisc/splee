@@ -3,7 +3,6 @@
 
 use std::time::Duration;
 
-use reqwest::Url;
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 
 use crate::error::{AppError, AppResult};
@@ -35,23 +34,8 @@ pub async fn fetch(link: &str) -> AppResult<(String, Vec<u8>)> {
 
 /// https://docs.google.com/spreadsheets/d/{id}/edit#gid={tab} becomes its CSV export, keeping the tab that was open.
 fn export_url(link: &str) -> Option<String> {
-    let url = Url::parse(link.trim()).ok()?;
-    if url.host_str() != Some("docs.google.com") {
-        return None;
-    }
-    let mut path = url.path_segments()?;
-    let (Some("spreadsheets"), Some("d"), Some(id)) = (path.next(), path.next(), path.next()) else { return None };
-    // A "Publish to web" link (/d/e/…) has another id and export path. Keep this to the share link until it's asked for.
-    if id == "e" || id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return None;
-    }
-    let tab = [url.fragment(), url.query()]
-        .into_iter()
-        .flatten()
-        .flat_map(|part| part.split('&'))
-        .find_map(|pair| pair.strip_prefix("gid="))
-        .filter(|gid| !gid.is_empty() && gid.chars().all(|c| c.is_ascii_digit()));
-    Some(format!("https://docs.google.com/spreadsheets/d/{id}/export?format=csv{}", tab.map(|gid| format!("&gid={gid}")).unwrap_or_default()))
+    let crate::sheets::Link { id, gid } = crate::sheets::link(link)?;
+    Some(format!("https://docs.google.com/spreadsheets/d/{id}/export?format=csv{}", gid.map(|gid| format!("&gid={gid}")).unwrap_or_default()))
 }
 
 /// The UTF-8 name Google gives the export, like "Leads - Sheet1.csv".

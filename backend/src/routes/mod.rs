@@ -31,6 +31,7 @@ mod saved_replies;
 mod scores;
 mod slack;
 mod sending_domains;
+mod sheets;
 mod texts;
 mod social;
 pub mod org;
@@ -74,7 +75,7 @@ mod util_teable;
 mod util_nocodb;
 mod util_csv;
 pub mod util_input;
-mod util_lead_import;
+pub(crate) mod util_lead_import;
 mod util_notion;
 mod util_pagination;
 mod util_scope;
@@ -138,6 +139,7 @@ pub fn router() -> Router<AppState> {
         .merge(calls::router())
         .merge(meetings::router())
         .merge(deals::router())
+        .merge(sheets::router())
         .merge(outreach::router())
         .merge(payments::router())
         .merge(ads::router())

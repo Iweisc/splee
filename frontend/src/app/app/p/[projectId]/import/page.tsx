@@ -11,7 +11,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, FileName, Spinner, Tabs } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { Finders, Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
+import { type Finders, type Import, LEAD_IMPORT_FIELDS, type ProjectSettings, type SegmentWithStats } from "@/lib/types";
 import { cn, dateTime, num, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -98,21 +98,6 @@ const LINK_SOURCES: { value: LinkSource; label: string }[] = [
 
 const chooseAnother = (source: Source) =>
   `Choose another ${"file" in source ? "file" : "sheet_url" in source ? "sheet" : TABLE_SOURCES[source.kind].noun}`;
-
-// Lead columns the backend import accepts as mapping keys.
-const FIELDS: { key: string; label: string }[] = [
-  { key: "email", label: "Email" },
-  { key: "full_name", label: "Full name" },
-  { key: "first_name", label: "First name" },
-  { key: "last_name", label: "Last name" },
-  { key: "title", label: "Job title" },
-  { key: "company_name", label: "Company" },
-  { key: "company_domain", label: "Company domain" },
-  { key: "linkedin_url", label: "LinkedIn URL" },
-  { key: "city", label: "City" },
-  { key: "country_code", label: "Country code" },
-  { key: "phone", label: "Phone" },
-];
 
 export default function ImportPage({ params }: PageProps<"/app/p/[projectId]/import">) {
   const { projectId } = use(params);
@@ -328,7 +313,7 @@ function MappingStep({
       <p className="mb-5 text-sm text-muted-foreground">{plural(preview.headers.length, "column")}. Match them to lead fields.</p>
 
       <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-        {FIELDS.map((f) => (
+        {LEAD_IMPORT_FIELDS.map((f) => (
           <Field key={f.key} label={f.key === "email" ? `${f.label} *` : f.label}>
             <Select value={mapping[f.key] ?? ""} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}>
               <option value="">Don&apos;t import</option>

@@ -57,6 +57,7 @@ mod social_channels;
 mod stackexchange;
 mod state;
 mod teable;
+mod sheets;
 mod telegram;
 mod tech;
 mod threads;
@@ -137,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
     payments::spawn_worker(state.clone());
     meetings::spawn_worker(state.clone());
     ads::spawn_worker(state.clone());
+    sheets::spawn_worker(state.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

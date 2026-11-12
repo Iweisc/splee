@@ -2131,6 +2131,56 @@ export interface AdsStatus {
   audiences: AdAudience[];
 }
 
+/** The lead fields an import's columns can fill, as the backend's import takes them. */
+export const LEAD_IMPORT_FIELDS: { key: string; label: string }[] = [
+  { key: "email", label: "Email" },
+  { key: "full_name", label: "Full name" },
+  { key: "first_name", label: "First name" },
+  { key: "last_name", label: "Last name" },
+  { key: "title", label: "Job title" },
+  { key: "company_name", label: "Company" },
+  { key: "company_domain", label: "Company domain" },
+  { key: "linkedin_url", label: "LinkedIn URL" },
+  { key: "city", label: "City" },
+  { key: "country_code", label: "Country code" },
+  { key: "phone", label: "Phone" },
+];
+
+/** The lead events a Google Sheets export can write. Keep in sync with export::EVENTS in backend/src/sheets/export.rs. */
+export const SHEET_EVENTS = { hot_lead: "Hot leads", meeting_booked: "Booked meetings", "deal.won": "Won deals" } as const;
+export type SheetEvent = keyof typeof SHEET_EVENTS;
+
+/** A tab a project imports leads from, or writes lead events to. */
+export interface SheetConnection {
+  id: UUID;
+  project_id: UUID;
+  kind: "import" | "export";
+  spreadsheet_id: string;
+  spreadsheet_name: string;
+  tab: string;
+  /** {field: column header}, for an import. */
+  mapping: Record<string, string>;
+  segment_id: UUID | null;
+  keep_importing: boolean;
+  next_import_at: Ts | null;
+  events: SheetEvent[];
+  last_sync_at: Ts | null;
+  /** Leads an import added, or rows an export wrote. */
+  rows_added: number;
+  error: string | null;
+  failed_at: Ts | null;
+  created_at: Ts;
+}
+
+/** GET /projects/:id/sheets. */
+export interface SheetsStatus {
+  /** Whether this Splee has a Google app to sign in with. */
+  available: boolean;
+  /** The Google account the project signed in with. Its tokens never come back. */
+  account: { email: string; needs_reconnect: boolean; error: string | null; held_until: Ts | null } | null;
+  connections: SheetConnection[];
+}
+
 export interface DealAmounts {
   currency: string;
   open: number;

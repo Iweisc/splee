@@ -245,6 +245,8 @@ const MEETING_FIELDS: &[&str] = &[
 ];
 const LOCAL_FIELDS: &[&str] =
     &["place_id", "name", "category", "address", "phone", "website", "domain", "rating", "review_count", "maps_url", "known"];
+const SHEET_FIELDS: &[&str] =
+    &["id", "kind", "spreadsheet_id", "spreadsheet_name", "tab", "segment_id", "keep_importing", "events", "last_sync_at", "rows_added", "error"];
 const CALL_FIELDS: &[&str] = &[
     "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
     "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
@@ -312,6 +314,16 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "list_call_tasks" => async { Ok(pick(value(v1::list_calls(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
         "log_call" => async { Ok(pick(value(v1::log_call(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
         "list_meetings" => async { Ok(pick(value(v1::list_meetings(st(), auth, id(a, "lead_id")?).await?)?, MEETING_FIELDS)) }.await,
+        "list_sheet_connections" => async { Ok(pick(value(v1::list_sheets(st(), auth, id(a, "project_id")?).await?)?, SHEET_FIELDS)) }.await,
+        "import_from_sheet" => async {
+            let Path(project) = id(a, "project_id")?;
+            let Path(conn) = id(a, "connection_id")?;
+            let done = value(v1::import_sheet(st(), auth, Path((project, conn))).await?)?;
+            let import = &done["import"];
+            Ok(json!({ "imported": import["imported"].as_i64().unwrap_or(0), "skipped": import["skipped"].as_i64().unwrap_or(0), "errors": import["errors"],
+                       "connection": pick(done["connection"].clone(), SHEET_FIELDS) }))
+        }
+        .await,
         _ => return None,
     })
 }
@@ -674,7 +686,7 @@ fn tools() -> Vec<Value> {
                 "notes": { "type": "string", "description": "Optional. What was said" },
             }),
             &["lead_id", "outcome"],
-            adds,
+            adds.clone(),
         ),
         tool(
             "list_meetings",
@@ -685,7 +697,29 @@ fn tools() -> Vec<Value> {
              waits for approval.",
             json!({ "lead_id": id_prop("A lead id from list_leads or list_replies") }),
             &["lead_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_sheet_connections",
+            "List Google Sheets",
+            "A project's Google Sheets tabs: kind import is a tab leads come from, read every 15 minutes when keep_importing is on, \
+             and kind export a tab that gets a row for each hot lead, booked meeting or won deal in events. rows_added counts the \
+             leads or rows Splee added so far, and error says why the last read or write failed.",
+            json!({ "project_id": id_prop("A project id from list_projects") }),
+            &["project_id"],
             read,
+        ),
+        tool(
+            "import_from_sheet",
+            "Import from Google Sheet",
+            "Reads an import tab now and adds the rows it hasn't seen as leads in its campaign. Rows are told apart by email, or by \
+             their content when they have none. Suppressed and duplicate addresses are skipped, with the reason in errors.",
+            json!({
+                "project_id": id_prop("A project id from list_projects"),
+                "connection_id": id_prop("An import tab's id from list_sheet_connections"),
+            }),
+            &["project_id", "connection_id"],
+            adds,
         ),
     ]
 }
@@ -757,6 +791,7 @@ mod tests {
                 ipinfo_token: None,
                 places_api_url,
                 local_sites_url,
+                sheets_api_url: String::new(),
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -837,7 +872,7 @@ mod tests {
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
-                     "search_local_businesses", "add_local_businesses"] {
+                     "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));

@@ -477,6 +477,7 @@ mod tests {
             ipinfo_token: None,
             places_api_url: String::new(),
             local_sites_url: String::new(),
+            sheets_api_url: String::new(),
             slack: None,
         }
     }

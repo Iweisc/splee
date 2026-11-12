@@ -775,6 +775,7 @@ mod tests {
             ipinfo_token: None,
             places_api_url: String::new(),
             local_sites_url: String::new(),
+            sheets_api_url: String::new(),
             slack: Some(SlackApp { client_id: "123.456".into(), client_secret: "shh".into(), signing_secret: "signing".into(), api_url: fake_url.into() }),
         }
     }

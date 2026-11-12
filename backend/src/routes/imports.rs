@@ -34,7 +34,7 @@ pub fn router() -> Router<AppState> {
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
 }
 
-const FIELDS: &[&str] = &[
+pub(crate) const FIELDS: &[&str] = &[
     "email",
     "full_name",
     "first_name",
@@ -225,7 +225,7 @@ fn parse_spreadsheet(bytes: Vec<u8>) -> AppResult<Csv> {
     Ok(Csv { headers, rows: rows.collect() })
 }
 
-fn suggest_field(header: &str) -> Option<&'static str> {
+pub(crate) fn suggest_field(header: &str) -> Option<&'static str> {
     let normalized = header.trim().to_lowercase().replace(['_', '-'], " ");
     Some(match normalized.as_str() {
         "email" | "e mail" | "email address" => "email",

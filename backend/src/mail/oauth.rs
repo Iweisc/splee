@@ -130,6 +130,7 @@ pub const META: &str = "meta-oauth";
 pub const POSTMASTER: &str = "postmaster-oauth";
 pub const CRM: &str = "crm-oauth";
 pub const ADS: &str = "ads-oauth";
+pub const SHEETS: &str = "sheets-oauth";
 
 pub use crypto::{sign_state, state_nonce, verify_state};
 
@@ -410,6 +411,7 @@ pub(crate) mod tests {
             ipinfo_token: None,
             places_api_url: String::new(),
             local_sites_url: String::new(),
+            sheets_api_url: String::new(),
         }
     }
 

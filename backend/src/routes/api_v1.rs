@@ -15,6 +15,7 @@ use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::meetings::{self, MeetingRow};
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
+use super::sheets::{self, ImportedNow};
 use super::stats::{self, Totals};
 use super::suppressions;
 use super::util_lead_import::{self, NewLead};
@@ -63,6 +64,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/calls", get(list_calls))
         .route("/v1/leads/{id}/calls", post(log_call))
         .route("/v1/leads/{id}/meetings", get(list_meetings))
+        .route("/v1/projects/{id}/sheets", get(list_sheets))
+        .route("/v1/projects/{id}/sheets/{conn}/import", post(import_sheet))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -782,4 +785,15 @@ pub(super) async fn log_call(State(state): State<AppState>, auth: ApiKeyAuth, Pa
 /// suggested stage. Transcripts stay in Splee.
 pub(super) async fn list_meetings(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<MeetingRow>>> {
     Ok(Json(meetings::of_lead(&state.db, auth.org_id, id).await?))
+}
+
+/// The project's Google Sheets: the tabs leads import from and the ones lead events go to, with how each last went.
+pub(super) async fn list_sheets(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<crate::sheets::Connection>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(crate::sheets::Connection::list(&state.db, id).await?))
+}
+
+/// Reads an import tab now and adds its new rows as leads, like "Import now" on the integrations page.
+pub(super) async fn import_sheet(State(state): State<AppState>, auth: ApiKeyAuth, Path((id, conn)): Path<(Uuid, Uuid)>) -> AppResult<Json<ImportedNow>> {
+    Ok(Json(sheets::import_for(&state, auth.org_id, id, conn).await?))
 }
