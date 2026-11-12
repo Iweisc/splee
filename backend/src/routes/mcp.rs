@@ -523,8 +523,11 @@ fn tools() -> Vec<Value> {
              (micro-dollars), revenue_cents from the payments of leads through Stripe, Paddle or Lemon Squeezy in the organization's \
              currency (payments in others are counted in ignored_payments) with revenue_per_meeting_cents and return_on_spend (null \
              unless that currency is USD, since spend is in dollars), the same totals for the period before in previous, a daily series (weekly past 90 days), and breakdowns by campaign (with its leads' revenue), mailbox \
-             (bouncing flags over 5% bounced), sequence step, weekday and hour of send in the project's time zone, and channel. \
-             Replies, bounces and meetings count for the last email the lead got before them.",
+             (bouncing flags over 5% bounced), sequence step, A/B test angle, weekday and hour of send in the project's time zone, \
+             and channel. Replies, bounces and meetings count for the last email the lead got before them. Totals, campaigns, \
+             angles, mailboxes and steps have opened, open_rate, clicked and click_rate, by email out of those sent in the range \
+             that tracked opens or clicks, scanners left out. A null rate means none tracked it. Open rates are estimates, since \
+             Apple Mail opens every email itself and some people block the pixel.",
             json!({
                 "project_id": project,
                 "from": { "type": "string", "format": "date", "description": "Optional. First day, as YYYY-MM-DD in the project's time zone" },

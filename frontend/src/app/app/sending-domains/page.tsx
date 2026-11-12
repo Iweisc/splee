@@ -14,8 +14,8 @@ import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Badge, Card, Host, Message, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { DomainAvailability, DomainRecord, MailProvider, ProjectSummary, RegistrarAccount, SendingDomain } from "@/lib/types";
-import { cn, money, normalizeDomain, plural } from "@/lib/utils";
+import type { DomainAvailability, DomainRecord, MailProvider, ProjectSummary, RegistrarAccount, SendingDomain, TrackingDomains } from "@/lib/types";
+import { cn, money, normalizeDomain, plural, timeAgo } from "@/lib/utils";
 
 /** What each provider still needs after Splee set the records it knows in advance. */
 const PROVIDERS: Record<MailProvider, { label: string; next: string }> = {
@@ -82,6 +82,7 @@ export default function SendingDomainsPage() {
               <Registrar account={account} onChange={(a) => mutateAccount(a, { revalidate: false })} />
               {account && <FindDomains owned={domains ?? []} onBought={(list) => mutate(list, { revalidate: false })} />}
               {domains && domains.length > 0 && <DomainList domains={domains} mutate={mutate} />}
+              <TrackingHosts />
             </>
           )}
         </SettingsColumn>
@@ -548,5 +549,67 @@ function AddRecord({ domain, refresh, onDone }: { domain: SendingDomain; refresh
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Each sending domain's own address for tracked links and the open pixel, so emails don't link to Splee's host. The sender
+ * uses one once a DNS check finds its CNAME. Splee sets it on domains it bought and checks those every 10 minutes itself.
+ */
+function TrackingHosts() {
+  const { data, mutate } = useSWR<TrackingDomains>("/tracking-domains", fetcher);
+  const { pending, run } = useAction();
+  if (!data || data.domains.length === 0) return null;
+
+  const check = (domain: string) =>
+    run(`track:${domain}`, async () => {
+      const res = await api<TrackingDomains>("/tracking-domains/check", { body: { domain } });
+      await mutate(res, { revalidate: false });
+      const checked = res.domains.find((d) => d.domain === domain);
+      if (!checked?.verified_at) throw new Error(checked?.error || "The record isn't there yet");
+    }, "Tracking domain verified");
+
+  return (
+    <Section
+      title="Tracking domains"
+      description="Tracked links and the open pixel use your own domain instead of Splee's address, which spam filters trust more. Add the CNAME below at your DNS provider, then check it."
+    >
+      {!data.target && (
+        <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-pretty text-amber-800">
+          Splee&apos;s PUBLIC_URL is a local address, so there&apos;s nothing to point a CNAME at yet. Set it to the address people reach Splee at.
+        </p>
+      )}
+      <div className="divide-y divide-border rounded-xl border border-border">
+        {data.domains.map((d) => (
+          <div key={d.domain} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 px-4 py-3">
+            <div className="min-w-0 flex-1 basis-64">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <p className="min-w-0 text-sm font-medium">
+                  <Host host={d.host} />
+                </p>
+                {d.verified_at ? <Badge tone="green">Verified</Badge> : <Badge tone={d.checked_at ? "amber" : "neutral"}>{d.checked_at ? "Not found" : "Not checked"}</Badge>}
+              </div>
+              {data.target && (
+                <p className="mt-1 font-mono text-xs wrap-anywhere text-muted-foreground">
+                  CNAME track → {data.target}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-pretty text-muted-foreground">
+                {d.verified_at
+                  ? `Emails from ${d.domain} use it. Checked ${timeAgo(d.checked_at ?? d.verified_at)}.`
+                  : d.porkbun
+                    ? "Splee set this record in Porkbun and checks it every 10 minutes."
+                    : d.error || `Until then, emails from ${d.domain} use Splee's address.`}
+              </p>
+            </div>
+            {data.target && (
+              <Button variant="outline" size="sm" className="max-sm:w-full" onClick={() => check(d.domain)} loading={pending === `track:${d.domain}`}>
+                <RefreshCw className="size-4" /> Check
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }

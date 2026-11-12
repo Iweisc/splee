@@ -4,6 +4,9 @@
 //! Everything counts on the day it happened, in the project's time zone: an email when it was sent, a reply when the lead's
 //! first reply arrived, a meeting when the lead was booked. A reply, bounce, meeting, unsubscribe or won deal is credited
 //! to the last first email or follow-up the lead got before it, which decides its campaign, mailbox, step and send hour.
+//!
+//! Open and click rates are by email, out of the emails sent in the range that tracked them, counting opens and clicks
+//! whenever they came. Opens are an estimate: some people block the pixel and Apple Mail opens every email itself.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
@@ -57,6 +60,8 @@ pub struct Analytics {
     pub(crate) previous: Totals,
     series: Vec<Point>,
     pub(crate) campaigns: Vec<CampaignRow>,
+    /// The A/B test angles of the campaigns, for projects that test any.
+    angles: Vec<AngleRow>,
     mailboxes: Vec<MailboxRow>,
     steps: Vec<StepRow>,
     /// Weekday (1 for Monday to 7 for Sunday) and hour of the emails sent, in the project's time zone. Empty cells are left out.
@@ -83,6 +88,8 @@ pub struct Totals {
     unsubscribes: i64,
     bounced: i64,
     bounce_rate: Option<f64>,
+    #[serde(flatten)]
+    engagement: Engagement,
     /// What Claude Code reported for the agent runs started in the range. A mailbox filter leaves it out, since runs
     /// don't belong to a mailbox.
     claude_cost_micros: i64,
@@ -101,6 +108,22 @@ pub struct Totals {
     /// Revenue over spend, null when nothing was spent. Spend is in US dollars, so it's also null when the organization
     /// counts revenue in another currency.
     pub(crate) return_on_spend: Option<f64>,
+}
+
+/// Emails opened and clicked, and the rates out of those that tracked it. A rate is null when none did, so the page leaves
+/// out opens for campaigns that don't track them.
+#[derive(Serialize, Default, Clone, Copy)]
+pub struct Engagement {
+    opened: i64,
+    open_rate: Option<f64>,
+    clicked: i64,
+    click_rate: Option<f64>,
+}
+
+impl Engagement {
+    fn from_counts(n: &Counts) -> Self {
+        Self { opened: n.opened, open_rate: rate(n.opened, n.open_tracked), clicked: n.clicked, click_rate: rate(n.clicked, n.click_tracked) }
+    }
 }
 
 #[derive(Serialize)]
@@ -133,6 +156,8 @@ pub(crate) struct CampaignRow {
     deals_won: i64,
     bounced: i64,
     bounce_rate: Option<f64>,
+    #[serde(flatten)]
+    engagement: Engagement,
     spend_micros: i64,
     cost_per_hot_micros: Option<i64>,
     /// From the payments of the campaign's leads.
@@ -153,6 +178,23 @@ struct MailboxRow {
     bounce_rate: Option<f64>,
     /// Over 5% of at least 20 leads bounced, where providers start sending the mailbox's mail to spam.
     bouncing: bool,
+    #[serde(flatten)]
+    engagement: Engagement,
+}
+
+/// One angle of a campaign's A/B test. The reply rate is by lead, like the campaign's.
+#[derive(Serialize)]
+struct AngleRow {
+    variant_id: Uuid,
+    segment_id: Uuid,
+    name: String,
+    campaign: String,
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+    #[serde(flatten)]
+    engagement: Engagement,
 }
 
 /// Step 0 is the first email, step n follow-up n. The rate is out of the step's emails, like the Follow-ups page's.
@@ -162,6 +204,8 @@ struct StepRow {
     sent: i64,
     replies: i64,
     reply_rate: Option<f64>,
+    #[serde(flatten)]
+    engagement: Engagement,
 }
 
 #[derive(Serialize)]
@@ -199,6 +243,10 @@ struct Counts {
     won: i64,
     won_cents: i64,
     email_cost_micros: i64,
+    open_tracked: i64,
+    opened: i64,
+    click_tracked: i64,
+    clicked: i64,
 }
 
 #[derive(FromRow)]
@@ -208,6 +256,7 @@ struct Row {
     cur: bool,
     bucket: Option<String>,
     segment_id: Option<Uuid>,
+    variant_id: Option<Uuid>,
     mailbox_id: Option<Uuid>,
     step: Option<i32>,
     weekday: Option<i32>,
@@ -238,15 +287,18 @@ const FACTS: &str = "with w as (
    union all select lead_id, 'won', closed_at, null, currency, value_cents from deals where project_id = $1 and status = 'won'
  ), facts as (
    select 'sent' as what, e.sent_at as at, e.lead_id, e.segment_id, e.mailbox_id, e.kind in ('initial', 'follow_up') as outreach,
-     e.step, e.sent_at, e.cost_micros, false as hot, null as channel, null as currency, 0::bigint as cents
+     e.step, e.sent_at, e.cost_micros, false as hot, null as channel, null as currency, 0::bigint as cents, e.variant_id,
+     e.track_opens, e.track_clicks,
+     exists (select 1 from tracking_hits h where h.email_id = e.id and h.kind = 'open' and h.filter_reason is null) as opened,
+     exists (select 1 from tracking_hits h where h.email_id = e.id and h.kind = 'click' and h.filter_reason is null) as clicked
    from email_messages e, w
    where e.project_id = $1 and e.status = 'sent' and e.direction = 'outbound' and e.sent_at >= w.lo and e.sent_at < w.hi
    union all
    select o.what, o.at, o.lead_id, coalesce(c.segment_id, l.segment_id), c.mailbox_id, c.step is not null, c.step, c.sent_at, 0,
-     l.status in ('hot', 'meeting_booked'), o.channel, o.currency, o.cents
+     l.status in ('hot', 'meeting_booked'), o.channel, o.currency, o.cents, c.variant_id, false, false, false, false
    from outcomes o cross join w join leads l on l.id = o.lead_id
    left join lateral (
-     select e.segment_id, e.mailbox_id, e.step, e.sent_at from email_messages e
+     select e.segment_id, e.mailbox_id, e.step, e.sent_at, e.variant_id from email_messages e
      where e.lead_id = o.lead_id and e.direction = 'outbound' and e.status = 'sent' and e.kind in ('initial', 'follow_up')
        and e.sent_at <= o.at
      order by e.sent_at desc limit 1
@@ -262,8 +314,9 @@ const FACTS: &str = "with w as (
  )
  select case when grouping(bucket) = 0 then 'series' when grouping(segment_id) = 0 then 'campaign'
           when grouping(mailbox_id) = 0 then 'mailbox' when grouping(out_step) = 0 then 'step'
-          when grouping(weekday) = 0 then 'slot' when grouping(currency) = 0 then 'currency' else 'total' end as breakdown,
-   cur, bucket, segment_id, mailbox_id, out_step as step, weekday, hour, currency,
+          when grouping(weekday) = 0 then 'slot' when grouping(currency) = 0 then 'currency' when grouping(variant_id) = 0 then 'angle'
+          else 'total' end as breakdown,
+   cur, bucket, segment_id, variant_id, mailbox_id, out_step as step, weekday, hour, currency,
    count(*) filter (where what = 'sent' and outreach) as sent,
    count(distinct lead_id) filter (where what = 'sent' and outreach) as contacted,
    count(*) filter (where what = 'reply') as replies,
@@ -274,9 +327,14 @@ const FACTS: &str = "with w as (
    count(*) filter (where what = 'unsubscribe') as unsubscribes,
    count(*) filter (where what = 'won') as won,
    coalesce(sum(cents) filter (where what = 'won'), 0)::bigint as won_cents,
-   coalesce(sum(cost_micros), 0)::bigint as email_cost_micros
+   coalesce(sum(cost_micros), 0)::bigint as email_cost_micros,
+   count(*) filter (where what = 'sent' and outreach and track_opens) as open_tracked,
+   count(*) filter (where what = 'sent' and outreach and track_opens and opened) as opened,
+   count(*) filter (where what = 'sent' and outreach and track_clicks) as click_tracked,
+   count(*) filter (where what = 'sent' and outreach and track_clicks and clicked) as clicked
  from scoped
- group by grouping sets ((cur), (cur, bucket), (cur, segment_id), (cur, mailbox_id), (cur, out_step), (cur, weekday, hour), (cur, currency))";
+ group by grouping sets ((cur), (cur, bucket), (cur, segment_id), (cur, mailbox_id), (cur, out_step), (cur, weekday, hour), (cur, currency),
+                         (cur, variant_id))";
 
 fn rate(part: i64, whole: i64) -> Option<f64> {
     (whole > 0).then(|| part as f64 / whole as f64)
@@ -389,7 +447,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
 
     let mut totals = [Totals::default(), Totals::default()];
     let mut won_value: [Vec<Money>; 2] = [vec![], vec![]];
-    let (mut series, mut campaigns, mut mailboxes, mut steps, mut heatmap) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut series, mut campaigns, mut mailboxes, mut steps, mut heatmap, mut angles) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut email_replies = 0;
     for row in rows {
         let n = row.n;
@@ -408,10 +466,12 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
             _ if !row.cur => {}
             "series" => series.push((row.bucket.unwrap_or_default(), n)),
             "campaign" => campaigns.push((row.segment_id, n)),
+            "angle" => angles.extend(row.variant_id.map(|v| (v, n))),
             "mailbox" => mailboxes.push((row.mailbox_id, n)),
             "step" => {
                 if let Some(step) = row.step.filter(|_| n.sent > 0 || n.replies > 0) {
-                    steps.push(StepRow { step, sent: n.sent, replies: n.replies, reply_rate: rate(n.replies, n.sent) });
+                    let engagement = Engagement::from_counts(&n);
+                    steps.push(StepRow { step, sent: n.sent, replies: n.replies, reply_rate: rate(n.replies, n.sent), engagement });
                 }
             }
             "slot" => {
@@ -464,6 +524,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
     Ok(Analytics {
         series: fill(series, from, to, weekly),
         campaigns: campaign_rows(db, id, campaigns, &campaign_revenue, usd, |segment| claude_for(true, segment)).await?,
+        angles: angle_rows(db, id, angles).await?,
         mailboxes: mailbox_rows(db, project.org_id, mailboxes).await?,
         channels: channels(db, id, q, from, to, &project.timezone, email).await?,
         from,
@@ -500,6 +561,7 @@ impl Totals {
             unsubscribes: n.unsubscribes,
             bounced: n.bounced,
             bounce_rate: rate(n.bounced, n.contacted),
+            engagement: Engagement::from_counts(n),
             claude_cost_micros,
             email_cost_micros: n.email_cost_micros,
             spend_micros,
@@ -591,6 +653,7 @@ async fn campaign_rows(
                 deals_won: n.won,
                 bounced: n.bounced,
                 bounce_rate: rate(n.bounced, n.contacted),
+                engagement: Engagement::from_counts(&n),
                 spend_micros,
                 cost_per_hot_micros: per(spend_micros, n.hot),
                 revenue_cents,
@@ -618,6 +681,34 @@ async fn mailbox_rows(db: &PgPool, org_id: Option<Uuid>, rows: Vec<(Option<Uuid>
             bounced: n.bounced,
             bounce_rate: rate(n.bounced, n.contacted),
             bouncing: bouncing(n.contacted, n.bounced),
+            engagement: Engagement::from_counts(&n),
+        })
+        .collect())
+}
+
+async fn angle_rows(db: &PgPool, id: Uuid, rows: Vec<(Uuid, Counts)>) -> sqlx::Result<Vec<AngleRow>> {
+    let names: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        "select v.id, s.id, v.name, s.name from segment_variants v join segments s on s.id = v.segment_id where s.project_id = $1
+         order by s.position, s.created_at, v.position, v.created_at",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    Ok(names
+        .into_iter()
+        .filter_map(|(variant_id, segment_id, name, campaign)| {
+            let (_, n) = rows.iter().find(|(v, _)| *v == variant_id)?;
+            Some(AngleRow {
+                variant_id,
+                segment_id,
+                name,
+                campaign,
+                sent: n.sent,
+                contacted: n.contacted,
+                replies: n.replies,
+                reply_rate: rate(n.replies, n.contacted),
+                engagement: Engagement::from_counts(n),
+            })
         })
         .collect())
 }
@@ -925,10 +1016,11 @@ mod tests {
         assert_eq!(pick(p, &["sent", "contacted", "replies", "claude_cost_micros", "email_cost_micros"]), [2, 2, 1, 2_000_000, 2_000].map(serde_json::Value::from));
 
         // The hot reply came after the follow-up, so it counts there.
-        assert_eq!(
-            a["steps"],
-            serde_json::json!([{ "step": 0, "sent": 4, "replies": 1, "reply_rate": 0.25 }, { "step": 1, "sent": 1, "replies": 1, "reply_rate": 1.0 }])
-        );
+        let steps: Vec<_> = a["steps"].as_array().unwrap().iter().map(|s| pick(s, &["step", "sent", "replies", "reply_rate"])).collect();
+        let expected = serde_json::json!([[0, 4, 1, 0.25], [1, 1, 1, 1.0]]);
+        assert_eq!(serde_json::json!(steps), expected);
+        // Nothing here tracked opens or clicks, so there are no rates to show.
+        assert_eq!(pick(&a["steps"][0], &["opened", "open_rate", "clicked", "click_rate"]), [0.into(), serde_json::Value::Null, 0.into(), serde_json::Value::Null]);
         let campaigns: Vec<_> = a["campaigns"].as_array().unwrap().iter().map(|c| pick(c, &["name", "sent", "replies", "bounced", "spend_micros"])).collect();
         assert!(campaigns.contains(&["Alpha".into(), 3.into(), 2.into(), 0.into(), 503_300.into()].to_vec()));
         assert!(campaigns.contains(&["Beta".into(), 2.into(), 0.into(), 1.into(), 2_000.into()].to_vec()));
@@ -1000,7 +1092,9 @@ mod tests {
             [2, 2, 0, 1, 1, 0, 2_000]
         );
         assert_eq!(second["channels"].as_array().unwrap().len(), 1);
-        assert_eq!(second["steps"], serde_json::json!([{ "step": 0, "sent": 2, "replies": 0, "reply_rate": 0.0 }]));
+        let step = &second["steps"][0];
+        assert_eq!(second["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(serde_json::json!([step["step"], step["sent"], step["replies"], step["reply_rate"]]), serde_json::json!([0, 2, 0, 0.0]));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

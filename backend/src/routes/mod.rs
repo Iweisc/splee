@@ -34,6 +34,7 @@ mod slack;
 mod sending_domains;
 mod sheets;
 mod texts;
+mod tracking;
 mod social;
 pub mod org;
 pub mod projects;
@@ -128,6 +129,7 @@ pub fn router() -> Router<AppState> {
         .merge(support::router())
         .merge(explorer::router())
         .merge(unsubscribe::router())
+        .merge(tracking::router())
         .merge(reports::router())
         .merge(variants::router())
         .merge(bookings::router())

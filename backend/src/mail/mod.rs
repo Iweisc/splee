@@ -70,6 +70,8 @@ pub fn spawn_workers(state: AppState) {
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::hooks::announce_due_reminders(&s), "reminder alerts").await });
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::rest_hooks::post_new_leads(&s), "new lead hooks").await });
+    let s = state.clone();
+    tokio::spawn(async move { every(Duration::from_secs(600), || crate::tracking::recheck_hosts(&s), "tracking hosts").await });
     // Checked every 15 minutes so the 08:00 UTC window is never skipped. notification_log prevents doubles.
     tokio::spawn(async move { every(Duration::from_secs(900), || notify::digests(&state), "digests").await });
 }

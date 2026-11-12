@@ -146,8 +146,8 @@ async fn buy(State(state): State<AppState>, auth: Auth, Json(body): Json<BuyBody
     let ids = domains::queue(&state.db, auth.org_id, &orders, &setup).await?;
     let queued = domains::list(&state.db, auth.org_id).await?;
     let skipped: Vec<&str> = orders.iter().map(|o| o.domain.as_str()).filter(|d| !queued.iter().any(|q| ids.contains(&q.id) && q.domain == *d)).collect();
-    let db = state.db.clone();
-    tokio::spawn(async move { domains::buy(&db, &pb, &ids).await });
+    let (db, tracking) = (state.db.clone(), crate::tracking::cname_target(&state.cfg.public_url));
+    tokio::spawn(async move { domains::buy(&db, &pb, &ids, tracking.as_deref()).await });
     Ok(Json(json!({ "domains": queued, "skipped": skipped })))
 }
 
@@ -157,7 +157,8 @@ async fn confirm(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
         return Err(AppError::BadRequest("Only a purchase that ended unclear needs checking".into()));
     }
     let pb = porkbun(&state, auth.org_id).await?;
-    domains::confirm(&state.db, &pb, &d).await.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let tracking = crate::tracking::cname_target(&state.cfg.public_url);
+    domains::confirm(&state.db, &pb, &d, tracking.as_deref()).await.map_err(|e| AppError::BadRequest(e.to_string()))?;
     Ok(Json(load(&state, id, auth.org_id).await?))
 }
 
@@ -167,7 +168,7 @@ async fn set_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
         return Err(AppError::BadRequest("Splee sets DNS once the domain is bought".into()));
     }
     let pb = porkbun(&state, auth.org_id).await?;
-    domains::set_dns(&state.db, &pb, id).await?;
+    domains::set_dns(&state.db, &pb, id, crate::tracking::cname_target(&state.cfg.public_url).as_deref()).await?;
     Ok(Json(load(&state, id, auth.org_id).await?))
 }
 

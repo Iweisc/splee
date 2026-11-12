@@ -399,6 +399,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     // Saved as sent, so the app shows the signature the lead got.
     let email = EmailMessage { body: as_mailbox(&state.db, &email, &mb).await?, ..email };
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
+    let tracked = crate::tracking::prepare(state, &email, &mb, &body).await?;
 
     let built = smtp::build(
         &mb,
@@ -406,13 +407,13 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             to_name: &lead.full_name,
             to_email: &to,
             subject: &email.subject,
-            body: &body,
+            body: &tracked.text,
             message_id: &message_id,
             in_reply_to: in_reply_to.as_deref(),
             references: if in_reply_to.is_some() { &references } else { &[] },
             unsubscribe_url: Some(&one_click),
             warmup: None,
-            html: None,
+            html: tracked.html.as_deref(),
         },
     );
     let message = match built {

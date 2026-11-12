@@ -154,6 +154,8 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "lead_unsubscribed", label: "Unsubscribed", hint: "The lead clicked unsubscribe or asked to stop." },
   { value: "lead_bounced", label: "Bounced", hint: "The address can't get email." },
   { value: "email_sent", label: "Email sent", hint: "Every email Splee sends a lead, to log it in your CRM." },
+  { value: "email.opened", label: "Email opened", hint: "The first time a lead opens an email, in campaigns that track opens." },
+  { value: "email.clicked", label: "Link clicked", hint: "The first time a lead clicks each link in an email. Scanners are left out." },
   { value: "follow_up_due", label: "Follow-up due", hint: "A reminder you set in the inbox came due." },
   { value: "form_submitted", label: "Form submitted", hint: "Someone filled in your website form and became a lead." },
   { value: "status_changed", label: "Status changed", hint: "Someone on your team changed a lead's status in Splee." },
@@ -3995,7 +3997,9 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
                   <code>classification</code>: hot, question, not_interested or other. <code>meeting_booked</code>, <code>meeting_cancelled</code>, <code>lead_unsubscribed</code> and <code>lead_bounced</code> send{" "}
                   <code>&quot;reply&quot;: null</code>. <code>email_sent</code> sends <code>&quot;reply&quot;: null</code> and an <code>email</code> with its{" "}
                   <code>id</code>, <code>kind</code> (initial, follow_up, auto_reply or manual_reply), <code>step</code>, <code>subject</code>, <code>body</code>,{" "}
-                  <code>from</code>, <code>to</code> and <code>message_id</code>. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
+                  <code>from</code>, <code>to</code> and <code>message_id</code>. <code>email.opened</code> and <code>email.clicked</code> send{" "}
+                  <code>&quot;reply&quot;: null</code> and an <code>email</code> with its <code>id</code>, <code>subject</code>, <code>step</code>,{" "}
+                  <code>at</code> and the clicked <code>url</code>, null for an open. <code>follow_up_due</code> sends <code>&quot;reply&quot;: null</code> and a{" "}
                   <code>reminder</code> with its <code>at</code> time and the lead&apos;s <code>notes</code>. <code>meeting_rescheduled</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and the old time as <code>previous_meeting_at</code>. <code>form_submitted</code> sends{" "}
                   <code>&quot;reply&quot;: null</code> and a <code>form</code> whose <code>answers</code> each have a <code>question</code> and an{" "}

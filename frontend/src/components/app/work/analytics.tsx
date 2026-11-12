@@ -36,6 +36,7 @@ function compare(a: Cell, b: Cell, desc: boolean) {
 export function Breakdown<T>({
   title,
   hint,
+  hintClass,
   rows,
   columns,
   sortBy = 1,
@@ -45,6 +46,8 @@ export function Breakdown<T>({
 }: {
   title: string;
   hint?: React.ReactNode;
+  /** For a hint about columns that only wider screens show. */
+  hintClass?: string;
   rows: T[];
   columns: Column<T>[];
   /** The column to start sorted by, biggest first. */
@@ -66,7 +69,7 @@ export function Breakdown<T>({
           <Download className="size-3.5" /> CSV
         </Button>
       </div>
-      {hint && <p className="px-5 pb-2 text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className={cn("px-5 pb-2 text-xs text-muted-foreground", hintClass)}>{hint}</p>}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
