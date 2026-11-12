@@ -43,6 +43,7 @@ mod tumblr;
 mod meta;
 mod crm_oauth;
 mod bots;
+mod calls;
 pub mod settings;
 pub mod materials;
 pub mod imports;
@@ -129,6 +130,7 @@ pub fn router() -> Router<AppState> {
         .merge(directory::router())
         .merge(slack::router())
         .merge(texts::router())
+        .merge(calls::router())
         .merge(deals::router())
         .merge(outreach::router())
         .merge(payments::router())

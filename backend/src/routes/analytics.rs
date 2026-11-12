@@ -172,8 +172,9 @@ struct SlotRow {
     replies: i64,
 }
 
-/// sent is emails, LinkedIn steps, texts or posts. Null leads or replies are ones Splee doesn't record for the channel:
-/// LinkedIn replies only stop the sequence, and posts have no lead.
+/// sent is emails, LinkedIn steps, texts, calls made or posts. Null leads or replies are ones Splee doesn't record for the
+/// channel: LinkedIn replies only stop the sequence, posts have no lead, and a call is answered rather than replied to. Only
+/// calls have connect_rate, the share where someone picked up and talked, and meetings, the ones booked on the call.
 #[derive(Serialize)]
 struct ChannelRow {
     channel: &'static str,
@@ -181,6 +182,8 @@ struct ChannelRow {
     leads: Option<i64>,
     replies: Option<i64>,
     reply_rate: Option<f64>,
+    connect_rate: Option<f64>,
+    meetings: Option<i64>,
 }
 
 #[derive(FromRow, Default)]
@@ -452,6 +455,8 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         leads: Some(totals.contacted),
         replies: Some(email_replies),
         reply_rate: rate(email_replies, totals.contacted),
+        connect_rate: None,
+        meetings: None,
     };
     steps.sort_by_key(|s| s.step);
     heatmap.sort_by_key(|s| (s.weekday, s.hour));
@@ -627,6 +632,10 @@ struct ChannelCounts {
     whatsapp: i64,
     whatsapp_leads: i64,
     whatsapp_replies: i64,
+    calls: i64,
+    call_leads: i64,
+    connected: i64,
+    call_meetings: i64,
     posts: i64,
 }
 
@@ -658,10 +667,18 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
            select count(*) filter (where f.channel = 'sms') as sms_replies, count(*) filter (where f.channel = 'whatsapp') as whatsapp_replies
            from first_replies f join leads l on l.id = f.lead_id, w
            where f.at >= w.lo and f.at < w.hi and ($5::uuid is null or l.segment_id = $5)
+         ), calls as (
+           -- A call counts once it's logged, on the day it was made.
+           select count(*) as calls, count(distinct c.lead_id) as call_leads,
+             count(*) filter (where c.outcome in ('connected', 'not_interested', 'meeting_booked')) as connected,
+             count(*) filter (where c.outcome = 'meeting_booked') as call_meetings
+           from calls c, w
+           where c.project_id = $1 and c.status = 'done' and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi
+             and ($5::uuid is null or c.segment_id = $5)
          )
-         select linkedin.*, texts.*, text_replies.*,
+         select linkedin.*, texts.*, text_replies.*, calls.*,
            (select count(*) from social_posts p, w where p.project_id = $1 and p.status = 'posted' and p.posted_at >= w.lo and p.posted_at < w.hi) as posts
-         from linkedin, texts, text_replies",
+         from linkedin, texts, text_replies, calls",
     )
     .bind(id)
     .bind(from)
@@ -670,15 +687,17 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
     .bind(q.segment_id)
     .fetch_one(db)
     .await?;
-    let texts = |channel, sent, leads, replies| ChannelRow { channel, sent, leads: Some(leads), replies: Some(replies), reply_rate: rate(replies, leads) };
+    let row = |channel, sent, leads| ChannelRow { channel, sent, leads, replies: None, reply_rate: None, connect_rate: None, meetings: None };
+    let texts = |channel, sent, leads, replies| ChannelRow { replies: Some(replies), reply_rate: rate(replies, leads), ..row(channel, sent, Some(leads)) };
     let mut rows = vec![
         email,
-        ChannelRow { channel: "linkedin", sent: c.linkedin, leads: Some(c.linkedin_leads), replies: None, reply_rate: None },
+        row("linkedin", c.linkedin, Some(c.linkedin_leads)),
         texts("sms", c.sms, c.sms_leads, c.sms_replies),
         texts("whatsapp", c.whatsapp, c.whatsapp_leads, c.whatsapp_replies),
+        ChannelRow { connect_rate: rate(c.connected, c.calls), meetings: Some(c.call_meetings), ..row("call", c.calls, Some(c.call_leads)) },
     ];
     if q.segment_id.is_none() {
-        rows.push(ChannelRow { channel: "social", sent: c.posts, leads: None, replies: None, reply_rate: None });
+        rows.push(row("social", c.posts, None));
     }
     Ok(rows)
 }
@@ -843,6 +862,25 @@ mod tests {
         .execute(db)
         .await
         .unwrap();
+        // Calls made in October: two answered, one of them booked, and a no answer. One still open and one from September don't count.
+        for (lead, segment, status, outcome, at) in [
+            (l1, Some(alpha), "done", Some("connected"), "2026-10-10 14:00Z"),
+            (l2, Some(alpha), "done", Some("meeting_booked"), "2026-10-11 14:00Z"),
+            (l1, Some(alpha), "done", Some("no_answer"), "2026-10-12 14:00Z"),
+            (l6, Some(beta), "open", None, "2026-10-12 14:00Z"),
+            (l6, Some(beta), "done", Some("connected"), "2026-09-12 14:00Z"),
+        ] {
+            sqlx::query("insert into calls (project_id, lead_id, segment_id, kind, status, outcome, called_at, closed_at) values ($1, $2, $3, 'manual', $4, $5, $6::timestamptz, $6::timestamptz)")
+                .bind(project)
+                .bind(lead)
+                .bind(segment)
+                .bind(status)
+                .bind(outcome)
+                .bind(at)
+                .execute(db)
+                .await
+                .unwrap();
+        }
         sqlx::query("insert into social_posts (project_id, platform, body, status, posted_at) values ($1, 'x', 'Hello', 'posted', '2026-10-15 12:00Z')")
             .bind(project)
             .execute(db)
@@ -902,9 +940,13 @@ mod tests {
         let channels: Vec<_> = a["channels"].as_array().unwrap().iter().map(|c| pick(c, &["channel", "sent", "leads", "replies"])).collect();
         assert_eq!(
             channels,
-            [("email", 5, Some(4), Some(2)), ("linkedin", 1, Some(1), None), ("sms", 1, Some(1), Some(0)), ("whatsapp", 0, Some(0), Some(0)), ("social", 1, None, None)]
+            [("email", 5, Some(4), Some(2)), ("linkedin", 1, Some(1), None), ("sms", 1, Some(1), Some(0)), ("whatsapp", 0, Some(0), Some(0)), ("call", 3, Some(2), None),
+             ("social", 1, None, None)]
                 .map(|(c, sent, leads, replies)| vec![serde_json::Value::from(c), sent.into(), leads.into(), replies.into()])
         );
+        let calls = a["channels"].as_array().unwrap().iter().find(|c| c["channel"] == "call").unwrap();
+        assert_eq!((calls["connect_rate"].as_f64(), calls["meetings"].as_i64()), (Some(2.0 / 3.0), Some(1)));
+        assert!(a["channels"][0]["connect_rate"].is_null() && a["channels"][0]["meetings"].is_null(), "only calls have them");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

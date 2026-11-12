@@ -23,7 +23,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts, social posts and client reports wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts, call steps, social posts and client reports wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -49,6 +49,8 @@ pub fn spawn_workers(state: AppState) {
             }
             every(Duration::from_secs(60), || crate::twilio::tick(&s), "text sender").await;
         });
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(60), || crate::calls::tick(&s.db), "call steps").await });
         // One post per account a tick, so 15 approved posts go out over a couple of hours.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
@@ -214,6 +216,7 @@ pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, 
         .bind(format!("Lead {status}"))
         .execute(&mut *tx)
         .await?;
+    sqlx::query(crate::calls::STOP_CALLS).bind(lead.id).bind(format!("Lead {status}")).execute(&mut *tx).await?;
     tx.commit().await?;
     let event = match status {
         "unsubscribed" => Some("lead_unsubscribed"),

@@ -238,6 +238,10 @@ const DEAL_FIELDS: &[&str] = &[
     "stage_changed_at",
 ];
 const STAGE_FIELDS: &[&str] = &["name", "kind", "probability", "deals"];
+const CALL_FIELDS: &[&str] = &[
+    "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
+    "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
+];
 
 /// None for a tool that doesn't exist.
 async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) -> Option<AppResult<Value>> {
@@ -296,6 +300,8 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
             Ok(json!({ "id": detail["id"], "full_name": detail["full_name"], "owner_id": detail["owner_id"], "owner_email": detail["owner_email"] }))
         }
         .await,
+        "list_call_tasks" => async { Ok(pick(value(v1::list_calls(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
+        "log_call" => async { Ok(pick(value(v1::log_call(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
         _ => return None,
     })
 }
@@ -557,7 +563,7 @@ fn tools() -> Vec<Value> {
                 "lead_id": id_prop("Optional. Only this lead's deals"),
             })),
             &[],
-            read,
+            read.clone(),
         ),
         tool(
             "create_deal",
@@ -598,6 +604,33 @@ fn tools() -> Vec<Value> {
                 "owner": { "type": ["string", "null"], "description": "A team member's email or user id, or null for nobody" },
             }),
             &["lead_id", "owner"],
+            adds.clone(),
+        ),
+        tool(
+            "list_call_tasks",
+            "List call tasks",
+            "A project's calls to make, overdue first, then the calls made in the last 14 days. bucket is overdue, today or done. \
+             local_time is the time where the lead is, and outside_hours says why not to call now: calls go out between 8:00 and 20:00 \
+             their time.",
+            json!({
+                "project_id": id_prop("A project id from list_projects"),
+                "status": { "type": "string", "enum": ["open", "done"], "description": "Optional. Both by default" },
+                "owner": owner_prop(),
+            }),
+            &["project_id"],
+            read,
+        ),
+        tool(
+            "log_call",
+            "Log call",
+            "Records a call made with a lead and what happened. It closes the lead's open call task, so their sequence goes on. \
+             meeting_booked books the lead, not_interested stops their sequence, and wrong_number clears their phone number.",
+            json!({
+                "lead_id": id_prop("A lead id from list_call_tasks or list_leads"),
+                "outcome": { "type": "string", "enum": ["connected", "voicemail", "no_answer", "wrong_number", "not_interested", "meeting_booked"] },
+                "notes": { "type": "string", "description": "Optional. What was said" },
+            }),
+            &["lead_id", "outcome"],
             adds,
         ),
     ]
@@ -738,7 +771,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
-                     "create_deal", "move_deal", "get_analytics", "assign_lead"] {
+                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));

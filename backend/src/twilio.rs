@@ -138,6 +138,34 @@ impl Client {
         Ok((body, vars))
     }
 
+    /// Points the TwiML App's Voice URL at Splee when it doesn't already, so calls from the browser ask /api/twilio/voice what
+    /// to do. Returns the app's name.
+    pub async fn point_app(&self, sid: &str, voice_url: &str) -> Result<String, Failure> {
+        let url = format!("{}/2010-04-01/Accounts/{}/Applications/{sid}.json", self.api, self.account_sid);
+        let app = self.call(self.http.get(&url)).await?;
+        if app["voice_url"].as_str() != Some(voice_url) || !app["voice_method"].as_str().is_some_and(|m| m.eq_ignore_ascii_case("POST")) {
+            self.call(self.http.post(&url).form(&[("VoiceUrl", voice_url), ("VoiceMethod", "POST")])).await?;
+        }
+        Ok(app["friendly_name"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// A call recording's audio as MP3. Twilio keeps recordings behind the account's credentials, so the app plays them
+    /// through Splee.
+    pub async fn recording(&self, sid: &str) -> Result<Vec<u8>, Failure> {
+        let url = format!("{}/2010-04-01/Accounts/{}/Recordings/{sid}.mp3", self.api, self.account_sid);
+        let res = self
+            .http
+            .get(url)
+            .basic_auth(&self.user, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| Failure::Unanswered(format!("Twilio didn't answer: {}", e.without_url())))?;
+        if !res.status().is_success() {
+            return Err(Failure::Message(format!("Twilio couldn't find the recording ({})", res.status().as_u16())));
+        }
+        res.bytes().await.map(|b| b.to_vec()).map_err(|e| Failure::Unanswered(format!("Twilio stopped sending the recording: {}", e.without_url())))
+    }
+
     /// Sends from the account's SMS sender or WhatsApp number and returns the MessageSid.
     pub async fn send(&self, account: &Account, channel: &str, to: &str, content: &Content<'_>, status_url: &str) -> Result<String, Failure> {
         let mut form = vec![("StatusCallback", status_url.to_string())];
@@ -661,6 +689,8 @@ pub(crate) mod fake {
     pub const ACCOUNT: &str = concat!("AC", "0123456789abcdef", "0123456789abcdef");
     pub const KEY: &str = concat!("SK", "0123456789abcdef", "0123456789abcdef");
     pub const TEMPLATE: &str = concat!("HX", "0123456789abcdef", "0123456789abcdef");
+    pub const APP: &str = concat!("AP", "0123456789abcdef", "0123456789abcdef");
+    pub const RECORDING: &str = concat!("RE", "0123456789abcdef", "0123456789abcdef");
 
     pub type Sent = Arc<Mutex<Vec<HashMap<String, String>>>>;
 
@@ -704,10 +734,38 @@ pub(crate) mod fake {
                 "types": { "twilio/text": { "body": "Hi {{1}}, it's Alex from Fieldnote. Can I send {{2}} a two-minute video?" } },
             })))
         }
+        // A TwiML App whose Voice URL starts out pointing elsewhere. Updates land in `sent` like messages do.
+        async fn application(headers: HeaderMap, Path((_, file)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+            if !authed(&headers) {
+                return refused();
+            }
+            if file != format!("{APP}.json") {
+                return (StatusCode::NOT_FOUND, Json(json!({ "code": 20404, "message": "The requested resource was not found", "status": 404 })));
+            }
+            (StatusCode::OK, Json(json!({ "sid": APP, "friendly_name": "Splee calls", "voice_url": "https://old.example/voice", "voice_method": "GET" })))
+        }
+        async fn update_application(State(sent): State<Sent>, headers: HeaderMap, Form(form): Form<HashMap<String, String>>) -> (StatusCode, Json<Value>) {
+            if !authed(&headers) {
+                return refused();
+            }
+            sent.lock().unwrap().push(form);
+            (StatusCode::OK, Json(json!({ "sid": APP })))
+        }
+        async fn recording(headers: HeaderMap, Path((_, file)): Path<(String, String)>) -> (StatusCode, Vec<u8>) {
+            if !authed(&headers) {
+                return (StatusCode::UNAUTHORIZED, vec![]);
+            }
+            if file != format!("{RECORDING}.mp3") {
+                return (StatusCode::NOT_FOUND, vec![]);
+            }
+            (StatusCode::OK, b"ID3 fake mp3".to_vec())
+        }
         let sent = Sent::default();
         let app = Router::new()
             .route("/2010-04-01/Accounts/{file}", get(account))
             .route("/2010-04-01/Accounts/{sid}/Messages.json", post(message))
+            .route("/2010-04-01/Accounts/{sid}/Applications/{file}", get(application).post(update_application))
+            .route("/2010-04-01/Accounts/{sid}/Recordings/{file}", get(recording))
             .route("/v1/Content/{sid}", get(content))
             .with_state(sent.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

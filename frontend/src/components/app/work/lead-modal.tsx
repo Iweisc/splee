@@ -13,6 +13,7 @@ import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
+import { CallCard } from "./calls";
 import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { ScoreBar, ScoreReasons } from "./score";
@@ -246,6 +247,19 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {lead.calls.length > 0 && (
+        <div>
+          <MicroLabel className="mb-2">Calls</MicroLabel>
+          <ol className="flex flex-col gap-2">
+            {lead.calls.map((c) => (
+              <li key={c.id}>
+                <CallCard call={c} />
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 

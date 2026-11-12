@@ -9,11 +9,12 @@ import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
+import type { Call, EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
+import { CallCard } from "./calls";
 import { LeadDeal } from "./deal-dialog";
 import { LeadNotes } from "./lead-modal";
 import { OwnerFilterSelect, OwnerMenu, useOwnerFilter } from "./owner-menu";
@@ -214,7 +215,9 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const pendingDraft = messages.find((m) => m.kind === "auto_reply" && m.status === "draft");
   // Texts Splee sent sit among the emails by time. Drafts and cancelled ones are on the Texts page.
   const texts = (data?.lead.texts ?? []).filter((t) => !["draft", "cancelled"].includes(t.status));
-  const conversation: (EmailMessage | TextMessage)[] = [...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"), ...texts].sort(
+  // So are the calls someone made. Open ones are on the Calls page.
+  const calls = (data?.lead.calls ?? []).filter((c) => c.status === "done");
+  const conversation: (EmailMessage | TextMessage | Call)[] = [...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"), ...texts, ...calls].sort(
     (a, b) => new Date(at(a)).getTime() - new Date(at(b)).getTime(),
   );
   // They last wrote by text, so the reply box answers on that channel.
@@ -404,7 +407,17 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       </div>
 
       <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5 focus-visible:-outline-offset-2">
-        {conversation.map((m) => ("direction" in m ? <Bubble key={m.id} message={m} /> : <TextBubble key={m.id} text={m} />))}
+        {conversation.map((m) =>
+          "direction" in m ? (
+            <Bubble key={m.id} message={m} />
+          ) : "outcome" in m ? (
+            <li key={m.id} className="w-[min(80%,36rem)] self-end">
+              <CallCard call={m} />
+            </li>
+          ) : (
+            <TextBubble key={m.id} text={m} />
+          ),
+        )}
         {pendingDraft && <PendingReply key={pendingDraft.id} draft={pendingDraft} onDone={refresh} />}
         {activeRun && (
           <li className="flex items-center gap-2 self-end rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
@@ -558,8 +571,9 @@ function ReminderBadge({ at }: { at: string }) {
   );
 }
 
-/** When a message or text happened, for ordering the thread. */
-function at(m: EmailMessage | TextMessage) {
+/** When a message, text or call happened, for ordering the thread. */
+function at(m: EmailMessage | TextMessage | Call) {
+  if ("outcome" in m) return m.called_at ?? m.closed_at ?? m.created_at;
   return m.sent_at ?? ("scheduled_for" in m ? m.scheduled_for : m.due_at) ?? m.created_at;
 }
 

@@ -31,6 +31,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/organization/twilio", get(status).put(connect).delete(disconnect))
         .route("/organization/twilio/template", put(set_template))
+        .route("/organization/twilio/calling", put(set_calling))
         .route("/projects/{id}/texts", get(list))
         .route("/texts/{id}", patch(update))
         .route("/inbox/threads/{lead_id}/text", post(reply))
@@ -48,6 +49,9 @@ struct Connection {
     whatsapp_template_sid: String,
     whatsapp_template_body: String,
     whatsapp_template_vars: Value,
+    twiml_app_sid: String,
+    voice_from: String,
+    call_transcription: bool,
     error: Option<String>,
     failed_at: Option<Ts>,
     created_at: Ts,
@@ -58,11 +62,14 @@ struct Status {
     connection: Option<Connection>,
     /// Where the Twilio number's or Messaging Service's incoming messages webhook should point.
     inbound_url: String,
+    /// Where the TwiML App's Voice URL points. Turning calling on sets it.
+    voice_url: String,
 }
 
 async fn status(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Status>> {
     let connection = sqlx::query_as::<_, Connection>("select * from twilio_accounts where org_id = $1").bind(auth.org_id).fetch_optional(&state.db).await?;
-    Ok(Json(Status { connection, inbound_url: twilio::inbound_url(&state.cfg.public_url) }))
+    let public = &state.cfg.public_url;
+    Ok(Json(Status { connection, inbound_url: twilio::inbound_url(public), voice_url: crate::calls::voice_url(public) }))
 }
 
 /// Twilio's ids: two letters and 32 hex digits.
@@ -205,6 +212,50 @@ async fn set_template(State(state): State<AppState>, auth: Auth, Json(body): Jso
 }
 
 #[derive(Deserialize)]
+struct CallingBody {
+    /// Empty turns calling off.
+    twiml_app_sid: String,
+    /// Empty calls from the SMS number, when that's a number.
+    #[serde(default)]
+    voice_from: String,
+    #[serde(default)]
+    transcribe: bool,
+}
+
+/// Turns on calling from the browser with a TwiML App, which Splee points at /api/twilio/voice so the account's calls ask it
+/// what to dial.
+async fn set_calling(State(state): State<AppState>, auth: Auth, Json(body): Json<CallingBody>) -> AppResult<Json<Status>> {
+    auth.require_admin()?;
+    let bad = |m: &str| AppError::BadRequest(m.into());
+    let account = Account::of_org(&state.db, auth.org_id).await?.ok_or_else(|| bad("Connect Twilio first"))?;
+    let voice_from = match body.voice_from.trim() {
+        "" => String::new(),
+        raw => sender_number(raw).ok_or_else(|| bad("Enter the calling number with its country code, like +14155550100"))?,
+    };
+    let app = match body.twiml_app_sid.trim() {
+        "" => String::new(),
+        raw => {
+            let app = sid(raw, "AP").ok_or_else(|| bad("A TwiML App SID starts with AP, then 32 letters and digits"))?;
+            if voice_from.is_empty() && !account.sms_from.starts_with('+') {
+                return Err(bad("Enter the Twilio number calls should come from"));
+            }
+            let client = Client::for_account(&state, &account)?;
+            let url = crate::calls::voice_url(&state.cfg.public_url);
+            client.point_app(&app, &url).await.map_err(|e| bad(&format!("Twilio couldn't set up that TwiML App. {}", e.reason())))?;
+            app
+        }
+    };
+    sqlx::query("update twilio_accounts set twiml_app_sid = $2, voice_from = $3, call_transcription = $4 where org_id = $1")
+        .bind(auth.org_id)
+        .bind(app)
+        .bind(voice_from)
+        .bind(body.transcribe)
+        .execute(&state.db)
+        .await?;
+    status(State(state), auth).await
+}
+
+#[derive(Deserialize)]
 struct ListQuery {
     segment_id: Option<Uuid>,
 }
@@ -333,7 +384,7 @@ async fn reply(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uu
 }
 
 /// The org whose account the post names, when its signature checks out against the URL Twilio was given.
-async fn verified(state: &AppState, headers: &HeaderMap, params: &[(String, String)], url: &str) -> AppResult<Uuid> {
+pub(super) async fn verified(state: &AppState, headers: &HeaderMap, params: &[(String, String)], url: &str) -> AppResult<Uuid> {
     let refused = || AppError::Forbidden("That didn't come from a connected Twilio account".into());
     let account_sid = params.iter().find(|(k, _)| k == "AccountSid").map(|(_, v)| v.as_str()).ok_or_else(refused)?;
     let (org_id, token_enc): (Uuid, String) = sqlx::query_as("select org_id, auth_token_enc from twilio_accounts where account_sid = $1")
@@ -349,7 +400,7 @@ async fn verified(state: &AppState, headers: &HeaderMap, params: &[(String, Stri
     Ok(org_id)
 }
 
-fn param<'a>(params: &'a [(String, String)], name: &str) -> &'a str {
+pub(super) fn param<'a>(params: &'a [(String, String)], name: &str) -> &'a str {
     params.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()).unwrap_or_default()
 }
 

@@ -771,6 +771,9 @@ pub async fn team_set_status(state: &AppState, before: &str, lead: &Lead) {
 pub async fn status_changed(state: &AppState, before: &str, lead: &Lead) {
     if booked(before, lead) {
         crate::ownership::claim(&state.db, lead.id).await;
+        if let Err(e) = sqlx::query(crate::calls::STOP_CALLS).bind(lead.id).bind("They booked a meeting").execute(&state.db).await {
+            tracing::warn!(lead_id = %lead.id, error = %e, "couldn't cancel the lead's calls");
+        }
         // First, so the CRM note announce_booked sends has the deal's new stage.
         crate::deals::booked(state, lead).await;
         announce_booked(state, lead);

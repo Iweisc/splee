@@ -663,25 +663,25 @@ async fn queue_linkedin<'e, E: sqlx::PgExecutor<'e>>(db: E, lead: Uuid) -> sqlx:
 }
 
 /// Leads whose next follow-up is due within 12 hours get one written by the agent. A campaign brought over from another tool
-/// follows its own steps and their delays and stops after its last one. Other campaigns follow the project's follow-ups.
+/// follows its own steps and their delays and stops after its last one. Other campaigns follow the project's follow-ups, where
+/// a call step waits for its call to be logged or skipped (calls.rs), and the email after it counts its delay from then.
 pub(crate) async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> {
-    let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+    let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(&format!(
         "select l.project_id, p.org_id, l.id
          from leads l
          join projects p on p.id = l.project_id
          join project_settings ps on ps.project_id = l.project_id
          left join segments s on s.id = l.segment_id
-         join lateral (select e.step, e.sent_at from email_messages e
-                       where e.lead_id = l.id and e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status = 'sent'
-                       order by e.step desc limit 1) last on true
+         join {LAST_STEP} on true
          left join segment_steps own on own.segment_id = l.segment_id and own.position = last.step + 1
          where p.org_id is not null and not ps.paused and l.status = 'contacted'
            and coalesce(s.status, 'working') <> 'paused'
            and (own.segment_id is not null
                 or (not exists (select 1 from segment_steps x where x.segment_id = l.segment_id)
                     and jsonb_typeof(ps.follow_ups) = 'array' and jsonb_array_length(ps.follow_ups) > last.step
-                    and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)))
-           and last.sent_at + make_interval(days => greatest(1, coalesce(own.delay_days, (ps.follow_ups -> last.step ->> 'delay_days')::int, 3)))
+                    and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)
+                    and coalesce(ps.follow_ups -> last.step ->> 'kind', 'email') <> 'call'))
+           and last.at + make_interval(days => greatest(1, coalesce(own.delay_days, (ps.follow_ups -> last.step ->> 'delay_days')::int, 3)))
                <= now() + interval '12 hours'
            and not exists (select 1 from email_messages f where f.lead_id = l.id and f.kind = 'follow_up' and f.step = last.step + 1)
            and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
@@ -689,7 +689,8 @@ pub(crate) async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> 
                            and (r.status in ('queued', 'running') or r.created_at > now() - interval '6 hours')
                            and r.input -> 'lead_ids' ? l.id::text)
          limit 200",
-    )
+        LAST_STEP = crate::calls::LAST_STEP,
+    ))
     .fetch_all(&state.db)
     .await?;
 
