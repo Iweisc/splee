@@ -142,6 +142,52 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: `/local-businesses?what=dentists&where=Austin,%20TX&min_rating=4&project_id=${projectId}`,
+      summary:
+        "Search Google Maps for local businesses through your organization's Google Maps key, up to 60 a place. Split a big area over up to 20 places with semicolons. A place searched in the last 30 days costs no Google calls, and the rest count against your monthly cap.",
+      params: [
+        ["what, where", "what to look for, and a city, area or ZIP code, or several split by semicolons"],
+        ["min_rating, min_reviews", "optional, only businesses rated or reviewed at least this much"],
+        ["with_website", "optional true to keep only businesses with a website"],
+        ["project_id", "optional, marks the businesses that project already has in known"],
+      ],
+      response: `{
+  "items": [
+    {
+      "place_id": "ChIJ…",
+      "name": "Smile Dental",
+      "category": "Dentist",
+      "address": "100 Congress Ave, Austin, TX 78701, USA",
+      "phone": "+15125550100",
+      "website": "https://www.smiledental.example/",
+      "domain": "smiledental.example",
+      "rating": 4.8,
+      "review_count": 212,
+      "known": null,
+      "…": "…"
+    }
+  ],
+  "found": 60,
+  "calls": 3,
+  "usage": { "calls": 312, "cap": 2000, "cost_cents": 1092, "…": "…" },
+  "note": null
+}`,
+    },
+    {
+      method: "POST",
+      path: "/segments/5d0a…/local-businesses",
+      summary:
+        "Add businesses from the search above to a campaign, up to 50 at a time. Splee reads each one's website for a contact address at its own domain, a person's before a shared one, and checks it with your verifier. One without a website keeps its phone for calls and texts.",
+      body: `{ "place_ids": ["ChIJ…"] }`,
+      response: `{
+  "added": [
+    { "name": "Smile Dental", "domain": "smiledental.example", "email": "maria.lopez@smiledental.example", "email_kind": "person", "contact_name": "Maria Lopez", "…": "…" }
+  ],
+  "skipped": [{ "name": "Known Dental", "reason": "Already in this project" }]
+}`,
+    },
+    {
+      method: "GET",
       path: `/projects/${projectId}/companies?sort=score&min_score=50`,
       summary:
         "The project's own companies, best research fit first, with their hiring roles and tools. A company's score is its best lead's, or its own while it has no leads.",

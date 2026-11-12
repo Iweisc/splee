@@ -367,6 +367,8 @@ mod tests {
             google_ads_developer_token: None,
             ads_api_url: String::new(),
             ipinfo_token: None,
+            places_api_url: String::new(),
+            local_sites_url: String::new(),
         };
         let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();

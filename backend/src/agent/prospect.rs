@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::explore::{self, EMPLOYEE_RANGES, Profile, RESEARCHER, is_directory, load_project};
-use super::directory;
+use super::{directory, places};
 use super::linkedin;
 use super::sdk::Call;
 use super::x;
@@ -181,6 +181,11 @@ async fn find_companies(ctx: &Ctx, project: &Project, profile: &Profile, segment
     call.hiring = true;
     if directory::has_companies(ctx.db()).await? {
         call.directory = Some(project.id);
+    }
+    if let Some(org_id) = project.org_id
+        && places::available(ctx.db(), org_id).await?
+    {
+        call.places = Some((org_id, project.id));
     }
     let list: CompanyList = ctx.ask(&call).await?;
     ctx.log(format!("scoring fit for {} domains…", list.companies.len())).await?;

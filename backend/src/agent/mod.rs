@@ -5,6 +5,7 @@ mod bluesky;
 mod calls;
 mod channels;
 mod directory;
+mod places;
 mod discourse;
 mod explore;
 mod hashnode;

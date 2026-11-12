@@ -774,6 +774,8 @@ mod tests {
                 google_ads_developer_token: None,
                 ads_api_url: String::new(),
                 ipinfo_token: None,
+                places_api_url: String::new(),
+                local_sites_url: String::new(),
             };
             let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

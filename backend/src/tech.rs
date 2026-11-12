@@ -71,7 +71,7 @@ impl Scanner {
         let www = (!domain.starts_with("www.")).then(|| format!("www.{domain}"));
         for host in std::iter::once(domain).chain(www.as_deref()) {
             let url = self.site.replace("{domain}", host);
-            let Some(mut res) = crate::hooks::get_page(&self.client, &url, self.public_only, USER_AGENT, TIMEOUT).await else { continue };
+            let Some(mut res) = crate::hooks::get_page(&self.client, &url, self.public_only, USER_AGENT, TIMEOUT, &|_| true).await else { continue };
             let headers = res.headers().iter().map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
             let mut body = Vec::new();
             while body.len() < MAX_PAGE_BYTES {

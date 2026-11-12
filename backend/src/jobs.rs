@@ -162,7 +162,7 @@ impl Boards {
 
     /// A page of the company's site.
     async fn page(&self, url: &str) -> Option<String> {
-        let res = crate::hooks::get_page(&self.client, url, self.public_only, USER_AGENT, TIMEOUT).await?;
+        let res = crate::hooks::get_page(&self.client, url, self.public_only, USER_AGENT, TIMEOUT, &|_| true).await?;
         let body = read_capped(res, MAX_PAGE_BYTES).await.ok()?;
         Some(String::from_utf8_lossy(&body).into_owned())
     }
