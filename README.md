@@ -1,4 +1,4 @@
-# Splee
+# Splee: open-source AI SDR and cold email platform
 
 **Paste your website. Splee finds your buyers, writes each one a personal cold email, sends it from your own mailbox and answers the replies.**
 
@@ -19,9 +19,21 @@
 
 <sub>The screenshots show Fieldnote, a made-up company with made-up leads.</sub>
 
-Splee is a self-hosted AI outbound agent, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily email limit. It also reads the replies over IMAP and answers interested leads with your booking link.
+Splee is a free, open-source AI SDR (an AI outbound agent) that you host yourself, modelled on [explee.com](https://explee.com). You paste your website. A Claude agent then researches your company, competitors and buyer segments, and finds matching companies and their decision makers on the web. It writes a personal cold email to each person and sends them from your own mailboxes within a daily email limit. It also reads the replies over IMAP and answers interested leads with your booking link.
 
 It runs on your machine or server, with your own Claude subscription and mailboxes. Nothing goes through a third-party outbound platform.
+
+## How Splee compares
+
+**Is Splee an open-source alternative to Explee?** Yes. Explee is a hosted AI cold email agent, and Splee does the same job from your own server: you paste a website and get buyer segments, leads, written emails and answered replies. Splee is free under the AGPL and sends from your own mailboxes.
+
+**Can it replace Instantly, Smartlead or lemlist?** Yes. As self-hosted cold email software, Splee rotates mailboxes under daily limits, warms them up, threads follow-ups, A/B tests angles and shows every reply in one inbox. It also finds the leads and writes the emails. Paste an API key from any of the three and your campaigns, leads and blocklist come over.
+
+**Is it an AI SDR?** Yes. The agent researches your market, finds decision makers, writes to each one, classifies the replies and answers interested leads with your booking link. You choose whether it waits for your approval on every draft.
+
+**Is it an Apollo alternative for lead generation?** For finding leads and running sequences, yes. Splee ships no contact database. The agent finds companies and people on the web and through LinkedIn people search, the email finders you connect fill in addresses, and you can load every business with a website in a country from Overture Maps' open data.
+
+**Does it work from Claude, ChatGPT, Claude Code or Cursor?** Yes. Splee's MCP server lets you search companies, start campaigns, find people and approve emails from a chat. ChatGPT and Claude.ai connect with its URL and a sign-in, Claude Code and Cursor with an API key.
 
 ## Features
 
