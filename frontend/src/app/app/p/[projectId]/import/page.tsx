@@ -11,7 +11,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
 import { Card, EmptyState, FileName, Spinner, Tabs } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
+import type { Finders, Import, ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { cn, dateTime, num, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
@@ -382,6 +382,7 @@ function MappingStep({
 function HunterImport({ projectId, onImported }: { projectId: string; onImported: (r: Import) => void }) {
   const { mutate } = useSWRConfig();
   const { data: settings } = useSWR<ProjectSettings>(`/projects/${projectId}/settings`, fetcher);
+  const { data: finders } = useSWR<Finders>(`/projects/${projectId}/finders`, fetcher);
   const [domain, setDomain] = useState("");
   const [segmentId, setSegmentId] = useState("");
   const [finding, setFinding] = useState(false);
@@ -405,7 +406,7 @@ function HunterImport({ projectId, onImported }: { projectId: string; onImported
     <Card className="p-6">
       <h2 className="font-semibold">Find people with Hunter</h2>
       <p className="mt-0.5 text-sm text-muted-foreground">Imports the people Hunter knows at a company, with their titles and LinkedIn.</p>
-      {settings.verifier === "hunter" || settings.finder === "hunter" ? (
+      {settings.verifier === "hunter" || finders?.finders.some((f) => f.provider === "hunter") ? (
         <form
           className="mt-5 flex flex-wrap items-start gap-4"
           onSubmit={(e) => {

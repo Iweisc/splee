@@ -208,7 +208,7 @@ pub enum Alert {
     Crm(crate::crm::Crm),
     /// Matched on verifier_key_enc.
     Verifier,
-    /// Matched on finder_key_enc.
+    /// Matched on project_finders.key_enc.
     Finder,
     /// Matched on unipile_token_enc.
     Unipile,
@@ -260,9 +260,9 @@ pub async fn record(db: &sqlx::PgPool, project_id: uuid::Uuid, alert: Alert, url
         Alert::Chat => return record_row(db, "chat_channels", "url", project_id, url, result).await,
         Alert::Discourse => return record_row(db, "discourse_forums", "key_enc", project_id, url, result).await,
         Alert::Blog => return record_row(db, "blogs", "secret_enc", project_id, url, result).await,
+        Alert::Finder => return record_row(db, "project_finders", "key_enc", project_id, url, result).await,
         Alert::Crm(crm) => (crm.name(), format!("{}_token_enc", crm.name())),
         Alert::Verifier => ("verifier", "verifier_key_enc".to_string()),
-        Alert::Finder => ("finder", "finder_key_enc".to_string()),
         Alert::Unipile => ("unipile", "unipile_token_enc".to_string()),
         Alert::X => ("x", "x_auth_token_enc".to_string()),
         Alert::Reddit => ("reddit", "reddit_password_enc".to_string()),

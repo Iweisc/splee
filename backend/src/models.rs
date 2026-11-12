@@ -307,11 +307,7 @@ pub struct ProjectSettings {
     pub verifier: String,
     pub verifier_error: Option<String>,
     pub verifier_failed_at: Option<Ts>,
-    /// "hunter", "findymail", "prospeo", "anymailfinder" or "" for none. Looks up the real address behind a guessed one. Its key
-    /// (finder_key_enc) stays out of this struct.
-    pub finder: String,
-    pub finder_error: Option<String>,
-    pub finder_failed_at: Option<Ts>,
+    // The email finders are in project_finders since migration 0129. See routes/finders.rs.
     /// Keeps working campaigns stocked with written emails within the monthly budget and lead cap (see autopilot.rs).
     pub autopilot: bool,
     /// Claude spend a calendar month (UTC) may reach, counting runs started by hand.
@@ -456,6 +452,9 @@ pub struct Lead {
     pub x_url: String,
     /// In E.164, or "" for none. See phone.rs.
     pub phone: String,
+    /// The finder that found the phone, or "" when it came some other way.
+    #[sqlx(default)]
+    pub phone_source: String,
     pub company_name: String,
     pub company_domain: Option<String>,
     pub city: String,

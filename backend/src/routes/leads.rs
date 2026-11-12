@@ -390,7 +390,7 @@ struct LeadBody {
 }
 
 /// The country a lead's number is read by when it has no + in front: theirs, else the project's own.
-pub(super) async fn phone_country(db: &PgPool, project_id: Uuid, lead_country: &str) -> sqlx::Result<String> {
+pub(crate) async fn phone_country(db: &PgPool, project_id: Uuid, lead_country: &str) -> sqlx::Result<String> {
     if !lead_country.trim().is_empty() {
         return Ok(lead_country.trim().to_string());
     }
@@ -613,11 +613,7 @@ async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<U
     if body.ids.len() > MAX_PICKED {
         return Err(AppError::BadRequest(format!("Pick at most {MAX_PICKED} leads at a time")));
     }
-    let connected: bool = sqlx::query_scalar("select exists (select 1 from project_settings where project_id = $1 and (finder <> '' or verifier <> ''))")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
-    if !connected {
+    if !crate::waterfall::connected(&state.db, id).await? {
         return Err(AppError::BadRequest("Connect an email finder or verifier under Integrations first".into()));
     }
     let ids: Vec<Uuid> = if body.all {

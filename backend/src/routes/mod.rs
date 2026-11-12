@@ -23,6 +23,7 @@ pub(crate) mod calendar;
 mod deals;
 mod deliverability;
 mod outreach;
+pub(crate) mod finders;
 mod payments;
 mod saved_replies;
 mod scores;
@@ -134,6 +135,7 @@ pub fn router() -> Router<AppState> {
         .merge(deals::router())
         .merge(outreach::router())
         .merge(payments::router())
+        .merge(finders::router())
         .merge(chat::router())
         .route("/health", get(health))
 }
