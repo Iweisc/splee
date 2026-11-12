@@ -32,10 +32,14 @@ pub(super) struct Purpose {
     pub name: &'static str,
     /// What the user is connecting, in messages.
     pub what: &'static str,
+    /// Only owners and admins may connect it: mailboxes and Postmaster belong to the whole organization. A project's Google
+    /// Sheets is up to anyone in the project, like its CRM.
+    pub admin: bool,
 }
 
-pub(super) const MAILBOX: Purpose = Purpose { state: oauth::MAILBOX, name: "mailbox", what: "the mailbox" };
-pub(super) const POSTMASTER: Purpose = Purpose { state: oauth::POSTMASTER, name: "postmaster", what: "Google Postmaster" };
+pub(super) const MAILBOX: Purpose = Purpose { state: oauth::MAILBOX, name: "mailbox", what: "the mailbox", admin: true };
+pub(super) const POSTMASTER: Purpose = Purpose { state: oauth::POSTMASTER, name: "postmaster", what: "Google Postmaster", admin: true };
+pub(super) const SHEETS: Purpose = Purpose { state: oauth::SHEETS, name: "sheets", what: "Google Sheets", admin: false };
 
 fn start_again(purpose: &Purpose) -> String {
     format!("This sign-in expired or was already used. Connect {} again.", purpose.what)
@@ -54,28 +58,32 @@ struct StartBody {
 async fn start(State(state): State<AppState>, auth: Auth, Path(provider): Path<String>, Json(body): Json<StartBody>) -> AppResult<Json<Value>> {
     let provider = Provider::parse(&provider).ok_or(AppError::NotFound)?;
     let hint = body.email.as_deref().and_then(util_input::email);
-    let url = start_sign_in(&state, &auth, provider, &MAILBOX, provider.scope(), hint.as_deref()).await?;
+    let url = start_sign_in(&state, &auth, provider, &MAILBOX, None, provider.scope(), hint.as_deref()).await?;
     Ok(Json(json!({ "url": url })))
 }
 
-/// Saves a pending sign-in and returns the provider's URL to send the browser to.
+/// Saves a pending sign-in and returns the provider's URL to send the browser to. `project_id` is the project it's for, when
+/// it's for one, which the caller has checked the user can open.
 pub(super) async fn start_sign_in(
     state: &AppState,
     auth: &Auth,
     provider: Provider,
     purpose: &Purpose,
+    project_id: Option<Uuid>,
     scope: &str,
     login_hint: Option<&str>,
 ) -> AppResult<String> {
-    auth.require_admin()?;
+    if purpose.admin {
+        auth.require_admin()?;
+    }
     if provider.app(&state.cfg).is_none() {
         return Err(AppError::BadRequest(format!("{} sign-in isn't set up on this Splee", provider.label())));
     }
     let (nonce, verifier) = (random_token(), random_token());
     sqlx::query("delete from mailbox_oauth_states where expires_at < now()").execute(&state.db).await?;
     sqlx::query(
-        "insert into mailbox_oauth_states (nonce_hash, user_id, org_id, provider, code_verifier_enc, expires_at, purpose)
-         values ($1, $2, $3, $4, $5, $6, $7)",
+        "insert into mailbox_oauth_states (nonce_hash, user_id, org_id, provider, code_verifier_enc, expires_at, purpose, project_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(sha256_hex(&nonce))
     .bind(auth.user_id)
@@ -84,6 +92,7 @@ pub(super) async fn start_sign_in(
     .bind(crypto::encrypt(&state.cfg.app_secret, &verifier))
     .bind(Utc::now() + Duration::minutes(STATE_MINUTES))
     .bind(purpose.name)
+    .bind(project_id)
     .execute(&state.db)
     .await?;
     let signed = oauth::sign_state(&state.cfg.app_secret, purpose.state, &nonce, auth.user_id, auth.org_id);
@@ -98,14 +107,17 @@ pub(super) struct CallbackQuery {
     error_description: Option<String>,
 }
 
-/// Always redirects: a Postmaster sign-in to the Deliverability page, and a mailbox's to the Mailboxes page, with
+/// Always redirects: a Postmaster sign-in to the Deliverability page, a Google Sheets one to its project's integrations page,
+/// and a mailbox's to the Mailboxes page, with
 /// `connected`, the mailbox's id, which the page then tests like a mailbox added with a password, or with `mailbox_error`.
 async fn callback(State(state): State<AppState>, MaybeAuth(auth): MaybeAuth, Query(q): Query<CallbackQuery>) -> Redirect {
     let nonce = q.state.as_deref().and_then(oauth::state_nonce).map(sha256_hex);
-    let purpose: Option<String> =
-        sqlx::query_scalar("select purpose from mailbox_oauth_states where nonce_hash = $1").bind(nonce).fetch_optional(&state.db).await.ok().flatten();
-    if purpose.as_deref() == Some(POSTMASTER.name) {
-        return super::deliverability::postmaster_callback(&state, auth, q).await;
+    let pending: Option<(String, Option<Uuid>)> =
+        sqlx::query_as("select purpose, project_id from mailbox_oauth_states where nonce_hash = $1").bind(nonce).fetch_optional(&state.db).await.ok().flatten();
+    match pending {
+        Some((purpose, _)) if purpose == POSTMASTER.name => return super::deliverability::postmaster_callback(&state, auth, q).await,
+        Some((purpose, Some(project))) if purpose == SHEETS.name => return super::sheets::callback(&state, auth, q, project).await,
+        _ => {}
     }
     let params = match finish(&state, auth, q).await {
         Ok(id) => vec![("connected", id.to_string())],
@@ -126,10 +138,13 @@ struct Pending {
     provider: String,
     code_verifier_enc: String,
     expires_at: Ts,
+    project_id: Option<Uuid>,
 }
 
 pub(super) struct SignedIn {
     pub auth: Auth,
+    /// The project the sign-in was started for, which the user can still open.
+    pub project_id: Option<Uuid>,
     pub provider: Provider,
     pub tokens: oauth::Tokens,
     pub account: oauth::Account,
@@ -147,7 +162,7 @@ pub(super) async fn signed_in(state: &AppState, auth: Option<Auth>, q: CallbackQ
     let nonce = oauth::state_nonce(signed).ok_or_else(|| start_again(purpose))?;
     // Deleted before anything else is checked, so a state works once whatever happens.
     let pending = sqlx::query_as::<_, Pending>(
-        "delete from mailbox_oauth_states where nonce_hash = $1 and purpose = $2 returning user_id, org_id, provider, code_verifier_enc, expires_at",
+        "delete from mailbox_oauth_states where nonce_hash = $1 and purpose = $2 returning user_id, org_id, provider, code_verifier_enc, expires_at, project_id",
     )
     .bind(sha256_hex(nonce))
     .bind(purpose.name)
@@ -170,13 +185,19 @@ pub(super) async fn signed_in(state: &AppState, auth: Option<Auth>, q: CallbackQ
     if (auth.user_id, auth.org_id) != (pending.user_id, pending.org_id) {
         return Err(format!("You switched organizations while signing in. Connect {what} again from this one."));
     }
-    auth.require_admin().map_err(|e| e.public_message())?;
+    if purpose.admin {
+        auth.require_admin().map_err(|e| e.public_message())?;
+    }
+    // Checked again, since access to the project could have gone in the meantime.
+    if let Some(project) = pending.project_id {
+        auth.project(&state.db, project).await.map_err(|e| e.public_message())?;
+    }
     let code = q.code.filter(|c| !c.is_empty()).ok_or_else(|| start_again(purpose))?;
 
     let verifier = crypto::decrypt(&state.cfg.app_secret, &pending.code_verifier_enc).map_err(|e| internal(&e))?;
     let tokens = oauth::exchange_code(&state.cfg, provider, &code, &verifier).await.map_err(|e| e.to_string())?;
     let account = tokens.id_token.as_deref().and_then(oauth::account).ok_or(format!("{label} didn't share the account's email address."))?;
-    Ok(SignedIn { auth, provider, tokens, account })
+    Ok(SignedIn { auth, project_id: pending.project_id, provider, tokens, account })
 }
 
 /// The saved mailbox, or what went wrong as the page shows it.
@@ -185,7 +206,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
         tracing::error!(error = %e, "mailbox sign-in failed");
         "Something went wrong saving the mailbox. Try again.".to_string()
     };
-    let SignedIn { auth, provider, tokens, account } = signed_in(state, auth, q, &MAILBOX).await?;
+    let SignedIn { auth, provider, tokens, account, .. } = signed_in(state, auth, q, &MAILBOX).await?;
     let label = provider.label();
     let secret = &state.cfg.app_secret;
     let refresh = tokens.refresh_token.as_deref().filter(|t| !t.is_empty()).ok_or(format!("{label} didn't let Splee stay signed in. Connect the mailbox again."))?;

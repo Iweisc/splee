@@ -392,8 +392,11 @@ pub fn payload(public_url: &str, project_id: Uuid, project_name: &str, event: &s
 
 /// Posts a lead event to each of the project's webhook endpoints when it sends that event, and to each REST hook
 /// subscription to it. Delivery runs in the background, one task per URL, so a slow receiver never holds up a run, a
-/// request or the other URLs. Failures are logged and shown on the integrations page.
+/// request or the other URLs. Failures are logged and shown on the integrations page. The project's Google Sheets exports keep
+/// a row for the events they write, for the Sheets worker.
 pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static str, lead: &Lead, detail: Detail) {
+    let reply = detail.as_ref().filter(|(key, _)| *key == "reply").and_then(|(_, reply)| reply["body"].as_str());
+    crate::sheets::export::queue(state, project_id, event, lead, reply).await;
     match lead_event(&state.db, &state.cfg.public_url, project_id, event, lead, detail).await {
         Ok(Some(Recipients { urls, subscriptions, secret, payload })) => {
             for target in subscriptions {

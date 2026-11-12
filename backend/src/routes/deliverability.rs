@@ -86,7 +86,7 @@ async fn check(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Page
 }
 
 async fn connect(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
-    let url = mailbox_oauth::start_sign_in(&state, &auth, Provider::Google, &POSTMASTER, postmaster::SCOPE, None).await?;
+    let url = mailbox_oauth::start_sign_in(&state, &auth, Provider::Google, &POSTMASTER, None, postmaster::SCOPE, None).await?;
     Ok(Json(json!({ "url": url })))
 }
 
