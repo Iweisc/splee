@@ -74,6 +74,11 @@ pub struct Config {
     pub ads_api_url: String,
     /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
     pub ipinfo_token: Option<String>,
+    /// Google's Places API (New). Only tests and sandboxes point it elsewhere, at a fake.
+    pub places_api_url: String,
+    /// Where the websites of businesses added from Google Maps are read for a contact address. Empty for their real sites.
+    /// Only tests and sandboxes set it, to a fake that serves each site under /site/{domain}.
+    pub local_sites_url: String,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -172,6 +177,8 @@ impl Config {
             google_ads_developer_token: env::var("GOOGLE_ADS_DEVELOPER_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
             ads_api_url: env::var("ADS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+            places_api_url: env::var("PLACES_API_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| crate::places::API_URL.into()),
+            local_sites_url: env::var("LOCAL_SITES_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -241,6 +248,8 @@ mod tests {
             google_ads_developer_token: None,
             ads_api_url: String::new(),
             ipinfo_token: None,
+            places_api_url: String::new(),
+            local_sites_url: String::new(),
         }
     }
 

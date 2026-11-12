@@ -854,6 +854,62 @@ export interface FoundPeople {
   skipped: { name: string; company: string; reason: string }[];
 }
 
+/** A business from a Google Maps search on the Companies page. `known` says the project already has it. */
+export interface LocalBusiness {
+  place_id: string;
+  name: string;
+  category: string;
+  types: string[];
+  address: string;
+  city: string;
+  region: string;
+  country_code: string;
+  lat: number | null;
+  lng: number | null;
+  /** E.164 when it could be read, else as Google wrote it, or "". */
+  phone: string;
+  website: string;
+  domain: string | null;
+  rating: number | null;
+  review_count: number;
+  maps_url: string;
+  known: "company" | "lead" | null;
+}
+
+/** The organization's Google Maps calls this calendar month (UTC). Keep in sync with local_businesses::Usage. */
+export interface LocalUsage {
+  connected: boolean;
+  calls: number;
+  cap: number;
+  price_per_1000_cents: number;
+  cost_cents: number;
+}
+
+export interface LocalSearch {
+  items: LocalBusiness[];
+  /** Businesses found before the filters. */
+  found: number;
+  /** Calls this search made, 0 when it all came from searches of the last 30 days. */
+  calls: number;
+  usage: LocalUsage;
+  /** Why some places weren't searched, like the monthly cap. */
+  note: string | null;
+}
+
+/** What "Add to campaign" did with each picked business. */
+export interface LocalAdded {
+  added: {
+    name: string;
+    domain: string | null;
+    phone: string;
+    email: string | null;
+    email_kind: "person" | "role" | "";
+    contact_name: string;
+    note: string;
+  }[];
+  skipped: { name: string; reason: string }[];
+}
+
 export interface DirectoryCountry {
   country_code: string;
   companies: number;
@@ -908,7 +964,7 @@ export interface Lead extends Scored {
   company_domain: string | null;
   city: string;
   country_code: string;
-  source: "agent" | "import" | "api" | "form" | "linkedin" | "chat";
+  source: "agent" | "import" | "api" | "form" | "linkedin" | "google_maps" | "chat";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;

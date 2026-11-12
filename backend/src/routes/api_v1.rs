@@ -26,6 +26,7 @@ use crate::auth::ApiKeyAuth;
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
+use crate::local_businesses::{self, AddOutcome, Results};
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
 use crate::ownership;
 use crate::state::AppState;
@@ -48,6 +49,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/companies", get(search_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/segments/{id}/find-people", post(find_people))
+        .route("/v1/local-businesses", get(search_local_businesses))
+        .route("/v1/segments/{id}/local-businesses", post(add_local_businesses))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
         .route("/v1/runs/{id}", get(get_run))
         .route("/v1/emails", get(list_emails))
@@ -513,6 +516,35 @@ pub(super) async fn add_companies(
 ) -> AppResult<Json<Added>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     Ok(Json(directory::add_domains(&state.db, auth.org_id, segment.project_id, segment.id, &body.domains).await?))
+}
+
+/// Google Maps through the organization's key, like the Companies page's Local businesses tab. With project_id, says which
+/// businesses that project already has.
+pub(super) async fn search_local_businesses(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<local_businesses::SearchQuery>,
+) -> AppResult<Json<Results>> {
+    if let Some(project) = q.project_id {
+        check_project(&state.db, project, auth.org_id).await?;
+    }
+    Ok(Json(local_businesses::search(&state, auth.org_id, &q).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AddLocalBody {
+    #[serde(default)]
+    place_ids: Vec<String>,
+}
+
+pub(super) async fn add_local_businesses(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddLocalBody>,
+) -> AppResult<Json<AddOutcome>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    Ok(Json(local_businesses::add(&state, auth.org_id, segment.project_id, segment.id, &body.place_ids).await?))
 }
 
 pub(super) async fn find_people(

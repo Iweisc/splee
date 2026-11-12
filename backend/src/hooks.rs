@@ -36,13 +36,24 @@ pub async fn public_client(url: &Url) -> anyhow::Result<reqwest::Client> {
 /// GETs a page of a site a lead or company gave us, following up to four redirects by hand. With `public_only`, each hop
 /// goes through `public_client`, so a redirect can't lead the server into its own network either. Tests turn it off for
 /// their fake site on this machine. The final answer, or None when a hop fails or the page isn't a success.
-pub async fn get_page(client: &reqwest::Client, url: &str, public_only: bool, user_agent: &str, timeout: Duration) -> Option<reqwest::Response> {
+/// `follow` says which redirects to take. It's asked before each one is requested.
+pub async fn get_page(
+    client: &reqwest::Client,
+    url: &str,
+    public_only: bool,
+    user_agent: &str,
+    timeout: Duration,
+    follow: &(dyn Fn(&Url) -> bool + Sync),
+) -> Option<reqwest::Response> {
     let mut url = Url::parse(url).ok()?;
     for _ in 0..4 {
         let client = if public_only { public_client(&url).await.ok()? } else { client.clone() };
         let res = client.get(url.clone()).header(reqwest::header::USER_AGENT, user_agent).timeout(timeout).send().await.ok()?;
         if res.status().is_redirection() {
             url = url.join(res.headers().get(reqwest::header::LOCATION)?.to_str().ok()?).ok()?;
+            if !follow(&url) {
+                return None;
+            }
             continue;
         }
         return res.status().is_success().then_some(res);

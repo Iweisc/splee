@@ -43,7 +43,8 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
 so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule. Hot replies open \
 deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on \
-the team. get_analytics says which campaigns, mailboxes, follow-ups and send times get replies.";
+the team. get_analytics says which campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists \
+or gyms in a city, search_local_businesses and add_local_businesses use Google Maps once the user connected a key.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -242,6 +243,8 @@ const MEETING_FIELDS: &[&str] = &[
     "id", "provider", "title", "started_at", "duration_secs", "attendees", "summary", "next_steps", "provider_summary", "recording_url",
     "suggested_stage", "stage_reason", "stage_status", "follow_up_status",
 ];
+const LOCAL_FIELDS: &[&str] =
+    &["place_id", "name", "category", "address", "phone", "website", "domain", "rating", "review_count", "maps_url", "known"];
 const CALL_FIELDS: &[&str] = &[
     "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
     "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
@@ -268,6 +271,8 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "search_local_businesses" => async { Ok(pick(value(v1::search_local_businesses(st(), auth, Query(parse(a)?)).await?)?, LOCAL_FIELDS)) }.await,
+        "add_local_businesses" => async { value(v1::add_local_businesses(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
         "find_people" => async { started(value(v1::find_people(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
         "write_emails" => async { started(value(v1::write_emails(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
         "get_run" => async { Ok(pick(value(v1::get_run(st(), auth, id(a, "run_id")?).await?)?, RUN_FIELDS)) }.await,
@@ -428,6 +433,39 @@ fn tools() -> Vec<Value> {
                 "domains": { "type": "array", "items": { "type": "string" }, "description": "Domains from search_companies" },
             }),
             &["campaign_id", "domains"],
+            adds.clone(),
+        ),
+        tool(
+            "search_local_businesses",
+            "Search local businesses",
+            "Searches Google Maps through the organization's own Google Maps key, connected under Integrations, for local businesses \
+             like dentists, gyms or restaurants in a city or ZIP code: up to 60 a place, with category, address, phone, website, \
+             rating and review count. where can list up to 20 places split by semicolons, and each business shows once. Each place \
+             costs up to 3 calls against the organization's monthly cap, and a place searched in the last 30 days is free. With \
+             project_id, known says whether the project already has a business as a company or a lead.",
+            json!({
+                "what": { "type": "string", "description": "The kind of business, like \"dentists\"" },
+                "where": { "type": "string", "description": "A city, area or ZIP code, like \"Austin, TX\", or several split by semicolons" },
+                "min_rating": { "type": "number", "minimum": 0, "maximum": 5, "description": "Optional. Only businesses rated at least this" },
+                "min_reviews": { "type": "integer", "minimum": 0, "description": "Optional. Only businesses with at least this many reviews" },
+                "with_website": { "type": "boolean", "description": "Optional. Only businesses with a website" },
+                "project_id": id_prop("Optional. Marks the businesses this project already has"),
+            }),
+            &["what", "where"],
+            read.clone(),
+        ),
+        tool(
+            "add_local_businesses",
+            "Add local businesses to campaign",
+            "Adds businesses from search_local_businesses to a campaign by place_id, up to 50 at a time. Each with a website becomes \
+             a company, and each one a lead: Splee reads its website for a contact address at its own domain, a person's before a \
+             shared one like info@. One without a website keeps its phone for calls and texts. Returns what each got, and the ones \
+             skipped with why. Then call write_emails.",
+            json!({
+                "campaign_id": campaign,
+                "place_ids": { "type": "array", "items": { "type": "string" }, "description": "place_id values from search_local_businesses" },
+            }),
+            &["campaign_id", "place_ids"],
             adds.clone(),
         ),
         tool(
@@ -678,6 +716,11 @@ mod tests {
 
     impl Server {
         async fn start(db: PgPool) -> Self {
+            Self::with(db, String::new(), String::new()).await
+        }
+
+        /// With Google Places and the businesses' websites at fakes.
+        async fn with(db: PgPool, places_api_url: String, local_sites_url: String) -> Self {
             let cfg = Config {
                 database_url: String::new(),
                 app_secret: String::new(),
@@ -712,6 +755,8 @@ mod tests {
                 google_ads_developer_token: None,
                 ads_api_url: String::new(),
                 ipinfo_token: None,
+                places_api_url,
+                local_sites_url,
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -791,7 +836,8 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
-                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings"] {
+                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
+                     "search_local_businesses", "add_local_businesses"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1159,5 +1205,48 @@ mod tests {
         let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2026-07-28", "capabilities": {} } });
         let (status, body) = server.post(KEY, init).await;
         assert_eq!((status, body["result"]["protocolVersion"].as_str()), (200, Some("2025-11-25")));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn local_business_tools_and_api_use_the_keys_organization_only(db: PgPool) {
+        let [(project, segment), (other_project, other_segment)] = seed(&db).await;
+        let (places_url, google) = crate::places::fake::start().await;
+        let (sites_url, sites) = crate::site_contacts::fake::start().await;
+        google.places.lock().unwrap().push(crate::places::fake::place("smile", "Smile Dental", "https://smile.example", 4.8, 90));
+        sites.page("smile.example", "/", "Ask for Ana: ana.ruiz@smile.example");
+        let server = Server::with(db.clone(), places_url, sites_url).await;
+
+        let (is_error, text) = server.call(KEY, "search_local_businesses", json!({ "what": "dentists", "where": "Austin, TX" })).await;
+        assert_eq!((is_error, text.as_str()), (true, "Connect a Google Maps key under Integrations first"));
+        sqlx::query("insert into places_keys (org_id, key_enc) select org_id, $1 from projects where id = $2")
+            .bind(crate::crypto::encrypt("", "good"))
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let (is_error, text) = server.call(KEY, "search_local_businesses", json!({ "what": "dentists", "where": "Austin, TX", "project_id": project })).await;
+        assert!(!is_error, "{text}");
+        let found: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((found["items"][0]["place_id"].as_str(), found["items"][0]["known"].clone()), (Some("smile"), Value::Null));
+        assert!(found["items"][0].get("lat").is_none(), "the tool keeps its answer short");
+        let api = server.url.replace("/mcp", "/v1");
+        let res = server.client.get(format!("{api}/local-businesses?what=dentists&where=Austin,%20TX")).bearer_auth(KEY).send().await.unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!((body["items"][0]["lat"].as_f64(), body["calls"].as_i64()), (Some(30.2672), Some(0)), "the API answers in full, from the cache");
+        assert_eq!(google.calls(), 1);
+
+        for (tool, args) in [
+            ("search_local_businesses", json!({ "what": "dentists", "where": "Austin", "project_id": other_project })),
+            ("add_local_businesses", json!({ "campaign_id": other_segment, "place_ids": ["smile"] })),
+        ] {
+            assert_eq!(server.call(KEY, tool, args).await, (true, "Not found".into()), "{tool}");
+        }
+        let res = server.client.post(format!("{api}/segments/{segment}/local-businesses")).bearer_auth(KEY).json(&json!({ "place_ids": ["smile"] }));
+        let added: Value = res.send().await.unwrap().json().await.unwrap();
+        assert_eq!((added["added"][0]["email"].as_str(), added["added"][0]["contact_name"].as_str()), (Some("ana.ruiz@smile.example"), Some("Ana Ruiz")));
+        let (_, text) = server.call(KEY, "add_local_businesses", json!({ "campaign_id": segment, "place_ids": ["smile"] })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["skipped"][0]["reason"], "Already in this project");
     }
 }

@@ -475,6 +475,8 @@ mod tests {
             google_ads_developer_token: None,
             ads_api_url: String::new(),
             ipinfo_token: None,
+            places_api_url: String::new(),
+            local_sites_url: String::new(),
             slack: None,
         }
     }
