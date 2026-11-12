@@ -768,6 +768,7 @@ mod tests {
                 graph_api_url: String::new(),
                 crm_api_url: String::new(),
                 payments_api_url: String::new(),
+                meetings_api_url: String::new(),
                 webflow_api_url: String::new(),
                 linkedin_ads: None,
                 google_ads_developer_token: None,

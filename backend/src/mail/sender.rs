@@ -15,11 +15,12 @@ use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
 use crate::verify::{self, Lookup, Verdict};
 
-/// Replies people are waiting for. They skip the send window, the pause switch and the daily email limit.
-const REPLY_KINDS: [&str; 2] = ["auto_reply", "manual_reply"];
+/// Replies people are waiting for, and the follow-up after a sales meeting (agent/meetings.rs). They skip the send window,
+/// the pause switch and the daily email limit.
+const REPLY_KINDS: [&str; 3] = ["auto_reply", "manual_reply", "meeting_follow_up"];
 /// The kinds Splee writes, ending with the signature WriterSettings::sign added. A reply someone typed is sent as they
 /// wrote it.
-const WRITTEN_KINDS: [&str; 3] = ["initial", "follow_up", "auto_reply"];
+const WRITTEN_KINDS: [&str; 4] = ["initial", "follow_up", "auto_reply", "meeting_follow_up"];
 
 pub fn new_message_id(sender_email: &str) -> String {
     let domain = sender_email.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("splee.local");

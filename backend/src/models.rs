@@ -776,6 +776,42 @@ pub struct Call {
     pub created_at: Ts,
 }
 
+/// A sales meeting with a lead, from Fireflies, Fathom, Gong or Zoom, and the agent's notes on it. See meetings/. The
+/// transcript is only read by the agent, so it's not here.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Meeting {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub lead_id: Uuid,
+    pub provider: String,
+    pub external_id: String,
+    /// The Splee booking it was, when there was one.
+    pub booking_id: Option<Uuid>,
+    pub title: String,
+    pub started_at: Ts,
+    pub duration_secs: Option<i32>,
+    /// [{"name", "email"}], without the team.
+    pub attendees: Value,
+    /// The provider's own summary, or empty.
+    pub provider_summary: String,
+    pub recording_url: String,
+    pub summary: String,
+    /// A list of strings.
+    pub next_steps: Value,
+    pub follow_up_email_id: Option<Uuid>,
+    pub suggested_stage_id: Option<Uuid>,
+    pub stage_reason: String,
+    /// none, or pending until someone accepts or dismisses the suggested stage.
+    pub stage_status: String,
+    pub summarized_at: Option<Ts>,
+    pub created_at: Ts,
+}
+
+/// Meeting's columns, for selects that leave the transcript behind.
+pub const MEETING_COLUMNS: &str = "m.id, m.project_id, m.lead_id, m.provider, m.external_id, m.booking_id, m.title, m.started_at, m.duration_secs,
+       m.attendees, m.provider_summary, m.recording_url, m.summary, m.next_steps, m.follow_up_email_id, m.suggested_stage_id, m.stage_reason,
+       m.stage_status, m.summarized_at, m.created_at";
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct LinkedinMessage {
     pub id: Uuid,

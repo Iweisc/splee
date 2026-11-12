@@ -238,6 +238,10 @@ const DEAL_FIELDS: &[&str] = &[
     "stage_changed_at",
 ];
 const STAGE_FIELDS: &[&str] = &["name", "kind", "probability", "deals"];
+const MEETING_FIELDS: &[&str] = &[
+    "id", "provider", "title", "started_at", "duration_secs", "attendees", "summary", "next_steps", "provider_summary", "recording_url",
+    "suggested_stage", "stage_reason", "stage_status", "follow_up_status",
+];
 const CALL_FIELDS: &[&str] = &[
     "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
     "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
@@ -302,6 +306,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "list_call_tasks" => async { Ok(pick(value(v1::list_calls(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
         "log_call" => async { Ok(pick(value(v1::log_call(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?, CALL_FIELDS)) }.await,
+        "list_meetings" => async { Ok(pick(value(v1::list_meetings(st(), auth, id(a, "lead_id")?).await?)?, MEETING_FIELDS)) }.await,
         _ => return None,
     })
 }
@@ -618,7 +623,7 @@ fn tools() -> Vec<Value> {
                 "owner": owner_prop(),
             }),
             &["project_id"],
-            read,
+            read.clone(),
         ),
         tool(
             "log_call",
@@ -632,6 +637,17 @@ fn tools() -> Vec<Value> {
             }),
             &["lead_id", "outcome"],
             adds,
+        ),
+        tool(
+            "list_meetings",
+            "List meetings",
+            "A lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first: the title, when, who from their side, the \
+             agent's summary and next steps, and the deal stage it suggested. stage_status is pending until someone accepts or \
+             dismisses that stage in Splee. follow_up_status is the status of the follow-up email drafted after it, draft while it \
+             waits for approval.",
+            json!({ "lead_id": id_prop("A lead id from list_leads or list_replies") }),
+            &["lead_id"],
+            read,
         ),
     ]
 }
@@ -690,6 +706,7 @@ mod tests {
                 graph_api_url: String::new(),
                 crm_api_url: String::new(),
                 payments_api_url: String::new(),
+                meetings_api_url: String::new(),
                 webflow_api_url: String::new(),
                 linkedin_ads: None,
                 google_ads_developer_token: None,
@@ -774,7 +791,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
-                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call"] {
+                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));

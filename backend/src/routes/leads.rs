@@ -311,6 +311,8 @@ pub struct LeadDetail {
     pub texts: Vec<TextMessage>,
     /// Calls to them, open and made, oldest first.
     pub calls: Vec<Call>,
+    /// Sales meetings with them from Fireflies, Fathom, Gong or Zoom, oldest first.
+    pub meetings: Vec<super::meetings::MeetingRow>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,
     /// Their open deal, or else the one that closed last.
@@ -354,9 +356,10 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
         Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
         None => vec![],
     };
+    let meetings = super::meetings::for_lead(db, lead.id).await?;
     let deal = crate::deals::for_lead(db, lead.id).await?;
     let (owner_name, owner_email) = owner_of(db, &lead).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, hiring, deal, owner_name, owner_email })
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, meetings, hiring, deal, owner_name, owner_email })
 }
 
 /// The lead owner's name and email, the name falling back to the email like everywhere else.

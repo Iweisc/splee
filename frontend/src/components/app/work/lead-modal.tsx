@@ -14,6 +14,7 @@ import { cn, dateTime, dayTime } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { CallCard } from "./calls";
+import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { ScoreBar, ScoreReasons } from "./score";
@@ -251,6 +252,25 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         </div>
       )}
 
+      {lead.meetings.length > 0 && (
+        <div>
+          <MicroLabel className="mb-2">Meetings</MicroLabel>
+          <ol className="flex flex-col gap-2">
+            {lead.meetings.map((m) => (
+              <li key={m.id}>
+                <MeetingCard
+                  meeting={m}
+                  onChange={() => {
+                    mutate();
+                    mutateAll((k) => typeof k === "string" && k.startsWith("/pipeline"));
+                  }}
+                />
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
       {lead.calls.length > 0 && (
         <div>
           <MicroLabel className="mb-2">Calls</MicroLabel>
@@ -478,7 +498,8 @@ function ThreadItem({ message: m }: { message: EmailMessage }) {
     <li className={cn("rounded-xl border border-border p-3", inbound ? "bg-card" : "bg-muted/60")}>
       <div className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">
-          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : m.kind.replace("_", " ")} · {m.subject}
+          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : m.kind === "meeting_follow_up" ? "Meeting follow-up" : m.kind.replace("_", " ")} ·{" "}
+          {m.subject}
         </span>
         <span className="flex shrink-0 items-center gap-2">
           {!inbound && <EmailStatusBadge status={m.status} />}

@@ -46,6 +46,7 @@ mod meta;
 mod crm_oauth;
 mod bots;
 mod calls;
+pub mod meetings;
 pub mod settings;
 pub mod materials;
 pub mod imports;
@@ -133,6 +134,7 @@ pub fn router() -> Router<AppState> {
         .merge(slack::router())
         .merge(texts::router())
         .merge(calls::router())
+        .merge(meetings::router())
         .merge(deals::router())
         .merge(outreach::router())
         .merge(payments::router())

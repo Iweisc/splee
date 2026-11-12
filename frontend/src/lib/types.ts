@@ -994,6 +994,8 @@ export interface LeadDetail extends Lead {
   texts: TextMessage[];
   /** Calls to them, open and made, oldest first. */
   calls: Call[];
+  /** Sales meetings with them from Fireflies, Fathom, Gong or Zoom, oldest first. */
+  meetings: Meeting[];
   hiring: JobPost[];
   /** Their open deal, or else the one that closed last. */
   deal: Deal | null;
@@ -1162,7 +1164,8 @@ export interface EmailMessage {
   segment_id: UUID | null;
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound";
+  /** meeting_follow_up is the email the agent drafts after a sales meeting. */
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up";
   step: number;
   subject: string;
   body: string;
@@ -1951,6 +1954,62 @@ export interface Deal {
   paid_through: PaymentProvider | null;
   stage_changed_at: Ts;
   closed_at: Ts | null;
+  created_at: Ts;
+  /** The lead's latest sales meeting and the agent's summary of it. */
+  meeting_id: UUID | null;
+  meeting_title: string | null;
+  meeting_at: Ts | null;
+  meeting_summary: string | null;
+}
+
+/** In the order the integrations page offers them. Keep in sync with Provider in backend/src/meetings/mod.rs. */
+export const MEETING_PROVIDERS = ["fireflies", "fathom", "gong", "zoom"] as const;
+export type MeetingProvider = (typeof MEETING_PROVIDERS)[number];
+export const MEETING_NAMES: Record<MeetingProvider, string> = { fireflies: "Fireflies", fathom: "Fathom", gong: "Gong", zoom: "Zoom" };
+
+/** GET /projects/:id/meeting-connections. Keys and secrets never come back. */
+export interface MeetingConnection {
+  provider: MeetingProvider;
+  /** The secret in the webhook URL, /api/meeting-webhooks/{provider}/{webhook_token}. Gong has no webhook. */
+  webhook_token: string;
+  has_secret: boolean;
+  last_event_at: Ts | null;
+  /** Gong's last read, every 15 minutes, and why it failed. */
+  synced_at: Ts | null;
+  error: string;
+  /** Meetings kept from it. */
+  meetings: number;
+  created_at: Ts;
+}
+
+/** A sales meeting with a lead and the agent's notes on it. GET /leads/:id/meetings. */
+export interface Meeting {
+  id: UUID;
+  project_id: UUID;
+  lead_id: UUID;
+  provider: MeetingProvider;
+  external_id: string;
+  /** The Splee booking it was. */
+  booking_id: UUID | null;
+  title: string;
+  started_at: Ts;
+  duration_secs: number | null;
+  /** Their side of the call. */
+  attendees: { name: string; email: string }[];
+  /** The recorder's own summary, or empty. */
+  provider_summary: string;
+  recording_url: string;
+  summary: string;
+  next_steps: string[];
+  follow_up_email_id: UUID | null;
+  /** Draft until someone approves the follow-up. */
+  follow_up_status: EmailMessage["status"] | null;
+  suggested_stage_id: UUID | null;
+  suggested_stage: string | null;
+  stage_reason: string;
+  stage_status: "none" | "pending" | "accepted" | "dismissed";
+  summarized_at: Ts | null;
+  transcript_chars: number;
   created_at: Ts;
 }
 
