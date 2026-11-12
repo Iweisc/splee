@@ -61,6 +61,14 @@ pub struct Config {
     pub payments_api_url: String,
     /// Webflow's Data API v2, empty for Webflow itself. Only tests and sandboxes point it elsewhere, at a fake.
     pub webflow_api_url: String,
+    /// The LinkedIn app projects sign in with to sync ad audiences, from LINKEDIN_ADS_CLIENT_ID and LINKEDIN_ADS_CLIENT_SECRET. It
+    /// needs LinkedIn's Advertising API and Audiences products. None leaves LinkedIn off the Ad audiences card.
+    pub linkedin_ads: Option<OAuthApp>,
+    /// The Google Ads API developer token. Google Ads signs in with the Google app above and shows only when both are set.
+    pub google_ads_developer_token: Option<String>,
+    /// LinkedIn's Marketing API and the Google Ads API. Empty for the real ones. Only tests and sandboxes set it, to one fake that
+    /// answers for each under /linkedin and /google. Meta's audiences use graph_api_url.
+    pub ads_api_url: String,
     /// An IPinfo token. Website visitors' networks are looked up there first, else through reverse DNS and RDAP.
     pub ipinfo_token: Option<String>,
 }
@@ -76,7 +84,8 @@ pub struct SlackApp {
     pub api_url: String,
 }
 
-/// An OAuth app registered with Google, Microsoft, Tumblr, Salesforce, Zoho or Meta. See mail::oauth, tumblr and crm::signin.
+/// An OAuth app registered with Google, Microsoft, Tumblr, Salesforce, Zoho, Meta or LinkedIn. See mail::oauth, tumblr, crm::signin
+/// and ads.
 #[derive(Clone, Debug)]
 pub struct OAuthApp {
     pub client_id: String,
@@ -155,6 +164,9 @@ impl Config {
             crm_api_url: env::var("CRM_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             payments_api_url: env::var("PAYMENTS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             webflow_api_url: env::var("WEBFLOW_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            linkedin_ads: OAuthApp::from_env("LINKEDIN_ADS", crate::ads::linkedin::AUTHORIZE_URL.into(), crate::ads::linkedin::TOKEN_URL.into()),
+            google_ads_developer_token: env::var("GOOGLE_ADS_DEVELOPER_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+            ads_api_url: env::var("ADS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             ipinfo_token: env::var("IPINFO_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         };
         cfg.check_app_secret()?;
@@ -220,6 +232,9 @@ mod tests {
             crm_api_url: String::new(),
             payments_api_url: String::new(),
             webflow_api_url: String::new(),
+            linkedin_ads: None,
+            google_ads_developer_token: None,
+            ads_api_url: String::new(),
             ipinfo_token: None,
         }
     }

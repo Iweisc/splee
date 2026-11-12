@@ -11,6 +11,7 @@ import { CompaniesTable } from "@/components/app/work/companies-table";
 import { EmailsView } from "@/components/app/work/emails-view";
 import { LeadsView } from "@/components/app/work/leads-view";
 import { AbTestCard } from "@/components/app/work/ab-test";
+import { AdAudiencesCard } from "@/components/app/work/ad-audiences";
 import { ImportedSequence } from "@/components/app/work/imported-sequence";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
@@ -112,6 +113,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
         <div hidden={tab !== "details"} className="flex flex-col gap-4">
           <ImportedSequence segmentId={segId} />
           <AbTestCard segmentId={segId} />
+          <AdAudiencesCard projectId={projectId} segmentId={segId} />
           <SegmentEditor key={editorKey(segment)} segment={segment} />
         </div>
         {tab === "companies" && <CompaniesTable projectId={projectId} segmentId={segId} />}

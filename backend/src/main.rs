@@ -1,4 +1,5 @@
 mod ab_test;
+mod ads;
 mod agent;
 mod airtable;
 mod auth;
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
+    ads::spawn_worker(state.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

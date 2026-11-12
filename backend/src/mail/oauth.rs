@@ -129,6 +129,7 @@ pub const TUMBLR: &str = "tumblr-oauth";
 pub const META: &str = "meta-oauth";
 pub const POSTMASTER: &str = "postmaster-oauth";
 pub const CRM: &str = "crm-oauth";
+pub const ADS: &str = "ads-oauth";
 
 pub use crypto::{sign_state, state_nonce, verify_state};
 
@@ -402,6 +403,9 @@ pub(crate) mod tests {
             crm_api_url: String::new(),
             payments_api_url: String::new(),
             webflow_api_url: String::new(),
+            linkedin_ads: None,
+            google_ads_developer_token: None,
+            ads_api_url: String::new(),
             ipinfo_token: None,
         }
     }
