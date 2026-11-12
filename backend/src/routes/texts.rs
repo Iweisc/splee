@@ -470,6 +470,9 @@ mod tests {
             crm_api_url: String::new(),
             payments_api_url: String::new(),
             webflow_api_url: String::new(),
+            linkedin_ads: None,
+            google_ads_developer_token: None,
+            ads_api_url: String::new(),
             ipinfo_token: None,
             slack: None,
         }

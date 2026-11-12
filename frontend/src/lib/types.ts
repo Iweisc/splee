@@ -1975,6 +1975,47 @@ export interface PaymentConnection {
   created_at: Ts;
 }
 
+/** In the order the pages show them. Keep in sync with Platform in backend/src/ads/mod.rs. */
+export const AD_PLATFORMS = ["linkedin", "google", "meta"] as const;
+export type AdPlatform = (typeof AD_PLATFORMS)[number];
+export const AD_PLATFORM_NAMES: Record<AdPlatform, string> = { linkedin: "LinkedIn", google: "Google Ads", meta: "Meta" };
+
+/** A project's sign-in to an ad platform. The tokens never come back. */
+export interface AdConnection {
+  platform: AdPlatform;
+  /** The ad accounts the sign-in can use, to pick from. */
+  ad_accounts: { id: string; name: string }[];
+  /** Empty until one is picked. */
+  ad_account_id: string;
+  ad_account_name: string;
+  needs_reconnect: boolean;
+  error: string | null;
+  failed_at: Ts | null;
+  /** Until when the platform asked Splee to slow down, while that's still ahead. */
+  held_until: Ts | null;
+}
+
+export interface AdAudience {
+  platform: AdPlatform;
+  /** Null for the hot leads' audience. */
+  segment_id: string | null;
+  name: string;
+  /** As the platform last reported it. Null until it does. */
+  size: number | null;
+  /** The leads Splee has sent it. */
+  uploaded: number;
+  synced_at: Ts | null;
+  error: string | null;
+}
+
+/** GET /projects/:id/ads, with the hot leads' audiences, and GET /segments/:id/audiences, with the campaign's. */
+export interface AdsStatus {
+  /** The platforms this Splee can connect. */
+  available: AdPlatform[];
+  connections: AdConnection[];
+  audiences: AdAudience[];
+}
+
 export interface DealAmounts {
   currency: string;
   open: number;
