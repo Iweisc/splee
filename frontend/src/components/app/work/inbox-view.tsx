@@ -9,12 +9,13 @@ import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { Call, EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
+import type { Call, EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Meeting, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
 import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
 import { CallCard } from "./calls";
+import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
 import { LeadNotes } from "./lead-modal";
 import { OwnerFilterSelect, OwnerMenu, useOwnerFilter } from "./owner-menu";
@@ -217,7 +218,14 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const texts = (data?.lead.texts ?? []).filter((t) => !["draft", "cancelled"].includes(t.status));
   // So are the calls someone made. Open ones are on the Calls page.
   const calls = (data?.lead.calls ?? []).filter((c) => c.status === "done");
-  const conversation: (EmailMessage | TextMessage | Call)[] = [...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"), ...texts, ...calls].sort(
+  // And the sales meetings, with the agent's notes on them.
+  const meetings = data?.lead.meetings ?? [];
+  const conversation: (EmailMessage | TextMessage | Call | Meeting)[] = [
+    ...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"),
+    ...texts,
+    ...calls,
+    ...meetings,
+  ].sort(
     (a, b) => new Date(at(a)).getTime() - new Date(at(b)).getTime(),
   );
   // They last wrote by text, so the reply box answers on that channel.
@@ -414,6 +422,10 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             <li key={m.id} className="w-[min(80%,36rem)] self-end">
               <CallCard call={m} />
             </li>
+          ) : "attendees" in m ? (
+            <li key={m.id} className="w-[min(80%,36rem)] self-end">
+              <MeetingCard meeting={m} onChange={refresh} />
+            </li>
           ) : (
             <TextBubble key={m.id} text={m} />
           ),
@@ -571,9 +583,10 @@ function ReminderBadge({ at }: { at: string }) {
   );
 }
 
-/** When a message, text or call happened, for ordering the thread. */
-function at(m: EmailMessage | TextMessage | Call) {
+/** When a message, text, call or meeting happened, for ordering the thread. */
+function at(m: EmailMessage | TextMessage | Call | Meeting) {
   if ("outcome" in m) return m.called_at ?? m.closed_at ?? m.created_at;
+  if ("attendees" in m) return m.started_at;
   return m.sent_at ?? ("scheduled_for" in m ? m.scheduled_for : m.due_at) ?? m.created_at;
 }
 

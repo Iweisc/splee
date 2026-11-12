@@ -12,6 +12,7 @@ mod hiring;
 mod lemmy;
 mod linkedin;
 mod mastodon;
+pub(crate) mod meetings;
 mod meta;
 mod nostr;
 mod prospect;
@@ -57,6 +58,7 @@ pub mod kind {
     pub const SOCIAL: &str = "social";
     pub const WRITE_TEXTS: &str = "write_texts";
     pub const SUMMARIZE_CALL: &str = "summarize_call";
+    pub const MEETING_NOTES: &str = "meeting_notes";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -310,6 +312,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::SOCIAL => social::run(ctx).await,
         kind::WRITE_TEXTS => write::texts_run(ctx).await,
         kind::SUMMARIZE_CALL => calls::summarize_run(ctx).await,
+        kind::MEETING_NOTES => meetings::notes_run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

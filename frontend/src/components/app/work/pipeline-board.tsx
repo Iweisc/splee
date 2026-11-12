@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Clock, CreditCard, GripVertical } from "lucide-react";
+import { Clock, CreditCard, GripVertical, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select } from "@/components/ui/form";
 import { Card, Favicon, Modal } from "@/components/ui/misc";
 import { type Deal, type DealStage, PAYMENT_NAMES } from "@/lib/types";
-import { cn, plural } from "@/lib/utils";
+import { cn, plural, timeAgo } from "@/lib/utils";
 import { dealMoney, moneyList, sumByCurrency } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 
@@ -57,6 +57,15 @@ function DealCardBody({ deal, onOpen, onAssign, action }: { deal: Deal; onOpen: 
         </div>
         {action}
       </div>
+      {deal.meeting_at && (
+        <div className="mt-2 rounded-lg bg-muted/70 px-2 py-1.5 text-xs">
+          <p className="flex min-w-0 items-center gap-1 text-muted-foreground">
+            <Video className="size-3 shrink-0" /> <span className="truncate">{deal.meeting_title || "Meeting"}</span>
+            <span className="ml-auto shrink-0 pl-1">{timeAgo(deal.meeting_at)}</span>
+          </p>
+          {deal.meeting_summary && <p className="mt-0.5 line-clamp-2 text-pretty text-foreground/80">{deal.meeting_summary}</p>}
+        </div>
+      )}
       <div className="mt-2.5 flex h-5 items-center gap-2 text-xs">
         <span className="font-medium tabular-nums">
           {deal.value > 0 ? dealMoney(deal.value, deal.currency) : <span className="text-muted-foreground">No value yet</span>}

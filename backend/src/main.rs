@@ -32,6 +32,7 @@ mod jobs;
 mod lemmy;
 mod mail;
 mod mastodon;
+mod meetings;
 mod meta;
 mod models;
 mod nocodb;
@@ -131,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
+    meetings::spawn_worker(state.clone());
     ads::spawn_worker(state.clone());
 
     let app = Router::new()

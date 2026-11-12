@@ -79,6 +79,11 @@ pub struct Deal {
     pub stage_changed_at: Ts,
     pub closed_at: Option<Ts>,
     pub created_at: Ts,
+    /// The lead's latest sales meeting, from Fireflies, Fathom, Gong or Zoom (meetings/), and the agent's summary of it.
+    pub meeting_id: Option<Uuid>,
+    pub meeting_title: Option<String>,
+    pub meeting_at: Option<Ts>,
+    pub meeting_summary: Option<String>,
 }
 
 const DEAL_SELECT: &str = "select d.id, d.project_id, p.name as project_name, d.lead_id, l.full_name as lead_name, l.email::text as lead_email,
@@ -86,9 +91,12 @@ const DEAL_SELECT: &str = "select d.id, d.project_id, p.name as project_name, d.
        d.currency, d.close_date, l.owner_id, coalesce(nullif(u.name, ''), u.email::text) as owner_name, d.notes, d.lost_reason, d.source,
        case when d.status = 'won' then (select p.provider from payments p where p.lead_id = d.lead_id and p.kind = 'payment' order by p.paid_at limit 1)
        end as paid_through,
-       d.stage_changed_at, d.closed_at, d.created_at
+       d.stage_changed_at, d.closed_at, d.created_at, mt.id as meeting_id, mt.title as meeting_title, mt.started_at as meeting_at,
+       mt.summary as meeting_summary
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
-     left join users u on u.id = l.owner_id";
+     left join users u on u.id = l.owner_id
+     left join lateral (select m.id, m.title, m.started_at, m.summary from meetings m where m.lead_id = d.lead_id
+                        order by m.started_at desc limit 1) mt on true";
 
 fn major_units<S: Serializer>(cents: &i64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64(*cents as f64 / 100.0)
@@ -913,6 +921,7 @@ mod tests {
             graph_api_url: String::new(),
             crm_api_url: String::new(),
             payments_api_url: String::new(),
+            meetings_api_url: String::new(),
             webflow_api_url: String::new(),
             linkedin_ads: None,
             google_ads_developer_token: None,

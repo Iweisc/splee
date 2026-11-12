@@ -12,6 +12,7 @@ use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
+use super::meetings::{self, MeetingRow};
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::stats::{self, Totals};
@@ -58,6 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/deal-stages", get(list_stages))
         .route("/v1/projects/{id}/calls", get(list_calls))
         .route("/v1/leads/{id}/calls", post(log_call))
+        .route("/v1/leads/{id}/meetings", get(list_meetings))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -742,4 +744,10 @@ pub(super) async fn list_calls(
 /// their sequence on, and the outcome updates the lead like it does in the app.
 pub(super) async fn log_call(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<LogBody>) -> AppResult<Json<Value>> {
     Ok(Json(calls::log_for_lead(&state, auth.org_id, id, &body).await?))
+}
+
+/// The lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first, with the agent's summary, next steps and
+/// suggested stage. Transcripts stay in Splee.
+pub(super) async fn list_meetings(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<MeetingRow>>> {
+    Ok(Json(meetings::of_lead(&state.db, auth.org_id, id).await?))
 }
