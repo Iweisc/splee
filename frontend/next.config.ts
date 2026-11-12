@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${API_URL}/api/:path*` },
+      // Email tracking's short links and pixel, on PUBLIC_URL and every tracking host CNAMEd to it. See backend/src/tracking.rs.
+      { source: "/c/:token", destination: `${API_URL}/api/t/c/:token` },
+      { source: "/o/:file", destination: `${API_URL}/api/t/o/:file` },
       { source: "/.well-known/oauth-authorization-server", destination: `${API_URL}/api/.well-known/oauth-authorization-server` },
       { source: "/.well-known/oauth-protected-resource/:path*", destination: `${API_URL}/api/.well-known/oauth-protected-resource/:path*` },
     ];

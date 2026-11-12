@@ -51,7 +51,8 @@ pub struct Outgoing<'a> {
     pub unsubscribe_url: Option<&'a str>,
     /// The token of a warmup email, sent as X-Splee-Warmup. See warmup::find_token.
     pub warmup: Option<&'a str>,
-    /// An HTML version of `body`, for Splee's own emails like the client reports. Outreach stays plain text.
+    /// An HTML version of `body`, for Splee's own emails like the client reports, and outreach whose campaign tracks opens,
+    /// since the pixel needs one. Other outreach stays plain text.
     pub html: Option<&'a str>,
 }
 

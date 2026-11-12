@@ -3,7 +3,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use super::analytics::{self, Analytics, AnalyticsQuery};
@@ -45,6 +45,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/leads/{id}/assign", post(assign_lead))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
+        .route("/v1/projects/{id}/email-events", get(email_events))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/projects/{id}/analytics", get(project_analytics))
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
@@ -391,7 +392,7 @@ pub(super) async fn assign_lead(
 }
 
 #[derive(Deserialize)]
-struct SinceQuery {
+pub(super) struct SinceQuery {
     since: Option<Ts>,
 }
 
@@ -434,6 +435,42 @@ async fn sent_emails(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(messages))
+}
+
+/// An open or a click that counted, without the scanners and link checks tracking.rs filters out.
+#[derive(Serialize, FromRow, Debug)]
+pub(super) struct EmailEvent {
+    id: Uuid,
+    /// "email.opened" or "email.clicked", like the webhooks.
+    event: String,
+    email_id: Uuid,
+    lead_id: Uuid,
+    /// The clicked link, null for an open.
+    url: Option<String>,
+    at: Ts,
+}
+
+/// The polling twin of the email.opened and email.clicked webhooks: every counted open and click, oldest first.
+pub(super) async fn email_events(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SinceQuery>,
+) -> AppResult<Json<Vec<EmailEvent>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let events = sqlx::query_as::<_, EmailEvent>(
+        "select h.id, case h.kind when 'open' then 'email.opened' else 'email.clicked' end as event, h.email_id, h.lead_id, k.url,
+                h.created_at as at
+         from tracking_hits h left join tracked_links k on k.token = h.link_token
+         where h.project_id = $1 and h.filter_reason is null and ($2::timestamptz is null or h.created_at > $2)
+         order by h.created_at limit $3",
+    )
+    .bind(id)
+    .bind(q.since)
+    .bind(MAX_MESSAGES)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(events))
 }
 
 #[derive(Serialize)]

@@ -663,6 +663,29 @@ pub async fn record(state: &AppState, site: &Site, ip: IpAddr, hash: &str, hit: 
     Ok(())
 }
 
+/// What kind of network `ip` is on: the cached answer, else a lookup now, which is cached for page views too. Unknown for
+/// private addresses. Used by email tracking (tracking.rs) to tell scanners in clouds from people.
+pub async fn network_kind(state: &AppState, ip: IpAddr) -> anyhow::Result<Kind> {
+    if !hooks::is_public(ip) {
+        return Ok(Kind::Unknown);
+    }
+    let hash = ip_hash(&state.cfg.app_secret, ip);
+    let cached: Option<String> = sqlx::query_scalar("select kind from visitor_networks where ip_hash = $1 and resolved_at > now() - make_interval(days => $2)")
+        .bind(&hash)
+        .bind(RECHECK_DAYS)
+        .fetch_optional(&state.db)
+        .await?;
+    if let Some(kind) = cached {
+        return Ok(Kind::parse(&kind));
+    }
+    let network = {
+        let _permit = RESOLVING.acquire().await;
+        LOOKUP.get_or_init(|| Lookup::new(state.cfg.ipinfo_token.clone())).resolve(&state.db, ip).await
+    };
+    settle(state, &hash, &network).await?;
+    Ok(network.kind)
+}
+
 fn warn_on_error<T>(result: anyhow::Result<T>) {
     if let Err(e) = result {
         tracing::warn!(error = ?e, "website visitor follow-up failed");

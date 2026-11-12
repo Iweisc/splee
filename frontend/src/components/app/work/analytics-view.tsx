@@ -6,7 +6,7 @@ import { type Change, type Kpi, KpiCard } from "@/components/app/work/kpi-card";
 import { ListSkeleton, MicroLabel } from "@/components/app/work/states";
 import { Badge, Card, Skeleton } from "@/components/ui/misc";
 import { bouncing } from "@/lib/mailbox";
-import type { Analytics, AnalyticsTotals } from "@/lib/types";
+import type { Analytics, AnalyticsTotals, Engagement } from "@/lib/types";
 import { cn, money, num, percent, plural } from "@/lib/utils";
 
 /** "Oct 14 – Nov 12, 2026", with both years when the range crosses one. */
@@ -153,18 +153,39 @@ type CampaignRow = Analytics["campaigns"][number];
 type MailboxRow = Analytics["mailboxes"][number];
 type StepRow = Analytics["steps"][number];
 type ChannelRow = Analytics["channels"][number];
+type AngleRow = NonNullable<Analytics["angles"]>[number];
 
 const WIDE = "hidden sm:table-cell";
 const WIDER = "hidden lg:table-cell";
+const WIDEST = "hidden 2xl:table-cell";
+
+/** Click and open rates, which a campaign that doesn't track them leaves as a dash. Opens get a ~, since they're estimates. */
+function engagementColumns<T extends Engagement>(clickClass?: string, openClass?: string): Column<T>[] {
+  return [
+    { label: "Click rate", value: (r) => rateCell(r.click_rate), render: (r) => rateText(r.click_rate), numeric: true, className: clickClass },
+    {
+      label: "Open rate",
+      value: (r) => rateCell(r.open_rate),
+      render: (r) => (r.open_rate === null ? "—" : <span title="An estimate">~{percent(r.open_rate)}</span>),
+      numeric: true,
+      className: openClass,
+    },
+  ];
+}
+
+const OPENS_HINT = "Open rates are estimates, since Apple Mail opens every email itself and some people block images. A dash means opens or clicks aren't tracked.";
+const tracksOpens = (rows: Engagement[]) => rows.some((r) => r.open_rate !== null);
 
 const CAMPAIGN_COLUMNS: Column<CampaignRow>[] = [
   { label: "Campaign", value: (r) => r.name },
   { label: "Sent", value: (r) => r.sent, numeric: true },
-  { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDE },
+  // Replies and Won wait for the widest screens so the click and open rates fit at 1280. The tiles above have both totals.
+  { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDEST },
   { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => rateText(r.reply_rate), numeric: true },
+  ...engagementColumns<CampaignRow>(WIDE, WIDER),
   { label: "Hot", value: (r) => r.hot, numeric: true, className: WIDE },
   { label: "Meetings", value: (r) => r.meetings, numeric: true, className: WIDER },
-  { label: "Won", value: (r) => r.deals_won, numeric: true, className: WIDER },
+  { label: "Won", value: (r) => r.deals_won, numeric: true, className: WIDEST },
   { label: "Bounce rate", value: (r) => rateCell(r.bounce_rate), render: (r) => rateText(r.bounce_rate), numeric: true, className: WIDER },
   { label: "Spend", value: (r) => r.spend_micros / 1e6, render: (r) => money(r.spend_micros), numeric: true, className: WIDE },
   {
@@ -181,6 +202,7 @@ const MAILBOX_COLUMNS: Column<MailboxRow>[] = [
   { label: "Sent", value: (r) => r.sent, numeric: true },
   { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDE },
   { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => rateText(r.reply_rate), numeric: true, className: WIDE },
+  ...engagementColumns<MailboxRow>(WIDER, WIDER),
   { label: "Hot", value: (r) => r.hot, numeric: true, className: WIDER },
   { label: "Bounced", value: (r) => r.bounced, numeric: true, className: WIDER },
   {
@@ -210,8 +232,25 @@ function stepColumns(steps: StepRow[]): Column<StepRow>[] {
     { label: "Sent", value: (r) => r.sent, numeric: true },
     { label: "Replies", value: (r) => r.replies, numeric: true },
     { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => <RateBar rate={r.reply_rate} best={best} />, numeric: true },
+    ...engagementColumns<StepRow>(WIDE, WIDE),
   ];
 }
+
+const ANGLE_COLUMNS: Column<AngleRow>[] = [
+  {
+    label: "Angle",
+    value: (r) => `${r.campaign}: ${r.name}`,
+    render: (r) => (
+      <span className="block max-w-40 truncate sm:max-w-none">
+        {r.name} <span className="font-normal text-muted-foreground">· {r.campaign}</span>
+      </span>
+    ),
+  },
+  { label: "Sent", value: (r) => r.sent, numeric: true },
+  { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDE },
+  { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => rateText(r.reply_rate), numeric: true },
+  ...engagementColumns<AngleRow>(WIDE, WIDE),
+];
 
 /** The campaign's revenue, in the organization's currency, and its return on spend. */
 function revenueColumns(currency: string): Column<CampaignRow>[] {
@@ -224,7 +263,7 @@ function revenueColumns(currency: string): Column<CampaignRow>[] {
       className: WIDE,
     },
     // The table only has room for a twelfth column on the widest screens. The Return on spend tile has the total.
-    { label: "Return", value: (r) => r.return_on_spend, render: (r) => times(r.return_on_spend), numeric: true, className: "hidden 2xl:table-cell" },
+    { label: "Return", value: (r) => r.return_on_spend, render: (r) => times(r.return_on_spend), numeric: true, className: WIDEST },
   ];
 }
 
@@ -283,7 +322,30 @@ export function AnalyticsView({ data, validating, shared }: { data?: Analytics; 
       </Card>
       {data ? (
         <>
-          <Breakdown title="Campaigns" rows={data.campaigns} columns={campaignColumns} file={`splee-campaigns-${slug}.csv`} rowKey={(r) => r.segment_id ?? "none"} />
+          <Breakdown
+            title="Campaigns"
+            hint={tracksOpens(data.campaigns) ? OPENS_HINT : undefined}
+            hintClass="hidden lg:block"
+            rows={data.campaigns}
+            columns={campaignColumns}
+            file={`splee-campaigns-${slug}.csv`}
+            rowKey={(r) => r.segment_id ?? "none"}
+          />
+          {!shared && !!data.angles?.length && (
+            <Breakdown
+              title="A/B test angles"
+              hint={
+                <>
+                  Each angle&apos;s leads and emails, follow-ups included. Reply rate is by lead
+                  <span className="hidden sm:inline">, click and open rates by email</span>.
+                </>
+              }
+              rows={data.angles}
+              columns={ANGLE_COLUMNS}
+              file={`splee-angles-${slug}.csv`}
+              rowKey={(r) => r.variant_id}
+            />
+          )}
           <div className="grid gap-4 lg:grid-cols-2">
             <Breakdown
               title="Follow-ups"

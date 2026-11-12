@@ -307,6 +307,8 @@ pub struct LeadDetail {
     pub segment_name: Option<String>,
     pub company: Option<Company>,
     pub emails: Vec<EmailMessage>,
+    /// Opens and clicks of their emails that counted, oldest first.
+    pub email_events: Vec<EmailEvent>,
     /// Texts Splee wrote or sent them, oldest first. Their answers are in `emails`, with a channel.
     pub texts: Vec<TextMessage>,
     /// Calls to them, open and made, oldest first.
@@ -368,7 +370,38 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
     .fetch_optional(db)
     .await?;
     let (owner_name, owner_email) = owner_of(db, &lead).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, meetings, hiring, deal, job_change, owner_name, owner_email })
+    let email_events = email_events(db, lead.id).await?;
+    Ok(LeadDetail { lead, segment_name, company, emails, email_events, texts, calls, meetings, hiring, deal, job_change, owner_name, owner_email })
+}
+
+/// An email's opens, or its clicks on one link, that counted. See tracking.rs.
+#[derive(Serialize, FromRow, Debug)]
+pub struct EmailEvent {
+    email_id: Uuid,
+    /// "open" or "click".
+    kind: String,
+    /// The clicked link's host and path, like acme.com/pricing.
+    link: Option<String>,
+    url: Option<String>,
+    count: i64,
+    first_at: Ts,
+    last_at: Ts,
+}
+
+async fn email_events(db: &PgPool, lead_id: Uuid) -> sqlx::Result<Vec<EmailEvent>> {
+    let mut events: Vec<EmailEvent> = sqlx::query_as(
+        "select h.email_id, h.kind, null::text as link, k.url, count(*) as count, min(h.created_at) as first_at, max(h.created_at) as last_at
+         from tracking_hits h left join tracked_links k on k.token = h.link_token
+         where h.lead_id = $1 and h.filter_reason is null
+         group by h.email_id, h.kind, k.url order by first_at",
+    )
+    .bind(lead_id)
+    .fetch_all(db)
+    .await?;
+    for e in &mut events {
+        e.link = e.url.as_deref().map(crate::tracking::link_label);
+    }
+    Ok(events)
 }
 
 /// Where a lead from a job change was before, and what they did with the project there: won, booked or hot.

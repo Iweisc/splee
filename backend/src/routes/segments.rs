@@ -103,6 +103,8 @@ pub(super) struct SegmentBody {
     pain_points: Option<String>,
     angle: Option<String>,
     position: Option<i32>,
+    track_clicks: Option<bool>,
+    track_opens: Option<bool>,
 }
 
 impl SegmentBody {
@@ -200,7 +202,9 @@ async fn update(
            targeting = coalesce($8, targeting),
            pain_points = coalesce($9, pain_points),
            angle = coalesce($10, angle),
-           position = coalesce($11, position)
+           position = coalesce($11, position),
+           track_clicks = coalesce($12, track_clicks),
+           track_opens = coalesce($13, track_opens)
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -214,6 +218,8 @@ async fn update(
     .bind(body.pain_points)
     .bind(body.angle)
     .bind(body.position)
+    .bind(body.track_clicks)
+    .bind(body.track_opens)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))

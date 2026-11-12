@@ -166,10 +166,12 @@ pub fn redact(mut analytics: Value, link: &ReportLink) -> Value {
             SPEND.iter().for_each(|k| drop(campaign.remove(*k)));
         }
     }
-    if !link.show_mailboxes
-        && let Some(a) = analytics.as_object_mut()
-    {
-        a.remove("mailboxes");
+    if let Some(a) = analytics.as_object_mut() {
+        // Angles are the team's own briefs for the writer, so a client never sees them.
+        a.remove("angles");
+        if !link.show_mailboxes {
+            a.remove("mailboxes");
+        }
     }
     for campaign in analytics["campaigns"].as_array_mut().into_iter().flatten() {
         if let Some(name) = campaign["name"].as_str() {

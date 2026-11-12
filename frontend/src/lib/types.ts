@@ -378,6 +378,8 @@ export type WebhookEvent =
   | "lead_unsubscribed"
   | "lead_bounced"
   | "email_sent"
+  | "email.opened"
+  | "email.clicked"
   | "follow_up_due"
   | "form_submitted"
   | "status_changed"
@@ -420,7 +422,7 @@ export interface ProjectStats {
 }
 
 /** GET /projects/:id/analytics. Rates are null when nobody was emailed. Money is in micro-dollars, deal values in cents. */
-export interface AnalyticsTotals {
+export interface AnalyticsTotals extends Engagement {
   sent: number; // first emails and follow-ups
   contacted: number; // leads emailed
   delivered: number;
@@ -458,6 +460,17 @@ export interface AnalyticsPoint {
   meetings: number;
 }
 
+/**
+ * Emails opened and clicked, out of the emails sent in the range that tracked it, scanners left out. A rate is null when
+ * none did. Opens are an estimate: Apple Mail opens every email itself and some people block the pixel.
+ */
+export interface Engagement {
+  opened: number;
+  open_rate: number | null;
+  clicked: number;
+  click_rate: number | null;
+}
+
 export interface Analytics {
   from: string;
   to: string;
@@ -475,7 +488,7 @@ export interface Analytics {
   totals: AnalyticsTotals;
   previous: AnalyticsTotals;
   series: AnalyticsPoint[];
-  campaigns: {
+  campaigns: ({
     segment_id: UUID | null;
     name: string;
     sent: number;
@@ -491,8 +504,19 @@ export interface Analytics {
     cost_per_hot_micros: number | null;
     revenue_cents: number;
     return_on_spend: number | null;
-  }[];
-  mailboxes: {
+  } & Engagement)[];
+  /** The A/B test angles of the campaigns. Left out of shared reports. */
+  angles?: ({
+    variant_id: UUID;
+    segment_id: UUID;
+    name: string;
+    campaign: string;
+    sent: number;
+    contacted: number;
+    replies: number;
+    reply_rate: number | null;
+  } & Engagement)[];
+  mailboxes: ({
     mailbox_id: UUID | null;
     email: string;
     sent: number;
@@ -503,9 +527,9 @@ export interface Analytics {
     bounced: number;
     bounce_rate: number | null;
     bouncing: boolean;
-  }[];
+  } & Engagement)[];
   /** Step 0 is the first email. The rate is out of the step's emails. */
-  steps: { step: number; sent: number; replies: number; reply_rate: number | null }[];
+  steps: ({ step: number; sent: number; replies: number; reply_rate: number | null } & Engagement)[];
   /** weekday 1 (Monday) to 7, hour 0 to 23, in the project's time zone. Empty cells are left out. */
   heatmap: { weekday: number; hour: number; sent: number; replies: number }[];
   /** null leads or replies are ones Splee doesn't record for the channel. */
@@ -714,6 +738,10 @@ export interface Segment {
   variant_winner_id: UUID | null;
   variant_picked_at: Ts | null;
   variant_pick_note: string;
+  /** Whether its emails' links go through Splee to count clicks. On for new campaigns. */
+  track_clicks: boolean;
+  /** Whether its emails carry a pixel to count opens. Off for new campaigns, since it can hurt inbox placement. */
+  track_opens: boolean;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */
@@ -1042,10 +1070,24 @@ export interface LeadRow extends Lead {
   owner_email: string | null;
 }
 
+/** An email's opens, or its clicks on one link, scanners left out. */
+export interface EmailEvent {
+  email_id: UUID;
+  kind: "open" | "click";
+  /** The clicked link's host and path, like acme.com/pricing. */
+  link: string | null;
+  url: string | null;
+  count: number;
+  first_at: Ts;
+  last_at: Ts;
+}
+
 export interface LeadDetail extends Lead {
   segment_name: string | null;
   company: Company | null;
   emails: EmailMessage[];
+  /** Opens and clicks of their emails, oldest first. */
+  email_events: EmailEvent[];
   /** Texts Splee wrote or sent them. Their answers are in emails, with a text channel. */
   texts: TextMessage[];
   /** Calls to them, open and made, oldest first. */
@@ -1480,6 +1522,23 @@ export interface DnsCheck {
 }
 
 /** The org's registrar account. Porkbun is the only one. */
+/** A mailbox or bought domain's tracking host, like track.acme.com (GET /tracking-domains). */
+export interface TrackingDomain {
+  domain: string;
+  host: string;
+  verified_at: Ts | null;
+  checked_at: Ts | null;
+  error: string;
+  /** Bought through Porkbun, so Splee set the CNAME itself. */
+  porkbun: boolean;
+}
+
+export interface TrackingDomains {
+  /** What each tracking host's CNAME points to. null while PUBLIC_URL is a local address. */
+  target: string | null;
+  domains: TrackingDomain[];
+}
+
 export interface RegistrarAccount {
   provider: "porkbun";
   /** The Porkbun username the API key belongs to. */

@@ -313,7 +313,7 @@ async fn record_row(db: &sqlx::PgPool, table: &str, column: &str, project_id: Uu
 }
 
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 15] = [
+pub const EVENTS: [&str; 17] = [
     "hot_lead",
     "lead_replied",
     "meeting_booked",
@@ -322,6 +322,8 @@ pub const EVENTS: [&str; 15] = [
     "lead_unsubscribed",
     "lead_bounced",
     "email_sent",
+    "email.opened",
+    "email.clicked",
     "follow_up_due",
     "form_submitted",
     "status_changed",
@@ -331,7 +333,7 @@ pub const EVENTS: [&str; 15] = [
     "deal.lost",
 ];
 
-/// What an event carries besides the lead: the reply that set it off, the email Splee sent, a reminder, a form's answers,
+/// What an event carries besides the lead: the reply that set it off, the email Splee sent or that was opened or clicked, a reminder, a form's answers,
 /// a moved call's old time or status, or a deal. Its key is "reply", "email", "reminder", "form", "previous_meeting_at",
 /// "previous_status" or "deal", and "reply" stays in every payload, null when there's none.
 pub type Detail = Option<(&'static str, Value)>;

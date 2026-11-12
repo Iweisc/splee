@@ -134,20 +134,21 @@ pub async fn queue(db: &PgPool, org_id: Uuid, orders: &[Order], setup: &Setup) -
 }
 
 /// Buys the queued domains one at a time and sets up each one bought. Each row moves to registering before its create
-/// call, so a restart mid-call leaves it there for `recover` to mark unclear instead of trying again.
-pub async fn buy(db: &PgPool, pb: &Porkbun, ids: &[Uuid]) {
+/// call, so a restart mid-call leaves it there for `recover` to mark unclear instead of trying again. `tracking` is where
+/// the domain's tracking host points, from tracking::cname_target, when there's one.
+pub async fn buy(db: &PgPool, pb: &Porkbun, ids: &[Uuid], tracking: Option<&str>) {
     for (i, id) in ids.iter().enumerate() {
         if i > 0 {
             // Porkbun allows one create a second.
             tokio::time::sleep(Duration::from_millis(1100)).await;
         }
-        if let Err(e) = buy_one(db, pb, *id).await {
+        if let Err(e) = buy_one(db, pb, *id, tracking).await {
             tracing::error!(error = ?e, domain_id = %id, "buying a sending domain");
         }
     }
 }
 
-async fn buy_one(db: &PgPool, pb: &Porkbun, id: Uuid) -> sqlx::Result<()> {
+async fn buy_one(db: &PgPool, pb: &Porkbun, id: Uuid, tracking: Option<&str>) -> sqlx::Result<()> {
     let claimed: Option<(String, i64, Uuid)> =
         sqlx::query_as("update sending_domains set status = 'registering' where id = $1 and status = 'queued' returning domain, price_micros, attempt_key")
             .bind(id)
@@ -161,7 +162,7 @@ async fn buy_one(db: &PgPool, pb: &Porkbun, id: Uuid) -> sqlx::Result<()> {
                 .bind(order)
                 .execute(db)
                 .await?;
-            registered(db, pb, id, &domain).await
+            registered(db, pb, id, &domain, tracking).await
         }
         Err(Failure::Refused { message, .. }) => {
             sqlx::query("update sending_domains set status = 'failed', error = $2 where id = $1").bind(id).bind(message).execute(db).await?;
@@ -175,15 +176,15 @@ async fn buy_one(db: &PgPool, pb: &Porkbun, id: Uuid) -> sqlx::Result<()> {
     }
 }
 
-async fn registered(db: &PgPool, pb: &Porkbun, id: Uuid, domain: &str) -> sqlx::Result<()> {
+async fn registered(db: &PgPool, pb: &Porkbun, id: Uuid, domain: &str, tracking: Option<&str>) -> sqlx::Result<()> {
     if let Ok(Some(Some(expires))) = pb.find(domain).await {
         sqlx::query("update sending_domains set expires_on = $2 where id = $1").bind(id).bind(expires).execute(db).await?;
     }
-    set_dns(db, pb, id).await
+    set_dns(db, pb, id, tracking).await
 }
 
 /// For a purchase that ended unclear: asks Porkbun whether the domain is in the account. Never buys.
-pub async fn confirm(db: &PgPool, pb: &Porkbun, d: &SendingDomain) -> Result<bool, Failure> {
+pub async fn confirm(db: &PgPool, pb: &Porkbun, d: &SendingDomain, tracking: Option<&str>) -> Result<bool, Failure> {
     let Some(expires) = pb.find(&d.domain).await? else {
         // A bought domain shows up in the account within minutes, so after a day it's safe to call it never bought.
         sqlx::query(
@@ -205,20 +206,23 @@ pub async fn confirm(db: &PgPool, pb: &Porkbun, d: &SendingDomain) -> Result<boo
         .execute(db)
         .await
         .map_err(|e| Failure::Unknown(e.to_string()))?;
-    set_dns(db, pb, d.id).await.map_err(|e| Failure::Unknown(e.to_string()))?;
+    set_dns(db, pb, d.id, tracking).await.map_err(|e| Failure::Unknown(e.to_string()))?;
     Ok(true)
 }
 
-/// Sets the planned records plus any the user added, and keeps how each went.
-pub async fn set_dns(db: &PgPool, pb: &Porkbun, id: Uuid) -> sqlx::Result<()> {
-    let row: Option<(String, String, String, String, serde_json::Value)> = sqlx::query_as(
-        "update sending_domains set dns_status = 'setting' where id = $1 and status = 'registered' returning domain, provider, forward_to, dmarc_email, records",
+/// Sets the planned records plus any the user added, and keeps how each went. With `tracking`, the domain's tracking host
+/// gets its CNAME too, and the tracking host check takes it from there.
+pub async fn set_dns(db: &PgPool, pb: &Porkbun, id: Uuid, tracking: Option<&str>) -> sqlx::Result<()> {
+    let row: Option<(Uuid, String, String, String, String, serde_json::Value)> = sqlx::query_as(
+        "update sending_domains set dns_status = 'setting' where id = $1 and status = 'registered'
+         returning org_id, domain, provider, forward_to, dmarc_email, records",
     )
     .bind(id)
     .fetch_optional(db)
     .await?;
-    let Some((domain, provider, forward_to, dmarc_email, old)) = row else { return Ok(()) };
+    let Some((org_id, domain, provider, forward_to, dmarc_email, old)) = row else { return Ok(()) };
     let mut records = plan(&domain, &provider, &forward_to, &dmarc_email);
+    records.extend(tracking.map(|target| Record::new("CNAME", "track", target, None)));
     let old: Vec<Record> = serde_json::from_value(old).unwrap_or_default();
     records.extend(old.into_iter().filter(|r| r.added));
     for r in &mut records {
@@ -228,6 +232,13 @@ pub async fn set_dns(db: &PgPool, pb: &Porkbun, id: Uuid) -> sqlx::Result<()> {
     }
     let status = if records.iter().all(|r| r.ok) { "set" } else { "error" };
     sqlx::query("update sending_domains set dns_status = $2, records = $3 where id = $1").bind(id).bind(status).bind(json!(records)).execute(db).await?;
+    if records.iter().any(|r| r.kind == "CNAME" && r.name == "track" && r.ok) {
+        sqlx::query("insert into tracking_domains (org_id, domain, host) values ($1, lower($2), lower('track.' || $2)) on conflict do nothing")
+            .bind(org_id)
+            .bind(&domain)
+            .execute(db)
+            .await?;
+    }
     Ok(())
 }
 
@@ -341,7 +352,7 @@ mod tests {
         let pb = Porkbun::new(&base, "pk1_good", "sk1_good");
         let org = org(&db).await;
         let ids = queue(&db, org, &orders(&["getacme.com", "acmetaken.com"]), &google()).await.unwrap();
-        buy(&db, &pb, &ids).await;
+        buy(&db, &pb, &ids, Some("app.splee.example")).await;
 
         assert_eq!(status(&db, org, "getacme.com").await, ("registered".into(), "set".into(), String::new()));
         let (taken, _, why) = status(&db, org, "acmetaken.com").await;
@@ -354,26 +365,31 @@ mod tests {
                 "getacme.com MX  1 smtp.google.com",
                 "getacme.com TXT  v=spf1 include:_spf.google.com ~all",
                 "getacme.com TXT _dmarc v=DMARC1; p=none",
-                "getacme.com URL  https://acme.com"
+                "getacme.com URL  https://acme.com",
+                "getacme.com CNAME track app.splee.example"
             ]
         );
+        // Its tracking host waits for the DNS check, which tracking::recheck_hosts runs.
+        let host: (String, Option<chrono::DateTime<chrono::Utc>>) =
+            sqlx::query_as("select host, verified_at from tracking_domains where org_id = $1").bind(org).fetch_one(&db).await.unwrap();
+        assert_eq!(host, ("track.getacme.com".to_string(), None));
 
         // The same order again: the bought domain is skipped, the failed one is tried again.
         let again = queue(&db, org, &orders(&["getacme.com", "acmetaken.com"]), &google()).await.unwrap();
         assert_eq!(again.len(), 1);
-        buy(&db, &pb, &again).await;
+        buy(&db, &pb, &again, None).await;
         assert_eq!(porkbun.lock().unwrap().bought, ["getacme.com"]);
 
         // The DKIM key pasted from Google goes in, and setting DNS again keeps it without adding anything twice.
         let d = load(&db, d.id, org).await.unwrap().unwrap();
         add_record(&db, &pb, &d, "TXT", "google._domainkey.getacme.com.", "\"v=DKIM1; k=rsa; \" \"p=MIIBIj\"").await.unwrap();
-        set_dns(&db, &pb, d.id).await.unwrap();
+        set_dns(&db, &pb, d.id, None).await.unwrap();
         let d = load(&db, d.id, org).await.unwrap().unwrap();
         assert_eq!(dkim_selector(&d).as_deref(), Some("google"));
         assert_eq!(d.dns_status, "set");
         let records = porkbun.lock().unwrap().records.clone();
-        assert_eq!(records.len(), 5);
-        assert_eq!(records[4], "getacme.com TXT google._domainkey v=DKIM1; k=rsa; p=MIIBIj");
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[5], "getacme.com TXT google._domainkey v=DKIM1; k=rsa; p=MIIBIj");
     }
 
     #[sqlx::test]
@@ -383,7 +399,7 @@ mod tests {
         let impatient = crate::porkbun::with_timeout(&base, "pk1_good", "sk1_good", Duration::from_millis(500));
         let org = org(&db).await;
         let ids = queue(&db, org, &orders(&["timeoutacme.com"]), &google()).await.unwrap();
-        buy(&db, &impatient, &ids).await;
+        buy(&db, &impatient, &ids, None).await;
         let (unclear, _, why) = status(&db, org, "timeoutacme.com").await;
         assert_eq!(unclear, "uncertain");
         assert!(why.contains("Check Porkbun"), "{why}");
@@ -395,16 +411,16 @@ mod tests {
         sqlx::query("update sending_domains set status = 'uncertain' where id = $1").bind(never[0]).execute(&db).await.unwrap();
         let pb = Porkbun::new(&base, "pk1_good", "sk1_good");
         let n = load(&db, never[0], org).await.unwrap().unwrap();
-        assert!(!confirm(&db, &pb, &n).await.unwrap());
+        assert!(!confirm(&db, &pb, &n, None).await.unwrap());
         assert_eq!(status(&db, org, "nevergot.com").await.0, "uncertain");
         sqlx::query("update sending_domains set created_at = now() - interval '2 days' where id = $1").bind(never[0]).execute(&db).await.unwrap();
-        assert!(!confirm(&db, &pb, &n).await.unwrap());
+        assert!(!confirm(&db, &pb, &n, None).await.unwrap());
         assert_eq!(status(&db, org, "nevergot.com").await.0, "failed");
         assert_eq!(queue(&db, org, &orders(&["nevergot.com"]), &google()).await.unwrap(), never);
 
         // Porkbun did buy it, which the check finds, and then the DNS goes on.
         let d = load(&db, ids[0], org).await.unwrap().unwrap();
-        assert!(confirm(&db, &pb, &d).await.unwrap());
+        assert!(confirm(&db, &pb, &d, None).await.unwrap());
         assert_eq!(status(&db, org, "timeoutacme.com").await, ("registered".into(), "set".into(), String::new()));
         assert_eq!(porkbun.lock().unwrap().bought, ["timeoutacme.com"]);
     }
@@ -417,19 +433,19 @@ mod tests {
         porkbun.lock().unwrap().balance = 0;
         let pb = Porkbun::new(&base, "pk1_good", "sk1_good");
         let ids = queue(&db, org, &orders(&["getacme.com"]), &google()).await.unwrap();
-        buy(&db, &pb, &ids).await;
+        buy(&db, &pb, &ids, None).await;
         let (failed, _, why) = status(&db, org, "getacme.com").await;
         assert_eq!((failed.as_str(), why.as_str()), ("failed", "Your Porkbun credit is too low by $11.08. Add credit at porkbun.com/account/credit, then buy it again."));
 
         let wrong = Porkbun::new(&base, "pk1_good", "sk1_old");
         let ids = queue(&db, org, &orders(&["getacme.com"]), &google()).await.unwrap();
-        buy(&db, &wrong, &ids).await;
+        buy(&db, &wrong, &ids, None).await;
         assert_eq!(status(&db, org, "getacme.com").await.2, "Invalid API key. (002)");
 
         // A domain bought with API access off is kept, with the fix next to its DNS.
         porkbun.lock().unwrap().balance = 5000;
         let ids = queue(&db, org, &orders(&["noapiacme.com"]), &google()).await.unwrap();
-        buy(&db, &pb, &ids).await;
+        buy(&db, &pb, &ids, None).await;
         let d = load(&db, ids[0], org).await.unwrap().unwrap();
         assert_eq!((d.status.as_str(), d.dns_status.as_str()), ("registered", "error"));
         assert!(d.records[0]["error"].as_str().unwrap().contains("Turn on API access"));

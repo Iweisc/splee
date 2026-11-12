@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Smartphone, Trash2, UserRoundCheck } from "lucide-react";
+import { Briefcase, CalendarCheck, Eye, ExternalLink, Link2, Mail, MapPin, MousePointerClick, Pencil, Smartphone, Trash2, UserRoundCheck } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
 import { Address, Avatar, Badge, Favicon, Message, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { EmailMessage, JobChangeFrom, Lead, LeadDetail, LeadStatus } from "@/lib/types";
+import type { EmailEvent, EmailMessage, JobChangeFrom, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime, dayTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
@@ -293,7 +293,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
         ) : (
           <ol className="flex flex-col gap-2">
             {lead.emails.map((m) => (
-              <ThreadItem key={m.id} message={m} />
+              <ThreadItem key={m.id} message={m} events={lead.email_events.filter((e) => e.email_id === m.id)} />
             ))}
           </ol>
         )}
@@ -516,7 +516,7 @@ function Detail({ label, icon, wide, children }: { label: string; icon: React.Re
   );
 }
 
-function ThreadItem({ message: m }: { message: EmailMessage }) {
+function ThreadItem({ message: m, events }: { message: EmailMessage; events: EmailEvent[] }) {
   const inbound = m.direction === "inbound";
   return (
     <li className={cn("rounded-xl border border-border p-3", inbound ? "bg-card" : "bg-muted/60")}>
@@ -537,6 +537,45 @@ function ThreadItem({ message: m }: { message: EmailMessage }) {
       {!inbound && m.error && (m.status === "failed" || m.status === "cancelled") && (
         <p className={cn("mt-2 text-xs", m.status === "failed" ? "text-red-700" : "text-muted-foreground")}>Not sent: {m.error}</p>
       )}
+      {events.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
+          {events.map((e) => (
+            <EmailEventLine key={`${e.kind}:${e.url ?? ""}`} event={e} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/** Lets "acme.com/customers/harbour-physio" wrap after a slash rather than mid-word. */
+const breakAtSlashes = (link: string) => link.split("/").flatMap((part, i) => (i ? ["/", <wbr key={i} />, part] : [part]));
+
+const repeats = (n: number) => (n === 1 ? "" : n === 2 ? " twice" : ` ${n} times`);
+
+/** "Opened twice" or "Clicked acme.com/pricing", with the first time on the right. */
+function EmailEventLine({ event: e }: { event: EmailEvent }) {
+  const Icon = e.kind === "open" ? Eye : MousePointerClick;
+  return (
+    <li className="flex min-w-0 items-start gap-1.5">
+      <Icon className={cn("mt-px size-3.5 shrink-0", e.kind === "click" && "text-sky-700")} />
+      {/* A long link wraps on a phone rather than truncating, so two clicked links never look the same. */}
+      <span className="min-w-0 flex-1 break-words">
+        {e.kind === "open" ? (
+          <span title="Opens are an estimate: Apple Mail opens every email itself">Opened{repeats(e.count)}</span>
+        ) : (
+          <>
+            Clicked{" "}
+            <a href={e.url ?? undefined} target="_blank" rel="noreferrer" className="font-medium text-foreground hover:underline">
+              {e.link && breakAtSlashes(e.link)}
+            </a>
+            {repeats(e.count)}
+          </>
+        )}
+      </span>
+      <span className="shrink-0 whitespace-nowrap" title={e.count > 1 ? `Last ${dateTime(e.last_at)}` : undefined}>
+        {dateTime(e.first_at)}
+      </span>
     </li>
   );
 }

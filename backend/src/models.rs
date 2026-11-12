@@ -392,6 +392,10 @@ pub struct Segment {
     pub variant_picked_at: Option<Ts>,
     /// Why auto-pick kept the winner, in words for the campaign page.
     pub variant_pick_note: String,
+    /// Whether its emails' links go through Splee to count clicks. See tracking.rs.
+    pub track_clicks: bool,
+    /// Whether its emails carry a pixel to count opens, which adds an HTML part.
+    pub track_opens: bool,
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.

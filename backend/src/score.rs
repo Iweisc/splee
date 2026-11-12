@@ -66,8 +66,12 @@ pub const DEAL: Signal = Signal { key: "deal", label: "Open deal", weight: 25.0,
 /// months in a new role are when they bring in the tools they trust.
 pub const JOB_CHANGE: Signal = Signal { key: "job_change", label: "Past customer moved here", weight: 35.0, half_life: 60.0, window: 180 };
 
-pub const SIGNALS: [&Signal; 12] =
-    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE];
+/// The lead clicked a link in one of your emails, scanners and link checks aside (tracking.rs). Opens count for nothing:
+/// too many are machines. Clicks on 2 or more links in a day from a lead who hasn't replied count half again.
+pub const CLICK: Signal = Signal { key: "click", label: "Clicked links", weight: 15.0, half_life: 3.0, window: 14 };
+
+pub const SIGNALS: [&Signal; 13] =
+    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE, &CLICK];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reason {
@@ -133,6 +137,9 @@ pub struct LeadFacts {
     pub deal: Option<(String, Ts)>,
     /// The company they left, what they did with us there (won, booked or hot), and when the move was seen.
     pub moved: Option<(String, String, Ts)>,
+    /// Each counted click on a link in their emails in the CLICK window, as (link, when), oldest first.
+    pub clicks: Vec<(String, Ts)>,
+    pub replied: bool,
 }
 
 impl Targeting {
@@ -246,6 +253,9 @@ pub fn score(t: &Targeting, company: &CompanyFacts, lead: Option<&LeadFacts>) ->
         {
             intents.push((points, format!("Moved from {from}, where they {}", crate::jobchanges::did(relationship))));
         }
+        if let Some(click) = clicked(t, lead) {
+            intents.push(click);
+        }
     }
     let intent = intents.iter().map(|r| r.0).sum::<f64>().min(INTENT_MAX);
     reasons.extend(intents.into_iter().map(|(points, text)| (points, text, "intent")));
@@ -259,6 +269,38 @@ pub fn score(t: &Targeting, company: &CompanyFacts, lead: Option<&LeadFacts>) ->
 }
 
 /// Lowercase words between single spaces, with a space at each end, so a keyword only matches whole words.
+/// The click signal's points and reason: the most clicked link, by the last click, or the links clicked on one day.
+fn clicked(t: &Targeting, lead: &LeadFacts) -> Option<(f64, String)> {
+    let (_, last) = lead.clicks.last()?;
+    let points = t.fade(&CLICK, *last)?;
+    let day = |at: &Ts| at.with_timezone(&t.tz).date_naive();
+    let mut busiest: Option<(usize, Ts)> = None;
+    for (_, at) in &lead.clicks {
+        let links: HashSet<&str> = lead.clicks.iter().filter(|(_, a)| day(a) == day(at)).map(|(url, _)| url.as_str()).collect();
+        if busiest.is_none_or(|(n, _)| links.len() >= n) {
+            busiest = Some((links.len(), *at));
+        }
+    }
+    if let Some((n, at)) = busiest.filter(|(n, _)| *n >= 2 && !lead.replied) {
+        return Some((points * 1.5, format!("Clicked {n} of your links {}", t.when(at))));
+    }
+    let mut counts: Vec<(&str, usize)> = vec![];
+    for (url, _) in &lead.clicks {
+        match counts.iter_mut().find(|(u, _)| u == url) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((url, 1)),
+        }
+    }
+    // max_by_key keeps the last of equals, which is the link clicked last.
+    let (url, n) = counts.into_iter().max_by_key(|(_, n)| *n)?;
+    let times = match n {
+        1 => String::new(),
+        2 => " twice".to_string(),
+        n => format!(" {n} times"),
+    };
+    Some((points, format!("Clicked your {} link{times}", crate::tracking::link_name(url))))
+}
+
 fn words(text: &str) -> String {
     let words: Vec<String> = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect();
     format!(" {} ", words.join(" "))
@@ -393,6 +435,8 @@ pub async fn due(db: &PgPool) -> sqlx::Result<Vec<Uuid>> {
                 or exists (select 1 from visitor_hits h where h.project_id = p.id and h.created_at > s.scored_at and h.domain is not null)
                 or exists (select 1 from job_openings j where j.project_id = p.id and (j.first_seen > s.scored_at or j.closed_at > s.scored_at))
                 or exists (select 1 from email_messages e where e.project_id = p.id and e.status = 'received' and e.created_at > s.scored_at)
+                or exists (select 1 from tracking_hits h where h.project_id = p.id and h.created_at > s.scored_at and h.kind = 'click'
+                           and h.filter_reason is null)
                 or exists (select 1 from deals d where d.project_id = p.id
                            and (d.created_at > s.scored_at or d.stage_changed_at > s.scored_at or d.closed_at > s.scored_at))
                 or exists (select 1 from job_changes j where j.project_id = p.id and (j.seen_at > s.scored_at or j.dismissed_at > s.scored_at)))))
@@ -502,6 +546,9 @@ struct LeadRow {
     moved_from: Option<String>,
     moved_relationship: Option<String>,
     moved_at: Option<Ts>,
+    click_urls: Option<Vec<String>>,
+    click_ats: Option<Vec<Ts>>,
+    replied: bool,
 }
 
 #[derive(FromRow)]
@@ -572,7 +619,8 @@ fn with_signals(mut facts: CompanyFacts, signals: Option<&DomainRow>) -> Company
 
 const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_domain::text, ''), c.domain::text)) as domain, l.segment_id,
        l.title, l.country_code, l.company_name, q.at as question_at, d.stage as deal_stage, d.at as deal_at,
-       m.old_company as moved_from, m.relationship as moved_relationship, m.seen_at as moved_at
+       m.old_company as moved_from, m.relationship as moved_relationship, m.seen_at as moved_at, k.urls as click_urls, k.ats as click_ats,
+       exists (select 1 from email_messages r where r.lead_id = l.id and r.direction = 'inbound' and r.classification is distinct from 'bounce') as replied
      from leads l
      left join companies c on c.id = l.company_id
      left join (select lead_id, max(created_at) as at from email_messages
@@ -583,6 +631,10 @@ const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_
                 where d.project_id = $1 and d.status = 'open' and ($2::uuid is null or d.lead_id = $2)) d on d.lead_id = l.id
      left join lateral (select j.old_company, w.relationship, j.seen_at from job_changes j join watched_people w on w.id = j.watched_id
                         where j.new_lead_id = l.id and j.dismissed_at is null order by j.seen_at desc limit 1) m on true
+     left join lateral (select array_agg(t.url order by h.created_at) as urls, array_agg(h.created_at order by h.created_at) as ats
+                        from tracking_hits h join tracked_links t on t.token = h.link_token
+                        where h.lead_id = l.id and h.kind = 'click' and h.filter_reason is null
+                          and h.created_at > now() - make_interval(days => $4)) k on true
      where l.project_id = $1 and ($2::uuid is null or l.id = $2)";
 
 const COMPANIES: &str = "select c.id, lower(c.domain::text) as domain, c.segment_id, c.country_code, c.employees,
@@ -603,12 +655,15 @@ fn lead_score(t: &Targeting, l: &LeadRow, companies: &HashMap<Uuid, CompanyFacts
         facts.text = format!("{} {}", facts.text, l.company_name.to_lowercase());
     }
     let moved = l.moved_from.clone().zip(l.moved_relationship.clone()).zip(l.moved_at).map(|((from, relationship), at)| (from, relationship, at));
+    let clicks = l.click_urls.clone().unwrap_or_default().into_iter().zip(l.click_ats.clone().unwrap_or_default()).collect();
     let lead = LeadFacts {
         segment_id: l.segment_id,
         title: l.title.clone(),
         question_at: l.question_at,
         deal: l.deal_stage.clone().zip(l.deal_at),
         moved,
+        clicks,
+        replied: l.replied,
     };
     score(t, &facts, Some(&lead))
 }
@@ -639,7 +694,7 @@ pub async fn recompute(db: &PgPool, project_id: Uuid) -> anyhow::Result<usize> {
     let rows = companies(db, project_id, None, &signals).await?;
     let domains: Vec<(Uuid, String)> = rows.iter().map(|(id, domain, _)| (*id, domain.clone())).collect();
     let companies: HashMap<Uuid, CompanyFacts> = rows.into_iter().map(|(id, _, facts)| (id, facts)).collect();
-    let leads: Vec<LeadRow> = sqlx::query_as(LEADS).bind(project_id).bind(None::<Uuid>).bind(QUESTION.window).fetch_all(db).await?;
+    let leads: Vec<LeadRow> = sqlx::query_as(LEADS).bind(project_id).bind(None::<Uuid>).bind(QUESTION.window).bind(CLICK.window).fetch_all(db).await?;
     let scored: Vec<(Uuid, Score)> = leads.iter().map(|l| (l.id, lead_score(&t, l, &companies, &signals))).collect();
     write(db, "leads", &scored).await?;
 
@@ -662,7 +717,7 @@ pub async fn refresh_lead(db: &PgPool, lead_id: Uuid) -> anyhow::Result<Option<S
         return Ok(None);
     };
     let t = targeting(db, project_id).await?;
-    let Some(lead) = sqlx::query_as::<_, LeadRow>(LEADS).bind(project_id).bind(lead_id).bind(QUESTION.window).fetch_optional(db).await? else {
+    let Some(lead) = sqlx::query_as::<_, LeadRow>(LEADS).bind(project_id).bind(lead_id).bind(QUESTION.window).bind(CLICK.window).fetch_optional(db).await? else {
         return Ok(None);
     };
     let signals = match &lead.domain {
@@ -882,6 +937,31 @@ mod tests {
         let busy = LeadFacts { question_at: Some(ago(0)), deal: Some(("Proposal".into(), ago(0))), ..Default::default() };
         let s = score(&t, &CompanyFacts { hiring: vec![("SDR".into(), ago(0))], ..all }, Some(&busy));
         assert_eq!((s.intent, s.score), (50, 50));
+    }
+
+    #[test]
+    fn real_clicks_say_which_link_and_many_in_a_day_count_more() {
+        let t = targeting();
+        let click = |url: &str, hours: i64| (url.to_string(), now() - chrono::Duration::hours(hours));
+        let pricing = LeadFacts { clicks: vec![click("https://acme.example/pricing", 30), click("https://acme.example/pricing", 2)], ..Default::default() };
+        let s = score(&t, &company(), Some(&pricing));
+        assert_eq!(s.intent, 15);
+        assert!(texts(&s).contains(&"Clicked your pricing link twice"), "{s:?}");
+        let once = LeadFacts { clicks: vec![click("https://acme.example/", 0)], ..Default::default() };
+        assert!(texts(&score(&t, &company(), Some(&once))).contains(&"Clicked your acme.example link"));
+
+        // Two links in one day, with no reply yet: half as much again.
+        let busy = LeadFacts { clicks: vec![click("https://acme.example/pricing", 0), click("https://acme.example/case-studies", 0)], ..Default::default() };
+        let s = score(&t, &company(), Some(&busy));
+        assert_eq!(s.intent, 23);
+        assert!(texts(&s).contains(&"Clicked 2 of your links today"), "{s:?}");
+        let replied = LeadFacts { replied: true, ..busy.clone() };
+        assert_eq!(score(&t, &company(), Some(&replied)).intent, 15);
+
+        // Old clicks fade out, and the signal can be turned off.
+        assert_eq!(score(&t, &company(), Some(&LeadFacts { clicks: vec![click("https://acme.example/pricing", 15 * 24)], ..Default::default() })).intent, 0);
+        let off = Targeting { off: ["click".to_string()].into(), ..targeting() };
+        assert_eq!(score(&off, &company(), Some(&pricing)).intent, 0);
     }
 
     #[test]
