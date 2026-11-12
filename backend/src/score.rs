@@ -62,8 +62,12 @@ pub const INTENT_PAGE: Signal = Signal { key: "intent_page", label: "High-intent
 pub const QUESTION: Signal = Signal { key: "question", label: "Replied with a question", weight: 20.0, half_life: 7.0, window: 30 };
 /// The lead has an open deal. Fades slowly, since a deal that sits still is going cold.
 pub const DEAL: Signal = Signal { key: "deal", label: "Open deal", weight: 25.0, half_life: 30.0, window: 365 };
+/// The lead bought, booked a meeting or replied hot at their last company and just moved here. See jobchanges.rs. Their first
+/// months in a new role are when they bring in the tools they trust.
+pub const JOB_CHANGE: Signal = Signal { key: "job_change", label: "Past customer moved here", weight: 35.0, half_life: 60.0, window: 180 };
 
-pub const SIGNALS: [&Signal; 11] = [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL];
+pub const SIGNALS: [&Signal; 12] =
+    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reason {
@@ -127,6 +131,8 @@ pub struct LeadFacts {
     pub question_at: Option<Ts>,
     /// The open deal's stage and when it opened.
     pub deal: Option<(String, Ts)>,
+    /// The company they left, what they did with us there (won, booked or hot), and when the move was seen.
+    pub moved: Option<(String, String, Ts)>,
 }
 
 impl Targeting {
@@ -234,6 +240,11 @@ pub fn score(t: &Targeting, company: &CompanyFacts, lead: Option<&LeadFacts>) ->
             && let Some(points) = t.fade(&DEAL, *at)
         {
             intents.push((points, format!("Open deal in {stage}")));
+        }
+        if let Some((from, relationship, at)) = &lead.moved
+            && let Some(points) = t.fade(&JOB_CHANGE, *at)
+        {
+            intents.push((points, format!("Moved from {from}, where they {}", crate::jobchanges::did(relationship))));
         }
     }
     let intent = intents.iter().map(|r| r.0).sum::<f64>().min(INTENT_MAX);
@@ -383,7 +394,8 @@ pub async fn due(db: &PgPool) -> sqlx::Result<Vec<Uuid>> {
                 or exists (select 1 from job_openings j where j.project_id = p.id and (j.first_seen > s.scored_at or j.closed_at > s.scored_at))
                 or exists (select 1 from email_messages e where e.project_id = p.id and e.status = 'received' and e.created_at > s.scored_at)
                 or exists (select 1 from deals d where d.project_id = p.id
-                           and (d.created_at > s.scored_at or d.stage_changed_at > s.scored_at or d.closed_at > s.scored_at)))))
+                           and (d.created_at > s.scored_at or d.stage_changed_at > s.scored_at or d.closed_at > s.scored_at))
+                or exists (select 1 from job_changes j where j.project_id = p.id and (j.seen_at > s.scored_at or j.dismissed_at > s.scored_at)))))
          order by s.scored_at nulls first",
     )
     .bind(THROTTLE_MINUTES)
@@ -487,6 +499,9 @@ struct LeadRow {
     question_at: Option<Ts>,
     deal_stage: Option<String>,
     deal_at: Option<Ts>,
+    moved_from: Option<String>,
+    moved_relationship: Option<String>,
+    moved_at: Option<Ts>,
 }
 
 #[derive(FromRow)]
@@ -556,7 +571,8 @@ fn with_signals(mut facts: CompanyFacts, signals: Option<&DomainRow>) -> Company
 }
 
 const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_domain::text, ''), c.domain::text)) as domain, l.segment_id,
-       l.title, l.country_code, l.company_name, q.at as question_at, d.stage as deal_stage, d.at as deal_at
+       l.title, l.country_code, l.company_name, q.at as question_at, d.stage as deal_stage, d.at as deal_at,
+       m.old_company as moved_from, m.relationship as moved_relationship, m.seen_at as moved_at
      from leads l
      left join companies c on c.id = l.company_id
      left join (select lead_id, max(created_at) as at from email_messages
@@ -565,6 +581,8 @@ const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_
                 group by lead_id) q on q.lead_id = l.id
      left join (select d.lead_id, s.name as stage, d.created_at as at from deals d join deal_stages s on s.id = d.stage_id
                 where d.project_id = $1 and d.status = 'open' and ($2::uuid is null or d.lead_id = $2)) d on d.lead_id = l.id
+     left join lateral (select j.old_company, w.relationship, j.seen_at from job_changes j join watched_people w on w.id = j.watched_id
+                        where j.new_lead_id = l.id and j.dismissed_at is null order by j.seen_at desc limit 1) m on true
      where l.project_id = $1 and ($2::uuid is null or l.id = $2)";
 
 const COMPANIES: &str = "select c.id, lower(c.domain::text) as domain, c.segment_id, c.country_code, c.employees,
@@ -584,7 +602,14 @@ fn lead_score(t: &Targeting, l: &LeadRow, companies: &HashMap<Uuid, CompanyFacts
     if !l.company_name.is_empty() {
         facts.text = format!("{} {}", facts.text, l.company_name.to_lowercase());
     }
-    let lead = LeadFacts { segment_id: l.segment_id, title: l.title.clone(), question_at: l.question_at, deal: l.deal_stage.clone().zip(l.deal_at) };
+    let moved = l.moved_from.clone().zip(l.moved_relationship.clone()).zip(l.moved_at).map(|((from, relationship), at)| (from, relationship, at));
+    let lead = LeadFacts {
+        segment_id: l.segment_id,
+        title: l.title.clone(),
+        question_at: l.question_at,
+        deal: l.deal_stage.clone().zip(l.deal_at),
+        moved,
+    };
     score(t, &facts, Some(&lead))
 }
 

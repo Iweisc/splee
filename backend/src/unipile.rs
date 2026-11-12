@@ -388,6 +388,33 @@ impl Unipile {
         self.social(self.client.get(self.url(&format!("/users/{id}"), &[("linkedin_sections", "experience_preview")])?)).await
     }
 
+    /// A GET for the job change watch, which only reads, so a timeout or a 5xx is the account's to retry later. The inner Err
+    /// is about the person or company, like a profile LinkedIn doesn't find. The outer one is about the account or Unipile.
+    async fn read(&self, path: &str, query: &[(&str, &str)]) -> anyhow::Result<Result<Value, String>> {
+        let url = Url::parse_with_params(&format!("{}{path}", self.base), [("account_id", self.account.as_str())].iter().chain(query))?;
+        match self.call(self.client.get(url)).await {
+            Ok(body) => Ok(Ok(body)),
+            Err(Failure::Lead { reason, .. }) => Ok(Err(reason)),
+            Err(Failure::Account(e)) => Err(e),
+        }
+    }
+
+    /// Someone's profile with their positions, by profile link.
+    pub async fn work_profile(&self, url: &str) -> anyhow::Result<Result<Value, String>> {
+        match profile_id(url).filter(|id| id.chars().all(|c| c.is_alphanumeric() || "-_%".contains(c))) {
+            Some(id) => self.read(&format!("/users/{id}"), &[("linkedin_sections", "experience_preview")]).await,
+            None => Ok(Err("The LinkedIn link isn't a profile link".into())),
+        }
+    }
+
+    /// A company's LinkedIn page, with its website, by the id one of its positions gives.
+    pub async fn company_page(&self, id: &str) -> anyhow::Result<Result<Value, String>> {
+        if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || "-_".contains(c)) {
+            return Ok(Err(format!("{id} isn't a LinkedIn company id")));
+        }
+        self.read(&format!("/linkedin/company/{id}"), &[]).await
+    }
+
     /// The lead's LinkedIn profile, with their `provider_id`.
     async fn profile(&self, url: &str) -> Result<Value, Failure> {
         let id = profile_id(url).ok_or_else(|| Failure::lead("The LinkedIn URL isn't a profile link"))?;

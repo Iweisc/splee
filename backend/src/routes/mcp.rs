@@ -247,6 +247,10 @@ const LOCAL_FIELDS: &[&str] =
     &["place_id", "name", "category", "address", "phone", "website", "domain", "rating", "review_count", "maps_url", "known"];
 const SHEET_FIELDS: &[&str] =
     &["id", "kind", "spreadsheet_id", "spreadsheet_name", "tab", "segment_id", "keep_importing", "events", "last_sync_at", "rows_added", "error"];
+const JOB_CHANGE_FIELDS: &[&str] = &[
+    "id", "full_name", "linkedin_url", "relationship", "old_company", "new_company", "new_domain", "new_title", "new_lead_id", "new_lead_email",
+    "segment_name", "seen_at",
+];
 const CALL_FIELDS: &[&str] = &[
     "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
     "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
@@ -324,6 +328,13 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
                        "connection": pick(done["connection"].clone(), SHEET_FIELDS) }))
         }
         .await,
+        "list_job_changes" => async {
+            let overview = value(v1::list_job_changes(st(), auth, id(a, "project_id")?).await?)?;
+            Ok(json!({ "connected": overview["connected"], "watching": overview["watching"], "last_checked_at": overview["last_checked_at"],
+                       "items": pick(overview["changes"].clone(), JOB_CHANGE_FIELDS) }))
+        }
+        .await,
+        "add_to_watch_list" => async { value(v1::add_to_watch_list(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
         _ => return None,
     })
 }
@@ -707,7 +718,7 @@ fn tools() -> Vec<Value> {
              leads or rows Splee added so far, and error says why the last read or write failed.",
             json!({ "project_id": id_prop("A project id from list_projects") }),
             &["project_id"],
-            read,
+            read.clone(),
         ),
         tool(
             "import_from_sheet",
@@ -719,6 +730,34 @@ fn tools() -> Vec<Value> {
                 "connection_id": id_prop("An import tab's id from list_sheet_connections"),
             }),
             &["project_id", "connection_id"],
+            adds.clone(),
+        ),
+        tool(
+            "list_job_changes",
+            "List job changes",
+            "People who bought, booked a meeting or replied hot and then moved to a new company, newest first, from their LinkedIn \
+             profiles. relationship is won, booked or hot. new_lead_id is the lead Splee made at the new company, whose email the \
+             finders look up. watching counts the people on the watch list, and connected says whether LinkedIn is connected through \
+             Unipile, which the checks need.",
+            json!({ "project_id": id_prop("A project id from list_projects") }),
+            &["project_id"],
+            read,
+        ),
+        tool(
+            "add_to_watch_list",
+            "Add to job change watch list",
+            "Adds past customers or champions to a project's watch list, so Splee notices when they move to a new company. Each \
+             person needs an email or a LinkedIn URL, and the checks need the URL. Someone already on the list isn't added twice.",
+            json!({
+                "project_id": id_prop("A project id from list_projects"),
+                "relationship": { "type": "string", "enum": ["won", "booked", "hot"],
+                                  "description": "What they did with you: won (bought), booked (a meeting) or hot (replied with interest). Defaults to won" },
+                "people": { "type": "array", "items": { "type": "object", "properties": {
+                    "name": { "type": "string" }, "email": { "type": "string" }, "linkedin_url": { "type": "string" },
+                    "company": { "type": "string" }, "company_domain": { "type": "string" }, "title": { "type": "string" },
+                } } },
+            }),
+            &["project_id", "people"],
             adds,
         ),
     ]
@@ -872,7 +911,8 @@ mod tests {
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
-                     "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet"] {
+                     "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
+                     "list_job_changes", "add_to_watch_list"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -956,6 +996,59 @@ mod tests {
         }
         let (is_error, _) = server.call(KEY, "list_leads", json!({ "project_id": other_project, "sort": "score" })).await;
         assert!(is_error);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn job_changes_and_the_watch_list_for_the_keys_organization(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        let server = Server::start(db.clone()).await;
+
+        let people = json!([{ "name": "Dana Reyes", "email": "dana@acme.example", "linkedin_url": "https://www.linkedin.com/in/dana-reyes", "company": "Acme" },
+                            { "name": "No Way" }]);
+        let (is_error, text) = server.call(KEY, "add_to_watch_list", json!({ "project_id": project, "people": people })).await;
+        assert!(!is_error, "{text}");
+        let added: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((added["added"].clone(), added["errors"][0]["error"].clone()), (json!(1), json!("Needs an email or a LinkedIn link")));
+        let watched: Uuid = sqlx::query_scalar("select id from watched_people where project_id = $1").bind(project).fetch_one(&db).await.unwrap();
+        sqlx::query(
+            "insert into job_changes (project_id, watched_id, old_company, new_company, new_domain, move_number, new_title)
+             values ($1, $2, 'Acme', 'Brightline', 'brightline.example', 1, 'VP Sales')",
+        )
+        .bind(project)
+        .bind(watched)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let (is_error, text) = server.call(KEY, "list_job_changes", json!({ "project_id": project })).await;
+        assert!(!is_error, "{text}");
+        let listed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((listed["connected"].clone(), listed["watching"].clone()), (json!(false), json!(1)));
+        let change = &listed["items"][0];
+        assert_eq!((change["full_name"].clone(), change["old_company"].clone(), change["new_company"].clone(), change["relationship"].clone()),
+                   (json!("Dana Reyes"), json!("Acme"), json!("Brightline"), json!("won")));
+        assert!(change.get("old_lead_id").is_none(), "only the picked fields");
+
+        // The REST API takes a CSV too, and another organization's project is not found either way.
+        let api = server.url.replace("/mcp", "/v1");
+        let csv = "Name,Email,LinkedIn,Company\nBo Chen,bo@bright.example,,Brightline\n";
+        let res = server.client.post(format!("{api}/projects/{project}/watch-list")).bearer_auth(KEY).json(&json!({ "relationship": "booked", "csv": csv }));
+        let added: Value = res.send().await.unwrap().json().await.unwrap();
+        assert_eq!(added["added"], 1);
+        let res = server.client.get(format!("{api}/projects/{project}/job-changes")).bearer_auth(KEY).send().await.unwrap();
+        let overview: Value = res.json().await.unwrap();
+        assert_eq!((overview["watching"].clone(), overview["changes"][0]["new_title"].clone()), (json!(2), json!("VP Sales")));
+        for res in [
+            server.client.get(format!("{api}/projects/{other_project}/job-changes")).bearer_auth(KEY).send().await.unwrap(),
+            server.client.post(format!("{api}/projects/{other_project}/watch-list")).bearer_auth(KEY).json(&json!({ "csv": csv })).send().await.unwrap(),
+        ] {
+            assert_eq!(res.status(), 404);
+        }
+        let (is_error, _) = server.call(KEY, "list_job_changes", json!({ "project_id": other_project })).await;
+        assert!(is_error);
+        let theirs: i64 = sqlx::query_scalar("select count(*) from watched_people where project_id = $1").bind(other_project).fetch_one(&db).await.unwrap();
+        assert_eq!(theirs, 0);
     }
 
     #[sqlx::test]

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Smartphone, Trash2 } from "lucide-react";
+import { Briefcase, CalendarCheck, ExternalLink, Link2, Mail, MapPin, Pencil, Smartphone, Trash2, UserRoundCheck } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,8 @@ import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
 import { Address, Avatar, Badge, Favicon, Message, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
-import type { EmailMessage, Lead, LeadDetail, LeadStatus } from "@/lib/types";
-import { cn, dateTime, dayTime } from "@/lib/utils";
+import type { EmailMessage, JobChangeFrom, Lead, LeadDetail, LeadStatus } from "@/lib/types";
+import { cn, dateTime, dayTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { CallCard } from "./calls";
@@ -201,6 +201,8 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           </Detail>
         )}
       </dl>
+
+      {lead.job_change && <JobChangeNote change={lead.job_change} />}
 
       <div>
         <MicroLabel className="mb-2">Score</MicroLabel>
@@ -479,6 +481,28 @@ export function LeadNotes({ lead, onSaved }: { lead: Lead; onSaved: () => unknow
 
 /** `wide` is for the email: it takes the whole row and wraps rather than being cut off, since it's the one detail people copy. */
 /** One row of the details list. The icon is the term on screen; screen readers get the label instead. */
+const DID_THERE: Record<JobChangeFrom["relationship"], string> = {
+  won: "They bought from you there",
+  booked: "They booked a meeting with you there",
+  hot: "They replied to you with interest there",
+};
+
+/** Where a lead from a job change was before. The email writer gets the same history and can open with it. */
+function JobChangeNote({ change }: { change: JobChangeFrom }) {
+  return (
+    <div className="flex gap-3 rounded-xl bg-muted p-4 text-sm">
+      <UserRoundCheck className="mt-0.5 size-4 shrink-0 text-emerald-700" />
+      <div className="min-w-0">
+        <MicroLabel className="mb-1">Job change</MicroLabel>
+        <p className="text-pretty">
+          Moved here from {change.old_company || "their last company"}, seen {timeAgo(change.seen_at)}. {DID_THERE[change.relationship]}, so the
+          first email can mention it.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function Detail({ label, icon, wide, children }: { label: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
   return (
     <div className={cn("flex min-w-0 items-start gap-2", wide && "sm:col-span-2")}>

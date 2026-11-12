@@ -17,6 +17,7 @@ mod endpoints;
 mod extension;
 mod forms;
 mod hiring;
+mod job_changes;
 mod local_businesses;
 mod tech;
 mod visitors;
@@ -90,6 +91,7 @@ pub fn router() -> Router<AppState> {
         .merge(segments::router())
         .merge(leads::router())
         .merge(hiring::router())
+        .merge(job_changes::router())
         .merge(tech::router())
         .merge(scores::router())
         .merge(visitors::router())

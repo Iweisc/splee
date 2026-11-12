@@ -16,7 +16,7 @@ use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::hiring;
-use crate::models::{Call, Company, EmailMessage, Lead, TextMessage};
+use crate::models::{Call, Company, EmailMessage, Lead, TextMessage, Ts};
 use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
 use crate::waterfall;
@@ -317,6 +317,8 @@ pub struct LeadDetail {
     pub hiring: Vec<hiring::Post>,
     /// Their open deal, or else the one that closed last.
     pub deal: Option<crate::deals::Deal>,
+    /// The move that made them a lead here, when a job change did.
+    pub job_change: Option<JobChangeFrom>,
     /// The owner's name, or their email when they have none.
     pub owner_name: Option<String>,
     pub owner_email: Option<String>,
@@ -358,8 +360,25 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
     };
     let meetings = super::meetings::for_lead(db, lead.id).await?;
     let deal = crate::deals::for_lead(db, lead.id).await?;
+    let job_change = sqlx::query_as(
+        "select j.old_company, j.old_domain::text, w.lead_id as old_lead_id, w.relationship, j.seen_at from job_changes j
+         join watched_people w on w.id = j.watched_id where j.new_lead_id = $1 and j.dismissed_at is null order by j.seen_at desc limit 1",
+    )
+    .bind(lead.id)
+    .fetch_optional(db)
+    .await?;
     let (owner_name, owner_email) = owner_of(db, &lead).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, meetings, hiring, deal, owner_name, owner_email })
+    Ok(LeadDetail { lead, segment_name, company, emails, texts, calls, meetings, hiring, deal, job_change, owner_name, owner_email })
+}
+
+/// Where a lead from a job change was before, and what they did with the project there: won, booked or hot.
+#[derive(Serialize, FromRow)]
+pub struct JobChangeFrom {
+    old_company: String,
+    old_domain: Option<String>,
+    old_lead_id: Option<Uuid>,
+    relationship: String,
+    seen_at: Ts,
 }
 
 /// The lead owner's name and email, the name falling back to the email like everywhere else.

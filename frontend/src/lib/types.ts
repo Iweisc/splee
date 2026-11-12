@@ -1055,8 +1055,73 @@ export interface LeadDetail extends Lead {
   hiring: JobPost[];
   /** Their open deal, or else the one that closed last. */
   deal: Deal | null;
+  /** The move that made them a lead here, when a job change did. */
+  job_change: JobChangeFrom | null;
   owner_name: string | null;
   owner_email: string | null;
+}
+
+/** What someone on a job change watch list did with you at their old company: bought, booked a meeting or replied hot. */
+export type Relationship = "won" | "booked" | "hot";
+
+export interface JobChangeFrom {
+  old_company: string;
+  old_domain: string | null;
+  old_lead_id: string | null;
+  relationship: Relationship;
+  seen_at: string;
+}
+
+/** A move LinkedIn showed for someone on the watch list. See backend/src/jobchanges.rs. */
+export interface JobChange {
+  id: string;
+  full_name: string;
+  linkedin_url: string;
+  relationship: Relationship;
+  old_company: string;
+  old_domain: string | null;
+  old_lead_id: string | null;
+  new_company: string;
+  new_domain: string | null;
+  new_title: string;
+  /** The lead Splee made or found at the new company, null once it's deleted. */
+  new_lead_id: string | null;
+  new_lead_email: string | null;
+  segment_id: string | null;
+  segment_name: string | null;
+  seen_at: string;
+}
+
+export interface JobChanges {
+  /** LinkedIn connected through Unipile, which the checks need. */
+  connected: boolean;
+  /** The campaign leads from moves join on their own. */
+  segment_id: string | null;
+  watching: number;
+  last_checked_at: string | null;
+  changes: JobChange[];
+}
+
+export interface WatchedPerson {
+  id: string;
+  lead_id: string | null;
+  relationship: Relationship;
+  full_name: string;
+  email: string | null;
+  linkedin_url: string;
+  company_name: string;
+  company_domain: string | null;
+  title: string;
+  checked_at: string | null;
+  check_error: string | null;
+  created_at: string;
+}
+
+export interface WatchAdded {
+  added: number;
+  updated: number;
+  skipped: number;
+  errors: { row: number; error: string }[];
 }
 
 export interface CompanyRow extends Company {
