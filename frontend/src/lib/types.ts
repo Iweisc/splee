@@ -217,10 +217,6 @@ export interface ProjectSettings extends CrmStatus {
   verifier: "" | "neverbounce" | "millionverifier" | "hunter" | "kickbox" | "bouncer" | "emailable" | "clearout" | "reoon" | "debounce" | "emaillistverify" | "bouncify" | "quickemailverification" | "abstract" | "mailboxvalidator" | "myemailverifier";
   verifier_error: string | null;
   verifier_failed_at: string | null;
-  /** Looks up the real address behind a guessed one. Its key is write-only, through PUT /integrations/finder. */
-  finder: "" | "hunter" | "findymail" | "prospeo" | "anymailfinder" | "leadmagic" | "apollo" | "voilanorbert" | "skrapp" | "lusha";
-  finder_error: string | null;
-  finder_failed_at: string | null;
   /** Unipile sends due LinkedIn steps from this account. Its token is write-only. */
   unipile_connected: boolean;
   unipile_account_name: string;
@@ -906,6 +902,8 @@ export interface Lead extends Scored {
   x_url: string;
   /** In E.164, like +447700900123, or "" for none. */
   phone: string;
+  /** The finder that found the phone, like "RocketReach", or "" when it came some other way. */
+  phone_source: string;
   company_name: string;
   company_domain: string | null;
   city: string;
@@ -932,6 +930,41 @@ export interface Lead extends Scored {
   email_searched_at: Ts | null;
   /** The team member who works the lead. */
   owner_id: UUID | null;
+}
+
+export const FINDER_NAMES = {
+  hunter: "Hunter",
+  findymail: "Findymail",
+  prospeo: "Prospeo",
+  anymailfinder: "Anymail Finder",
+  leadmagic: "LeadMagic",
+  apollo: "Apollo",
+  voilanorbert: "Voila Norbert",
+  skrapp: "Skrapp",
+  lusha: "Lusha",
+  peopledatalabs: "People Data Labs",
+  rocketreach: "RocketReach",
+  snov: "Snov.io",
+  dropcontact: "Dropcontact",
+  contactout: "ContactOut",
+  kaspr: "Kaspr",
+} as const;
+
+export type FinderName = keyof typeof FINDER_NAMES;
+
+/** A connected email finder. Its key is write-only, through PUT /projects/:id/finders/:provider. */
+export interface ConnectedFinder {
+  provider: FinderName;
+  error: string | null;
+  failed_at: Ts | null;
+  /** Out of credits or past its rate limit, so the email search skips it until then. */
+  paused_until: Ts | null;
+}
+
+/** The project's email finders, in the order the email search asks them. */
+export interface Finders {
+  finders: ConnectedFinder[];
+  find_phones: boolean;
 }
 
 export type EmailSearch = "" | "queued" | "found" | "guessed" | "catch_all" | "not_found" | "suppressed" | "duplicate" | "failed";

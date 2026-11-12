@@ -1,6 +1,7 @@
 //! The email waterfall: finds an address for a lead that came without one, like the leads LinkedIn people search adds, with
 //! no Claude run. The project's email finders go first, then the common address patterns, each checked with its verifier.
-//! A worker runs it on new leads by itself, and "Find emails" on the Leads page queues leads for it, ahead of the rest.
+//! A worker runs it on new leads by itself, and "Find emails" on the Leads page queues leads for it, ahead of the rest. With
+//! "Find phone numbers too" on, finders that return mobile numbers also fill the lead's phone when it has none.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -14,7 +15,7 @@ use crate::crypto;
 use crate::hooks::{self, Alert};
 use crate::models::Lead;
 use crate::state::AppState;
-use crate::verify::{Finder, Person, Verdict, Verifier};
+use crate::verify::{Finder, Paused, Person, Search, Verdict, Verifier};
 
 /// Leads an organization's projects search an hour, together, so one big LinkedIn search can't spend a month's finder and
 /// verifier credits in an afternoon.
@@ -23,11 +24,22 @@ pub const HOURLY: i64 = 200;
 const PARALLEL: usize = 4;
 
 /// What the worker picks up, on `l` (leads): leads someone queued, and leads never searched that have a name and a company
-/// domain, still want email and are in a project with a finder or verifier. One without either waits until one is
-/// connected, rather than being marked not found.
+/// domain and still want email, in a project with a verifier or a finder that isn't paused. One without either waits until
+/// one is connected or back, rather than being marked not found.
 const WAITING: &str = "l.email is null and (l.email_search = 'queued' or (l.email_search = '' and l.full_name <> '' and l.company_domain is not null
-       and l.status not in ('bounced', 'unsubscribed', 'do_not_contact', 'not_interested')
-       and exists (select 1 from project_settings ps where ps.project_id = l.project_id and (ps.finder <> '' or ps.verifier <> ''))))";
+       and l.status not in ('bounced', 'unsubscribed', 'do_not_contact', 'not_interested')))
+       and (exists (select 1 from project_finders pf where pf.project_id = l.project_id and (pf.paused_until is null or pf.paused_until <= now()))
+         or exists (select 1 from project_settings ps where ps.project_id = l.project_id and ps.verifier <> ''))";
+
+/// Whether the project has an email finder or verifier, so there's something to search with.
+pub async fn connected(db: &PgPool, project_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "select exists (select 1 from project_finders where project_id = $1) or exists (select 1 from project_settings where project_id = $1 and verifier <> '')",
+    )
+    .bind(project_id)
+    .fetch_one(db)
+    .await
+}
 
 /// The patterns tried, in this order, after any the domain's verified leads already follow.
 pub const PATTERNS: [&str; 7] = ["first", "first.last", "flast", "firstlast", "first_last", "f.last", "last"];
@@ -121,11 +133,13 @@ pub struct Outcome {
     pub email: Option<(String, &'static str)>,
     pub lookups: i32,
     pub credits: Option<i32>,
+    /// A mobile number in E.164 for a lead without a phone, with the finder that found it.
+    pub phone: Option<(String, &'static str)>,
 }
 
 impl Outcome {
     fn ended(state: &'static str, note: impl Into<String>) -> Outcome {
-        Outcome { state, source: String::new(), note: note.into(), email: None, lookups: 0, credits: None }
+        Outcome { state, source: String::new(), note: note.into(), email: None, lookups: 0, credits: None, phone: None }
     }
 }
 
@@ -171,12 +185,17 @@ async fn unset_if_suppressed(db: &PgPool, lead: &Lead, email: &str) -> sqlx::Res
     Ok(unset.rows_affected() == 1)
 }
 
-/// Leaves the lead alone when it got an address some other way while the search ran.
+/// Leaves the lead alone when it got an address some other way while the search ran, and never replaces a phone it has. The
+/// phone's do-not-contact check is in the same statement, since one added while later finders ran must still keep it off.
 async fn save(db: &PgPool, lead: &Lead, o: &Outcome) -> sqlx::Result<()> {
     sqlx::query(
-        "update leads set email = coalesce($2, email), email_status = coalesce($3, email_status), email_search = $4, email_source = $5,
-           email_search_note = $6, email_search_lookups = $7, email_search_credits = $8, email_searched_at = now()
-         where id = $1 and email is null",
+        "update leads l set email = coalesce($2, email), email_status = coalesce($3, email_status), email_search = $4, email_source = $5,
+           email_search_note = $6, email_search_lookups = $7, email_search_credits = $8, email_searched_at = now(),
+           phone_source = case when l.phone = '' and phone_ok.ok then $10 else l.phone_source end,
+           phone = case when l.phone = '' and phone_ok.ok then $9 else l.phone end
+         from (select $9::text is not null and not exists (
+                 select 1 from suppressions s join projects p on p.org_id = s.org_id where p.id = $11 and s.value = $9) as ok) phone_ok
+         where l.id = $1 and l.email is null",
     )
     .bind(lead.id)
     .bind(o.email.as_ref().map(|(email, _)| email))
@@ -186,6 +205,9 @@ async fn save(db: &PgPool, lead: &Lead, o: &Outcome) -> sqlx::Result<()> {
     .bind(&o.note)
     .bind(o.lookups)
     .bind(o.credits)
+    .bind(o.phone.as_ref().map(|(phone, _)| phone))
+    .bind(o.phone.as_ref().map_or("", |(_, source)| *source))
+    .bind(lead.project_id)
     .execute(db)
     .await?;
     Ok(())
@@ -204,12 +226,12 @@ pub async fn search(state: &AppState, lead: &Lead) -> anyhow::Result<Outcome> {
     if suppressed(&state.db, org_id, &domain).await? {
         return Ok(Outcome::ended("suppressed", format!("{domain} is on the do-not-contact list.")));
     }
-    let mut run = Run::new(state, lead.project_id).await?;
+    let mut run = Run::new(state, lead, org_id).await?;
     if run.finders.is_empty() && run.verifier.is_none() {
         return Ok(Outcome::ended("not_found", "No email finder or verifier is connected."));
     }
 
-    let outcome = match run.ask_finders(&person, &domain).await {
+    let outcome = match run.ask_finders(&person, &domain).await? {
         Some(found) if run.verifier.is_none() || found.email.as_ref().is_some_and(|(_, status)| *status == "verified") => found,
         // A finder's unconfirmed address is kept only when no guess verifies.
         Some(found) => match run.guess(org_id, lead, &person, &domain).await? {
@@ -222,7 +244,7 @@ pub async fn search(state: &AppState, lead: &Lead) -> anyhow::Result<Outcome> {
         Some(email) => settle(&state.db, org_id, lead, &email, outcome).await?,
         None => outcome,
     };
-    Ok(Outcome { lookups: run.lookups, credits: run.credits, ..outcome })
+    Ok(Outcome { lookups: run.lookups, credits: run.credits, phone: run.phone.take(), ..outcome })
 }
 
 /// The do-not-contact list holds addresses and domains alike.
@@ -267,89 +289,224 @@ async fn taken(db: &PgPool, lead: &Lead, email: &str) -> sqlx::Result<bool> {
         .await
 }
 
-struct Service<T> {
-    service: T,
+pub(crate) struct Service<T> {
+    pub service: T,
     key: String,
     /// The stored ciphertext, which alerts match on.
     enc: String,
-    alert: Alert,
+    pub alert: Alert,
+}
+
+/// The project's finders that aren't paused, in its order, then Hunter when it's connected under Email verification and not
+/// as a finder, since Hunter finds addresses too.
+pub(crate) async fn finders(db: &PgPool, secret: &str, project_id: Uuid) -> anyhow::Result<Vec<Service<Finder>>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select provider, key_enc from project_finders where project_id = $1 and (paused_until is null or paused_until <= now()) order by position, created_at",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await?;
+    let mut finders = Vec::new();
+    for (provider, enc) in rows {
+        if let Some(service) = Finder::parse(&provider) {
+            finders.push(Service { service, key: crypto::decrypt(secret, &enc)?, enc, alert: Alert::Finder });
+        }
+    }
+    let hunter: Option<String> = sqlx::query_scalar(
+        "select verifier_key_enc from project_settings where project_id = $1 and verifier = 'hunter'
+           and not exists (select 1 from project_finders where project_id = $1 and provider = 'hunter')",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await?;
+    if let Some(enc) = hunter {
+        finders.push(Service { service: Finder::Hunter, key: crypto::decrypt(secret, &enc)?, enc, alert: Alert::Verifier });
+    }
+    Ok(finders)
+}
+
+pub(crate) enum Asked {
+    Answer(Search),
+    /// Out of credits or past its rate limit, which is the finder's problem rather than the lead's.
+    Paused(String),
+    /// Paused by another search since this one loaded its finders, so it wasn't called.
+    Skipped(String),
+    Failed(anyhow::Error),
+}
+
+/// Asks one finder and shows how it went on the integrations page. A finder that says it's out of credits or past its rate
+/// limit is paused on its row, so every search skips it until then. The pause is read again right before the call, since
+/// searches running side by side load their finders before another one's call pauses it.
+pub(crate) async fn ask(db: &PgPool, project_id: Uuid, finder: &Service<Finder>, person: &Person<'_>, domain: &str, phones: bool) -> Asked {
+    let Service { service, key, enc, alert } = finder;
+    let label = service.label();
+    if matches!(alert, Alert::Finder) {
+        let paused: sqlx::Result<Option<bool>> =
+            sqlx::query_scalar("select paused_until > now() from project_finders where project_id = $1 and key_enc = $2")
+                .bind(project_id)
+                .bind(enc)
+                .fetch_optional(db)
+                .await
+                .map(Option::flatten);
+        match paused {
+            Ok(Some(true)) => return Asked::Skipped(format!("{label}: it's out of credits or past its rate limit, so it's skipped for now")),
+            Ok(_) => {}
+            Err(e) => return Asked::Failed(e.into()),
+        }
+    }
+    let result = service.find(key, person, domain, phones).await;
+    // A Hunter key under Email verification shows only its failures there, like the sender's lookup.
+    let shown = result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"));
+    if matches!(alert, Alert::Finder) || shown.is_err() {
+        hooks::record(db, project_id, *alert, enc, &shown).await;
+    }
+    let e = match result {
+        Ok(search) => return Asked::Answer(search),
+        Err(e) => e,
+    };
+    let Some(paused) = e.downcast_ref::<Paused>() else {
+        tracing::warn!(error = %e, finder = label, "email search call failed");
+        return Asked::Failed(e);
+    };
+    tracing::info!(finder = label, why = %paused, "email finder paused");
+    if matches!(alert, Alert::Finder)
+        && let Err(e) = pause(db, project_id, enc, paused.wait).await
+    {
+        tracing::warn!(error = %e, "couldn't pause the email finder");
+    }
+    Asked::Paused(format!("{label}: {e:#}"))
+}
+
+/// Never shortens a pause, so a rate limit answered by a search running alongside can't cut an hour without credits short.
+async fn pause(db: &PgPool, project_id: Uuid, enc: &str, wait: Duration) -> sqlx::Result<()> {
+    sqlx::query(
+        "update project_finders set paused_until = greatest(paused_until, now() + make_interval(secs => $3)) where project_id = $1 and key_enc = $2",
+    )
+    .bind(project_id)
+    .bind(enc)
+    .bind(wait.as_secs_f64())
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// One lead's search: the project's services and what they cost.
 struct Run<'a> {
     db: &'a PgPool,
     project_id: Uuid,
+    org_id: Option<Uuid>,
     finders: Vec<Service<Finder>>,
     verifier: Option<Service<Verifier>>,
     lookups: i32,
     credits: Option<i32>,
     /// The first service failure, which explains a search that found nothing.
     failure: Option<String>,
+    /// Finders that paused during this search, which a search that found nothing mentions.
+    paused: Vec<String>,
     /// Verdicts so far, so an address the finders' turn checked isn't paid for again when guessing.
     verdicts: HashMap<String, Verdict>,
+    /// Set when the project finds phone numbers and the lead has none, to the country a local number is read by.
+    phone_country: Option<String>,
+    phone: Option<(String, &'static str)>,
 }
 
 impl<'a> Run<'a> {
-    /// The project's finder, then Hunter when it's connected under Email verification, since Hunter finds addresses too.
-    async fn new(state: &'a AppState, project_id: Uuid) -> anyhow::Result<Run<'a>> {
-        let row: Option<(String, String, String, String)> =
-            sqlx::query_as("select finder, finder_key_enc, verifier, verifier_key_enc from project_settings where project_id = $1")
-                .bind(project_id)
-                .fetch_optional(&state.db)
-                .await?;
-        let (finder, finder_enc, verifier, verifier_enc) = row.unwrap_or_default();
-        let secret = &state.cfg.app_secret;
-        let mut finders = Vec::new();
-        if let Some(service) = Finder::parse(&finder) {
-            finders.push(Service { service, key: crypto::decrypt(secret, &finder_enc)?, enc: finder_enc, alert: Alert::Finder });
-        }
-        if verifier == "hunter" && finder != "hunter" {
-            finders.push(Service { service: Finder::Hunter, key: crypto::decrypt(secret, &verifier_enc)?, enc: verifier_enc.clone(), alert: Alert::Verifier });
-        }
+    async fn new(state: &'a AppState, lead: &Lead, org_id: Option<Uuid>) -> anyhow::Result<Run<'a>> {
+        let (db, project_id, secret) = (&state.db, lead.project_id, &state.cfg.app_secret);
+        let row: Option<(String, String, bool)> = sqlx::query_as("select verifier, verifier_key_enc, find_phones from project_settings where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(db)
+            .await?;
+        let (verifier, verifier_enc, find_phones) = row.unwrap_or_default();
         let verifier = match Verifier::parse(&verifier) {
             Some(service) => Some(Service { service, key: crypto::decrypt(secret, &verifier_enc)?, enc: verifier_enc, alert: Alert::Verifier }),
             None => None,
         };
-        Ok(Run { db: &state.db, project_id, finders, verifier, lookups: 0, credits: None, failure: None, verdicts: HashMap::new() })
+        let phone_country = match find_phones && lead.phone.trim().is_empty() {
+            true => Some(crate::routes::leads::phone_country(db, project_id, &lead.country_code).await?),
+            false => None,
+        };
+        Ok(Run {
+            db,
+            project_id,
+            org_id,
+            finders: finders(db, secret, project_id).await?,
+            verifier,
+            lookups: 0,
+            credits: None,
+            failure: None,
+            paused: Vec::new(),
+            verdicts: HashMap::new(),
+            phone_country,
+            phone: None,
+        })
+    }
+
+    fn wants_phone(&self) -> bool {
+        self.phone_country.is_some() && self.phone.is_none()
+    }
+
+    /// A finder's mobile number, kept in E.164 unless it's on the do-not-contact list.
+    async fn take_phone(&mut self, raw: &str, finder: &'static str) -> sqlx::Result<()> {
+        let Some(phone) = self.phone_country.as_deref().and_then(|country| crate::phone::normalize(raw, country)) else { return Ok(()) };
+        let suppressed: bool = sqlx::query_scalar("select exists (select 1 from suppressions where org_id = $1 and value = $2)")
+            .bind(self.org_id)
+            .bind(&phone)
+            .fetch_one(self.db)
+            .await?;
+        if !suppressed {
+            self.phone = Some((phone, finder));
+        }
+        Ok(())
     }
 
     fn failed(&mut self, service: &str, e: &anyhow::Error) {
-        tracing::warn!(error = %e, service, "email search call failed");
+        tracing::warn!(error = %e, service, "email verification call failed");
         self.failure.get_or_insert_with(|| format!("{service}: {e:#}"));
     }
 
     /// Each finder in turn, stopping at the first address it, or the verifier, says is deliverable. One that's found but
-    /// unconfirmed is kept in case nothing better turns up, since a finder's answer beats a guess.
-    async fn ask_finders(&mut self, person: &Person<'_>, domain: &str) -> Option<Outcome> {
-        let mut fallback = None;
+    /// unconfirmed is kept in case nothing better turns up, since a finder's answer beats a guess. While the lead still
+    /// wants a phone, the finders after that one that return mobile numbers are asked too.
+    async fn ask_finders(&mut self, person: &Person<'_>, domain: &str) -> anyhow::Result<Option<Outcome>> {
+        let (mut chosen, mut fallback) = (None, None);
         for i in 0..self.finders.len() {
-            let Service { service, key, enc, alert } = &self.finders[i];
-            let (label, enc, alert) = (service.label(), enc.clone(), *alert);
-            self.lookups += 1;
-            let result = service.find(key, person, domain).await;
-            // A Hunter key under Email verification shows only its failures there, like the sender's lookup.
-            let shown = result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"));
-            if matches!(alert, Alert::Finder) || shown.is_err() {
-                hooks::record(self.db, self.project_id, alert, &enc, &shown).await;
+            let finder = &self.finders[i];
+            let label = finder.service.label();
+            let phones = self.wants_phone() && finder.service.finds_phones();
+            if (chosen.is_some() && !phones) || !finder.service.can_search(person) {
+                continue;
             }
-            let search = match result {
-                Ok(search) => search,
-                Err(e) => {
-                    self.failed(label, &e);
+            let asked = ask(self.db, self.project_id, finder, person, domain, phones).await;
+            if !matches!(asked, Asked::Skipped(_)) {
+                self.lookups += 1;
+            }
+            let search = match asked {
+                Asked::Answer(search) => search,
+                Asked::Paused(why) | Asked::Skipped(why) => {
+                    self.paused.push(why);
+                    continue;
+                }
+                Asked::Failed(e) => {
+                    self.failure.get_or_insert_with(|| format!("{label}: {e:#}"));
                     continue;
                 }
             };
             if let Some(charged) = search.credits {
                 *self.credits.get_or_insert(0) += charged as i32;
             }
-            let Some(found) = search.found else { continue };
+            if let Some(raw) = search.phone.as_deref().filter(|_| phones) {
+                self.take_phone(raw, label).await?;
+            }
+            let Some(found) = search.found.filter(|_| chosen.is_none()) else { continue };
             if found.verified {
-                return Some(found_by(label, found.email, "verified", format!("Found by {label}.")));
+                chosen = Some(found_by(label, found.email, "verified", format!("Found by {label}.")));
+                continue;
             }
             match self.check(&found.email).await {
                 Some(Verdict::Valid) => {
                     let checker = self.verifier.as_ref().map_or("", |v| v.service.label());
-                    return Some(found_by(label, found.email, "verified", format!("Found by {label}, verified by {checker}.")));
+                    chosen = Some(found_by(label, found.email, "verified", format!("Found by {label}, verified by {checker}.")));
                 }
                 Some(Verdict::Invalid) => {}
                 // The sender checks it again before the first email, as it does any found address.
@@ -358,7 +515,7 @@ impl<'a> Run<'a> {
                 }
             }
         }
-        fallback
+        Ok(chosen.or(fallback))
     }
 
     /// The verifier's verdict, or None when there's no verifier or it failed. Every call is shown on the integrations page
@@ -382,8 +539,7 @@ impl<'a> Run<'a> {
     /// catch-all domain says yes to every address, so it's skipped: known from an earlier search, or found when an
     /// unsure answer comes back and a made-up address gets the same.
     async fn guess(&mut self, org_id: Option<Uuid>, lead: &Lead, person: &Person<'_>, domain: &str) -> anyhow::Result<Outcome> {
-        let finders: Vec<&str> = self.finders.iter().map(|f| f.service.label()).collect();
-        let finders = finders.join(" and ");
+        let finders = and_list(self.finders.iter().map(|f| f.service.label()).collect());
         let Some(checker) = self.verifier.as_ref().map(|v| v.service.label()) else {
             return Ok(self.nothing(format!("{finders} found no address, and there's no verifier to check a guess.")));
         };
@@ -437,12 +593,22 @@ impl<'a> Run<'a> {
         Ok(self.nothing(format!("{tried}{checker} turned down every common pattern.")))
     }
 
-    /// Nothing found: a failure explains why better than the services' silence.
+    /// Nothing found: a failure explains why better than the services' silence, and a paused finder is named.
     fn nothing(&self, note: String) -> Outcome {
         match &self.failure {
             Some(failure) => Outcome::ended("failed", failure.clone()),
-            None => Outcome::ended("not_found", note),
+            None if self.paused.is_empty() => Outcome::ended("not_found", note),
+            None => Outcome::ended("not_found", format!("{note} Skipped {}.", self.paused.join("; "))),
         }
+    }
+}
+
+/// "A", "A and B", or "A, B and C".
+fn and_list(mut names: Vec<&str>) -> String {
+    match names.pop() {
+        Some(last) if !names.is_empty() => format!("{} and {last}", names.join(", ")),
+        Some(last) => last.to_string(),
+        None => String::new(),
     }
 }
 
@@ -529,7 +695,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use axum::extract::{Query, State};
+    use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
@@ -554,6 +720,25 @@ mod tests {
         mailboxes: HashMap<String, &'static str>,
         catch_all: Vec<String>,
         calls: Vec<String>,
+        /// The six newer finders' people, by "{finder} {domain}", or "kaspr {LinkedIn id}" for Kaspr.
+        people: HashMap<String, Found>,
+        /// Finders answering that they're out of credits, or past their rate limit.
+        broke: Vec<&'static str>,
+        limited: Vec<&'static str>,
+        /// Dropcontact's answers to a poll before a search is done.
+        not_ready: usize,
+    }
+
+    /// A person a finder knows: their address, whether the finder vouches for it, and their mobile.
+    #[derive(Clone, Default)]
+    struct Found {
+        email: Option<String>,
+        verified: bool,
+        mobile: Option<String>,
+    }
+
+    fn person(email: &str, verified: bool, mobile: Option<&str>) -> Found {
+        Found { email: Some(email.to_string()), verified, mobile: mobile.map(str::to_string) }
     }
 
     impl Fake {
@@ -563,6 +748,19 @@ mod tests {
 
         fn calls(&self) -> Vec<String> {
             std::mem::take(&mut self.book().calls)
+        }
+
+        /// Logs the call, and says whether the finder is out of credits or past its limit, else whom it knows there.
+        fn ask(&self, finder: &'static str, at: &str, phones: bool) -> Result<Found, &'static str> {
+            let mut book = self.book();
+            book.calls.push(format!("{finder} {at}{}", if phones { " +phone" } else { "" }));
+            if book.broke.contains(&finder) {
+                return Err("broke");
+            }
+            if book.limited.contains(&finder) {
+                return Err("limited");
+            }
+            Ok(book.people.get(&format!("{finder} {at}")).cloned().unwrap_or_default())
         }
 
         fn verdict(&self, email: &str) -> &'static str {
@@ -603,6 +801,122 @@ mod tests {
         Json(json!({"result": fake.verdict(&q["email"]), "error": ""}))
     }
 
+    fn reply(status: u16, body: Value) -> Response {
+        (StatusCode::from_u16(status).unwrap(), Json(body)).into_response()
+    }
+
+    /// A 429 with Retry-After, as RocketReach and ContactOut send it.
+    fn retry_in_two_minutes() -> Response {
+        (StatusCode::TOO_MANY_REQUESTS, [("retry-after", "120")], Json(json!({"message": "Rate limit reached"}))).into_response()
+    }
+
+    async fn pdl(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Response {
+        match fake.ask("peopledatalabs", &q["company"], false) {
+            Err("broke") => reply(402, json!({"status": 402, "error": {"type": "payment_required", "message": "You have hit your account maximum"}})),
+            // People Data Labs gives no Retry-After, only when the window resets.
+            Err(_) => (StatusCode::TOO_MANY_REQUESTS, [("x-ratelimit-reset", "2026-11-12 10:00:00")], Json(json!({"status": 429}))).into_response(),
+            Ok(Found { email: None, .. }) => reply(404, json!({"status": 404, "error": {"type": "not_found", "message": "No records were found matching your request"}})),
+            Ok(p) => Json(json!({"status": 200, "likelihood": 8, "data": {"work_email": p.email, "mobile_phone": p.mobile}})).into_response(),
+        }
+    }
+
+    async fn rocketreach(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Response {
+        match fake.ask("rocketreach", &q["current_employer"], false) {
+            Err("broke") => reply(403, json!({"detail": "You have no lookup credits remaining."})),
+            Err(_) => retry_in_two_minutes(),
+            Ok(Found { email: None, .. }) => reply(404, json!({"detail": "Not found."})),
+            // Still searching, which its status call finishes.
+            Ok(_) => Json(json!({"id": 7, "status": "searching", "emails": []})).into_response(),
+        }
+    }
+
+    async fn rocketreach_status(State(fake): State<Fake>) -> Json<Value> {
+        let book = fake.book();
+        let p = book.people.iter().find(|(k, _)| k.starts_with("rocketreach ")).map(|(_, p)| p.clone()).unwrap_or_default();
+        let smtp = if p.verified { "valid" } else { "accept-all" };
+        let phones = json!([{"number": "+1 212-555-0100", "e164": "+12125550100", "type": "direct dial"}, {"number": p.mobile, "e164": p.mobile, "type": "mobile"}]);
+        Json(json!([{"id": 7, "status": "complete", "emails": [{"email": p.email, "type": "professional", "grade": "A", "smtp_valid": smtp}], "phones": phones}]))
+    }
+
+    async fn snov_sign_in(body: String) -> Response {
+        match body.contains("client_secret=snov-secret") {
+            true => Json(json!({"access_token": "snov-token", "token_type": "Bearer", "expires_in": 3600})).into_response(),
+            false => reply(400, json!({"error": "invalid_client"})),
+        }
+    }
+
+    async fn snov_start(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {
+        let domain = body["rows"][0]["domain"].as_str().unwrap_or_default().to_string();
+        match fake.ask("snov", &domain, false) {
+            Err("limited") => (StatusCode::TOO_MANY_REQUESTS, Json(json!({"message": "Too many requests"}))).into_response(),
+            _ => Json(json!({"data": {"task_hash": domain}, "meta": {"rows": 1}})).into_response(),
+        }
+    }
+
+    async fn snov_result(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+        let book = fake.book();
+        if book.broke.contains(&"snov") {
+            return Json(json!({"status": "not_enough_credits", "data": []}));
+        }
+        let p = book.people.get(&format!("snov {}", q["task_hash"])).cloned().unwrap_or_default();
+        let result: Vec<Value> = p.email.iter().map(|e| json!({"email": e, "smtp_status": if p.verified { "valid" } else { "unknown" }})).collect();
+        Json(json!({"status": "completed", "data": [{"people": "Jane Doe", "result": result}]}))
+    }
+
+    async fn dropcontact_submit(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {
+        let domain = body["data"][0]["website"].as_str().unwrap_or_default().to_string();
+        match fake.ask("dropcontact", &domain, false) {
+            Err("broke") => reply(403, json!({"error": true, "reason": "You submitted 1 valid items but only have 0 credits left", "success": false})),
+            Err(_) => reply(429, json!({"error": true, "reason": "please retry in a few seconds", "success": false})),
+            Ok(_) => Json(json!({"error": false, "request_id": domain, "success": true, "credits_left": 99})).into_response(),
+        }
+    }
+
+    async fn dropcontact_poll(State(fake): State<Fake>, Path(id): Path<String>) -> Json<Value> {
+        let mut book = fake.book();
+        book.calls.push("dropcontact poll".into());
+        if book.not_ready > 0 {
+            book.not_ready -= 1;
+            return Json(json!({"error": false, "reason": "Request not ready yet, try again in 30 seconds", "success": false}));
+        }
+        let p = book.people.get(&format!("dropcontact {id}")).cloned().unwrap_or_default();
+        let qualification = if p.verified { "nominative@pro" } else { "catch-all@pro" };
+        let email: Vec<Value> = p.email.iter().map(|e| json!({"email": e, "qualification": qualification})).collect();
+        Json(json!({"data": [{"first_name": "Jane", "email": email, "phone": "+33 1 23 45 67 89"}], "error": false, "success": true}))
+    }
+
+    async fn contactout(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {
+        let phones = body["include"].as_array().is_some_and(|i| i.contains(&json!("phone")));
+        match fake.ask("contactout", body["company_domain"][0].as_str().unwrap_or_default(), phones) {
+            Err("broke") => reply(403, json!({"status_code": 403, "message": "You're out of credits, please email your sales manager"})),
+            Err(_) => retry_in_two_minutes(),
+            Ok(Found { email: None, mobile: None, .. }) => reply(404, json!({"status_code": 404, "message": "Not Found"})),
+            Ok(p) => {
+                let status: serde_json::Map<String, Value> = p.email.iter().map(|e| (e.clone(), json!(if p.verified { "Verified" } else { "Unverified" }))).collect();
+                let phone: Vec<&String> = p.mobile.iter().filter(|_| phones).collect();
+                Json(json!({"status_code": 200, "profile": {"work_email": p.email.iter().collect::<Vec<_>>(), "work_email_status": status, "phone": phone}}))
+                    .into_response()
+            }
+        }
+    }
+
+    async fn kaspr(State(fake): State<Fake>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+        assert_eq!(headers["accept-version"], "v2.0");
+        assert!(body["name"].as_str().is_some_and(|n| !n.is_empty()), "Kaspr needs the name: {body}");
+        let phones = body["dataToGet"].as_array().is_some_and(|d| d.contains(&json!("phone")));
+        match fake.ask("kaspr", body["id"].as_str().unwrap_or_default(), phones) {
+            Err("broke") => reply(402, json!({"message": "No credits left", "reason": "No work email credits left"})),
+            Err(_) => {
+                let headers = [("x-minutely-ratelimit-remaining", "0"), ("x-minutely-reset", "30000")];
+                (StatusCode::TOO_MANY_REQUESTS, headers, Json(json!({"message": "Too many requests, please try again later."}))).into_response()
+            }
+            Ok(p) => {
+                let phones: Vec<&String> = p.mobile.iter().filter(|_| phones).collect();
+                Json(json!({"profile": {"professionalEmails": p.email.iter().collect::<Vec<_>>(), "starryProfessionalEmail": p.email, "phones": phones}})).into_response()
+            }
+        }
+    }
+
     async fn serve() -> (Url, Fake) {
         let fake = Fake::default();
         let app = Router::new()
@@ -610,6 +924,16 @@ mod tests {
             .route("/v2/email-verifier", get(hunter_verify))
             .route("/api/search/name", post(findymail))
             .route("/api/v3/", get(millionverifier))
+            .route("/v5/person/enrich", get(pdl))
+            .route("/api/v2/person/lookup", get(rocketreach))
+            .route("/api/v2/person/checkStatus", get(rocketreach_status))
+            .route("/v1/oauth/access_token", post(snov_sign_in))
+            .route("/v2/emails-by-domain-by-name/start", post(snov_start))
+            .route("/v2/emails-by-domain-by-name/result", get(snov_result))
+            .route("/v1/enrich/all", post(dropcontact_submit))
+            .route("/v1/enrich/all/{id}", get(dropcontact_poll))
+            .route("/v1/people/enrich", post(contactout))
+            .route("/profile/linkedin", post(kaspr))
             .with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
@@ -630,19 +954,33 @@ mod tests {
         Seeded { state, org, project }
     }
 
-    async fn add_project(db: &PgPool, org: Uuid, finder: &str, verifier: &str) -> Uuid {
+    /// `finders` is a comma-separated list, in the order they're asked.
+    async fn add_project(db: &PgPool, org: Uuid, finders: &str, verifier: &str) -> Uuid {
         let project: Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Fieldnote') returning id").bind(org).fetch_one(db).await.unwrap();
-        let key = |name: &str| if name.is_empty() { String::new() } else { crypto::encrypt("", &format!("{name}-key")) };
-        sqlx::query("insert into project_settings (project_id, finder, finder_key_enc, verifier, verifier_key_enc) values ($1, $2, $3, $4, $5)")
+        // Snov.io's key is its client ID and secret.
+        let key = |name: &str| match name {
+            "" => String::new(),
+            "snov" => crypto::encrypt("", "snov-id:snov-secret"),
+            _ => crypto::encrypt("", &format!("{name}-key")),
+        };
+        sqlx::query("insert into project_settings (project_id, verifier, verifier_key_enc) values ($1, $2, $3)")
             .bind(project)
-            .bind(finder)
-            .bind(key(finder))
             .bind(verifier)
             .bind(key(verifier))
             .execute(db)
             .await
             .unwrap();
+        for (position, finder) in finders.split(',').filter(|f| !f.is_empty()).enumerate() {
+            sqlx::query("insert into project_finders (project_id, provider, key_enc, position) values ($1, $2, $3, $4)")
+                .bind(project)
+                .bind(finder)
+                .bind(key(finder))
+                .bind(position as i32)
+                .execute(db)
+                .await
+                .unwrap();
+        }
         project
     }
 
@@ -872,5 +1210,282 @@ mod tests {
         // A lead searched again counts again, and a deleted one still counts.
         sqlx::query("delete from leads where id = $1").bind(middle.id).execute(&db).await.unwrap();
         assert_eq!(searched_last_hour(&db, s.org).await.unwrap(), 4);
+    }
+
+    async fn linked(db: &PgPool, lead: Lead, slug: &str) -> Lead {
+        sqlx::query_as("update leads set linkedin_url = $2 where id = $1 returning *")
+            .bind(lead.id)
+            .bind(format!("https://www.linkedin.com/in/{slug}/"))
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    async fn find_phones(db: &PgPool, project: Uuid) {
+        sqlx::query("update project_settings set find_phones = true where project_id = $1").bind(project).execute(db).await.unwrap();
+    }
+
+    /// Seconds until the finder is asked again, or None when it isn't paused.
+    async fn paused_for(db: &PgPool, project: Uuid, finder: &str) -> Option<f64> {
+        sqlx::query_scalar("select extract(epoch from paused_until - now())::float8 from project_finders where project_id = $1 and provider = $2")
+            .bind(project)
+            .bind(finder)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    const NEW_FINDERS: [(&str, &str); 6] = [
+        ("peopledatalabs", "People Data Labs"),
+        ("rocketreach", "RocketReach"),
+        ("snov", "Snov.io"),
+        ("dropcontact", "Dropcontact"),
+        ("contactout", "ContactOut"),
+        ("kaspr", "Kaspr"),
+    ];
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn each_new_finder_finds_an_address_or_says_it_has_none(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "", "").await;
+        for (finder, label) in NEW_FINDERS {
+            let project = add_project(&db, s.org, finder, "").await;
+            // Kaspr knows people by their LinkedIn profile.
+            let (hit, miss) = if finder == "kaspr" { ("jane-doe", "sam-lee") } else { ("acme.io", "beta.io") };
+            fake.book().people.insert(format!("{finder} {hit}"), person("Jane.Doe@acme.io", true, None));
+
+            let jane = linked(&db, lead(&db, project, "Jane Doe", "acme.io").await, "jane-doe").await;
+            let jane = find(&s, &url, &jane).await;
+            assert_eq!((jane.email.as_deref(), jane.email_source.as_str()), (Some("jane.doe@acme.io"), label), "{finder}");
+            assert_eq!(jane.email_search, "found", "{finder}");
+            // People Data Labs and Kaspr don't say whether they verified it, so the sender checks it first.
+            let status = if matches!(finder, "peopledatalabs" | "kaspr") { "found" } else { "verified" };
+            assert_eq!(jane.email_status, status, "{finder}");
+
+            let sam = linked(&db, lead(&db, project, "Sam Lee", "beta.io").await, "sam-lee").await;
+            let sam = find(&s, &url, &sam).await;
+            assert_eq!((sam.email, sam.email_search.as_str(), sam.email_search_lookups), (None, "not_found", 1), "{finder}");
+            assert_eq!(sam.email_search_note, format!("{label} found no address, and there's no verifier to check a guess."));
+            let calls = fake.calls();
+            assert!(calls.contains(&format!("{finder} {hit}")) && calls.contains(&format!("{finder} {miss}")), "{calls:?}");
+        }
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_finder_out_of_credits_or_past_its_limit_is_skipped_without_failing_the_lead(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "", "").await;
+        for (finder, label) in NEW_FINDERS {
+            for limited in [false, true] {
+                let project = add_project(&db, s.org, &format!("{finder},findymail"), "").await;
+                {
+                    let mut book = fake.book();
+                    book.broke.clear();
+                    book.limited.clear();
+                    if limited { book.limited.push(finder) } else { book.broke.push(finder) }
+                    book.findymail.insert("acme.io".into(), "jane@acme.io".into());
+                }
+                let jane = find(&s, &url, &linked(&db, lead(&db, project, "Jane Doe", "acme.io").await, "jane-doe").await).await;
+                assert_eq!((jane.email.as_deref(), jane.email_source.as_str()), (Some("jane@acme.io"), "Findymail"), "{finder} {limited}");
+
+                // Out of credits waits an hour, a rate limit as long as the finder says.
+                let wait = paused_for(&db, project, finder).await.unwrap_or_else(|| panic!("{finder} isn't paused"));
+                let want = match (finder, limited) {
+                    (_, false) => 3600.0,
+                    ("rocketreach" | "contactout", true) => 120.0,
+                    ("kaspr", true) => 30.0,
+                    _ => 60.0,
+                };
+                assert!((want - 5.0..=want).contains(&wait), "{finder} {limited}: paused for {wait}s, not {want}s");
+                let error: Option<String> =
+                    sqlx::query_scalar("select error from project_finders where project_id = $1 and provider = $2").bind(project).bind(finder).fetch_one(&db).await.unwrap();
+                assert!(error.is_some_and(|e| e.contains(if limited { "rate limit" } else { "out of credits" })), "{finder} {limited}");
+
+                // While it's paused, nobody's search asks it, and one that finds nothing names it without failing.
+                fake.calls();
+                let sam = find(&s, &url, &linked(&db, lead(&db, project, "Sam Lee", "beta.io").await, "sam-lee").await).await;
+                assert_eq!(fake.calls(), ["findymail beta.io"], "{finder} {limited}");
+                assert_eq!(sam.email_search, "not_found");
+                sqlx::query("update project_finders set paused_until = null where project_id = $1").bind(project).execute(&db).await.unwrap();
+                let kim = find(&s, &url, &linked(&db, lead(&db, project, "Kim Ek", "gamma.io").await, "kim-ek").await).await;
+                assert_eq!(kim.email_search, "not_found", "{finder} {limited}: {}", kim.email_search_note);
+                assert!(kim.email_search_note.contains(&format!("Skipped {label}: ")), "{}", kim.email_search_note);
+                fake.calls();
+            }
+        }
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn dropcontact_is_read_again_until_its_search_is_done(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "dropcontact", "").await;
+        {
+            let mut book = fake.book();
+            book.people.insert("dropcontact acme.io".into(), person("jane.doe@acme.io", false, None));
+            book.not_ready = 2;
+        }
+        let jane = find(&s, &url, &lead(&db, s.project, "Jane Doe", "acme.io").await).await;
+        assert_eq!(fake.calls(), ["dropcontact acme.io", "dropcontact poll", "dropcontact poll", "dropcontact poll"]);
+        // On a catch-all domain, so it's kept unconfirmed.
+        assert_eq!((jane.email.as_deref(), jane.email_status.as_str()), (Some("jane.doe@acme.io"), "found"));
+        assert_eq!(jane.email_search_note, "Found by Dropcontact, not verified yet.");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn kaspr_is_only_asked_about_leads_with_a_linkedin_profile(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "kaspr,snov", "").await;
+        fake.book().people.insert("kaspr jane-doe".into(), person("jane@acme.io", false, None));
+        fake.book().people.insert("snov beta.io".into(), person("sam@beta.io", true, None));
+
+        let sam = find(&s, &url, &lead(&db, s.project, "Sam Lee", "beta.io").await).await;
+        assert_eq!(fake.calls(), ["snov beta.io"]);
+        assert_eq!((sam.email.as_deref(), sam.email_search_lookups), (Some("sam@beta.io"), 1));
+
+        let jane = find(&s, &url, &linked(&db, lead(&db, s.project, "Jane Doe", "acme.io").await, "jane-doe").await).await;
+        assert_eq!(fake.calls()[0], "kaspr jane-doe");
+        assert_eq!(jane.email.as_deref(), Some("jane@acme.io"));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn finders_are_asked_in_the_projects_order(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "kaspr,snov,peopledatalabs", "").await;
+        {
+            let mut book = fake.book();
+            book.people.insert("kaspr jane-doe".into(), person("jane@acme.io", false, None));
+            book.people.insert("kaspr sam-lee".into(), person("sam@acme.io", false, None));
+            for who in ["jane", "sam"] {
+                book.people.insert(format!("snov {who}.io"), person(&format!("{who}@{who}.io"), true, None));
+                book.people.insert(format!("peopledatalabs {who}.io"), person(&format!("{who}@{who}.io"), false, None));
+            }
+        }
+        // Kaspr's answer isn't verified, so the next finder is asked, and Snov.io's verified one wins. Nobody asks People Data Labs.
+        let jane = find(&s, &url, &linked(&db, lead(&db, s.project, "Jane Doe", "jane.io").await, "jane-doe").await).await;
+        assert_eq!(fake.calls(), ["kaspr jane-doe", "snov jane.io"]);
+        assert_eq!(jane.email_source, "Snov.io");
+
+        crate::routes::finders::set_order(&db, s.project, &["peopledatalabs".into(), "snov".into(), "kaspr".into()]).await.unwrap();
+        let sam = find(&s, &url, &linked(&db, lead(&db, s.project, "Sam Lee", "sam.io").await, "sam-lee").await).await;
+        assert_eq!(fake.calls(), ["peopledatalabs sam.io", "snov sam.io"]);
+        assert_eq!((sam.email.as_deref(), sam.email_source.as_str()), (Some("sam@sam.io"), "Snov.io"));
+    }
+
+    async fn us_lead(db: &PgPool, project: Uuid, name: &str, domain: &str) -> Lead {
+        let l = lead(db, project, name, domain).await;
+        sqlx::query_as("update leads set country_code = 'US' where id = $1 returning *").bind(l.id).fetch_one(db).await.unwrap()
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn finders_fill_an_empty_phone_when_the_project_asks(db: PgPool) {
+        let (url, fake) = serve().await;
+        // Snov.io finds the address and has no phones, so People Data Labs and RocketReach are asked for one after it.
+        let s = seed(&db, "snov,peopledatalabs,rocketreach", "").await;
+        {
+            let mut book = fake.book();
+            for who in ["jane", "sam", "kim", "ola"] {
+                book.people.insert(format!("snov {who}.io"), person(&format!("{who}@{who}.io"), true, None));
+                book.people.insert(format!("peopledatalabs {who}.io"), person(&format!("{who}@{who}.io"), false, Some("415.555.0134")));
+            }
+            book.people.insert("rocketreach kim.io".into(), Found { email: Some("kim@kim.io".into()), mobile: Some("+1 202 555 0177".into()), ..Found::default() });
+        }
+
+        // Off by default: nobody is asked for a phone.
+        let jane = find(&s, &url, &us_lead(&db, s.project, "Jane Doe", "jane.io").await).await;
+        assert_eq!((jane.email.as_deref(), jane.phone.as_str()), (Some("jane@jane.io"), ""));
+        assert_eq!(fake.calls(), ["snov jane.io"]);
+
+        // On: People Data Labs' local number is read as the lead's country's, and RocketReach isn't asked once there's one.
+        find_phones(&db, s.project).await;
+        let sam = find(&s, &url, &us_lead(&db, s.project, "Sam Lee", "sam.io").await).await;
+        assert_eq!((sam.email.as_deref(), sam.email_source.as_str()), (Some("sam@sam.io"), "Snov.io"));
+        assert_eq!((sam.phone.as_str(), sam.phone_source.as_str()), ("+14155550134", "People Data Labs"));
+        assert_eq!(fake.calls(), ["snov sam.io", "peopledatalabs sam.io"]);
+
+        // A number on the do-not-contact list is skipped, and the next finder's mobile is used, not its direct dial.
+        crate::routes::suppressions::insert(&db, s.org, ["+1 415 555 0134"]).await.unwrap();
+        let kim = find(&s, &url, &us_lead(&db, s.project, "Kim Ek", "kim.io").await).await;
+        assert_eq!((kim.phone.as_str(), kim.phone_source.as_str()), ("+12025550177", "RocketReach"));
+        assert_eq!(fake.calls(), ["snov kim.io", "peopledatalabs kim.io", "rocketreach kim.io"]);
+
+        // A lead's own phone is never replaced, so nobody is asked for one.
+        let ola = us_lead(&db, s.project, "Ola Berg", "ola.io").await;
+        sqlx::query("update leads set phone = '+447700900123' where id = $1").bind(ola.id).execute(&db).await.unwrap();
+        let ola = find(&s, &url, &reload(&db, &ola).await).await;
+        assert_eq!((ola.phone.as_str(), ola.phone_source.as_str()), ("+447700900123", ""));
+        assert_eq!(fake.calls(), ["snov ola.io"]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn only_numbers_marked_as_mobiles_fill_a_phone(db: PgPool) {
+        let (url, fake) = serve().await;
+        // ContactOut and Kaspr list phones without saying which are mobiles, so they're never asked for one.
+        let s = seed(&db, "contactout,kaspr", "").await;
+        find_phones(&db, s.project).await;
+        {
+            let mut book = fake.book();
+            book.people.insert("contactout acme.io".into(), person("jane@acme.io", true, Some("+1 415 555 0134")));
+            book.people.insert("kaspr jane-doe".into(), person("jane@acme.io", false, Some("+1 202 555 0177")));
+        }
+        let jane = find(&s, &url, &linked(&db, us_lead(&db, s.project, "Jane Doe", "acme.io").await, "jane-doe").await).await;
+        assert_eq!((jane.email.as_deref(), jane.phone.as_str()), (Some("jane@acme.io"), ""));
+        assert_eq!(fake.calls(), ["contactout acme.io"]);
+
+        // RocketReach's direct dial isn't a mobile, so it's left out.
+        let other = add_project(&db, s.org, "rocketreach", "").await;
+        find_phones(&db, other).await;
+        fake.book().people.insert("rocketreach beta.io".into(), person("sam@beta.io", true, None));
+        let sam = find(&s, &url, &us_lead(&db, other, "Sam Lee", "beta.io").await).await;
+        assert_eq!((sam.email.as_deref(), sam.phone.as_str()), (Some("sam@beta.io"), ""));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_pause_is_never_shortened_and_is_read_again_before_each_call(db: PgPool) {
+        let (url, fake) = serve().await;
+        let s = seed(&db, "snov,findymail", "").await;
+        let enc: String = sqlx::query_scalar("select key_enc from project_finders where project_id = $1 and provider = 'snov'")
+            .bind(s.project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+        // A rate limit's minute answered after an hour without credits leaves the hour.
+        pause(&db, s.project, &enc, Duration::from_secs(3600)).await.unwrap();
+        pause(&db, s.project, &enc, Duration::from_secs(60)).await.unwrap();
+        let wait = paused_for(&db, s.project, "snov").await.unwrap();
+        assert!(wait > 3590.0, "paused for {wait}s");
+
+        // A search that loaded its finders before the pause still doesn't call it.
+        sqlx::query("update project_finders set paused_until = null where project_id = $1").bind(s.project).execute(&db).await.unwrap();
+        let loaded = finders(&db, "", s.project).await.unwrap();
+        pause(&db, s.project, &enc, Duration::from_secs(60)).await.unwrap();
+        let jane = Person { first: "Jane", last: "Doe", linkedin: "", company: "" };
+        let asked = TEST_API.scope(url.clone(), ask(&db, s.project, &loaded[0], &jane, "acme.io", false)).await;
+        assert!(matches!(asked, Asked::Skipped(_)));
+        assert!(fake.calls().is_empty());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_phone_suppressed_while_the_search_ran_is_not_saved(db: PgPool) {
+        let s = seed(&db, "rocketreach", "").await;
+        let with_phone = |phone: &str| Outcome { phone: Some((phone.to_string(), "RocketReach")), ..Outcome::ended("not_found", "") };
+        let jane = lead(&db, s.project, "Jane Doe", "acme.io").await;
+        let sam = lead(&db, s.project, "Sam Lee", "beta.io").await;
+        crate::routes::suppressions::insert(&db, s.org, ["+1 415 555 0134"]).await.unwrap();
+
+        save(&db, &jane, &with_phone("+14155550134")).await.unwrap();
+        save(&db, &sam, &with_phone("+12025550177")).await.unwrap();
+        let (jane, sam) = (reload(&db, &jane).await, reload(&db, &sam).await);
+        assert_eq!((jane.phone.as_str(), jane.phone_source.as_str(), jane.email_search.as_str()), ("", "", "not_found"));
+        assert_eq!((sam.phone.as_str(), sam.phone_source.as_str()), ("+12025550177", "RocketReach"));
     }
 }

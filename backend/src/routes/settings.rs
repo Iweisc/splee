@@ -15,7 +15,7 @@ use crate::hooks;
 use crate::models::{ProjectSettings, WebhookDelivery};
 use crate::state::AppState;
 use crate::unipile;
-use crate::verify::{Finder, Verifier};
+use crate::verify::Verifier;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -27,7 +27,6 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/{crm}", put(connect_crm).delete(disconnect_crm))
         // Static, so it wins over {crm} above.
         .route("/projects/{id}/integrations/verifier", put(connect_verifier).delete(disconnect_verifier))
-        .route("/projects/{id}/integrations/finder", put(connect_finder).delete(disconnect_finder))
         .route("/projects/{id}/integrations/unipile", put(connect_unipile).delete(disconnect_unipile))
 }
 
@@ -420,7 +419,7 @@ async fn set_crm_token(db: &PgPool, id: Uuid, crm: Crm, enc: &str) -> AppResult<
     Ok(Json(settings))
 }
 
-/// A service and its API key, for Email verification or Email finder.
+/// A service and its API key, for Email verification.
 #[derive(Deserialize)]
 struct ServiceKey {
     provider: String,
@@ -449,30 +448,6 @@ async fn disconnect_verifier(State(state): State<AppState>, auth: Auth, Path(id)
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
     set_verifier(&state.db, id, "", "").await
-}
-
-/// Saves an email finder key once the service accepts it.
-async fn connect_finder(
-    State(state): State<AppState>,
-    auth: Auth,
-    Path(id): Path<Uuid>,
-    Json(body): Json<ServiceKey>,
-) -> AppResult<Json<ProjectSettings>> {
-    auth.project(&state.db, id).await?;
-    load_or_create(&state.db, id).await?;
-    let finder = Finder::parse(&body.provider).ok_or_else(|| AppError::BadRequest("Pick an email finder".into()))?;
-    let key = body.key.trim();
-    if key.is_empty() {
-        return Err(AppError::BadRequest(format!("Paste your {} API key", finder.label())));
-    }
-    finder.check_key(key).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that key: {e:#}", finder.label())))?;
-    set_finder(&state.db, id, &body.provider, &crypto::encrypt(&state.cfg.app_secret, key)).await
-}
-
-async fn disconnect_finder(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
-    auth.project(&state.db, id).await?;
-    load_or_create(&state.db, id).await?;
-    set_finder(&state.db, id, "", "").await
 }
 
 #[derive(Deserialize)]
@@ -540,18 +515,6 @@ async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str
     .bind(account)
     .bind(name)
     .bind(hooks)
-    .fetch_one(db)
-    .await?;
-    Ok(Json(settings))
-}
-
-async fn set_finder(db: &PgPool, id: Uuid, provider: &str, enc: &str) -> AppResult<Json<ProjectSettings>> {
-    let settings = sqlx::query_as::<_, ProjectSettings>(
-        "update project_settings set finder = $2, finder_key_enc = $3, finder_error = null, finder_failed_at = null where project_id = $1 returning *",
-    )
-    .bind(id)
-    .bind(provider)
-    .bind(enc)
     .fetch_one(db)
     .await?;
     Ok(Json(settings))

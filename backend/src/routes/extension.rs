@@ -226,12 +226,7 @@ async fn add_lead(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): J
     let mut email_search = None;
     let mut note = None;
     if body.find_email && body.email.trim().is_empty() {
-        let connected: bool =
-            sqlx::query_scalar("select exists (select 1 from project_settings where project_id = $1 and (finder <> '' or verifier <> ''))")
-                .bind(body.project_id)
-                .fetch_one(&state.db)
-                .await?;
-        if !connected {
+        if !crate::waterfall::connected(&state.db, body.project_id).await? {
             note = Some("Connect an email finder or verifier under Integrations to find the email.");
         } else if !has_domain {
             note = Some("Add the company's website to find the email.");
@@ -497,7 +492,7 @@ mod tests {
         assert_eq!(added["email_search"], Value::Null);
         assert!(added["note"].as_str().unwrap().contains("Connect an email finder"));
 
-        sqlx::query("insert into project_settings (project_id, finder) values ($1, 'hunter') on conflict (project_id) do update set finder = 'hunter'")
+        sqlx::query("insert into project_finders (project_id, provider, key_enc, position) values ($1, 'hunter', '', 0)")
             .bind(project)
             .execute(&s.db)
             .await

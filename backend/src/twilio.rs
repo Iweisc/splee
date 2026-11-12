@@ -882,6 +882,7 @@ pub(crate) mod tests {
             linkedin_url: String::new(),
             x_url: String::new(),
             phone: String::new(),
+            phone_source: String::new(),
             company_name: String::new(),
             company_domain: None,
             city: String::new(),

@@ -165,6 +165,7 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
             <a href={`tel:${lead.phone}`} className="tabular-nums hover:underline">
               {lead.phone}
             </a>
+            {lead.phone_source && <p className="text-xs text-muted-foreground">Mobile found by {lead.phone_source}.</p>}
           </Detail>
         )}
         {lead.linkedin_url && (
