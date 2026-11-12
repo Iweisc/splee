@@ -69,6 +69,7 @@ where
     let (project, profile) = load_project(ctx, meeting.project_id).await?;
     let org_id = project.org_id.context("the project has no organization")?;
     let settings = WriterSettings::load(ctx, meeting.project_id).await?;
+    let lang = crate::language::for_lead(db, lead.id).await?;
     let stages = crate::deals::stages(db, org_id).await?;
     let latest_deal = crate::deals::for_lead(db, lead.id).await?;
     let deal = latest_deal.clone().filter(|d| d.status == "open");
@@ -84,7 +85,7 @@ where
          2. List the next steps that were agreed or are clearly needed, 1 to 5 short items, each starting with a verb.\n\
          3. Write the follow-up email to {first} from {sender}: thank them, recap what was agreed and the next steps, and \
          confirm the next meeting if one was set. At most 150 words. Tone: {tone}. Start with a greeting and their first name. \
-         No sign-off. Give it a short subject too.\n\
+         No sign-off. Give it a short subject too. {language} Write the summary, next steps and stage reason in English.\n\
          4. The deal is {deal_stage}. The stages are, in order: {stages}. Pick the stage the meeting moves it to, using a name \
          exactly as written, or an empty string when it should stay where it is. Say why in one sentence.",
         us = profile.name,
@@ -99,6 +100,7 @@ where
         transcript = if transcript.trim().is_empty() { "(none)" } else { transcript.trim() },
         first = if lead.first_name.is_empty() { "the lead" } else { &lead.first_name },
         tone = settings.tone,
+        language = crate::language::instruction(lang),
         deal_stage = deal.as_ref().map_or("not opened yet".to_string(), |d| format!("in {}", d.stage)),
         stages = stage_names.join(", "),
     );
@@ -144,8 +146,8 @@ where
                 None => (None, notes.follow_up_subject.trim().to_string()),
             };
             let id: Uuid = sqlx::query_scalar(
-                "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email)
-                 values ($1, $2, $3, $4, 'outbound', 'meeting_follow_up', $5, $6, 'draft', $7) returning id",
+                "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email, language)
+                 values ($1, $2, $3, $4, 'outbound', 'meeting_follow_up', $5, $6, 'draft', $7, $8) returning id",
             )
             .bind(lead.project_id)
             .bind(lead.id)
@@ -154,6 +156,7 @@ where
             .bind(subject)
             .bind(settings.sign(notes.follow_up_body.trim()))
             .bind(&lead.email)
+            .bind(lang.code)
             .fetch_one(&mut *tx)
             .await?;
             Some(id)

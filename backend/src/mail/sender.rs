@@ -353,10 +353,10 @@ fn swap_signature(body: &str, old: &str, new: &str) -> String {
     }
 }
 
-/// Cold emails carry an unsubscribe footer. Replies go without one, like any other message in a conversation.
-pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str) -> String {
+/// Cold emails carry an unsubscribe footer, in the email's language. Replies go without one, like any other message in a conversation.
+pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str, language: &str) -> String {
     if kind == "initial" || kind == "follow_up" {
-        format!("{}\n\n--\nNot relevant? Unsubscribe: {unsubscribe_page}", body.trim_end())
+        format!("{}\n\n--\n{} {unsubscribe_page}", body.trim_end(), crate::language::or_english(language).footer)
     } else {
         body.trim_end().to_string()
     }
@@ -398,7 +398,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let one_click = format!("{}/api/unsubscribe/{}", state.cfg.unsubscribe_url, lead.unsubscribe_token);
     // Saved as sent, so the app shows the signature the lead got.
     let email = EmailMessage { body: as_mailbox(&state.db, &email, &mb).await?, ..email };
-    let body = with_footer(&email.kind, &email.body, &unsubscribe_page);
+    let body = with_footer(&email.kind, &email.body, &unsubscribe_page, &email.language);
     let tracked = crate::tracking::prepare(state, &email, &mb, &body).await?;
 
     let built = smtp::build(
@@ -759,9 +759,23 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite, swap_link, swap_signature};
+    use super::{
+        MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite, swap_link,
+        swap_signature, with_footer,
+    };
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
+
+    #[test]
+    fn the_unsubscribe_footer_is_in_the_emails_language() {
+        let page = "https://s.example/unsubscribe/t1";
+        assert_eq!(with_footer("initial", "Guten Tag\n", page, "de"), "Guten Tag\n\n--\nNicht relevant? Abmelden: https://s.example/unsubscribe/t1");
+        assert_eq!(with_footer("follow_up", "Bonjour", page, "fr"), "Bonjour\n\n--\nPas pertinent ? Se désinscrire : https://s.example/unsubscribe/t1");
+        assert_eq!(with_footer("initial", "Hola", page, "es"), "Hola\n\n--\n¿No le interesa? Darse de baja: https://s.example/unsubscribe/t1");
+        // English for emails written before languages, and replies get no footer in any language.
+        assert_eq!(with_footer("initial", "Hi", page, ""), "Hi\n\n--\nNot relevant? Unsubscribe: https://s.example/unsubscribe/t1");
+        assert_eq!(with_footer("auto_reply", "Hallo", page, "de"), "Hallo");
+    }
 
     #[test]
     fn the_sending_mailbox_links_its_own_calendar() {

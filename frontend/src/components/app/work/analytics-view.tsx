@@ -153,6 +153,7 @@ type CampaignRow = Analytics["campaigns"][number];
 type MailboxRow = Analytics["mailboxes"][number];
 type StepRow = Analytics["steps"][number];
 type ChannelRow = Analytics["channels"][number];
+type LanguageRow = Analytics["languages"][number];
 type AngleRow = NonNullable<Analytics["angles"]>[number];
 
 const WIDE = "hidden sm:table-cell";
@@ -269,6 +270,14 @@ function revenueColumns(currency: string): Column<CampaignRow>[] {
 
 const CHANNEL_NAMES: Record<ChannelRow["channel"], string> = { email: "Email", linkedin: "LinkedIn", sms: "SMS", whatsapp: "WhatsApp", call: "Calls", social: "Social posts" };
 
+const LANGUAGE_COLUMNS: Column<LanguageRow>[] = [
+  { label: "Language", value: (r) => r.name },
+  { label: "Sent", value: (r) => r.sent, numeric: true },
+  { label: "Leads", value: (r) => r.contacted, numeric: true, className: WIDE },
+  { label: "Replies", value: (r) => r.replies, numeric: true, className: WIDE },
+  { label: "Reply rate", value: (r) => rateCell(r.reply_rate), render: (r) => rateText(r.reply_rate), numeric: true },
+];
+
 const CHANNEL_COLUMNS: Column<ChannelRow>[] = [
   { label: "Channel", value: (r) => CHANNEL_NAMES[r.channel] },
   { label: "Sent", value: (r) => r.sent, numeric: true },
@@ -346,26 +355,33 @@ export function AnalyticsView({ data, validating, shared }: { data?: Analytics; 
               rowKey={(r) => r.variant_id}
             />
           )}
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Breakdown
-              title="Follow-ups"
-              hint="A reply counts for the last email the lead got before it, so you can see whether each follow-up earns its place."
-              rows={data.steps}
-              columns={stepColumns(data.steps)}
-              sortBy={0}
-              file={`splee-steps-${slug}.csv`}
-              rowKey={(r) => String(r.step)}
-            />
-            <Breakdown
-              title="Channels"
-              hint="LinkedIn replies only stop the sequence, so Splee doesn't count them. For calls, sent is calls made, and connect rate is the share where someone picked up and talked."
-              rows={data.channels}
-              columns={CHANNEL_COLUMNS}
-              file={`splee-channels-${slug}.csv`}
-              rowKey={(r) => r.channel}
-              rowClass={(r) => (r.sent === 0 ? "text-muted-foreground" : undefined)}
-            />
-          </div>
+          <Breakdown
+            title="Follow-ups"
+            hint="A reply counts for the last email the lead got before it, so you can see whether each follow-up earns its place."
+            rows={data.steps}
+            columns={stepColumns(data.steps)}
+            sortBy={0}
+            file={`splee-steps-${slug}.csv`}
+            rowKey={(r) => String(r.step)}
+          />
+          <Breakdown
+            title="Channels"
+            hint="LinkedIn replies only stop the sequence, so Splee doesn't count them. For calls, sent is calls made, and connect rate is the share where someone picked up and talked."
+            rows={data.channels}
+            columns={CHANNEL_COLUMNS}
+            file={`splee-channels-${slug}.csv`}
+            rowKey={(r) => r.channel}
+            rowClass={(r) => (r.sent === 0 ? "text-muted-foreground" : undefined)}
+          />
+          <Breakdown
+            title="Languages"
+            hint="The language of the emails each lead got. A reply counts for the language of the last email before it. Reply rate is by lead."
+            rows={data.languages}
+            columns={LANGUAGE_COLUMNS}
+            sortBy={2}
+            file={`splee-languages-${slug}.csv`}
+            rowKey={(r) => r.language}
+          />
           {(!shared || shared.mailboxes) && (
             <Breakdown title="Mailboxes" rows={data.mailboxes} columns={MAILBOX_COLUMNS} file={`splee-mailboxes-${slug}.csv`} rowKey={(r) => r.mailbox_id ?? "none"} />
           )}

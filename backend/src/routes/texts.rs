@@ -270,9 +270,10 @@ struct Thread {
 async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<ListQuery>) -> AppResult<Json<Vec<Thread>>> {
     auth.project(&state.db, id).await?;
     let leads = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT}
+        "{}
          where l.project_id = $1 and ($2::uuid is null or l.segment_id = $2) and exists (select 1 from text_messages t where t.lead_id = l.id)
-         order by (select max(t.created_at) from text_messages t where t.lead_id = l.id) desc limit 500"
+         order by (select max(t.created_at) from text_messages t where t.lead_id = l.id) desc limit 500",
+        *LEAD_ROW_SELECT
     ))
     .bind(id)
     .bind(q.segment_id)

@@ -1,5 +1,7 @@
 // Mirrors backend/src/models.rs and the response shapes in SPEC.md. Change them together.
 
+import type { CampaignLanguage, LanguageCode, LanguageSource } from "./languages";
+
 export type UUID = string;
 export type Ts = string;
 
@@ -544,6 +546,8 @@ export interface Analytics {
     connect_rate: number | null;
     meetings: number | null;
   }[];
+  /** By the language of the emails leads got, most leads first. The rate is by lead. */
+  languages: { language: LanguageCode; name: string; sent: number; contacted: number; replies: number; reply_rate: number | null }[];
 }
 
 export type ReportRange = "last_7" | "last_30" | "last_90" | "month_to_date";
@@ -742,6 +746,8 @@ export interface Segment {
   track_clicks: boolean;
   /** Whether its emails carry a pixel to count opens. Off for new campaigns, since it can hurt inbox placement. */
   track_opens: boolean;
+  /** What it writes in: English by default, one fixed language, or "lead" for each lead's own. */
+  language: CampaignLanguage;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */
@@ -1014,6 +1020,14 @@ export interface Lead extends Scored {
   email_searched_at: Ts | null;
   /** The team member who works the lead. */
   owner_id: UUID | null;
+  /** A code from LANGUAGES set on the lead, or "" to go by their country and their company's website. */
+  language: string;
+}
+
+/** The lead's own language, as a campaign set to each lead's language picks it, and where it came from. */
+export interface EffectiveLanguage {
+  effective_language: LanguageCode;
+  effective_language_source: LanguageSource;
 }
 
 export const FINDER_NAMES = {
@@ -1060,7 +1074,7 @@ export interface EmailSearchProgress {
   hourly: number;
 }
 
-export interface LeadRow extends Lead {
+export interface LeadRow extends Lead, EffectiveLanguage {
   segment_name: string | null;
   last_email_status: string | null;
   /** The watched roles that open posts at their company match, newest first. */
@@ -1082,7 +1096,7 @@ export interface EmailEvent {
   last_at: Ts;
 }
 
-export interface LeadDetail extends Lead {
+export interface LeadDetail extends Lead, EffectiveLanguage {
   segment_name: string | null;
   company: Company | null;
   emails: EmailMessage[];
@@ -1351,6 +1365,8 @@ export interface EmailMessage {
   variant_id: UUID | null;
   /** "sms" or "whatsapp" for a lead's answer to a text. */
   channel: "email" | TextChannel;
+  /** The language Splee wrote it in, "" for English or an email it didn't write. */
+  language: string;
 }
 
 export type TextChannel = "sms" | "whatsapp";
@@ -2268,6 +2284,7 @@ export const LEAD_IMPORT_FIELDS: { key: string; label: string }[] = [
   { key: "city", label: "City" },
   { key: "country_code", label: "Country code" },
   { key: "phone", label: "Phone" },
+  { key: "language", label: "Language" },
 ];
 
 /** The lead events a Google Sheets export can write. Keep in sync with export::EVENTS in backend/src/sheets/export.rs. */

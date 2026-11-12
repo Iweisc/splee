@@ -7,11 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, Spinner } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { ApiError, api } from "@/lib/api";
+import { type LanguageCode, RTL, UNSUBSCRIBE_TEXT } from "@/lib/languages";
 
 // Opening this page doesn't unsubscribe anyone. Mail security scanners open links in a real browser, so only the button does.
+// It's in the language of the last email they got. The error states stay English, since a bad link can't say which that was.
 export function UnsubscribeCard({ token }: { token: string }) {
   const path = `/unsubscribe/${encodeURIComponent(token)}`;
-  const { data, error, mutate } = useSWR<{ email: string | null; unsubscribed: boolean }>(path, fetcher);
+  const { data, error, mutate } = useSWR<{ email: string | null; unsubscribed: boolean; language: LanguageCode }>(path, fetcher);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -20,7 +22,7 @@ export function UnsubscribeCard({ token }: { token: string }) {
     setFailed(false);
     try {
       await api(path, { method: "POST" });
-      await mutate({ email: data?.email ?? null, unsubscribed: true }, { revalidate: false });
+      await mutate({ email: data?.email ?? null, unsubscribed: true, language: data?.language ?? "en" }, { revalidate: false });
     } catch {
       setFailed(true);
     } finally {
@@ -28,6 +30,7 @@ export function UnsubscribeCard({ token }: { token: string }) {
     }
   };
 
+  const text = UNSUBSCRIBE_TEXT[data?.language ?? "en"] ?? UNSUBSCRIBE_TEXT.en;
   // A long address is wider than the card on phones. It breaks after the @ first, and anywhere only if a part is still too long.
   const [user, domain] = data?.email?.split(/@(.*)/) ?? [];
   const address = data?.email ? (
@@ -41,12 +44,25 @@ export function UnsubscribeCard({ token }: { token: string }) {
       )}
     </strong>
   ) : (
-    "This address"
+    text.thisAddress
+  );
+  // The address goes where the language puts it in the sentence.
+  const [before, after] = text.willStop.split("{address}");
+  const willStop = (
+    <p className="text-sm text-muted-foreground">
+      {before}
+      {address}
+      {after}
+    </p>
   );
 
   return (
     // Balanced lines, so a heading that just misses one line on a phone doesn't leave a word alone on the second.
-    <Card className="flex w-full max-w-[420px] flex-col items-center gap-3 p-8 text-center text-balance">
+    <Card
+      className="flex w-full max-w-[420px] flex-col items-center gap-3 p-8 text-center text-balance"
+      lang={data?.language}
+      dir={data && RTL.includes(data.language) ? "rtl" : undefined}
+    >
       {/* Only a 404 means the link is bad. When Splee can't be reached, the same link works once it can. */}
       {error instanceof ApiError && error.status === 404 ? (
         <>
@@ -68,17 +84,17 @@ export function UnsubscribeCard({ token }: { token: string }) {
       ) : data.unsubscribed ? (
         <>
           <CircleCheck className="size-6 text-brand-600" />
-          <h1 className="text-xl font-medium">You&apos;re unsubscribed</h1>
-          <p className="text-sm text-muted-foreground">{address} won&apos;t get any more emails from this sender.</p>
+          <h1 className="text-xl font-medium">{text.done}</h1>
+          {willStop}
         </>
       ) : (
         <>
-          <h1 className="text-xl font-medium">Unsubscribe?</h1>
-          <p className="text-sm text-muted-foreground">{address} won&apos;t get any more emails from this sender.</p>
+          <h1 className="text-xl font-medium">{text.title}</h1>
+          {willStop}
           <Button className="mt-2 w-full" onClick={confirm} loading={busy}>
-            Unsubscribe
+            {text.button}
           </Button>
-          {failed && <p className="text-sm text-danger">That didn&apos;t go through. Try again, or reply to the email and ask the sender to stop.</p>}
+          {failed && <p className="text-sm text-danger">{text.failed}</p>}
         </>
       )}
     </Card>

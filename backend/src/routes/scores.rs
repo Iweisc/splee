@@ -72,7 +72,8 @@ async fn set_signals(
 async fn hottest(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<LeadRow>>> {
     auth.project(&state.db, id).await?;
     let leads = sqlx::query_as::<_, LeadRow>(&format!(
-        "{LEAD_ROW_SELECT} where l.project_id = $1 and l.score_intent > 0 order by l.score_intent desc, l.score desc, l.id limit 5"
+        "{} where l.project_id = $1 and l.score_intent > 0 order by l.score_intent desc, l.score desc, l.id limit 5",
+        *LEAD_ROW_SELECT
     ))
     .bind(id)
     .fetch_all(&state.db)

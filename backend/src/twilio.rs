@@ -24,8 +24,12 @@ use crate::state::AppState;
 
 pub const API_URL: &str = "https://api.twilio.com";
 pub const CONTENT_URL: &str = "https://content.twilio.com";
-/// Twilio's opt-out words. Any of them alone in a text puts the number on the do-not-contact list.
-const STOP_WORDS: [&str; 6] = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
+/// Twilio's opt-out words, then the common ones in the languages Splee writes texts in (see language.rs). Any of them alone
+/// in a text puts the number on the do-not-contact list. Twilio itself only blocks the English ones.
+const STOP_WORDS: [&str; 24] = [
+    "STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "STOPP", "ABMELDEN", "ARRET", "ARRÊT", "DESINSCRIRE", "DÉSINSCRIRE", "BAJA",
+    "DARSE DE BAJA", "CANCELAR", "PARAR", "SAIR", "CANCELLA", "AFMELDEN", "AFMELD", "AVSLUTA", "AVMELD", "REZYGNUJ", "ODHLÁSIT",
+];
 /// Two SMS segments. Past that a text costs more and reads like a pitch.
 pub const SMS_MAX_CHARS: usize = 320;
 /// After the lead last wrote on WhatsApp, how long free text can go to them. Outside it only an approved template can.
@@ -817,7 +821,11 @@ pub(crate) mod tests {
         for body in ["STOP", " stop ", "Stop.", "STOPALL", "unsubscribe", "Cancel", "end", "QUIT!"] {
             assert!(is_stop(body), "{body}");
         }
-        for body in ["Don't stop", "stop by Tuesday?", "Ended up booking", ""] {
+        // The same in the languages Splee writes in, accents and all.
+        for body in ["Stopp", "abmelden", "Arrêt", "arret", "Darse de baja.", "baja", "Parar", "afmelden", "Cancella!", "odhlásit"] {
+            assert!(is_stop(body), "{body}");
+        }
+        for body in ["Bitte nicht abmelden, gerne mehr", "Baja California?", "Don't stop", "stop by Tuesday?", "Ended up booking", ""] {
             assert!(!is_stop(body), "{body}");
         }
     }
@@ -909,6 +917,7 @@ pub(crate) mod tests {
             score_reasons: sqlx::types::Json(vec![]),
             scored_at: None,
             owner_id: None,
+            language: String::new(),
         }
     }
 }

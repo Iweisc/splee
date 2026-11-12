@@ -126,6 +126,10 @@ impl Ctx {
     }
 
     pub async fn ask<T: DeserializeOwned>(&self, call: &sdk::Call) -> anyhow::Result<T> {
+        #[cfg(test)]
+        if let Some(answer) = fake::answer(self.run.id, call) {
+            return Ok(serde_json::from_value(answer)?);
+        }
         sdk::ask(&self.state, Some(self), call).await
     }
 
@@ -315,6 +319,39 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::SUMMARIZE_CALL => calls::summarize_run(ctx).await,
         kind::MEETING_NOTES => meetings::notes_run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
+    }
+}
+
+/// A model for tests, per run: it answers every call the run makes with what `answer_with` returns for it, and keeps the prompts.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    use serde_json::Value;
+    use uuid::Uuid;
+
+    use super::sdk::Call;
+
+    type Answer = Box<dyn Fn(&Call) -> Value + Send>;
+    /// The run's answer and the prompts it got so far.
+    type Fake = (Answer, Vec<String>);
+
+    static RUNS: LazyLock<Mutex<HashMap<Uuid, Fake>>> = LazyLock::new(Default::default);
+
+    pub fn answer_with(run: Uuid, answer: impl Fn(&Call) -> Value + Send + 'static) {
+        RUNS.lock().unwrap().insert(run, (Box::new(answer), vec![]));
+    }
+
+    pub(super) fn answer(run: Uuid, call: &Call) -> Option<Value> {
+        let mut runs = RUNS.lock().unwrap();
+        let (answer, prompts) = runs.get_mut(&run)?;
+        prompts.push(call.prompt.clone());
+        Some(answer(call))
+    }
+
+    pub fn prompts(run: Uuid) -> Vec<String> {
+        RUNS.lock().unwrap().get(&run).map(|(_, prompts)| prompts.clone()).unwrap_or_default()
     }
 }
 

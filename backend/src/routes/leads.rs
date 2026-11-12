@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use axum::routing::{get, patch, post, put};
@@ -16,6 +18,7 @@ use crate::agent;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::hiring;
+use crate::language;
 use crate::models::{Call, Company, EmailMessage, Lead, TextMessage, Ts};
 use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
@@ -49,9 +52,18 @@ pub struct ListQuery {
     pub sort: Option<String>,
     /// Leads only: mine, unassigned or a member's id. See ownership::OwnerFilter.
     pub owner: Option<String>,
+    /// Leads only: a code from language::LANGUAGES, matched against each lead's effective_language.
+    pub language: Option<String>,
 }
 
 impl ListQuery {
+    fn language(&self) -> AppResult<Option<&'static str>> {
+        match self.language.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            None => Ok(None),
+            Some(raw) => language::parse(raw).map(|l| Some(l.code)).ok_or_else(|| AppError::BadRequest(format!("Splee doesn't write in {raw}"))),
+        }
+    }
+
     fn min_score(&self) -> AppResult<Option<i16>> {
         match self.min_score {
             Some(n) if !(0..=100).contains(&n) => Err(AppError::BadRequest("min_score goes from 0 to 100".into())),
@@ -163,22 +175,39 @@ pub struct LeadRow {
     /// The owner's name, or their email when they have none.
     pub owner_name: Option<String>,
     pub owner_email: Option<String>,
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub effective: Effective,
 }
 
-/// Select list for LeadRow. Callers append `where` on `l` (leads) and `s` (segments).
-pub const LEAD_ROW_SELECT: &str = "select l.*, s.name as segment_name,
-       (select e.status from email_messages e where e.lead_id = l.id and e.direction = 'outbound'
-         order by e.created_at desc limit 1) as last_email_status,
-       array(select j.role from job_openings j where j.project_id = l.project_id and j.domain = l.company_domain and j.closed_at is null
-             group by j.role order by max(j.first_seen) desc, j.role) as hiring,
-       coalesce(nullif(o.name, ''), o.email::text) as owner_name, o.email::text as owner_email
-     from leads l left join segments s on s.id = l.segment_id left join users o on o.id = l.owner_id";
+/// The lead's own language as a campaign set to "Each lead's language" picks it, and where it came from: "set" on the lead,
+/// their "country", their company's "site", or English by "default". See language.rs.
+#[derive(Serialize, FromRow)]
+pub struct Effective {
+    pub effective_language: String,
+    pub effective_language_source: String,
+}
+
+/// Select list for LeadRow. Callers append `where` on `l` (leads), `s` (segments) and `own` (language::OWN_JOIN).
+pub static LEAD_ROW_SELECT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "select l.*, s.name as segment_name,
+           (select e.status from email_messages e where e.lead_id = l.id and e.direction = 'outbound'
+             order by e.created_at desc limit 1) as last_email_status,
+           array(select j.role from job_openings j where j.project_id = l.project_id and j.domain = l.company_domain and j.closed_at is null
+                 group by j.role order by max(j.first_seen) desc, j.role) as hiring,
+           coalesce(nullif(o.name, ''), o.email::text) as owner_name, o.email::text as owner_email,
+           own.code as effective_language, own.source as effective_language_source
+         from leads l left join segments s on s.id = l.segment_id left join users o on o.id = l.owner_id {}",
+        *language::OWN_JOIN
+    )
+});
 
 pub async fn lead_rows(db: &PgPool, ids: &[Uuid]) -> AppResult<Vec<LeadRow>> {
-    Ok(sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} where l.id = any($1)")).bind(ids).fetch_all(db).await?)
+    Ok(sqlx::query_as::<_, LeadRow>(&format!("{} where l.id = any($1)", *LEAD_ROW_SELECT)).bind(ids).fetch_all(db).await?)
 }
 
-/// The Leads page's filters as $1 to $8, the last two an OwnerFilter.
+/// The Leads page's filters as $1 to $9, $7 and $8 an OwnerFilter. They need `own`, so count queries join language::OWN_JOIN.
 fn lead_filter() -> String {
     format!(
         "where l.project_id = $1
@@ -188,7 +217,8 @@ fn lead_filter() -> String {
                 or l.company_name ilike $4 or l.title ilike $4)
            and (not $5 or l.email is null)
            and ($6::int2 is null or l.score >= $6)
-           and {}",
+           and {}
+           and ($9::text is null or own.code = $9)",
         ownership::sql("l", 7, 8)
     )
 }
@@ -213,9 +243,10 @@ pub async fn page_of(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: ListQue
     let min_score = q.min_score()?;
     let order = q.order("l", NEWEST)?;
     let owner = OwnerFilter::parse(q.owner.as_deref(), me)?;
+    let language = q.language()?;
     let status = q.status.filter(|s| !s.is_empty());
     let missing = q.email.as_deref() == Some("missing");
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {}", lead_filter()))
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from leads l {} {}", *language::OWN_JOIN, lead_filter()))
         .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
@@ -224,9 +255,10 @@ pub async fn page_of(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: ListQue
         .bind(min_score)
         .bind(owner.mode())
         .bind(owner.user())
+        .bind(language)
         .fetch_one(db)
         .await?;
-    let items = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {} order by {order} limit $9 offset $10", lead_filter()))
+    let items = sqlx::query_as::<_, LeadRow>(&format!("{} {} order by {order} limit $10 offset $11", *LEAD_ROW_SELECT, lead_filter()))
         .bind(project_id)
         .bind(q.segment_id)
         .bind(&status)
@@ -235,6 +267,7 @@ pub async fn page_of(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: ListQue
         .bind(min_score)
         .bind(owner.mode())
         .bind(owner.user())
+        .bind(language)
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(db)
@@ -249,8 +282,9 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
     let min_score = q.min_score()?;
     let order = q.order("l", NEWEST)?;
     let owner = OwnerFilter::parse(q.owner.as_deref(), Some(auth.user_id))?;
+    let language = q.language()?;
     let status = q.status.filter(|s| !s.is_empty());
-    let rows = sqlx::query_as::<_, LeadRow>(&format!("{LEAD_ROW_SELECT} {} order by {order}", lead_filter()))
+    let rows = sqlx::query_as::<_, LeadRow>(&format!("{} {} order by {order}", *LEAD_ROW_SELECT, lead_filter()))
         .bind(id)
         .bind(q.segment_id)
         .bind(&status)
@@ -259,13 +293,14 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
         .bind(min_score)
         .bind(owner.mode())
         .bind(owner.user())
+        .bind(language)
         .fetch_all(&state.db)
         .await?;
 
     let header = [
         "full_name", "first_name", "last_name", "title", "email", "email_status", "phone", "company_name", "company_domain",
         "linkedin_url", "x_url", "city", "country_code", "campaign", "status", "last_email_status", "last_contacted_at", "created_at", "notes",
-        "score", "score_fit", "score_intent", "score_reasons", "owner_email",
+        "score", "score_fit", "score_intent", "score_reasons", "owner_email", "language",
     ];
     let records = rows.iter().map(|r| {
         let l = &r.lead;
@@ -294,6 +329,7 @@ async fn export_leads(State(state): State<AppState>, auth: Auth, Path(id): Path<
             l.score_intent.to_string(),
             l.score_reasons.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("; "),
             r.owner_email.clone().unwrap_or_default(),
+            r.effective.effective_language.clone(),
         ]
     });
     let slug: String = project.domain.as_deref().unwrap_or(&project.name).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect();
@@ -324,6 +360,8 @@ pub struct LeadDetail {
     /// The owner's name, or their email when they have none.
     pub owner_name: Option<String>,
     pub owner_email: Option<String>,
+    #[serde(flatten)]
+    pub effective: Effective,
 }
 
 /// Lead with its company and every email in both directions, oldest first, scored again first so the score shown is
@@ -371,7 +409,29 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
     .await?;
     let (owner_name, owner_email) = owner_of(db, &lead).await?;
     let email_events = email_events(db, lead.id).await?;
-    Ok(LeadDetail { lead, segment_name, company, emails, email_events, texts, calls, meetings, hiring, deal, job_change, owner_name, owner_email })
+    let effective = sqlx::query_as::<_, Effective>(&format!(
+        "select own.code as effective_language, own.source as effective_language_source from leads l {} where l.id = $1",
+        *language::OWN_JOIN
+    ))
+    .bind(lead.id)
+    .fetch_one(db)
+    .await?;
+    Ok(LeadDetail {
+        lead,
+        segment_name,
+        company,
+        emails,
+        email_events,
+        texts,
+        calls,
+        meetings,
+        hiring,
+        deal,
+        job_change,
+        owner_name,
+        owner_email,
+        effective,
+    })
 }
 
 /// An email's opens, or its clicks on one link, that counted. See tracking.rs.
@@ -442,6 +502,8 @@ struct LeadBody {
     phone: Option<String>,
     company_name: Option<String>,
     notes: Option<String>,
+    /// A code from language::LANGUAGES or its name. Blank goes back to their country and site.
+    language: Option<String>,
 }
 
 /// The country a lead's number is read by when it has no + in front: theirs, else the project's own.
@@ -488,6 +550,7 @@ async fn update_lead(
         }
         None => None,
     };
+    let language = body.language.as_deref().map(language::lead_setting).transpose().map_err(AppError::BadRequest)?;
     let before = lead.status;
     let lead = sqlx::query_as::<_, Lead>(
         "update leads set
@@ -502,7 +565,8 @@ async fn update_lead(
            company_name = coalesce($9, company_name),
            x_url = coalesce($10, x_url),
            notes = coalesce($12, notes),
-           phone = coalesce($13, phone)
+           phone = coalesce($13, phone),
+           language = coalesce($14, language)
          where id = $1 returning *",
     )
     .bind(lead.id)
@@ -518,6 +582,7 @@ async fn update_lead(
     .bind(clear_email)
     .bind(notes)
     .bind(phone)
+    .bind(language)
     .fetch_one(&state.db)
     .await?;
     crate::hooks::team_set_status(&state, &before, &lead).await;
@@ -674,7 +739,8 @@ async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<U
     let ids: Vec<Uuid> = if body.all {
         let min_score = body.filter.min_score()?;
         let owner = OwnerFilter::parse(body.filter.owner.as_deref(), Some(auth.user_id))?;
-        sqlx::query_scalar(&format!("select l.id from leads l {}", lead_filter()))
+        let language = body.filter.language()?;
+        sqlx::query_scalar(&format!("select l.id from leads l {} {}", *language::OWN_JOIN, lead_filter()))
             .bind(id)
             .bind(body.filter.segment_id)
             .bind(body.filter.status.filter(|s| !s.is_empty()))
@@ -683,6 +749,7 @@ async fn find_emails(State(state): State<AppState>, auth: Auth, Path(id): Path<U
             .bind(min_score)
             .bind(owner.mode())
             .bind(owner.user())
+            .bind(language)
             .fetch_all(&state.db)
             .await?
     } else {
