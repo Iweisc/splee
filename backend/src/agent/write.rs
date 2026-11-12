@@ -103,13 +103,15 @@ async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
         .join("\n"))
 }
 
-/// What's known about each lead's company beyond the lead itself, by lowercase domain.
+/// What's known about each lead's company beyond the lead itself, by lowercase domain, and how we know the lead.
 #[derive(Default)]
 struct CompanySignals {
     /// Open roles that match the project's hiring signals. Two at most, newest first.
     posts: HashMap<String, Vec<Value>>,
     /// "Uses HubSpot and Intercom", naming only the project's tech picks.
     tech: HashMap<String, String>,
+    /// By lead: the company they left and what they did with us there, for leads a job change made. See jobchanges.rs.
+    history: HashMap<Uuid, Value>,
 }
 
 async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
@@ -122,7 +124,9 @@ async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySi
             found.push(json!({"role": post.title, "url": post.url, "excerpt": post.excerpt}));
         }
     }
-    Ok(CompanySignals { posts, tech: tech::fact_lines(ctx.db(), project_id, &domains).await? })
+    let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
+    let (tech, history) = (tech::fact_lines(ctx.db(), project_id, &domains).await?, crate::jobchanges::histories(ctx.db(), &ids).await?);
+    Ok(CompanySignals { posts, tech, history })
 }
 
 fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
@@ -148,6 +152,9 @@ fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     let reasons = crate::score::opener_reasons(&lead.score_reasons);
     if !reasons.is_empty() {
         brief["why_now"] = json!(reasons);
+    }
+    if let Some(history) = signals.history.get(&lead.id) {
+        brief["history"] = history.clone();
     }
     brief
 }
@@ -394,6 +401,9 @@ fn initial_prompt(
          - A lead's \"why_now\" holds the two strongest reasons the lead ranks high, as the user sees them on the lead. The first \
          sentence may build on one that's about their company, like a hire or their size. Never mention a visit to our website, a page \
          they read, their reply or a deal.\n\
+         - A lead's \"history\" means they already know us: at their previous company they did what it says, and they just started \
+         their new role. Open with that plainly instead of an observation, like \"You worked with us at Acme, so I wanted to say \
+         congrats on the new role.\" Then say how we could help at the new company. Never say how we noticed the move.\n\
          - Then one or two sentences that tie that observation to a concrete problem and how we solve it.\n\
          - End with one short question as the call to action: {cta}.{booking}\n\
          - At most {max_words} words. Tone: {tone}. {language}\n\
@@ -1021,6 +1031,38 @@ mod tests {
         let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
         assert_eq!(lead_brief(&leads[0], &signals)["tech"], "Uses HubSpot and Intercom");
         assert!(lead_brief(&leads[1], &signals).get("tech").is_none());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_lead_from_a_job_change_brings_its_history(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let ctx = ctx(&db, c.project).await;
+        let leads = add_leads(&db, &c, 2).await;
+        let watched: Uuid = sqlx::query_scalar(
+            "insert into watched_people (project_id, relationship, full_name, linkedin_key, company_name) values ($1, 'booked', 'Dana', 'dana', 'Acme')
+             returning id",
+        )
+        .bind(c.project)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("insert into job_changes (project_id, watched_id, old_company, new_company, move_number, new_title, new_lead_id) values ($1, $2, 'Acme', 'Brightline', 1, 'VP Sales', $3)")
+            .bind(c.project)
+            .bind(watched)
+            .bind(leads[0].id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
+        let history = serde_json::json!({ "previous_company": "Acme", "what_they_did_there": "booked a meeting with us", "new_role": "VP Sales" });
+        assert_eq!(lead_brief(&leads[0], &signals)["history"], history);
+        assert!(lead_brief(&leads[1], &signals).get("history").is_none());
+        // The writer is told to open with it plainly.
+        let profile = crate::agent::explore::Profile::default();
+        let project = sqlx::query_as("select * from projects where id = $1").bind(c.project).fetch_one(&db).await.unwrap();
+        let prompt = super::initial_prompt(&project, &profile, None, None, &super::WriterSettings::default(), "", "");
+        assert!(prompt.contains("A lead's \"history\" means they already know us") && prompt.contains("Never say how we noticed the move"), "{prompt}");
     }
 
     #[test]

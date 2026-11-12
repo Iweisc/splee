@@ -27,6 +27,7 @@ use crate::auth::ApiKeyAuth;
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
+use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
 use crate::ownership;
@@ -66,6 +67,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/leads/{id}/meetings", get(list_meetings))
         .route("/v1/projects/{id}/sheets", get(list_sheets))
         .route("/v1/projects/{id}/sheets/{conn}/import", post(import_sheet))
+        .route("/v1/projects/{id}/job-changes", get(list_job_changes))
+        .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -796,4 +799,22 @@ pub(super) async fn list_sheets(State(state): State<AppState>, auth: ApiKeyAuth,
 /// Reads an import tab now and adds its new rows as leads, like "Import now" on the integrations page.
 pub(super) async fn import_sheet(State(state): State<AppState>, auth: ApiKeyAuth, Path((id, conn)): Path<(Uuid, Uuid)>) -> AppResult<Json<ImportedNow>> {
     Ok(Json(sheets::import_for(&state, auth.org_id, id, conn).await?))
+}
+
+/// Moves seen on LinkedIn among the people the project watches, newest first, with the lead Splee made at each new company,
+/// and how many people it watches.
+pub(super) async fn list_job_changes(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Overview>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(jobchanges::overview(&state.db, id).await?))
+}
+
+/// Adds past customers or champions to the project's watch list, from a list or a CSV, like the Job changes tab.
+pub(super) async fn add_to_watch_list(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddBody>,
+) -> AppResult<Json<jobchanges::Added>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(jobchanges::add(&state.db, id, body).await?))
 }

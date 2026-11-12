@@ -28,6 +28,7 @@ mod grist;
 mod hashnode;
 mod hiring;
 mod hooks;
+mod jobchanges;
 mod jobs;
 mod lemmy;
 mod local_businesses;
@@ -131,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
     deliverability::spawn_worker(state.clone());
     directory_queue::spawn_worker(state.db.clone());
     hiring::spawn_worker(state.db.clone());
+    jobchanges::spawn_worker(state.clone());
     tech::spawn_worker(state.db.clone());
     score::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
