@@ -46,7 +46,7 @@ impl ProjectTargeting {
         if rules.is_empty() { String::new() } else { format!("Account-wide rules: {}", rules.join(" ")) }
     }
 
-    fn allows(&self, country_code: &str, text: &str) -> bool {
+    pub fn allows(&self, country_code: &str, text: &str) -> bool {
         let cc = country_code.to_uppercase();
         let in_list = |list: &[String]| list.iter().any(|c| c.eq_ignore_ascii_case(&cc));
         if !cc.is_empty() && (in_list(&self.exclude_countries) || (!self.countries.is_empty() && !in_list(&self.countries))) {
@@ -57,10 +57,10 @@ impl ProjectTargeting {
     }
 }
 
-pub async fn project_targeting(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<ProjectTargeting> {
+pub async fn project_targeting(db: &sqlx::PgPool, project_id: Uuid) -> anyhow::Result<ProjectTargeting> {
     let value: Option<Value> = sqlx::query_scalar("select targeting from project_settings where project_id = $1")
         .bind(project_id)
-        .fetch_optional(ctx.db())
+        .fetch_optional(db)
         .await?;
     Ok(value.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
 }
@@ -141,7 +141,7 @@ pub async fn find_companies_for_top_segment(ctx: &Ctx, project_id: Uuid, count: 
 }
 
 async fn find_companies(ctx: &Ctx, project: &Project, profile: &Profile, segment: &Segment, count: usize) -> anyhow::Result<Vec<Company>> {
-    let targeting = project_targeting(ctx, project.id).await?;
+    let targeting = project_targeting(ctx.db(), project.id).await?;
     let suppressed = suppressions(ctx, project).await?;
     let mut exclude: HashSet<String> = sqlx::query_scalar::<_, String>(
         "select domain::text from companies where project_id = $1 union select domain::text from competitors where project_id = $1",
@@ -181,6 +181,7 @@ async fn find_companies(ctx: &Ctx, project: &Project, profile: &Profile, segment
     call.hiring = true;
     if directory::has_companies(ctx.db()).await? {
         call.directory = Some(project.id);
+        call.lookalikes = crate::lookalikes::has_seeds(ctx.db(), project.id).await?;
     }
     if let Some(org_id) = project.org_id
         && places::available(ctx.db(), org_id).await?

@@ -877,6 +877,61 @@ export interface DirectoryCompany {
   tech: string[];
 }
 
+/** A customer the lookalikes are matched to: a won deal's company, or one added by hand. */
+export interface LookalikeSeed {
+  domain: string;
+  name: string;
+  /** From a won deal. */
+  won: boolean;
+  in_database: boolean;
+  /** Splee has a company database row, a company in the project or a tech scan for it. */
+  known: boolean;
+}
+
+export interface LookalikeTrait {
+  value: string;
+  label: string;
+  /** How many of the seeds have it. */
+  seeds: number;
+}
+
+export interface LookalikePart {
+  key: "category" | "tech" | "keywords" | "hiring" | "country" | "region";
+  label: string;
+  /** Switched on and has values. */
+  on: boolean;
+  /** The seeds Splee has this kind of data for. */
+  known: number;
+  values: LookalikeTrait[];
+}
+
+export interface LookalikeMatch {
+  domain: string;
+  name: string;
+  website: string;
+  city: string | null;
+  region: string | null;
+  country_code: string;
+  category: string | null;
+  /** 0-100, the share of the profile's points it earns. */
+  score: number;
+  reasons: string[];
+}
+
+export interface Lookalikes {
+  profile: { seeds: LookalikeSeed[]; parts: LookalikePart[] };
+  results: LookalikeMatch[];
+  database_empty: boolean;
+  settings: LookalikeSettings;
+}
+
+/** The hand-picked seeds and the profile parts switched off, by key. */
+export interface LookalikeSettings {
+  added: string[];
+  removed: string[];
+  off: string[];
+}
+
 export interface DirectoryPage extends Paginated<DirectoryCompany> {
   /** `total` stopped counting at 10,000 and there are more. */
   capped: boolean;

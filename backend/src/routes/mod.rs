@@ -19,6 +19,7 @@ mod forms;
 mod hiring;
 mod job_changes;
 mod local_businesses;
+mod lookalikes;
 mod tech;
 mod visitors;
 pub mod linkedin;
@@ -137,6 +138,7 @@ pub fn router() -> Router<AppState> {
         .merge(forms::router())
         .merge(calendar::router())
         .merge(directory::router())
+        .merge(lookalikes::router())
         .merge(local_businesses::router())
         .merge(slack::router())
         .merge(texts::router())

@@ -28,6 +28,8 @@ pub struct Call {
     pub web: bool,
     /// Offers the company database tool, leaving out the companies this project already has.
     pub directory: Option<Uuid>,
+    /// Offers the company database's lookalikes tool too. Only for a project with customers to match.
+    pub lookalikes: bool,
     /// Offers Google Maps search through the organization's key, as (organization, project). See places.rs.
     pub places: Option<(Uuid, Uuid)>,
     /// Offers the tool that lists a company's open roles from its job board.
@@ -52,6 +54,7 @@ impl Call {
             schema,
             web: true,
             directory: None,
+            lookalikes: false,
             places: None,
             hiring: false,
             max_turns,
@@ -71,6 +74,7 @@ impl Call {
             schema,
             web: false,
             directory: None,
+            lookalikes: false,
             places: None,
             hiring: false,
             max_turns: 4,
@@ -142,9 +146,13 @@ async fn once(state: &AppState, run: Option<&Ctx>, call: &Call, mut prompt: Stri
         prompt.push_str(x::GUIDANCE);
     }
     if let Some(project_id) = call.directory {
-        servers.insert("directory".to_string(), directory::server(state.db.clone(), project_id));
+        servers.insert("directory".to_string(), directory::server(state.db.clone(), project_id, call.lookalikes));
         allowed.push(directory::SEARCH.to_string());
         prompt.push_str(directory::GUIDANCE);
+        if call.lookalikes {
+            allowed.push(directory::LOOKALIKES.to_string());
+            prompt.push_str(directory::LOOKALIKE_GUIDANCE);
+        }
     }
     if let Some((org_id, project_id)) = call.places {
         servers.insert("places".to_string(), places::server(state.clone(), org_id, project_id));
@@ -236,6 +244,7 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
             let words = ["q", "category", "city", "country"].iter().filter_map(|k| input[*k].as_str()).filter(|s| !s.trim().is_empty());
             format!("searching the company database for \"{}\"…", words.collect::<Vec<_>>().join(" "))
         }
+        directory::LOOKALIKES => "finding companies like your customers in the company database…".to_string(),
         places::SEARCH => format!(
             "searching Google Maps for \"{} in {}\"…",
             input["what"].as_str().unwrap_or_default(),

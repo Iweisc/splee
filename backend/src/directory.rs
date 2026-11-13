@@ -254,6 +254,42 @@ pub fn forget_countries() {
     *COUNTRIES.lock().expect("not poisoned") = None;
 }
 
+/// A company from the database to add to a campaign, with why it fits.
+pub struct Pick {
+    pub domain: String,
+    pub fit_score: i16,
+    pub fit_reason: String,
+}
+
+/// Adds the picks to a campaign as new companies, where "Find people" picks them up like the ones the agent finds. Companies
+/// already in the project, missing from the database, or whose domain or listed email is on the do-not-contact list are
+/// skipped. The caller checks that the campaign belongs to the project. Returns how many were added.
+pub async fn add(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, picks: &[Pick]) -> sqlx::Result<u64> {
+    let domains: Vec<&str> = picks.iter().map(|p| p.domain.as_str()).collect();
+    let scores: Vec<i16> = picks.iter().map(|p| p.fit_score).collect();
+    let reasons: Vec<&str> = picks.iter().map(|p| p.fit_reason.as_str()).collect();
+    // The category is the closest thing to a description the database has. "Find people" shows it to the agent.
+    let done = sqlx::query(
+        "insert into companies (project_id, segment_id, domain, name, description, city, country_code, fit_score, fit_reason, source_url)
+         select $1, $2, d.domain, d.name, coalesce(upper(left(d.category, 1)) || replace(substr(d.category, 2), '_', ' '), ''),
+                coalesce(d.city, ''), d.country_code, p.score, p.reason, d.website
+         from unnest($3::text[], $5::smallint[], $6::text[]) p(domain, score, reason)
+         join directory_companies d on d.domain = p.domain
+         where not exists (select 1 from suppressions s where s.org_id = $4
+                           and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))
+         on conflict (project_id, domain) do nothing",
+    )
+    .bind(project_id)
+    .bind(segment_id)
+    .bind(&domains)
+    .bind(org_id)
+    .bind(&scores)
+    .bind(&reasons)
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected())
+}
+
 /// Every word as a prefix, so "dent" finds dental_clinic and general_dentistry, as a tsquery. Only letters and digits get
 /// through, so a query can't hold tsquery syntax.
 fn prefixes(q: &str) -> Option<String> {

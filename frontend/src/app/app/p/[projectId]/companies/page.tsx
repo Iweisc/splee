@@ -6,6 +6,7 @@ import { CompaniesTable } from "@/components/app/work/companies-table";
 import { DirectoryView } from "@/components/app/work/directory-view";
 import { HiringSignals } from "@/components/app/work/hiring";
 import { LocalBusinesses } from "@/components/app/work/local-businesses";
+import { LookalikesView } from "@/components/app/work/lookalikes";
 import { TechSignals } from "@/components/app/work/tech";
 import { VisitorsView } from "@/components/app/work/visitors";
 import { Tabs } from "@/components/ui/misc";
@@ -22,14 +23,18 @@ const DESCRIPTIONS: Record<Tab, string> = {
   visitors: "Companies that visited your website, the pages they read and how they found you. Add the ones you aren't talking to yet to a campaign.",
 };
 
+const LOOKALIKES = "Companies in the database like the ones you won deals with, ranked by what they share with them, with the reasons.";
+
 export default function CompaniesPage({ params, searchParams }: PageProps<"/app/p/[projectId]/companies">) {
   const { projectId } = use(params);
   // ?tab=visitors is where hot-visitor alerts link to.
   const { tab: linked } = use(searchParams);
-  const [tab, setTab] = useState<Tab>(TABS.find((t) => t === linked) ?? "yours");
+  // "Like your customers" is a second view of the company database, since a seventh tab doesn't fit a phone.
+  const [tab, setTab] = useState<Tab>(linked === "lookalikes" ? "database" : (TABS.find((t) => t === linked) ?? "yours"));
+  const [lookalikes, setLookalikes] = useState(linked === "lookalikes");
   return (
     <>
-      <PageHeader title="Companies" description={DESCRIPTIONS[tab]} />
+      <PageHeader title="Companies" description={tab === "database" && lookalikes ? LOOKALIKES : DESCRIPTIONS[tab]} />
       <PageBody>
         {/* Not a flex column with a gap: the country loader above the search keeps its own margin. */}
         <div className="mb-4">
@@ -50,7 +55,21 @@ export default function CompaniesPage({ params, searchParams }: PageProps<"/app/
           />
         </div>
         {tab === "yours" && <CompaniesTable projectId={projectId} />}
-        {tab === "database" && <DirectoryView projectId={projectId} />}
+        {tab === "database" && (
+          <>
+            <div className="mb-4">
+              <Tabs
+                value={lookalikes ? "lookalikes" : "search"}
+                onChange={(v) => setLookalikes(v === "lookalikes")}
+                options={[
+                  { value: "search", label: "Search" },
+                  { value: "lookalikes", label: "Like your customers" },
+                ]}
+              />
+            </div>
+            {lookalikes ? <LookalikesView projectId={projectId} /> : <DirectoryView projectId={projectId} />}
+          </>
+        )}
         {tab === "local" && <LocalBusinesses projectId={projectId} />}
         {tab === "hiring" && <HiringSignals projectId={projectId} />}
         {tab === "tech" && <TechSignals projectId={projectId} />}

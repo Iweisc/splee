@@ -371,7 +371,7 @@ fn is_acronym(word: &str) -> bool {
     word.len() <= 5 && word.chars().all(|c| c.is_ascii_uppercase())
 }
 
-fn article(role: &str) -> &'static str {
+pub(crate) fn article(role: &str) -> &'static str {
     let first = role.chars().next().unwrap_or('x');
     // An acronym is read letter by letter, and "an SDR" is said "an ess-dee-ar".
     let vowel = if is_acronym(role.split(' ').next().unwrap_or_default()) { "AEFHILMNORSX".contains(first) } else { "AEIOUaeiou".contains(first) };

@@ -10,6 +10,7 @@ use crate::directory::{self, Listing, Search};
 use crate::score::{self, CompanyFacts};
 
 pub const SEARCH: &str = "mcp__directory__search";
+pub const LOOKALIKES: &str = "mcp__directory__lookalikes";
 
 /// Appended to the task prompt of calls that have the tool, like x::GUIDANCE.
 pub const GUIDANCE: &str = "\n\nYou can also search our company database with mcp__directory__search. It lists businesses that have their own \
@@ -19,6 +20,15 @@ of business and a country or city, and try a few wordings and cities. Then searc
 online-only companies, or to check a fit you can't tell from the listing. For companies from the database, use their website as \
 source_url.";
 
+/// Added to GUIDANCE when the project has customers to match.
+pub const LOOKALIKE_GUIDANCE: &str = "\n\nThis project has customers to match: mcp__directory__lookalikes lists the companies in the database \
+most like them, best first, with what each shares with them. Call it before mcp__directory__search, keep the ones that fit the \
+segment, and give their reasons in fit_reason.";
+
+const LOOKALIKE_DESCRIPTION: &str = "Companies in the company database most like this project's customers (its won deals and the ones \
+picked by hand), best first, with a 0-100 score and what each shares with them, like their industry, tools or region. Companies \
+already in this project are left out.";
+
 const DESCRIPTION: &str = "Search the company database: businesses with their own website, the best matches for this project's targeting first. Every word \
 in `q` has to start a word in the business's name or category, so `dent` finds dental_clinic and general_dentistry. Companies already \
 in this project are left out.";
@@ -27,7 +37,8 @@ const MAX_LIMIT: i64 = 50;
 /// Listings ranked for each one shown, the most reliable first, so a better match a little further down still makes the list.
 const POOL: i64 = 4;
 
-pub fn server(db: PgPool, project_id: Uuid) -> McpServerConfig {
+/// With `lookalikes`, the server also has the lookalikes tool, for projects that have customers to match.
+pub fn server(db: PgPool, project_id: Uuid, lookalikes: bool) -> McpServerConfig {
     let schema = json!({
         "type": "object",
         "properties": {
@@ -40,8 +51,9 @@ pub fn server(db: PgPool, project_id: Uuid) -> McpServerConfig {
             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Companies to return. Defaults to 25."}
         }
     });
+    let search_db = db.clone();
     let search = tool!("search", DESCRIPTION, schema, move |args: Value| {
-        let db = db.clone();
+        let db = search_db.clone();
         async move {
             Ok(match run(&db, project_id, &args).await {
                 Ok(text) => result(text, false),
@@ -49,7 +61,45 @@ pub fn server(db: PgPool, project_id: Uuid) -> McpServerConfig {
             })
         }
     });
-    McpServerConfig::Sdk(create_sdk_mcp_server("directory", "1.0.0", vec![search]))
+    let mut tools = vec![search];
+    if lookalikes {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Companies to return. Defaults to 25."}
+            }
+        });
+        tools.push(tool!("lookalikes", LOOKALIKE_DESCRIPTION, schema, move |args: Value| {
+            let db = db.clone();
+            async move {
+                Ok(match like_customers(&db, project_id, &args).await {
+                    Ok(text) => result(text, false),
+                    Err(e) => result(e, true),
+                })
+            }
+        }));
+    }
+    McpServerConfig::Sdk(create_sdk_mcp_server("directory", "1.0.0", tools))
+}
+
+/// One line per match with its score and reasons, or why there are none.
+async fn like_customers(db: &PgPool, project_id: Uuid, args: &Value) -> Result<String, String> {
+    let limit = args["limit"].as_i64().unwrap_or(25).clamp(1, MAX_LIMIT) as usize;
+    let found = crate::lookalikes::find(db, project_id, None).await.map_err(|e| format!("The company database failed: {e}"))?;
+    if found.results.is_empty() {
+        return Ok("No companies in the database look like this project's customers yet. Use mcp__directory__search instead.".into());
+    }
+    let lines: Vec<String> = found
+        .results
+        .iter()
+        .take(limit)
+        .map(|m| {
+            let place = [m.region.as_deref(), Some(m.country_code.as_str())].into_iter().flatten().collect::<Vec<_>>().join(", ");
+            let category = m.category.as_deref().unwrap_or("uncategorized");
+            format!("- {} · {} · {category} · {place} · {}/100 · {}", m.domain, m.name, m.score, m.reasons.join("; "))
+        })
+        .collect();
+    Ok(lines.join("\n"))
 }
 
 fn result(text: String, is_error: bool) -> ToolResult {
@@ -181,5 +231,20 @@ mod tests {
         let domains: Vec<&str> = found.lines().filter_map(|l| l.strip_prefix("- ")?.split(' ').next()).collect();
         assert_eq!(domains, ["visitor.co.uk", "leeds.co.uk"]);
         assert!(found.ends_with("for more."), "{found}");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn lookalikes_list_matches_with_their_reasons(db: PgPool) {
+        let (org, project) = crate::lookalikes::tests::org_and_project(&db, "Acme").await;
+        let (_, empty) = crate::lookalikes::tests::org_and_project(&db, "Empty").await;
+        crate::lookalikes::tests::customers(&db, org, project).await;
+
+        let found = super::like_customers(&db, project, &json!({"limit": 2})).await.unwrap();
+        let lines: Vec<&str> = found.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("- ledger.example · Ledger Payroll · accounting_firm · West Yorkshire, GB · 93/100 · Accounting firm, like 2"), "{found}");
+        let none = super::like_customers(&db, empty, &json!({})).await.unwrap();
+        assert!(none.starts_with("No companies in the database look like"), "{none}");
     }
 }
