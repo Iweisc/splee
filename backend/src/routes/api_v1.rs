@@ -12,6 +12,7 @@ use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
+use super::lookalikes::{self as lookalike_routes, AddBody as AddLookalikesBody};
 use super::meetings::{self, MeetingRow};
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
@@ -29,6 +30,7 @@ use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
+use crate::lookalikes::{self, Lookalikes};
 use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
 use crate::ownership;
 use crate::state::AppState;
@@ -52,6 +54,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
         .route("/v1/companies", get(search_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
+        .route("/v1/projects/{id}/lookalikes", get(list_lookalikes).post(add_lookalikes))
         .route("/v1/segments/{id}/find-people", post(find_people))
         .route("/v1/local-businesses", get(search_local_businesses))
         .route("/v1/segments/{id}/local-businesses", post(add_local_businesses))
@@ -591,6 +594,36 @@ pub(super) async fn add_companies(
 ) -> AppResult<Json<Added>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     Ok(Json(directory::add_domains(&state.db, auth.org_id, segment.project_id, segment.id, &body.domains).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct LookalikesQuery {
+    /// Comma-separated domains to match instead of the project's seeds.
+    seeds: Option<String>,
+}
+
+/// Companies in the database like the project's customers, with the profile they were matched on, like the Companies page's
+/// "Like your customers".
+pub(super) async fn list_lookalikes(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<LookalikesQuery>,
+) -> AppResult<Json<Lookalikes>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let seeds: Option<Vec<String>> = q.seeds.map(|s| s.split(',').map(String::from).collect());
+    let seeds = seeds.as_deref().map(lookalike_routes::domains).transpose()?.filter(|s| !s.is_empty());
+    Ok(Json(lookalikes::find(&state.db, id, seeds.as_deref()).await?))
+}
+
+pub(super) async fn add_lookalikes(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddLookalikesBody>,
+) -> AppResult<Json<lookalike_routes::Added>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(lookalike_routes::add_matches(&state, auth.org_id, id, body).await?))
 }
 
 /// Google Maps through the organization's key, like the Companies page's Local businesses tab. With project_id, says which

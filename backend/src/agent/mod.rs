@@ -29,6 +29,7 @@ pub mod x;
 mod youtube;
 
 pub use explore::Profile;
+pub use prospect::project_targeting;
 pub use write::{leads_without_initial, signature};
 
 use std::sync::Arc;

@@ -374,7 +374,7 @@ async fn segments(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<()> {
     .bind(project_id)
     .fetch_all(ctx.db())
     .await?;
-    let targeting = prospect::project_targeting(ctx, project_id).await?;
+    let targeting = prospect::project_targeting(ctx.db(), project_id).await?;
 
     ctx.log("clustering use cases…").await?;
     let prompt = format!(
@@ -464,7 +464,7 @@ pub async fn segment_from_prompt_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let input: SegmentPromptInput = ctx.input()?;
     let segment = load_segment(ctx, input.segment_id).await?;
     let (project, profile) = load_project(ctx, segment.project_id).await?;
-    let targeting = prospect::project_targeting(ctx, project.id).await?;
+    let targeting = prospect::project_targeting(ctx.db(), project.id).await?;
     ctx.log("shaping the campaign…").await?;
     let prompt = format!(
         "Business:\n{}\n{}\n\nThe user wants a campaign for this buyer segment: \"{}\"\n\

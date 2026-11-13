@@ -141,24 +141,9 @@ pub(super) async fn add_domains(db: &PgPool, org_id: Uuid, project_id: Uuid, seg
 }
 
 async fn add_companies(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> sqlx::Result<u64> {
-    // The category is the closest thing to a description the database has. "Find people" shows it to the agent.
-    let done = sqlx::query(
-        "insert into companies (project_id, segment_id, domain, name, description, city, country_code, fit_reason, source_url)
-         select $1, $2, d.domain, d.name, coalesce(upper(left(d.category, 1)) || replace(substr(d.category, 2), '_', ' '), ''),
-                coalesce(d.city, ''), d.country_code, 'Picked from the company database', d.website
-         from directory_companies d
-         where d.domain = any($3)
-           and not exists (select 1 from suppressions s where s.org_id = $4
-                           and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))
-         on conflict (project_id, domain) do nothing",
-    )
-    .bind(project_id)
-    .bind(segment_id)
-    .bind(domains)
-    .bind(org_id)
-    .execute(db)
-    .await?;
-    Ok(done.rows_affected())
+    let picks: Vec<directory::Pick> =
+        domains.iter().map(|d| directory::Pick { domain: d.clone(), fit_score: 0, fit_reason: "Picked from the company database".into() }).collect();
+    directory::add(db, org_id, project_id, segment_id, &picks).await
 }
 
 /// Each company is a LinkedIn search or two, a few seconds each, and the page waits for them all.

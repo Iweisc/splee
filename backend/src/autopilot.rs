@@ -242,6 +242,19 @@ pub async fn check(state: &AppState, project_id: Uuid, now: Ts) -> anyhow::Resul
         return note(db, project_id, now, waiting).await;
     };
 
+    // Companies like the project's customers cost no Claude tokens, so they're tried before a run searches. The next check
+    // finds people at them.
+    if let Step::FindCompanies(count) = step {
+        let added = crate::lookalikes::autopilot_add(db, s.org_id, project_id, campaign.id, count).await?;
+        if added > 0 {
+            lock.commit().await?;
+            tracing::info!(%project_id, added, campaign = %campaign.name, "autopilot added companies like the project's customers");
+            let companies = if added == 1 { "1 company".to_string() } else { format!("{added} companies") };
+            let why = format!("Added {companies} like your customers to {}. It finds people there next.", campaign.name);
+            return note(db, project_id, now, &why).await;
+        }
+    }
+
     let cost = estimate_cost(db, project_id, step.kind()).await?;
     let spent = spent + still_to_spend(db, project_id).await?;
     if spent + cost > s.autopilot_budget_micros {
@@ -553,6 +566,35 @@ pub(crate) mod tests {
         assert_eq!(check(&s.state, s.project, now).await.unwrap(), None);
         assert_eq!(note_of(&db, s.project).await, "Every campaign has enough emails or a run of its own going.");
         assert!(check(&s.state, s.project, now + Duration::hours(7)).await.unwrap().is_some());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn companies_like_the_customers_come_before_a_paid_search(db: PgPool) {
+        let s = seed(&db).await;
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(s.project).fetch_one(&db).await.unwrap();
+        crate::lookalikes::tests::customers(&db, org, s.project).await;
+        let now = Utc::now();
+
+        // Only Ledger scores at least 50, so it alone joins the campaign, and no run starts.
+        assert_eq!(check(&s.state, s.project, now).await.unwrap(), None);
+        let added: Vec<(String, i32)> = sqlx::query_as("select domain::text, fit_score from companies where segment_id = $1")
+            .bind(s.campaign)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert_eq!(added, [("ledger.example".to_string(), 93)]);
+        assert_eq!(note_of(&db, s.project).await, "Added 1 company like your customers to Physiotherapists. It finds people there next.");
+        let runs: i64 = sqlx::query_scalar("select count(*) from agent_runs").fetch_one(&db).await.unwrap();
+        assert_eq!(runs, 0);
+
+        // Then it finds people there, and once no match is left, a run searches for companies as before.
+        let people = check(&s.state, s.project, now).await.unwrap().unwrap();
+        assert_eq!(started(&db, people).await.0, kind::FIND_PEOPLE);
+        sqlx::query("update agent_runs set status = 'succeeded'").execute(&db).await.unwrap();
+        sqlx::query("update companies set status = 'no_people' where segment_id = $1").bind(s.campaign).execute(&db).await.unwrap();
+        let search = check(&s.state, s.project, now).await.unwrap().unwrap();
+        assert_eq!(started(&db, search).await.0, kind::FIND_COMPANIES);
     }
 
     #[sqlx::test]

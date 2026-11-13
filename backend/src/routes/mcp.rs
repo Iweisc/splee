@@ -42,11 +42,12 @@ const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
-list_emails_to_approve and approve_email or skip_email. Finding people and writing emails take minutes: they return a run_id, \
-so poll get_run until it's done. Approved emails go out from the user's own mailboxes on the project's schedule. Hot replies open \
-deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on \
-the team. get_analytics says which campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists \
-or gyms in a city, search_local_businesses and add_local_businesses use Google Maps once the user connected a key.";
+list_emails_to_approve and approve_email or skip_email. find_lookalikes and add_lookalikes find companies like the user's \
+customers. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
+create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_analytics says which \
+campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
+search_local_businesses and add_local_businesses use Google Maps once the user connected a key.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -257,6 +258,9 @@ const JOB_CHANGE_FIELDS: &[&str] = &[
     "id", "full_name", "linkedin_url", "relationship", "old_company", "new_company", "new_domain", "new_title", "new_lead_id", "new_lead_email",
     "segment_name", "seen_at",
 ];
+const LOOKALIKE_FIELDS: &[&str] = &["domain", "name", "country_code", "region", "category", "score", "reasons"];
+const LOOKALIKE_SEED_FIELDS: &[&str] = &["domain", "name", "won", "in_database", "known"];
+const LOOKALIKE_PART_FIELDS: &[&str] = &["key", "label", "on", "known", "values"];
 const CALL_FIELDS: &[&str] = &[
     "id", "lead_id", "lead_name", "lead_company", "lead_phone", "status", "bucket", "due_at", "instructions", "owner_name", "local_time",
     "outside_hours", "outcome", "notes", "duration_secs", "summary", "next_step", "cancel_reason",
@@ -283,6 +287,32 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "find_lookalikes" => async {
+            let mut a = a.clone();
+            if let Some(seeds) = a["seeds"].as_array() {
+                a["seeds"] = json!(seeds.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","));
+            }
+            let limit = a["limit"].as_u64().unwrap_or(25).clamp(1, crate::lookalikes::LIMIT as u64) as usize;
+            let found = value(v1::list_lookalikes(st(), auth, id(&a, "project_id")?, Query(parse(&a)?)).await?)?;
+            let profile = &found["profile"];
+            let results: Vec<Value> = found["results"].as_array().into_iter().flatten().take(limit).cloned().collect();
+            Ok(json!({
+                "seeds": pick(profile["seeds"].clone(), LOOKALIKE_SEED_FIELDS),
+                "profile": pick(profile["parts"].clone(), LOOKALIKE_PART_FIELDS),
+                "results": pick(Value::Array(results), LOOKALIKE_FIELDS),
+                "total": found["results"].as_array().map_or(0, Vec::len),
+                "database_empty": found["database_empty"],
+            }))
+        }
+        .await,
+        "add_lookalikes" => async {
+            let mut a = a.clone();
+            if let Some(seeds) = a["seeds"].as_str() {
+                a["seeds"] = json!(seeds.split(',').collect::<Vec<_>>());
+            }
+            value(v1::add_lookalikes(st(), auth, id(&a, "project_id")?, Json(parse(&a)?)).await?)
+        }
+        .await,
         "search_local_businesses" => async { Ok(pick(value(v1::search_local_businesses(st(), auth, Query(parse(a)?)).await?)?, LOCAL_FIELDS)) }.await,
         "add_local_businesses" => async { value(v1::add_local_businesses(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
         "find_people" => async { started(value(v1::find_people(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
@@ -474,6 +504,38 @@ fn tools() -> Vec<Value> {
                 "domains": { "type": "array", "items": { "type": "string" }, "description": "Domains from search_companies" },
             }),
             &["campaign_id", "domains"],
+            adds.clone(),
+        ),
+        tool(
+            "find_lookalikes",
+            "Find companies like your customers",
+            "Ranks the company database by how much each company has in common with the project's customers: by default the \
+             companies of its won deals, plus or minus the ones picked on the Companies page. profile is what at least a third of \
+             them share (industry, tools, description words, hiring for the roles you sell to, country and region) and \
+             whether each part is on. Each result has a 0-100 score and the reasons that counted most. Seeds, companies already in \
+             the project and do-not-contact domains are left out. total counts all of the up to 200 matches.",
+            json!({
+                "project_id": project,
+                "seeds": { "type": "array", "items": { "type": "string" }, "description": "Optional. Customer domains to match instead of the project's" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Results to return, 25 by default" },
+            }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "add_lookalikes",
+            "Add lookalike companies to campaign",
+            "Adds companies from find_lookalikes to a campaign, with their score and reasons as why they fit. Pass domains, or top \
+             for the best that many. Pass the same seeds as find_lookalikes if you gave it some. Companies no longer among the \
+             matches are skipped. Then call find_people.",
+            json!({
+                "project_id": project,
+                "campaign_id": campaign,
+                "domains": { "type": "array", "items": { "type": "string" }, "description": "Domains from find_lookalikes" },
+                "top": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Instead of domains, add the best this many" },
+                "seeds": { "type": "array", "items": { "type": "string" }, "description": "Optional. The seeds find_lookalikes used" },
+            }),
+            &["project_id", "campaign_id"],
             adds.clone(),
         ),
         tool(
@@ -961,7 +1023,8 @@ mod tests {
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
-                     "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language"] {
+                     "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
+                     "add_lookalikes"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1045,6 +1108,65 @@ mod tests {
         }
         let (is_error, _) = server.call(KEY, "list_leads", json!({ "project_id": other_project, "sort": "score" })).await;
         assert!(is_error);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn lookalikes_rank_and_join_a_campaign_for_the_keys_organization(db: PgPool) {
+        let [(project, segment), (other_project, other_segment)] = seed(&db).await;
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(project).fetch_one(&db).await.unwrap();
+        crate::lookalikes::tests::customers(&db, org, project).await;
+        let server = Server::start(db.clone()).await;
+
+        let (is_error, text) = server.call(KEY, "find_lookalikes", json!({ "project_id": project, "limit": 2 })).await;
+        assert!(!is_error, "{text}");
+        let found: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((found["total"].clone(), found["database_empty"].clone()), (json!(4), json!(false)));
+        assert_eq!(found["results"].as_array().unwrap().len(), 2);
+        assert_eq!(found["results"][0]["domain"], "ledger.example");
+        assert_eq!(found["results"][0]["score"], 93);
+        assert_eq!(found["results"][0]["reasons"][2], "Hiring a Head of Finance");
+        assert_eq!(found["seeds"].as_array().unwrap().len(), 4);
+        assert_eq!(found["profile"][0]["key"], "category");
+
+        // Seeds passed in replace the project's, here and in the API's query string.
+        let (_, text) = server.call(KEY, "find_lookalikes", json!({ "project_id": project, "seeds": ["beta.example"] })).await;
+        let found: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(found["seeds"], json!([{ "domain": "beta.example", "name": "Beta", "won": true, "in_database": true, "known": true }]));
+        let api = server.url.replace("/api/mcp", &format!("/api/v1/projects/{project}/lookalikes?seeds=beta.example,https://www.gamma.example/"));
+        let res = server.client.get(&api).bearer_auth(KEY).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        let seeds: Vec<&str> = body["profile"]["seeds"].as_array().unwrap().iter().map(|s| s["domain"].as_str().unwrap()).collect();
+        assert_eq!(seeds, ["beta.example", "gamma.example"]);
+        let bad = server.url.replace("/api/mcp", &format!("/api/v1/projects/{project}/lookalikes?seeds=not%20a%20domain"));
+        assert_eq!(server.client.get(&bad).bearer_auth(KEY).send().await.unwrap().status(), 400);
+
+        let (is_error, text) = server.call(KEY, "add_lookalikes", json!({ "project_id": project, "campaign_id": segment, "top": 1 })).await;
+        assert!(!is_error, "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({ "added": 1, "skipped": 0 }));
+        let args = json!({ "project_id": project, "campaign_id": segment, "domains": ["tally.example", "noise.example"] });
+        let (_, text) = server.call(KEY, "add_lookalikes", args).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({ "added": 1, "skipped": 1 }), "noise isn't a match");
+        let (reason, segment_id): (String, Option<Uuid>) = sqlx::query_as("select fit_reason, segment_id from companies where domain = 'ledger.example' and project_id = $1")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(reason.starts_with("Like your customers: Accounting firm"), "{reason}");
+        assert_eq!(segment_id, Some(segment));
+
+        // Another organization's project or campaign is out of reach.
+        for (tool, args) in [
+            ("find_lookalikes", json!({ "project_id": other_project })),
+            ("add_lookalikes", json!({ "project_id": other_project, "campaign_id": other_segment, "top": 1 })),
+            ("add_lookalikes", json!({ "project_id": project, "campaign_id": other_segment, "top": 1 })),
+        ] {
+            let (is_error, text) = server.call(KEY, tool, args).await;
+            assert!(is_error, "{tool}: {text}");
+        }
+        let theirs: i64 = sqlx::query_scalar("select count(*) from companies where project_id = $1").bind(other_project).fetch_one(&db).await.unwrap();
+        assert_eq!(theirs, 0);
     }
 
     #[sqlx::test]

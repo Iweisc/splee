@@ -24,7 +24,7 @@ const CATEGORY = "hidden sm:table-cell";
 const CITY = "hidden md:table-cell";
 
 /** "dental_clinic" -> "Dental clinic" */
-const categoryWords = (category: string | null) => (category ? category[0].toUpperCase() + category.slice(1).replaceAll("_", " ") : "");
+export const categoryWords = (category: string | null) => (category ? category[0].toUpperCase() + category.slice(1).replaceAll("_", " ") : "");
 
 /** Many listings shout their city, like LEEDS. Those read as Leeds, the rest stay as written, like St Leonards-on-Sea. */
 const cityName = (city: string) => (city === city.toUpperCase() ? city.toLowerCase().replace(/(^|[\s-])\p{L}/gu, (m) => m.toUpperCase()) : city);
@@ -284,8 +284,9 @@ function Row({
 }
 
 /** Replaces the filters while companies are ticked. */
-function PickedBar({
+export function PickedBar({
   projectId,
+  addPath = `/projects/${projectId}/directory/add`,
   domains,
   segments,
   linkedin,
@@ -293,6 +294,8 @@ function PickedBar({
   onFound,
 }: {
   projectId: string;
+  /** Takes {segment_id, domains} and answers {added, skipped}, like the company database's. */
+  addPath?: string;
   domains: string[];
   segments: SegmentWithStats[];
   /** Undefined while the settings load. */
@@ -310,7 +313,7 @@ function PickedBar({
     if (!segment) return;
     setBusy(true);
     try {
-      const res = await api<{ added: number; skipped: number }>(`/projects/${projectId}/directory/add`, {
+      const res = await api<{ added: number; skipped: number }>(addPath, {
         body: { segment_id: segment.id, domains },
       });
       const skipped = res.skipped ? `. Skipped ${num(res.skipped)} already in this project or on the do-not-contact list` : "";
@@ -389,7 +392,7 @@ function PickedBar({
 }
 
 /** What "Find people" added, until it's closed. LinkedIn doesn't share emails, so the leads have none yet. */
-function FoundPanel({
+export function FoundPanel({
   projectId,
   found,
   onClose,

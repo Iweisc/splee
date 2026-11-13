@@ -33,6 +33,7 @@ mod jobs;
 mod language;
 mod lemmy;
 mod local_businesses;
+mod lookalikes;
 mod mail;
 mod mastodon;
 mod meetings;
