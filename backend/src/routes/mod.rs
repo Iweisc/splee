@@ -30,6 +30,7 @@ mod outreach;
 pub(crate) mod finders;
 mod payments;
 mod saved_replies;
+mod research;
 mod scores;
 mod slack;
 mod sending_domains;
@@ -97,6 +98,7 @@ pub fn router() -> Router<AppState> {
         .merge(signals::router())
         .merge(job_changes::router())
         .merge(tech::router())
+        .merge(research::router())
         .merge(scores::router())
         .merge(visitors::router())
         .merge(emails::router())
