@@ -97,6 +97,9 @@ pub struct CompanyRow {
     pub hiring: Vec<String>,
     /// The tools its last tech scan found, in catalogue order.
     pub tech: Vec<String>,
+    /// Its leading funding or news signal from the last 90 days, from signals::leading.
+    #[sqlx(skip)]
+    pub news: Option<crate::signals::Brief>,
 }
 
 async fn list_companies(
@@ -139,6 +142,12 @@ pub async fn companies_page(db: &PgPool, project_id: Uuid, q: ListQuery, page: &
     .bind(page.offset())
     .fetch_all(db)
     .await?;
+    let mut items = items;
+    let domains: Vec<String> = items.iter().map(|c| c.company.domain.clone()).collect();
+    let mut news = crate::signals::leading(db, project_id, &domains).await?;
+    for c in &mut items {
+        c.news = news.remove(&c.company.domain.to_lowercase());
+    }
     Ok(Paginated { items, total })
 }
 
@@ -353,6 +362,8 @@ pub struct LeadDetail {
     pub meetings: Vec<super::meetings::MeetingRow>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,
+    /// Their company's funding and news from the last 90 days, newest first.
+    pub news: Vec<crate::signals::Listed>,
     /// Their open deal, or else the one that closed last.
     pub deal: Option<crate::deals::Deal>,
     /// The move that made them a lead here, when a job change did.
@@ -398,6 +409,10 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
         Some(domain) => hiring::open_at(db, lead.project_id, std::slice::from_ref(domain)).await?,
         None => vec![],
     };
+    let news = match &lead.company_domain {
+        Some(domain) => crate::signals::list(db, lead.project_id, None, Some(crate::signals::WINDOW_DAYS), Some(domain)).await?,
+        None => vec![],
+    };
     let meetings = super::meetings::for_lead(db, lead.id).await?;
     let deal = crate::deals::for_lead(db, lead.id).await?;
     let job_change = sqlx::query_as(
@@ -426,6 +441,7 @@ pub async fn detail(db: &PgPool, mut lead: Lead) -> AppResult<LeadDetail> {
         calls,
         meetings,
         hiring,
+        news,
         deal,
         job_change,
         owner_name,

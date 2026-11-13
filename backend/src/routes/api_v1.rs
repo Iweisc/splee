@@ -73,6 +73,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/sheets", get(list_sheets))
         .route("/v1/projects/{id}/sheets/{conn}/import", post(import_sheet))
         .route("/v1/projects/{id}/job-changes", get(list_job_changes))
+        .route("/v1/projects/{id}/signals", get(list_signals))
         .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
 }
 
@@ -908,6 +909,17 @@ pub(super) async fn import_sheet(State(state): State<AppState>, auth: ApiKeyAuth
 pub(super) async fn list_job_changes(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Overview>> {
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(jobchanges::overview(&state.db, id).await?))
+}
+
+/// Funding filings and company news at the project's companies, newest first, like the Companies page's News tab.
+pub(super) async fn list_signals(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<super::signals::SignalsQuery>,
+) -> AppResult<Json<Vec<crate::signals::Listed>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(super::signals::listed(&state.db, id, &q).await?))
 }
 
 /// Adds past customers or champions to the project's watch list, from a list or a CSV, like the Job changes tab.

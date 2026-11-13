@@ -81,6 +81,14 @@ pub struct Config {
     pub local_sites_url: String,
     /// Google's Sheets API. Only tests and sandboxes point it elsewhere, at a fake. Sheets signs in with the Google app above.
     pub sheets_api_url: String,
+    /// The User-Agent sent to SEC EDGAR for Form D filings, which must name the client and give a contact, like
+    /// "Acme Splee admin@acme.com". None turns funding filings off.
+    pub sec_user_agent: Option<String>,
+    /// SEC EDGAR's search and archives. Empty for EDGAR itself. Only tests and sandboxes set it, to a fake that answers for both.
+    pub sec_api_url: String,
+    /// Where companies' blogs and feeds are read for news. Empty for their real sites. Only tests and sandboxes set it, to a fake
+    /// that serves each site under /site/{domain}.
+    pub news_sites_url: String,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -182,6 +190,9 @@ impl Config {
             places_api_url: env::var("PLACES_API_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| crate::places::API_URL.into()),
             local_sites_url: env::var("LOCAL_SITES_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             sheets_api_url: env::var("SHEETS_API_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| crate::sheets::API.into()),
+            sec_user_agent: env::var("SEC_USER_AGENT").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+            sec_api_url: env::var("SEC_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            news_sites_url: env::var("NEWS_SITES_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -254,6 +265,9 @@ mod tests {
             places_api_url: String::new(),
             local_sites_url: String::new(),
             sheets_api_url: String::new(),
+            sec_user_agent: None,
+            sec_api_url: String::new(),
+            news_sites_url: String::new(),
         }
     }
 

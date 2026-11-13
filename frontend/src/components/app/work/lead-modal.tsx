@@ -18,6 +18,7 @@ import { CallCard } from "./calls";
 import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
+import { LeadNews } from "./news";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
@@ -258,6 +259,13 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {lead.news.length > 0 && (
+        <div>
+          <MicroLabel className="mb-2">Company news</MicroLabel>
+          <LeadNews news={lead.news} />
         </div>
       )}
 

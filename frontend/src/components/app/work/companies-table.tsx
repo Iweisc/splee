@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, Td, Th, toastError, Tr, useDebounced } from "./states";
 import { HiringBadge } from "./hiring";
+import { NewsBadge } from "./news";
 import { SearchField } from "./search-field";
 import { TechBadges, useTech } from "./tech";
 import { FitScore } from "./status";
@@ -139,6 +140,7 @@ export function CompaniesTable({ projectId, segmentId }: { projectId: string; se
                             </span>
                           </a>
                           <HiringBadge roles={c.hiring} className="mt-1 pl-6" />
+                          <NewsBadge news={c.news} className="mt-1 pl-6" />
                           <TechBadges techs={c.tech} picks={tech?.picks ?? []} className="mt-1 pl-6" />
                         </Td>
                         <Td className={cn(FIRMOGRAPHICS, "whitespace-nowrap tabular-nums")}>{c.employees || "—"}</Td>

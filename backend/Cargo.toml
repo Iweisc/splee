@@ -53,6 +53,7 @@ unicode-segmentation = "1.13.3"
 whatlang = "0.18.0"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 zip = { version = "9.5.0", default-features = false }
+quick-xml = "0.42.0"
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 parquet = { version = "60.1.0", default-features = false, features = ["async", "arrow", "zstd"] }
 arrow-array = "60.1.0"
