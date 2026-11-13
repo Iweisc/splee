@@ -43,7 +43,7 @@ const CACHE_MS: u64 = 3_600_000;
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. find_lookalikes and add_lookalikes find companies like the user's \
-customers. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -236,7 +236,7 @@ const LEAD_FIELDS: &[&str] = &[
     "effective_language_source",
 ];
 const COMPANY_FIELDS: &[&str] =
-    &["id", "name", "domain", "segment_id", "country_code", "employees", "status", "score", "score_fit", "score_intent", "score_reasons", "hiring", "tech"];
+    &["id", "name", "domain", "segment_id", "country_code", "employees", "status", "score", "score_fit", "score_intent", "score_reasons", "hiring", "tech", "news"];
 /// What a campaign's language can be set to.
 static LANGUAGE_CHOICES: LazyLock<Vec<&str>> =
     LazyLock::new(|| crate::language::LANGUAGES.iter().map(|l| l.code).chain([crate::language::EACH_LEAD]).collect());
@@ -254,6 +254,10 @@ const LOCAL_FIELDS: &[&str] =
     &["place_id", "name", "category", "address", "phone", "website", "domain", "rating", "review_count", "maps_url", "known"];
 const SHEET_FIELDS: &[&str] =
     &["id", "kind", "spreadsheet_id", "spreadsheet_name", "tab", "segment_id", "keep_importing", "events", "last_sync_at", "rows_added", "error"];
+const SIGNAL_FIELDS: &[&str] =
+    &["domain", "company_id", "company_name", "leads", "kind", "happened_on", "headline", "title", "amount", "offered", "industry", "url", "checked_at"];
+/// Signals one list_company_signals call returns at most, so a big project's list doesn't fill the client's context.
+const MAX_SIGNALS: usize = 100;
 const JOB_CHANGE_FIELDS: &[&str] = &[
     "id", "full_name", "linkedin_url", "relationship", "old_company", "new_company", "new_domain", "new_title", "new_lead_id", "new_lead_email",
     "segment_name", "seen_at",
@@ -379,6 +383,15 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "add_to_watch_list" => async { value(v1::add_to_watch_list(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
+        "list_company_signals" => async {
+            let limit = a["limit"].as_u64().unwrap_or(25).clamp(1, MAX_SIGNALS as u64) as usize;
+            let mut listed = value(v1::list_signals(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?)?;
+            if let Some(items) = listed.as_array_mut() {
+                items.truncate(limit);
+            }
+            Ok(pick(listed, SIGNAL_FIELDS))
+        }
+        .await,
         _ => return None,
     })
 }
@@ -852,6 +865,23 @@ fn tools() -> Vec<Value> {
              Unipile, which the checks need.",
             json!({ "project_id": id_prop("A project id from list_projects") }),
             &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_company_signals",
+            "List company funding and news",
+            "Funding and news at the project's companies, newest first: Form D filings from SEC EDGAR (kind funding_filing, with \
+             amount sold and offered in US dollars) and posts on each company's own blog or newsroom feed about funding, a launch, an \
+             acquisition, an expansion or a new leader. headline is the line the score and the email writer use, like \"Raised $12M \
+             (SEC filing, Oct 3)\". Signals count for 90 days. company_id is set when the company is in the project, and leads counts \
+             its leads.",
+            json!({
+                "project_id": id_prop("A project id from list_projects"),
+                "kind": { "type": "string", "enum": crate::signals::KINDS, "description": "Optional. Only this kind" },
+                "days": { "type": "integer", "minimum": 1, "description": "Optional. Only signals from the last this many days" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SIGNALS, "description": "At most this many, 25 by default" },
+            }),
+            &["project_id"],
             read,
         ),
         tool(
@@ -942,6 +972,9 @@ mod tests {
                 places_api_url,
                 local_sites_url,
                 sheets_api_url: String::new(),
+                sec_user_agent: None,
+                sec_api_url: String::new(),
+                news_sites_url: String::new(),
             };
             let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1024,7 +1057,7 @@ mod tests {
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
-                     "add_lookalikes"] {
+                     "add_lookalikes", "list_company_signals"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1167,6 +1200,52 @@ mod tests {
         }
         let theirs: i64 = sqlx::query_scalar("select count(*) from companies where project_id = $1").bind(other_project).fetch_one(&db).await.unwrap();
         assert_eq!(theirs, 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn company_signals_for_the_keys_organization(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        let server = Server::start(db.clone()).await;
+        for (p, domain, kind, key, age) in [
+            (project, "acme.example", "funding_filing", "sec:1:021-1", 5),
+            (project, "acme.example", "launch", "feed:a", 40),
+            (other_project, "theirs.example", "funding_filing", "sec:2:021-2", 1),
+        ] {
+            sqlx::query(
+                "insert into company_signals (project_id, domain, kind, source, key, happened_on, title, amount, url)
+                 values ($1, $2, $3, 'sec', $4, current_date - $5::int, 'Acme Robotics, Inc.', 12000000, 'https://www.sec.gov/' || $4)",
+            )
+            .bind(p)
+            .bind(domain)
+            .bind(kind)
+            .bind(key)
+            .bind(age)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let (is_error, text) = server.call(KEY, "list_company_signals", json!({ "project_id": project, "days": 30 })).await;
+        assert!(!is_error, "{text}");
+        let listed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!((listed[0]["kind"].clone(), listed[0]["amount"].clone()), (json!("funding_filing"), json!(12000000)));
+        assert!(listed[0]["headline"].as_str().unwrap().starts_with("Raised $12M (SEC filing, "), "{text}");
+        assert!(listed[0].get("id").is_none(), "only the picked fields");
+        let (_, text) = server.call(KEY, "list_company_signals", json!({ "project_id": project, "kind": "launch" })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()[0]["kind"], "launch");
+        let (is_error, text) = server.call(KEY, "list_company_signals", json!({ "project_id": project, "kind": "gossip" })).await;
+        assert!(is_error && text.contains("kind must be one of"), "{text}");
+
+        let api = server.url.replace("/mcp", "/v1");
+        let res = server.client.get(format!("{api}/projects/{project}/signals")).bearer_auth(KEY).send().await.unwrap();
+        let all: Value = res.json().await.unwrap();
+        assert_eq!(all.as_array().unwrap().len(), 2);
+        let res = server.client.get(format!("{api}/projects/{other_project}/signals")).bearer_auth(KEY).send().await.unwrap();
+        assert_eq!(res.status(), 404);
+        let (is_error, _) = server.call(KEY, "list_company_signals", json!({ "project_id": other_project })).await;
+        assert!(is_error);
     }
 
     #[sqlx::test]

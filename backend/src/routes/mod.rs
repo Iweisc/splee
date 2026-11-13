@@ -34,6 +34,7 @@ mod scores;
 mod slack;
 mod sending_domains;
 mod sheets;
+mod signals;
 mod texts;
 mod tracking;
 mod social;
@@ -93,6 +94,7 @@ pub fn router() -> Router<AppState> {
         .merge(segments::router())
         .merge(leads::router())
         .merge(hiring::router())
+        .merge(signals::router())
         .merge(job_changes::router())
         .merge(tech::router())
         .merge(scores::router())

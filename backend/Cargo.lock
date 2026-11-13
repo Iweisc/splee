@@ -3495,6 +3495,7 @@ dependencies = [
  "mail-parser",
  "parquet",
  "pulldown-cmark",
+ "quick-xml",
  "reqwest",
  "rrule",
  "rustls-native-certs",

@@ -1164,6 +1164,8 @@ export interface LeadDetail extends Lead, EffectiveLanguage {
   /** Sales meetings with them from Fireflies, Fathom, Gong or Zoom, oldest first. */
   meetings: Meeting[];
   hiring: JobPost[];
+  /** Their company's funding and news from the last 90 days, newest first. */
+  news: CompanySignal[];
   /** Their open deal, or else the one that closed last. */
   deal: Deal | null;
   /** The move that made them a lead here, when a job change did. */
@@ -1239,6 +1241,8 @@ export interface CompanyRow extends Company {
   hiring: string[];
   /** The tools its last tech scan found, in catalogue order. */
   tech: string[];
+  /** Its leading funding or news signal from the last 90 days: the newest funding one, else the newest. */
+  news: SignalBrief | null;
 }
 
 /** A tool Splee can spot on a company's site or DNS. `category` is one of `TechCatalogue.categories`' keys. */
@@ -1375,6 +1379,43 @@ export interface HiringSignal {
   url: string;
   posted_at: Ts | null;
   first_seen: Ts;
+}
+
+export type SignalKind = "funding_filing" | "funding_post" | "launch" | "acquisition" | "expansion" | "leadership";
+
+export interface SignalBrief {
+  kind: SignalKind;
+  title: string;
+  /** US dollars sold, for SEC filings. */
+  amount: number | null;
+  offered: number | null;
+  /** A date, like 2026-10-03. */
+  happened_on: string;
+  url: string;
+  /** "Raised $12M (SEC filing, Oct 3)", the line scores and the email writer use. */
+  headline: string;
+}
+
+/** A Form D filing from SEC EDGAR or a post on a company's own feed. `checked_at` is when its source last looked at the company. */
+export interface CompanySignal extends SignalBrief {
+  id: UUID;
+  domain: string;
+  company_id: UUID | null;
+  company_name: string;
+  leads: number;
+  source: "sec" | "feed";
+  industry: string;
+  first_seen: Ts;
+  checked_at: Ts | null;
+}
+
+export interface SignalsOverview {
+  signals: CompanySignal[];
+  checked: number;
+  last_checked_at: Ts | null;
+  /** False when the server has no SEC_USER_AGENT, so only company feeds are read. */
+  sec: boolean;
+  funding_alerts: boolean;
 }
 
 export type EmailStatus =

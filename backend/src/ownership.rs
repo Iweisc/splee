@@ -531,6 +531,9 @@ mod tests {
             places_api_url: String::new(),
             local_sites_url: String::new(),
             sheets_api_url: String::new(),
+            sec_user_agent: None,
+            sec_api_url: String::new(),
+            news_sites_url: String::new(),
         }
     }
 

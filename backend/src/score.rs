@@ -69,9 +69,12 @@ pub const JOB_CHANGE: Signal = Signal { key: "job_change", label: "Past customer
 /// The lead clicked a link in one of your emails, scanners and link checks aside (tracking.rs). Opens count for nothing:
 /// too many are machines. Clicks on 2 or more links in a day from a lead who hasn't replied count half again.
 pub const CLICK: Signal = Signal { key: "click", label: "Clicked links", weight: 15.0, half_life: 3.0, window: 14 };
+/// The company raised money, by a Form D or its own post, or posted a launch, an acquisition, a new office or a new leader
+/// (signals/). Money is the clearest sign of new budget, so other news counts half.
+pub const NEWS: Signal = Signal { key: "news", label: "Funding and news", weight: 20.0, half_life: 30.0, window: crate::signals::WINDOW_DAYS };
 
-pub const SIGNALS: [&Signal; 13] =
-    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE, &CLICK];
+pub const SIGNALS: [&Signal; 14] =
+    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE, &CLICK, &NEWS];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reason {
@@ -126,6 +129,8 @@ pub struct CompanyFacts {
     pub views: i64,
     pub last_view: Option<Ts>,
     pub intent_page: Option<(String, Ts)>,
+    /// Its leading signal in the window (signals::leading): kind, headline and date.
+    pub news: Option<(String, String, chrono::NaiveDate)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -236,6 +241,12 @@ pub fn score(t: &Targeting, company: &CompanyFacts, lead: Option<&LeadFacts>) ->
         && let Some(points) = t.fade(&INTENT_PAGE, *at)
     {
         intents.push((points, format!("Read {path} {}", t.when(*at))));
+    }
+    if let Some((kind, headline, on)) = &company.news
+        && let Some(points) = t.fade(&NEWS, on.and_time(chrono::NaiveTime::MIN).and_utc())
+    {
+        let share = if kind.starts_with("funding") { 1.0 } else { 0.5 };
+        intents.push((points * share, headline.clone()));
     }
     if let Some(lead) = lead {
         if let Some(at) = lead.question_at
@@ -434,6 +445,7 @@ pub async fn due(db: &PgPool) -> sqlx::Result<Vec<Uuid>> {
                 or exists (select 1 from companies c where c.project_id = p.id and c.created_at > s.scored_at)
                 or exists (select 1 from visitor_hits h where h.project_id = p.id and h.created_at > s.scored_at and h.domain is not null)
                 or exists (select 1 from job_openings j where j.project_id = p.id and (j.first_seen > s.scored_at or j.closed_at > s.scored_at))
+                or exists (select 1 from company_signals g where g.project_id = p.id and g.first_seen > s.scored_at)
                 or exists (select 1 from email_messages e where e.project_id = p.id and e.status = 'received' and e.created_at > s.scored_at)
                 or exists (select 1 from tracking_hits h where h.project_id = p.id and h.created_at > s.scored_at and h.kind = 'click'
                            and h.filter_reason is null)
@@ -561,6 +573,11 @@ struct DomainRow {
     last_view: Option<Ts>,
     intent_path: Option<String>,
     intent_at: Option<Ts>,
+    news_kind: Option<String>,
+    news_title: Option<String>,
+    news_amount: Option<i64>,
+    news_offered: Option<i64>,
+    news_on: Option<chrono::NaiveDate>,
 }
 
 /// Domain signals of the project's companies and leads, or of `only` these domains. One row per domain with any of them.
@@ -587,20 +604,27 @@ async fn domain_signals(db: &PgPool, project_id: Uuid, only: Option<&[String]>) 
            where h.project_id = $1 and h.domain is not null and h.created_at > now() - make_interval(days => $5)
              and (h.path = i.path or starts_with(h.path, i.path || '/')) and ($2::text[] is null or lower(h.domain::text) = any($2))
            order by lower(h.domain::text), h.created_at desc
+         ), news as (
+           select distinct on (lower(domain::text)) lower(domain::text) as domain, kind, title, amount, offered, happened_on
+           from company_signals where project_id = $1 and happened_on > current_date - $6 and ($2::text[] is null or lower(domain::text) = any($2))
+           order by lower(domain::text), kind in ('funding_filing', 'funding_post') desc, happened_on desc, first_seen desc
          )
-         select d.domain, t.techs, h.roles, h.posted, v.views, v.last_view, i.path as intent_path, i.created_at as intent_at
+         select d.domain, t.techs, h.roles, h.posted, v.views, v.last_view, i.path as intent_path, i.created_at as intent_at,
+                n.kind as news_kind, n.title as news_title, n.amount as news_amount, n.offered as news_offered, n.happened_on as news_on
          from domains d
          left join tech_scans t on t.domain = d.domain::citext and t.scanned_at is not null
          left join hiring h on h.domain = d.domain
          left join views v on v.domain = d.domain
          left join intent i on i.domain = d.domain
-         where t.domain is not null or h.domain is not null or v.domain is not null or i.domain is not null",
+         left join news n on n.domain = d.domain
+         where t.domain is not null or h.domain is not null or v.domain is not null or i.domain is not null or n.domain is not null",
     )
     .bind(project_id)
     .bind(only)
     .bind(HIRING.window)
     .bind(VISIT.window)
     .bind(INTENT_PAGE.window)
+    .bind(NEWS.window)
     .fetch_all(db)
     .await?;
     Ok(rows.into_iter().map(|r| (r.domain.clone(), r)).collect())
@@ -613,6 +637,11 @@ fn with_signals(mut facts: CompanyFacts, signals: Option<&DomainRow>) -> Company
         facts.views = s.views.unwrap_or(0);
         facts.last_view = s.last_view;
         facts.intent_page = s.intent_path.clone().zip(s.intent_at);
+        if let (Some(kind), Some(on)) = (&s.news_kind, s.news_on) {
+            let today = chrono::Utc::now().date_naive();
+            let title = s.news_title.as_deref().unwrap_or_default();
+            facts.news = Some((kind.clone(), crate::signals::headline(kind, title, s.news_amount, s.news_offered, on, today), on));
+        }
     }
     facts
 }
@@ -962,6 +991,20 @@ mod tests {
         assert_eq!(score(&t, &company(), Some(&LeadFacts { clicks: vec![click("https://acme.example/pricing", 15 * 24)], ..Default::default() })).intent, 0);
         let off = Targeting { off: ["click".to_string()].into(), ..targeting() };
         assert_eq!(score(&off, &company(), Some(&pricing)).intent, 0);
+    }
+
+    #[test]
+    fn company_news_is_a_reason_and_money_counts_most() {
+        let t = targeting();
+        let news = |kind: &str, text: &str, days: i64| CompanyFacts { news: Some((kind.into(), text.into(), ago(days).date_naive())), ..company() };
+        let raised = score(&t, &news("funding_filing", "Raised $12M (SEC filing, Nov 11)", 0), None);
+        assert_eq!(raised.intent, 20);
+        assert!(texts(&raised).contains(&"Raised $12M (SEC filing, Nov 11)"), "{raised:?}");
+        assert_eq!(score(&t, &news("expansion", "Expanding: Acme opens its Austin office (Nov 11)", 0), None).intent, 10);
+        assert_eq!(score(&t, &news("funding_post", "Funding news: Our Series A", 30), None).intent, 10, "half after 30 days");
+        assert_eq!(score(&t, &news("funding_filing", "Raised $12M", 91), None).intent, 0, "gone after 90 days");
+        let off = Targeting { off: ["news".to_string()].into(), ..targeting() };
+        assert_eq!(score(&off, &news("funding_filing", "Raised $12M", 0), None).intent, 0);
     }
 
     #[test]

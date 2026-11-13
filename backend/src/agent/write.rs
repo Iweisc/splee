@@ -102,6 +102,8 @@ struct CompanySignals {
     tech: HashMap<String, String>,
     /// By lead: the company they left and what they did with us there, for leads a job change made. See jobchanges.rs.
     history: HashMap<Uuid, Value>,
+    /// The company's leading funding or news signal from the last 90 days. See signals/.
+    news: HashMap<String, crate::signals::Brief>,
 }
 
 async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
@@ -116,7 +118,8 @@ async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySi
     }
     let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
     let (tech, history) = (tech::fact_lines(ctx.db(), project_id, &domains).await?, crate::jobchanges::histories(ctx.db(), &ids).await?);
-    Ok(CompanySignals { posts, tech, history })
+    let news = crate::signals::leading(ctx.db(), project_id, &domains).await?;
+    Ok(CompanySignals { posts, tech, history, news })
 }
 
 fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
@@ -138,6 +141,10 @@ fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     }
     if let Some(line) = signals.tech.get(&domain) {
         brief["tech"] = json!(line);
+    }
+    if let Some(news) = signals.news.get(&domain) {
+        let source = if news.kind == "funding_filing" { "an SEC Form D filing" } else { "their own blog" };
+        brief["news"] = json!({"what": news.headline, "title": news.title, "date": news.happened_on.to_string(), "source": source});
     }
     let reasons = crate::score::opener_reasons(&lead.score_reasons);
     if !reasons.is_empty() {
@@ -398,6 +405,10 @@ fn initial_prompt(
          with, it usually makes the best first observation: name the role in plain words and tie it to what we do. Never paste the link.\n\
          - A lead's \"tech\" names tools their company uses that matter to our offer, like \"Uses HubSpot\". When no job post fits, it can \
          make the first observation: name the tool plainly and tie it to what we do. Never say how we know.\n\
+         - A lead's \"news\" is something their company did in the last 90 days, as its \"source\" reported it: money raised, a \
+         launch, an acquisition, a new office or a new leader. When no job post fits, it can make the first observation. Say it \
+         plainly and only as \"what\" and \"title\" put it: keep the amount as given, call a filing raising money, never name a round \
+         or an investor it doesn't name, and never say how we know. Never paste the link.\n\
          - A lead's \"why_now\" holds the two strongest reasons the lead ranks high, as the user sees them on the lead. The first \
          sentence may build on one that's about their company, like a hire or their size. Never mention a visit to our website, a page \
          they read, their reply or a deal.\n\
@@ -1155,6 +1166,46 @@ mod tests {
         let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
         assert_eq!(lead_brief(&leads[0], &signals)["tech"], "Uses HubSpot and Intercom");
         assert!(lead_brief(&leads[1], &signals).get("tech").is_none());
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn briefs_carry_the_companys_recent_funding_or_news(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let ctx = ctx(&db, c.project).await;
+        let leads = add_leads(&db, &c, 3).await;
+        for (lead, domain) in leads.iter().zip(["acme.example", "quiet.example", "old.example"]) {
+            sqlx::query("update leads set company_domain = $2 where id = $1").bind(lead.id).bind(domain).execute(&db).await.unwrap();
+        }
+        sqlx::query(
+            "insert into company_signals (project_id, domain, kind, source, key, happened_on, title, amount, offered, url) values
+               ($1, 'acme.example', 'launch', 'feed', 'a', current_date - 2, 'Introducing Acme Flow', null, null, 'https://acme.example/flow'),
+               ($1, 'acme.example', 'funding_filing', 'sec', 'b', current_date - 41, 'Acme Robotics, Inc.', 12000000, 15000000, 'https://www.sec.gov/b'),
+               ($1, 'old.example', 'funding_post', 'feed', 'c', current_date - 91, 'We raised our seed round', null, null, 'https://old.example/seed')",
+        )
+        .bind(c.project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let leads: Vec<Lead> =
+            sqlx::query_as("select * from leads where id = any($1) order by company_domain").bind(leads.iter().map(|l| l.id).collect::<Vec<_>>()).fetch_all(&db).await.unwrap();
+        let signals = company_signals(&ctx, &leads.iter().collect::<Vec<_>>()).await.unwrap();
+        let today = chrono::Utc::now().date_naive();
+        let filed = today - chrono::Duration::days(41);
+        let when = crate::signals::short_date(filed, today);
+        // The filing leads over the newer launch, since money is the stronger opener.
+        assert_eq!(
+            lead_brief(&leads[0], &signals)["news"],
+            serde_json::json!({"what": format!("Raised $12M (SEC filing, {when})"), "title": "Acme Robotics, Inc.", "date": filed.to_string(),
+                               "source": "an SEC Form D filing"})
+        );
+        assert!(lead_brief(&leads[1], &signals).get("news").is_none(), "old.example's post is past 90 days");
+        assert!(lead_brief(&leads[2], &signals).get("news").is_none());
+        let profile = crate::agent::explore::Profile::default();
+        let project = sqlx::query_as("select * from projects where id = $1").bind(c.project).fetch_one(&db).await.unwrap();
+        let prompt = super::initial_prompt(&project, &profile, None, None, &super::WriterSettings::default(), "", "", ENGLISH);
+        assert!(prompt.contains("A lead's \"news\"") && prompt.contains("keep the amount as given"), "{prompt}");
     }
 
     #[sqlx::test]

@@ -53,6 +53,7 @@ mod reports;
 mod rest_hooks;
 mod routes;
 mod score;
+mod signals;
 mod site_contacts;
 mod slack;
 mod social;
@@ -138,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
     jobchanges::spawn_worker(state.clone());
     tech::spawn_worker(state.db.clone());
     score::spawn_worker(state.db.clone());
+    signals::spawn_worker(state.db.clone(), &cfg);
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
