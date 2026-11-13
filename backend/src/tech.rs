@@ -53,8 +53,8 @@ impl Scanner {
         }
     }
 
-    /// The tools found, and whether the homepage could be read.
-    pub async fn scan(&self, domain: &str) -> (Vec<&'static str>, bool) {
+    /// The tools found, the homepage's language (see language::html_lang) and whether the homepage could be read.
+    pub async fn scan(&self, domain: &str) -> (Vec<&'static str>, &'static str, bool) {
         let (page, (mx, txt)) = tokio::join!(self.homepage(domain), async {
             match &self.resolver {
                 Some(r) => tokio::join!(dns::mx_exchanges(r, domain), dns::txt_records(r, domain)),
@@ -63,7 +63,8 @@ impl Scanner {
         });
         let read = page.is_some();
         let (headers, html) = page.unwrap_or_default();
-        (fingerprints::detect(&Evidence { html, headers, mx, txt }), read)
+        let lang = crate::language::html_lang(&html);
+        (fingerprints::detect(&Evidence { html, headers, mx, txt }), lang, read)
     }
 
     /// The headers and start of the domain's homepage, or of www's when the bare domain doesn't answer.
@@ -114,8 +115,8 @@ pub async fn tick(db: &PgPool, scanner: &Scanner, hourly: i64) -> anyhow::Result
         }
         let scans = stream::iter(claim(db, project_id, hourly).await?)
             .map(|domain| async move {
-                let (techs, read) = scanner.scan(&domain).await;
-                store(db, &domain, &techs, read).await
+                let (techs, lang, read) = scanner.scan(&domain).await;
+                store(db, &domain, &techs, lang, read).await
             })
             .buffer_unordered(PARALLEL);
         scans.collect::<Vec<_>>().await.into_iter().collect::<sqlx::Result<()>>()?;
@@ -154,8 +155,9 @@ async fn claim(db: &PgPool, project_id: Uuid, hourly: i64) -> sqlx::Result<Vec<S
     Ok(taken)
 }
 
-/// A homepage that couldn't be read keeps what earlier scans found on it, so a site that's down for a day keeps its badges.
-async fn store(db: &PgPool, domain: &str, found: &[&'static str], read: bool) -> sqlx::Result<()> {
+/// A homepage that couldn't be read keeps what earlier scans found on it, so a site that's down for a day keeps its badges and
+/// its language.
+async fn store(db: &PgPool, domain: &str, found: &[&'static str], lang: &str, read: bool) -> sqlx::Result<()> {
     let mut techs: Vec<&str> = found.to_vec();
     if !read {
         let before: Vec<String> = sqlx::query_scalar("select unnest(techs) from tech_scans where domain = $1").bind(domain).fetch_all(db).await?;
@@ -164,7 +166,13 @@ async fn store(db: &PgPool, domain: &str, found: &[&'static str], read: bool) ->
     let position = |name: &&str| CATALOGUE.iter().position(|t| t.name == *name);
     techs.sort_by_key(position);
     techs.dedup();
-    sqlx::query("update tech_scans set techs = $2, scanned_at = now() where domain = $1").bind(domain).bind(&techs).execute(db).await?;
+    sqlx::query("update tech_scans set techs = $2, html_lang = case when $4 then $3 else html_lang end, scanned_at = now() where domain = $1")
+        .bind(domain)
+        .bind(&techs)
+        .bind(lang)
+        .bind(read)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -273,12 +281,12 @@ mod tests {
         fake.page(
             "acme.com",
             &[("server", "cloudflare"), ("set-cookie", "hubspotutk=1; Path=/"), ("set-cookie", "_ga=GA1; Path=/")],
-            r#"<script src="https://widget.intercom.io/widget/abc"></script>"#,
+            r#"<html lang="de-AT"><script src="https://widget.intercom.io/widget/abc"></script>"#,
         );
-        assert_eq!(scanner.scan("acme.com").await, (vec!["HubSpot", "Intercom", "Google Analytics", "Cloudflare"], true));
+        assert_eq!(scanner.scan("acme.com").await, (vec!["HubSpot", "Intercom", "Google Analytics", "Cloudflare"], "de", true));
         fake.page("www.wwwonly.com", &[], r#"<meta name="generator" content="Webflow">"#);
-        assert_eq!(scanner.scan("wwwonly.com").await, (vec!["Webflow"], true));
-        assert_eq!(scanner.scan("down.com").await, (vec![], false));
+        assert_eq!(scanner.scan("wwwonly.com").await, (vec!["Webflow"], "", true));
+        assert_eq!(scanner.scan("down.com").await, (vec![], "", false));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -286,7 +294,7 @@ mod tests {
     #[ignore = "needs Postgres"]
     async fn each_domain_is_fetched_once_for_every_project_and_again_after_30_days(db: PgPool) {
         let (scanner, fake) = serve().await;
-        fake.page("shared.com", &[], r#"<script src="https://js.stripe.com/v3"></script>"#);
+        fake.page("shared.com", &[], r#"<html lang="fr"><script src="https://js.stripe.com/v3"></script>"#);
         fake.page("solo.com", &[("x-vercel-id", "fra1")], "<p>Hi</p>");
         // Two organizations with the same company, and a lead's company that has no company row.
         let a = project(&db, &["shared.com"]).await;
@@ -317,6 +325,8 @@ mod tests {
         tick(&db, &scanner, 300).await.unwrap();
         assert_eq!(fake.hits("shared.com"), 2);
         assert_eq!(techs(&db, "shared.com").await, ["Stripe"]);
+        let lang: String = sqlx::query_scalar("select html_lang from tech_scans where domain = 'shared.com'").fetch_one(&db).await.unwrap();
+        assert_eq!(lang, "fr");
         assert_eq!(techs(&db, "solo.com").await, ["Netlify"]);
     }
 

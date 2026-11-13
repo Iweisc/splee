@@ -75,10 +75,15 @@ struct Verdict {
     return_date: String,
 }
 
-pub async fn classify_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
-    let thread = load_thread(ctx).await?;
-    let prompt = format!(
+/// The reader is Claude, so a reply in any language is read as it is. The examples keep it from taking a German out-of-office
+/// or a Spanish "remove me" for "other", which would leave the lead in the sequence.
+fn classify_prompt(thread: &Thread) -> String {
+    format!(
         "Classify the last message in this email thread (it's their reply to our cold outreach).\n\n{}\n\
+         The reply can be in any language. Read it in its own language and sort it the same way, for example: \"bitte abmelden\", \
+         \"désinscrivez-moi\", \"darme de baja\", \"me descadastre\" or \"afmelden\" is unsubscribe, \"ich bin abwesend\", \"je suis \
+         absent\", \"fuera de la oficina\", \"ausente\" or \"afwezig\" in an automatic reply is ooo, and \"kein Interesse\", \"pas \
+         intéressé\", \"no nos interesa\", \"não temos interesse\" or \"geen interesse\" is not_interested.\n\
          Categories:\n\
          - hot: interest that moves a deal forward: wants a call or demo, asks for pricing, samples or a proposal, says yes, or points to the colleague who decides.\n\
          - question: asks something before deciding, without clear interest yet.\n\
@@ -87,9 +92,15 @@ pub async fn classify_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          - unsubscribe: asks to stop emailing or to be removed.\n\
          - bounce: a delivery failure notice.\n\
          - other: anything else.\n\
-         Also give the reason in one short sentence, and return_date (YYYY-MM-DD) when an out-of-office says when they are back, else \"\".",
-        transcript(&thread)
-    );
+         Also give the reason in one short sentence, in English, and return_date (YYYY-MM-DD) when an out-of-office says when they \
+         are back, else \"\".",
+        transcript(thread)
+    )
+}
+
+pub async fn classify_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
+    let thread = load_thread(ctx).await?;
+    let prompt = classify_prompt(&thread);
     let schema = json!({
         "type": "object",
         "properties": {
@@ -273,16 +284,19 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     } else {
         format!("Offer a short call with the booking link {} on its own line.", settings.booking_link.trim())
     };
+    // They may answer in another language than we wrote in, and the reply follows them. A one-word answer can't tell.
+    let lang = crate::language::reply_language(&t.inbound.body, crate::language::for_lead(ctx.db(), t.lead.id).await?);
     let prompt = format!(
         "Write our reply to the last message in this thread, from {sender}.\n\n{thread}\
          About us:\n{brief}\n{faq_block}\n\
          Answer what they asked in a sentence or two using only the facts above, then move toward a meeting. {next_step} \
-         At most 80 words. Reply in the language of their message, starting with a greeting and their first name. Tone: {tone}. No sign-off.{extra}",
+         At most 80 words. Start with a greeting and their first name. Tone: {tone}. No sign-off.{extra}\n{language}",
         sender = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) },
         thread = transcript(&t),
         brief = profile.brief(t.project.domain.as_deref()),
         faq_block = if faq.is_empty() { String::new() } else { format!("Facts and FAQ:\n{faq}\n") },
         tone = settings.tone,
+        language = crate::language::instruction(lang),
         extra = if settings.auto_reply_instructions.trim().is_empty() {
             String::new()
         } else {
@@ -308,8 +322,8 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     }
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for,
-                                     in_reply_to, to_email)
-         values ($1, $2, $3, $4, 'outbound', 'auto_reply', $5, $6, $7, $8, $9, $10)",
+                                     in_reply_to, to_email, language)
+         values ($1, $2, $3, $4, 'outbound', 'auto_reply', $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(t.project.id)
     .bind(t.lead.id)
@@ -321,6 +335,7 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .bind(auto.then(Utc::now))
     .bind(&t.inbound.message_id)
     .bind(t.inbound.from_email.as_ref().or(t.lead.email.as_ref()))
+    .bind(lang.code)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -328,4 +343,90 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         crate::slack::post_hot_reply(&ctx.state, t.lead.id).await;
     }
     Ok(Outcome::new(if auto { "Reply sent to the outbox" } else { "Reply drafted for approval" }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicI32;
+
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{Ctx, classify_run, draft_run};
+    use crate::ab_test::tests::{add_leads, seed};
+    use crate::agent::fake;
+    use crate::models::AgentRun;
+
+    async fn run(db: &PgPool, project: Uuid, kind: &str, message: Uuid, answer: Value) -> Ctx {
+        let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (project_id, kind, input) values ($1, $2, $3) returning *")
+            .bind(project)
+            .bind(kind)
+            .bind(json!({ "message_id": message }))
+            .fetch_one(db)
+            .await
+            .unwrap();
+        fake::answer_with(run.id, move |_| answer.clone());
+        Ctx { state: crate::autopilot::tests::state(db.clone()), run, step: AtomicI32::new(0) }
+    }
+
+    async fn reply(db: &PgPool, project: Uuid, lead: Uuid, body: &str) -> Uuid {
+        sqlx::query_scalar(
+            "insert into email_messages (project_id, lead_id, direction, kind, status, subject, body, message_id, from_email)
+             values ($1, $2, 'inbound', 'inbound', 'received', 'Re: Fieldnote x Brauhaus', $3, gen_random_uuid()::text, 'anna@brauhaus.example')
+             returning id",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(body)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_drafted_reply_answers_in_the_language_they_wrote_in(db: PgPool) {
+        let c = seed(&db, 0).await;
+        sqlx::query("update segments set language = 'lead' where id = $1").bind(c.segment).execute(&db).await.unwrap();
+        let lead = add_leads(&db, &c, 1).await.remove(0);
+        sqlx::query("update leads set country_code = 'DE' where id = $1").bind(lead.id).execute(&db).await.unwrap();
+
+        // We wrote in German, but they answered in French, so the reply is French.
+        let french = reply(&db, c.project, lead.id, "Bonjour, merci pour votre message. Pouvez-vous m'envoyer vos tarifs et me dire comment se passe la mise en place ?").await;
+        let ctx = run(&db, c.project, "draft_reply", french, json!({ "body": "Bonjour Anna" })).await;
+        draft_run(&ctx).await.unwrap();
+        let prompt = &fake::prompts(ctx.run.id)[0];
+        assert!(prompt.contains("write in French") && prompt.contains("\"vous\""), "{prompt}");
+
+        // Too short to tell, so it goes by the lead's own language.
+        let short = reply(&db, c.project, lead.id, "Ja, gerne!").await;
+        let ctx = run(&db, c.project, "draft_reply", short, json!({ "body": "Guten Tag Anna Weber" })).await;
+        draft_run(&ctx).await.unwrap();
+        let prompt = &fake::prompts(ctx.run.id)[0];
+        assert!(prompt.contains("write in German") && prompt.contains("\"Sie\""), "{prompt}");
+
+        let drafts: Vec<String> =
+            sqlx::query_scalar("select language from email_messages where kind = 'auto_reply' order by created_at").fetch_all(&db).await.unwrap();
+        assert_eq!(drafts, ["fr", "de"]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_reader_sorts_replies_in_any_language(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let lead = add_leads(&db, &c, 1).await.remove(0);
+        let message = reply(&db, c.project, lead.id, "Bitte melden Sie mich von Ihrer Liste ab.").await;
+        let verdict = json!({ "classification": "unsubscribe", "reason": "They asked to be removed.", "return_date": "" });
+        let ctx = run(&db, c.project, "classify_reply", message, verdict).await;
+        classify_run(&ctx).await.unwrap();
+        let prompt = &fake::prompts(ctx.run.id)[0];
+        assert!(prompt.contains("Bitte melden Sie mich von Ihrer Liste ab.") && prompt.contains("The reply can be in any language"), "{prompt}");
+        for phrase in ["bitte abmelden", "darme de baja", "désinscrivez-moi", "ich bin abwesend", "fuera de la oficina", "kein Interesse", "no nos interesa"] {
+            assert!(prompt.contains(phrase), "{phrase} missing from {prompt}");
+        }
+        let status: String = sqlx::query_scalar("select status from leads where id = $1").bind(lead.id).fetch_one(&db).await.unwrap();
+        assert_eq!(status, "unsubscribed");
+    }
 }

@@ -67,6 +67,8 @@ pub struct Analytics {
     /// Weekday (1 for Monday to 7 for Sunday) and hour of the emails sent, in the project's time zone. Empty cells are left out.
     heatmap: Vec<SlotRow>,
     channels: Vec<ChannelRow>,
+    /// By the language of the emails leads got, most leads first. A reply counts for the language of the last email before it.
+    languages: Vec<LanguageRow>,
 }
 
 /// Rates are by lead, out of the leads emailed in the range, like the overview's. Null when nobody was emailed.
@@ -230,6 +232,17 @@ struct ChannelRow {
     meetings: Option<i64>,
 }
 
+/// The rate is by lead, out of the leads emailed in this language, like the totals'.
+#[derive(Serialize)]
+struct LanguageRow {
+    language: &'static str,
+    name: &'static str,
+    sent: i64,
+    contacted: i64,
+    replies: i64,
+    reply_rate: Option<f64>,
+}
+
 #[derive(FromRow, Default)]
 struct Counts {
     sent: i64,
@@ -262,6 +275,7 @@ struct Row {
     weekday: Option<i32>,
     hour: Option<i32>,
     currency: Option<String>,
+    language: Option<String>,
     #[sqlx(flatten)]
     n: Counts,
 }
@@ -288,17 +302,17 @@ const FACTS: &str = "with w as (
  ), facts as (
    select 'sent' as what, e.sent_at as at, e.lead_id, e.segment_id, e.mailbox_id, e.kind in ('initial', 'follow_up') as outreach,
      e.step, e.sent_at, e.cost_micros, false as hot, null as channel, null as currency, 0::bigint as cents, e.variant_id,
-     e.track_opens, e.track_clicks,
+     e.track_opens, e.track_clicks, coalesce(nullif(e.language, ''), 'en') as language,
      exists (select 1 from tracking_hits h where h.email_id = e.id and h.kind = 'open' and h.filter_reason is null) as opened,
      exists (select 1 from tracking_hits h where h.email_id = e.id and h.kind = 'click' and h.filter_reason is null) as clicked
    from email_messages e, w
    where e.project_id = $1 and e.status = 'sent' and e.direction = 'outbound' and e.sent_at >= w.lo and e.sent_at < w.hi
    union all
    select o.what, o.at, o.lead_id, coalesce(c.segment_id, l.segment_id), c.mailbox_id, c.step is not null, c.step, c.sent_at, 0,
-     l.status in ('hot', 'meeting_booked'), o.channel, o.currency, o.cents, c.variant_id, false, false, false, false
+     l.status in ('hot', 'meeting_booked'), o.channel, o.currency, o.cents, c.variant_id, false, false, c.language, false, false
    from outcomes o cross join w join leads l on l.id = o.lead_id
    left join lateral (
-     select e.segment_id, e.mailbox_id, e.step, e.sent_at, e.variant_id from email_messages e
+     select e.segment_id, e.mailbox_id, e.step, e.sent_at, e.variant_id, coalesce(nullif(e.language, ''), 'en') as language from email_messages e
      where e.lead_id = o.lead_id and e.direction = 'outbound' and e.status = 'sent' and e.kind in ('initial', 'follow_up')
        and e.sent_at <= o.at
      order by e.sent_at desc limit 1
@@ -315,8 +329,8 @@ const FACTS: &str = "with w as (
  select case when grouping(bucket) = 0 then 'series' when grouping(segment_id) = 0 then 'campaign'
           when grouping(mailbox_id) = 0 then 'mailbox' when grouping(out_step) = 0 then 'step'
           when grouping(weekday) = 0 then 'slot' when grouping(currency) = 0 then 'currency' when grouping(variant_id) = 0 then 'angle'
-          else 'total' end as breakdown,
-   cur, bucket, segment_id, variant_id, mailbox_id, out_step as step, weekday, hour, currency,
+          when grouping(language) = 0 then 'language' else 'total' end as breakdown,
+   cur, bucket, segment_id, variant_id, mailbox_id, out_step as step, weekday, hour, currency, language,
    count(*) filter (where what = 'sent' and outreach) as sent,
    count(distinct lead_id) filter (where what = 'sent' and outreach) as contacted,
    count(*) filter (where what = 'reply') as replies,
@@ -334,7 +348,7 @@ const FACTS: &str = "with w as (
    count(*) filter (where what = 'sent' and outreach and track_clicks and clicked) as clicked
  from scoped
  group by grouping sets ((cur), (cur, bucket), (cur, segment_id), (cur, mailbox_id), (cur, out_step), (cur, weekday, hour), (cur, currency),
-                         (cur, variant_id))";
+                         (cur, variant_id), (cur, language))";
 
 fn rate(part: i64, whole: i64) -> Option<f64> {
     (whole > 0).then(|| part as f64 / whole as f64)
@@ -448,6 +462,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
     let mut totals = [Totals::default(), Totals::default()];
     let mut won_value: [Vec<Money>; 2] = [vec![], vec![]];
     let (mut series, mut campaigns, mut mailboxes, mut steps, mut heatmap, mut angles) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let mut languages = vec![];
     let mut email_replies = 0;
     for row in rows {
         let n = row.n;
@@ -472,6 +487,12 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
                 if let Some(step) = row.step.filter(|_| n.sent > 0 || n.replies > 0) {
                     let engagement = Engagement::from_counts(&n);
                     steps.push(StepRow { step, sent: n.sent, replies: n.replies, reply_rate: rate(n.replies, n.sent), engagement });
+                }
+            }
+            "language" => {
+                if let Some(lang) = row.language.as_deref().and_then(crate::language::find).filter(|_| n.sent > 0 || n.replies > 0) {
+                    let (sent, contacted, replies) = (n.sent, n.contacted, n.replies);
+                    languages.push(LanguageRow { language: lang.code, name: lang.name, sent, contacted, replies, reply_rate: rate(replies, contacted) });
                 }
             }
             "slot" => {
@@ -520,6 +541,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
     };
     steps.sort_by_key(|s| s.step);
     heatmap.sort_by_key(|s| (s.weekday, s.hour));
+    languages.sort_by_key(|l| (std::cmp::Reverse(l.contacted), l.language));
 
     Ok(Analytics {
         series: fill(series, from, to, weekly),
@@ -541,6 +563,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         previous,
         steps,
         heatmap,
+        languages,
     })
 }
 
@@ -990,6 +1013,41 @@ mod tests {
 
     async fn json(db: &PgPool, project: Uuid, q: AnalyticsQuery) -> serde_json::Value {
         serde_json::to_value(analytics(db, project, &q).await.unwrap()).unwrap()
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn reply_rate_by_the_language_the_emails_were_written_in(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        // Two German leads with a first email and a follow-up each, one of whom replied after the follow-up, a French lead who
+        // replied, and one written to before emails had a language, which counts as English.
+        for (language, emails, replied) in [("de", 2, true), ("de", 2, false), ("fr", 1, true), ("", 1, false)] {
+            sqlx::query(
+                "with l as (insert into leads (project_id, status) values ($1, 'contacted') returning id),
+                      e as (insert into email_messages (project_id, lead_id, direction, kind, step, status, sent_at, language)
+                            select $1, l.id, 'outbound', case when g = 0 then 'initial' else 'follow_up' end, g, 'sent',
+                                   now() - interval '3 days' + g * interval '1 day', $2
+                            from l, generate_series(0, $3 - 1) g returning lead_id)
+                 insert into email_messages (project_id, lead_id, direction, kind, status, created_at)
+                 select distinct $1, lead_id, 'inbound', 'inbound', 'received', now() - interval '1 hour' from e where $4",
+            )
+            .bind(project)
+            .bind(language)
+            .bind(emails)
+            .bind(replied)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let a = json(&db, project, AnalyticsQuery::default()).await;
+        let row = |l: &serde_json::Value| {
+            (l["language"].as_str().unwrap().to_string(), l["name"].as_str().unwrap().to_string(), l["sent"].as_i64(), l["contacted"].as_i64(), l["replies"].as_i64(), l["reply_rate"].as_f64())
+        };
+        let rows: Vec<_> = a["languages"].as_array().unwrap().iter().map(row).collect();
+        let want = |code: &str, name: &str, sent, contacted, replies, rate| (code.to_string(), name.to_string(), Some(sent), Some(contacted), Some(replies), Some(rate));
+        assert_eq!(rows, vec![want("de", "German", 4, 2, 1, 0.5), want("en", "English", 1, 1, 0, 0.0), want("fr", "French", 1, 1, 1, 1.0)]);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

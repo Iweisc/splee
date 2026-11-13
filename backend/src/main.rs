@@ -30,6 +30,7 @@ mod hiring;
 mod hooks;
 mod jobchanges;
 mod jobs;
+mod language;
 mod lemmy;
 mod local_businesses;
 mod mail;

@@ -17,6 +17,7 @@ import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
 import { SegmentToggle } from "@/components/app/work/segment-toggle";
+import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { FitScore, SegmentIcon, SegmentStatusDot } from "@/components/app/work/status";
@@ -115,6 +116,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           <ImportedSequence segmentId={segId} />
           <AbTestCard segmentId={segId} />
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
+          <LanguageCard segment={segment} />
           <TrackingCard segment={segment} />
           <SegmentEditor key={editorKey(segment)} segment={segment} />
         </div>

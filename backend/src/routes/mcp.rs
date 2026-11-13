@@ -4,6 +4,8 @@
 //! signs in with an API key or an access token from Splee's OAuth (routes/oauth.rs), and each tool calls the matching public
 //! API v1 handler for that organization.
 
+use std::sync::LazyLock;
+
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -229,10 +231,14 @@ const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Cal
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"];
 const LEAD_FIELDS: &[&str] = &[
     "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
-    "score_fit", "score_intent", "score_reasons", "owner_id", "owner_name", "owner_email",
+    "score_fit", "score_intent", "score_reasons", "owner_id", "owner_name", "owner_email", "language", "effective_language",
+    "effective_language_source",
 ];
 const COMPANY_FIELDS: &[&str] =
     &["id", "name", "domain", "segment_id", "country_code", "employees", "status", "score", "score_fit", "score_intent", "score_reasons", "hiring", "tech"];
+/// What a campaign's language can be set to.
+static LANGUAGE_CHOICES: LazyLock<Vec<&str>> =
+    LazyLock::new(|| crate::language::LANGUAGES.iter().map(|l| l.code).chain([crate::language::EACH_LEAD]).collect());
 const RUN_FIELDS: &[&str] = &["id", "kind", "status", "message", "error", "cost_usd", "created_at", "finished_at"];
 const DEAL_FIELDS: &[&str] = &[
     "id", "project_name", "lead_id", "lead_name", "company_name", "stage", "status", "value", "currency", "close_date", "owner_name", "lost_reason",
@@ -310,6 +316,14 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "create_deal" => async { Ok(pick(value(v1::create_deal(st(), auth, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
         "move_deal" => async { Ok(pick(value(v1::move_deal(st(), auth, id(a, "deal_id")?, Json(parse(a)?)).await?)?, DEAL_FIELDS)) }.await,
+        "set_lead_language" => async {
+            let body = json!({ "language": a["language"].as_str().unwrap_or_default() });
+            let detail = value(v1::update_lead(st(), auth, id(a, "lead_id")?, Json(parse(&body)?)).await?)?;
+            Ok(json!({ "id": detail["id"], "full_name": detail["full_name"], "language": detail["language"],
+                       "effective_language": detail["effective_language"], "effective_language_source": detail["effective_language_source"] }))
+        }
+        .await,
+        "set_campaign_language" => async { value(v1::update_campaign(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
         "assign_lead" => async {
             let detail = value(v1::assign_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?;
             Ok(json!({ "id": detail["id"], "full_name": detail["full_name"], "owner_id": detail["owner_id"], "owner_email": detail["owner_email"] }))
@@ -421,7 +435,11 @@ fn tools() -> Vec<Value> {
             "Create campaign",
             "Creates a campaign from a description of who to reach, like \"dental clinics in Leeds\". An agent names it and sets its \
              targeting, which takes a minute or two. Returns campaign_id and run_id.",
-            json!({ "project_id": project, "prompt": { "type": "string", "description": "Who the campaign targets, in plain words" } }),
+            json!({
+                "project_id": project,
+                "prompt": { "type": "string", "description": "Who the campaign targets, in plain words" },
+                "language": { "type": "string", "enum": LANGUAGE_CHOICES.as_slice(), "description": "Optional. lead (the default) for each lead's own language, en or another language code" },
+            }),
             &["project_id", "prompt"],
             adds.clone(),
         ),
@@ -524,7 +542,7 @@ fn tools() -> Vec<Value> {
              currency (payments in others are counted in ignored_payments) with revenue_per_meeting_cents and return_on_spend (null \
              unless that currency is USD, since spend is in dollars), the same totals for the period before in previous, a daily series (weekly past 90 days), and breakdowns by campaign (with its leads' revenue), mailbox \
              (bouncing flags over 5% bounced), sequence step, A/B test angle, weekday and hour of send in the project's time zone, \
-             and channel. Replies, bounces and meetings count for the last email the lead got before them. Totals, campaigns, \
+             channel, and the language the emails were written in. Replies, bounces and meetings count for the last email the lead got before them. Totals, campaigns, \
              angles, mailboxes and steps have opened, open_rate, clicked and click_rate, by email out of those sent in the range \
              that tracked opens or clicks, scanners left out. A null rate means none tracked it. Open rates are estimates, since \
              Apple Mail opens every email itself and some people block the pixel.",
@@ -551,12 +569,14 @@ fn tools() -> Vec<Value> {
             "list_leads",
             "List leads",
             "A project's leads, newest first, or the likeliest buyers first with sort \"score\". Each has a 0-100 score, its fit \
-             and intent parts (0-50 each) and the reasons behind it.",
+             and intent parts (0-50 each) and the reasons behind it, the language set on it, if any, and effective_language, the \
+             one a campaign set to each lead's language writes to them in.",
             page_props(json!({
                 "project_id": project,
                 "campaign_id": id_prop("Optional. Only this campaign's leads"),
                 "status": { "type": "string", "enum": LEAD_STATUSES, "description": "Optional. Only leads with this status" },
                 "q": { "type": "string", "description": "Optional. Matches name, email, company or title" },
+                "language": { "type": "string", "description": "Optional. Only leads whose effective_language is this code, like de" },
                 "min_score": score_prop(),
                 "sort": sort_prop(),
                 "owner": owner_prop(),
@@ -661,6 +681,32 @@ fn tools() -> Vec<Value> {
                 "lost_reason": { "type": "string", "description": "Optional. Why it was lost" },
             }),
             &["deal_id", "stage"],
+            adds.clone(),
+        ),
+        tool(
+            "set_lead_language",
+            "Set lead language",
+            "Sets the language a lead is written to in, for campaigns that write in each lead's own language. Empty goes back to \
+             picking it from their country, then their company's website, then English. Returns effective_language, the one now \
+             used, and effective_language_source: set, country, site or default.",
+            json!({
+                "lead_id": id_prop("A lead id from list_leads or list_replies"),
+                "language": { "type": "string", "description": "A code like de, fr or es, or its English name, or \"\" to clear it" },
+            }),
+            &["lead_id", "language"],
+            adds.clone(),
+        ),
+        tool(
+            "set_campaign_language",
+            "Set campaign language",
+            "Sets the language a campaign writes its emails, follow-ups, texts and LinkedIn messages in: lead (the default) to write to \
+             each lead in their own language, en for English, or another language code. Emails already written keep theirs until they're rewritten. \
+             Drafted replies always answer in the language the lead wrote in.",
+            json!({
+                "campaign_id": campaign,
+                "language": { "type": "string", "enum": LANGUAGE_CHOICES.as_slice(), "description": "en, another language code, or lead" },
+            }),
+            &["campaign_id", "language"],
             adds.clone(),
         ),
         tool(
@@ -915,7 +961,7 @@ mod tests {
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
-                     "list_job_changes", "add_to_watch_list"] {
+                     "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1106,6 +1152,86 @@ mod tests {
         assert_eq!(res.json::<Value>().await.unwrap()["owner_id"], Value::Null);
         let res = server.client.post(format!("{api}/leads/{theirs}/assign")).bearer_auth(KEY).json(&json!({ "owner": null })).send().await.unwrap();
         assert_eq!(res.status(), 404);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn language_on_leads_and_campaigns_through_the_api_and_mcp(db: PgPool) {
+        let [(project, segment), (other_project, other_segment)] = seed(&db).await;
+        let lead = |project: Uuid, email: &'static str, country: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, full_name, email, country_code) values ($1, $2, $2, $3) returning id")
+                .bind(project)
+                .bind(email)
+                .bind(country)
+        };
+        let anna = lead(project, "anna@brauhaus.example", "DE").fetch_one(&db).await.unwrap();
+        let olaf = lead(other_project, "olaf@fjord.example", "NO").fetch_one(&db).await.unwrap();
+        let server = Server::start(db.clone()).await;
+        let api = server.url.trim_end_matches("/mcp").to_string();
+        let send = |method: reqwest::Method, path: String, body: Value| {
+            let request = server.client.request(method, format!("{api}{path}")).bearer_auth(KEY).json(&body);
+            async move {
+                let res = request.send().await.unwrap();
+                (res.status().as_u16(), res.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+
+        // API v1: a lead added with a language by name keeps its code, and the list filters by the language Splee writes them in.
+        let (status, body) = send(reqwest::Method::POST, format!("/v1/projects/{project}/leads"), json!({ "leads": [{ "email": "camille@chocolat.example", "language": "French" }] })).await;
+        assert_eq!((status, body["imported"].as_i64()), (200, Some(1)), "{body}");
+        let (_, page) = send(reqwest::Method::GET, format!("/v1/projects/{project}/leads?language=fr"), Value::Null).await;
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{page}");
+        assert_eq!((items[0]["language"].as_str(), items[0]["effective_language"].as_str(), items[0]["effective_language_source"].as_str()), (Some("fr"), Some("fr"), Some("set")));
+        let (_, page) = send(reqwest::Method::GET, format!("/v1/projects/{project}/leads?language=de"), Value::Null).await;
+        assert_eq!(page["items"][0]["id"], json!(anna), "{page}");
+        assert_eq!(page["total"], 1);
+
+        let (status, detail) = send(reqwest::Method::PATCH, format!("/v1/leads/{anna}"), json!({ "language": "es" })).await;
+        assert_eq!((status, detail["language"].as_str(), detail["effective_language"].as_str()), (200, Some("es"), Some("es")), "{detail}");
+        let (status, body) = send(reqwest::Method::PATCH, format!("/v1/leads/{anna}"), json!({ "language": "Klingon" })).await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(send(reqwest::Method::PATCH, format!("/v1/leads/{olaf}"), json!({ "language": "de" })).await.0, 404);
+
+        // New campaigns write in each lead's language unless told otherwise, like projects did before campaigns had a language.
+        let (_, created) = send(reqwest::Method::POST, format!("/v1/projects/{project}/campaigns"), json!({ "prompt": "Breweries in Munich" })).await;
+        let (is_error, text) = server.call(KEY, "create_campaign", json!({ "project_id": project, "prompt": "Bakeries in Lyon" })).await;
+        assert!(!is_error, "{text}");
+        let from_mcp = serde_json::from_str::<Value>(&text).unwrap()["campaign_id"].clone();
+        let new: Vec<String> = sqlx::query_scalar("select language from segments where id::text = any($1) order by name")
+            .bind(vec![created["campaign_id"].as_str().unwrap(), from_mcp.as_str().unwrap()])
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert_eq!(new, ["lead", "lead"]);
+
+        let (status, campaign) = send(reqwest::Method::PATCH, format!("/v1/campaigns/{segment}"), json!({ "language": "fr" })).await;
+        assert_eq!((status, campaign["language"].as_str()), (200, Some("fr")), "{campaign}");
+        assert_eq!(send(reqwest::Method::PATCH, format!("/v1/campaigns/{segment}"), json!({ "language": "xx" })).await.0, 400);
+        assert_eq!(send(reqwest::Method::PATCH, format!("/v1/campaigns/{other_segment}"), json!({ "language": "de" })).await.0, 404);
+        let (_, campaigns) = send(reqwest::Method::GET, format!("/v1/projects/{project}/campaigns"), Value::Null).await;
+        let ours = campaigns.as_array().unwrap().iter().find(|c| c["id"] == json!(segment)).unwrap();
+        assert_eq!(ours["language"], "fr");
+
+        // MCP: clearing Anna's language takes her back to her country's, and the other organization's campaign is out of reach.
+        let (is_error, text) = server.call(KEY, "set_lead_language", json!({ "lead_id": anna, "language": "" })).await;
+        let set: Value = serde_json::from_str(&text).unwrap();
+        assert!(!is_error, "{text}");
+        assert_eq!((set["language"].as_str(), set["effective_language"].as_str(), set["effective_language_source"].as_str()), (Some(""), Some("de"), Some("country")));
+        let (is_error, text) = server.call(KEY, "set_campaign_language", json!({ "campaign_id": segment, "language": "nl" })).await;
+        assert!(!is_error && serde_json::from_str::<Value>(&text).unwrap()["language"] == "nl", "{text}");
+        let (is_error, _) = server.call(KEY, "set_campaign_language", json!({ "campaign_id": other_segment, "language": "nl" })).await;
+        assert!(is_error);
+        let (is_error, _) = server.call(KEY, "set_lead_language", json!({ "lead_id": olaf, "language": "de" })).await;
+        assert!(is_error);
+        let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "language": "de" })).await;
+        let page: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((page["total"].as_i64(), page["items"][0]["effective_language"].as_str()), (Some(1), Some("de")), "{text}");
+        let (_, text) = server.call(KEY, "list_campaigns", json!({ "project_id": project })).await;
+        let campaigns: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(campaigns.as_array().unwrap().iter().find(|c| c["id"] == json!(segment)).unwrap()["language"], "nl", "{text}");
+        let other: String = sqlx::query_scalar("select language from segments where id = $1").bind(other_segment).fetch_one(&db).await.unwrap();
+        assert_eq!(other, "lead");
     }
 
     #[sqlx::test]

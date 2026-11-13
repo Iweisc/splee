@@ -10,8 +10,9 @@ use uuid::Uuid;
 use super::explore::{self, Profile, load_project};
 use super::sdk::Call;
 use super::{Ctx, Outcome};
-use crate::{hiring, tech};
+use crate::language::{self, Language};
 use crate::models::{EmailMessage, Lead, Project, Segment, SegmentStep, Variant};
+use crate::{hiring, tech};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
 that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
@@ -26,7 +27,6 @@ pub struct WriterSettings {
     pub booking_link: String,
     pub sender_name: String,
     pub signature: String,
-    pub email_language: String,
     pub email_instructions: String,
     pub follow_ups: Value,
     pub auto_reply_instructions: String,
@@ -41,7 +41,6 @@ impl Default for WriterSettings {
             booking_link: String::new(),
             sender_name: String::new(),
             signature: String::new(),
-            email_language: "auto".into(),
             email_instructions: String::new(),
             follow_ups: json!([]),
             auto_reply_instructions: String::new(),
@@ -52,22 +51,13 @@ impl Default for WriterSettings {
 impl WriterSettings {
     pub async fn load(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<Self> {
         let row = sqlx::query_as::<_, Self>(
-            "select tone, max_words, cta, booking_link, sender_name, signature, email_language, email_instructions, follow_ups,
-                    auto_reply_instructions
+            "select tone, max_words, cta, booking_link, sender_name, signature, email_instructions, follow_ups, auto_reply_instructions
              from project_settings where project_id = $1",
         )
         .bind(project_id)
         .fetch_optional(ctx.db())
         .await?;
         Ok(row.unwrap_or_default())
-    }
-
-    pub fn language_rule(&self) -> String {
-        if self.email_language.is_empty() || self.email_language == "auto" {
-            "Write in the main language of the recipient's country (English when unsure).".into()
-        } else {
-            format!("Write in {}.", self.email_language)
-        }
     }
 
     fn sender(&self, profile: &Profile) -> String {
@@ -263,26 +253,32 @@ async fn write_initial(ctx: &Ctx, project_id: Uuid, leads: &[Lead], instructions
     crate::ab_test::assign(ctx.db(), &mut leads).await?;
     let variants = variants_by_id(ctx, project_id).await?;
     let imported = imported_steps(ctx, project_id).await?;
+    let languages = language::for_leads(ctx.db(), &leads.iter().map(|l| l.id).collect::<Vec<_>>()).await?;
 
-    // Each variant of a campaign gets its own prompt. A campaign without variants is one group, as before.
-    let mut groups: HashMap<(Option<Uuid>, Option<Uuid>), Vec<Lead>> = HashMap::new();
+    // Each variant of a campaign gets its own prompt, and so does each language its leads are written in. A campaign without
+    // variants in one language is one group, as before.
+    // Keyed by the language's code as a String: a &'static str here makes the stream below not Send.
+    let mut groups: HashMap<(Option<Uuid>, Option<Uuid>, String), Vec<Lead>> = HashMap::new();
     let mut filled = 0;
     for lead in leads {
+        let lang = languages.get(&lead.id).copied().unwrap_or(language::ENGLISH);
         let own = lead.segment_id.and_then(|id| imported.get(&(id, 0)));
         if let Some((subject, body)) = own.and_then(|s| Some((fill(&s.subject, &lead, &settings)?, fill(&s.body, &lead, &settings)?))) {
-            save_initial(ctx, &lead, lead.segment_id.and_then(|id| segments.get(&id)), subject.trim(), &settings.sign(&body)).await?;
+            save_initial(ctx, &lead, lead.segment_id.and_then(|id| segments.get(&id)), subject.trim(), &settings.sign(&body), lang).await?;
             filled += 1;
             continue;
         }
-        groups.entry((lead.segment_id, lead.variant_id)).or_default().push(lead);
+        groups.entry((lead.segment_id, lead.variant_id, lang.code.to_string())).or_default().push(lead);
     }
-    let campaigns = groups.into_iter().map(|((segment_id, variant_id), group)| {
+    let campaigns = groups.into_iter().map(|((segment_id, variant_id, code), group)| {
         let segment = segment_id.and_then(|id| segments.get(&id));
         let variant = variant_id.and_then(|id| variants.get(&id));
         let own = segment_id.and_then(|id| imported.get(&(id, 0)));
+        let lang = language::or_english(&code);
         // The campaign's own email goes last, so it wins over the default subject, opening and length in the rules.
-        let prompt = initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions) + &own.map(own_email_rule).unwrap_or_default();
-        write_campaign(ctx, segment, variant, prompt, group, &settings)
+        let prompt =
+            initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions, lang) + &own.map(own_email_rule).unwrap_or_default();
+        write_campaign(ctx, segment, variant, prompt, group, &settings, lang)
     });
     let saved: usize = filled + stream::iter(campaigns).buffer_unordered(CAMPAIGN_AGENTS).try_collect::<Vec<_>>().await?.into_iter().sum::<usize>();
     ctx.log(format!("wrote {saved} personal emails…")).await?;
@@ -296,16 +292,18 @@ async fn write_campaign(
     prompt: String,
     leads: Vec<Lead>,
     settings: &WriterSettings,
+    lang: &Language,
 ) -> anyhow::Result<usize> {
     let campaign = segment.map_or("No campaign", |s| s.name.as_str());
     let label = variant.map_or_else(|| campaign.to_string(), |v| format!("{campaign} ({})", v.name));
+    let label = if lang.code == "en" { label } else { format!("{label}, in {}", lang.name) };
     let mut saved = 0;
     for batch in company_batches(leads) {
         ctx.log(format!("{label}: writing to {}…", batch.iter().map(|l| l.first_name.as_str()).collect::<Vec<_>>().join(", "))).await?;
         let drafts = ask_drafts(ctx, prompt.clone(), &batch, true).await?;
         for lead in &batch {
             let Some(d) = drafts.get(&lead.id) else { continue };
-            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&d.body)).await?;
+            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&d.body), lang).await?;
             saved += 1;
         }
     }
@@ -364,6 +362,7 @@ async fn variants_by_id(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<HashMap<U
     Ok(rows.into_iter().map(|v| (v.id, v)).collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn initial_prompt(
     project: &Project,
     profile: &Profile,
@@ -372,6 +371,7 @@ fn initial_prompt(
     s: &WriterSettings,
     materials: &str,
     instructions: &str,
+    lang: &Language,
 ) -> String {
     let campaign = segment
         .map(|seg| format!("Campaign: {}. Their pain: {} Outreach angle: {}", seg.name, seg.pain_points, seg.angle))
@@ -392,7 +392,7 @@ fn initial_prompt(
          About us:\n{brief}\n{campaign}\n{materials_block}\n\
          Rules:\n\
          - Subject: \"{name} x <their company name>\", e.g. \"Larksilk x Tupelo Honey Flower\".\n\
-         - Start with a greeting and their first name on its own line, in the language of the email (\"Hi Dana,\", \"Bonjour Robin,\").\n\
+         - Start with a greeting and their first name on its own line, like \"Hi Dana,\".\n\
          - First sentence: one specific observation about their business from the lead's hook or facts. No flattery, no \"I hope this finds you well\", no \"I came across\".\n\
          - A lead's \"hiring\" lists roles their company has open right now, from its job board. When one is a role our offer helps \
          with, it usually makes the best first observation: name the role in plain words and tie it to what we do. Never paste the link.\n\
@@ -406,7 +406,8 @@ fn initial_prompt(
          congrats on the new role.\" Then say how we could help at the new company. Never say how we noticed the move.\n\
          - Then one or two sentences that tie that observation to a concrete problem and how we solve it.\n\
          - End with one short question as the call to action: {cta}.{booking}\n\
-         - At most {max_words} words. Tone: {tone}. {language}\n\
+         - At most {max_words} words. Tone: {tone}.\n\
+         - {language}\n\
          - Short paragraphs separated by a blank line. No sign-off or signature, it is added automatically.\n\
          - Leads at the same company may compare notes. Give each of them a different opening observation and an angle that fits their \
          own role, and never reuse a sentence between two emails in this list.\n\
@@ -417,7 +418,7 @@ fn initial_prompt(
         name = profile.name,
         max_words = s.max_words.clamp(30, 300),
         tone = s.tone,
-        language = s.language_rule(),
+        language = language::instruction(lang),
         extra_block = if extra.is_empty() { String::new() } else { format!("- Also: {extra}\n") },
         variant_block = variant.map(variant_rule).unwrap_or_default(),
     )
@@ -476,9 +477,9 @@ fn variant_rule(v: &Variant) -> String {
     )
 }
 
-async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject: &str, body: &str) -> anyhow::Result<()> {
+async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject: &str, body: &str, lang: &Language) -> anyhow::Result<()> {
     let updated = sqlx::query(
-        "update email_messages set subject = $2, body = $3, variant_id = $5
+        "update email_messages set subject = $2, body = $3, variant_id = $5, language = $6
          where id = (select id from email_messages where lead_id = $1 and kind = 'initial' and status = any($4)
                      order by created_at desc limit 1)",
     )
@@ -487,6 +488,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(body)
     .bind(&UNSENT[..])
     .bind(lead.variant_id)
+    .bind(lang.code)
     .execute(ctx.db())
     .await?;
     if updated.rows_affected() > 0 {
@@ -503,8 +505,8 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     let sending = !drafts && segment.is_some_and(|s| s.status == "working" || s.status == "scaling");
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for, to_email,
-                                     variant_id)
-         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8, $9)",
+                                     variant_id, language)
+         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(lead.project_id)
     .bind(lead.id)
@@ -515,6 +517,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(sending.then(chrono::Utc::now))
     .bind(&lead.email)
     .bind(lead.variant_id)
+    .bind(lang.code)
     .execute(ctx.db())
     .await?;
     if sending {
@@ -619,9 +622,11 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         .bind(lead_ids)
         .fetch_all(ctx.db())
         .await?;
+    let languages = language::for_leads(ctx.db(), lead_ids).await?;
 
     let mut saved = 0;
     for lead in &leads {
+        let lang = languages.get(&lead.id).copied().unwrap_or(language::ENGLISH);
         let thread = sqlx::query_as::<_, EmailMessage>(
             "select * from email_messages where lead_id = $1 and direction = 'outbound' and kind in ('initial', 'follow_up') and status = 'sent'
              order by step",
@@ -676,12 +681,12 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
             "Write follow-up number {step} to the lead below, from {sender}. They got these emails and have not replied:\n{earlier}\n\n\
              About us:\n{brief}\n\n\
              Rules: it is sent as a reply in the same thread, so no subject and no \"just following up\" or guilt-tripping. Start with a \
-             greeting and their first name, in the language of the earlier emails. Add one new angle, fact or offer that the earlier emails didn't use, then one short question. At most \
-             {max_words} words. Tone: {tone}. {language} No sign-off.{extra}{own}",
+             greeting and their first name. Add one new angle, fact or offer that the earlier emails didn't use, then one short question. \
+             At most {max_words} words. Tone: {tone}. No sign-off.\n{language}{extra}{own}",
             sender = settings.sender(&profile),
             brief = profile.brief(project.domain.as_deref()),
             tone = settings.tone,
-            language = settings.language_rule(),
+            language = language::instruction(lang),
             extra = {
                 let rule = rule.map_or("", |r| r.instructions.trim());
                 let extra = [settings.email_instructions.trim(), rule, instructions.trim(), angle.as_deref().unwrap_or_default()]
@@ -706,10 +711,11 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
 
         if let Some(id) = to_rewrite {
             // The sender may have sent it while the agent was writing. Leave sent emails alone.
-            sqlx::query("update email_messages set body = $2 where id = $1 and status = any($3)")
+            sqlx::query("update email_messages set body = $2, language = $4 where id = $1 and status = any($3)")
                 .bind(id)
                 .bind(settings.sign(&body))
                 .bind(&UNSENT[..])
+                .bind(lang.code)
                 .execute(ctx.db())
                 .await?;
             saved += 1;
@@ -718,13 +724,14 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
 
         let sending = lead.segment_id.and_then(|id| segments.get(&id)).is_some_and(|s| s.status == "working" || s.status == "scaling");
         let due = anchor.unwrap_or_else(chrono::Utc::now) + chrono::Duration::days(delay_days.max(1));
-        insert_follow_up(ctx.db(), lead, &thread, step, &settings.sign(&body), sending, due).await?;
+        insert_follow_up(ctx.db(), lead, &thread, step, &settings.sign(&body), sending, due, lang).await?;
         saved += 1;
     }
     Ok(saved)
 }
 
 /// Threads the follow-up under the last email sent, on the first email's variant even if the lead's has changed since.
+#[allow(clippy::too_many_arguments)]
 async fn insert_follow_up(
     db: &sqlx::PgPool,
     lead: &Lead,
@@ -733,13 +740,14 @@ async fn insert_follow_up(
     body: &str,
     sending: bool,
     due: chrono::DateTime<chrono::Utc>,
+    lang: &Language,
 ) -> sqlx::Result<()> {
     let (Some(first), Some(last)) = (thread.first(), thread.last()) else { return Ok(()) };
     let subject = if first.subject.to_lowercase().starts_with("re:") { first.subject.clone() } else { format!("Re: {}", first.subject) };
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for,
-                                     in_reply_to, to_email, variant_id)
-         values ($1, $2, $3, 'outbound', 'follow_up', $4, $5, $6, $7, $8, $9, $10, $11)",
+                                     in_reply_to, to_email, variant_id, language)
+         values ($1, $2, $3, 'outbound', 'follow_up', $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(lead.project_id)
     .bind(lead.id)
@@ -752,6 +760,7 @@ async fn insert_follow_up(
     .bind(&last.message_id)
     .bind(&lead.email)
     .bind(first.variant_id)
+    .bind(lang.code)
     .execute(db)
     .await?;
     Ok(())
@@ -791,13 +800,13 @@ pub async fn linkedin_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          - connect_note: the connection request note, at most 280 characters, no pitch, one specific reason to connect.\n\
          - message_1: sent after they accept, at most 500 characters: one observation about their business, how we help, a soft question.\n\
          - message_2: sent a few days later if no answer, at most 350 characters, a different angle and an easy yes/no question.\n\
-         Tone: {tone}. {language} Start each with their first name.",
+         Tone: {tone}. Start each with their first name.\n{language}",
         sender = settings.sender(&profile),
         lead = serde_json::to_string_pretty(&lead_brief(&lead, &company_signals(ctx, &[&lead]).await?))?,
         brief = profile.brief(project.domain.as_deref()),
         campaign = segment.map(|s| format!("Campaign angle: {}", s.angle)).unwrap_or_default(),
         tone = settings.tone,
-        language = settings.language_rule(),
+        language = language::instruction(language::for_lead(ctx.db(), lead.id).await?),
     );
     let schema = json!({
         "type": "object",
@@ -875,14 +884,14 @@ pub async fn texts_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             "Write text message number {n} to the lead below, from {sender}. They got these and have not replied:\n{earlier}\n\n\
              Lead:\n{lead}\n\nAbout us:\n{brief}\n\n\
              Rules: a text, not an email, so at most 260 characters, plain words, no subject, no links, no emoji and no sign-off. Start with \
-             their first name{intro}. One short reason to talk, then one easy question. Tone: {tone}. {language}{extra}",
+             their first name{intro}. One short reason to talk, then one easy question. Tone: {tone}.{extra}\n{language}",
             n = step.step,
             sender = settings.sender(&profile),
             lead = serde_json::to_string_pretty(&lead_brief(&lead, &company_signals(ctx, &[&lead]).await?))?,
             brief = profile.brief(project.domain.as_deref()),
             intro = if step.step == 1 { format!(", then say it's {who}, since this is the first text they get from us") } else { String::new() },
             tone = settings.tone,
-            language = settings.language_rule(),
+            language = language::instruction(language::for_lead(ctx.db(), lead.id).await?),
             extra = if extra.is_empty() { String::new() } else { format!(" Also: {extra}") },
         );
         ctx.log(format!("writing text {} to {}…", step.step, lead.first_name)).await?;
@@ -906,17 +915,132 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use serde_json::{Value, json};
+
     use super::{Ctx, company_signals, insert_follow_up, lead_brief, own_email_rule, save_initial, variant_rule};
     use crate::ab_test::{self, tests::{add_leads, seed}};
+    use crate::agent::fake;
+    use crate::agent::sdk::Call;
+    use crate::language::ENGLISH;
     use crate::models::{AgentRun, EmailMessage, Lead, Variant};
 
     async fn ctx(db: &PgPool, project: Uuid) -> Ctx {
-        let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (project_id, kind) values ($1, 'write_emails') returning *")
+        run_ctx(db, project, "write_emails", json!({})).await
+    }
+
+    async fn run_ctx(db: &PgPool, project: Uuid, kind: &str, input: Value) -> Ctx {
+        let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (project_id, kind, input) values ($1, $2, $3) returning *")
             .bind(project)
+            .bind(kind)
+            .bind(input)
             .fetch_one(db)
             .await
             .unwrap();
         Ctx { state: crate::autopilot::tests::state(db.clone()), run, step: AtomicI32::new(0) }
+    }
+
+    /// The fake model's answer to each kind of writing call: an email for every lead_id in the prompt, a LinkedIn sequence or a text.
+    fn written(call: &Call) -> Value {
+        let props = &call.schema["properties"];
+        if props.get("emails").is_some() {
+            let ids: Vec<&str> = call.prompt.split("\"lead_id\": \"").skip(1).map(|rest| &rest[..36]).collect();
+            json!({ "emails": ids.iter().map(|id| json!({ "lead_id": id, "subject": "Betreff", "body": "Guten Tag" })).collect::<Vec<_>>() })
+        } else if props.get("connect_note").is_some() {
+            json!({ "connect_note": "Note", "message_1": "One", "message_2": "Two" })
+        } else {
+            json!({ "text": "Kurze Frage?" })
+        }
+    }
+
+    /// The prompt that asked about this lead.
+    fn prompt_for(prompts: &[String], lead: &Lead) -> String {
+        let found: Vec<&String> = prompts.iter().filter(|p| p.contains(&lead.id.to_string())).collect();
+        assert_eq!(found.len(), 1, "{prompts:#?}");
+        found[0].clone()
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn every_message_to_a_lead_is_written_in_their_language(db: PgPool) {
+        let c = seed(&db, 0).await;
+        sqlx::query("update segments set language = 'lead' where id = $1").bind(c.segment).execute(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, paused, follow_ups, text_steps) values ($1, false, '[{\"delay_days\": 3, \"enabled\": true}]', '[{\"delay_days\": 1}]')")
+            .bind(c.project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(c.project).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into twilio_accounts (org_id, account_sid, api_key_sid, api_secret_enc, auth_token_enc, sms_from) values ($1, 'AC1', 'SK1', 'x', 'x', '+15550100')")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        let leads = add_leads(&db, &c, 3).await;
+        for (lead, country, phone) in leads.iter().zip([("DE", "+4915112345678"), ("FR", "+33612345678"), ("US", "+12025550143")]).map(|(l, (c, p))| (l, c, p)) {
+            sqlx::query("update leads set country_code = $2, phone = $3 where id = $1").bind(lead.id).bind(country).bind(phone).execute(&db).await.unwrap();
+        }
+        let leads: Vec<Lead> = sqlx::query_as("select * from leads where project_id = $1 order by created_at").bind(c.project).fetch_all(&db).await.unwrap();
+        let (anna, camille, dana) = (&leads[0], &leads[1], &leads[2]);
+
+        // First emails: one prompt per language, each with its own instruction, and the emails keep their language.
+        let ctx = ctx(&db, c.project).await;
+        fake::answer_with(ctx.run.id, written);
+        assert_eq!(super::write_initial(&ctx, c.project, &leads, "").await.unwrap(), 3);
+        let prompts = fake::prompts(ctx.run.id);
+        assert_eq!(prompts.len(), 3);
+        let german = prompt_for(&prompts, anna);
+        assert!(german.contains("write in German, the subject line too") && german.contains("\"Sie\"") && german.contains("not as a translation"), "{german}");
+        assert!(!german.contains(&camille.id.to_string()) && !german.contains(&dana.id.to_string()));
+        let french = prompt_for(&prompts, camille);
+        assert!(french.contains("write in French") && french.contains("\"vous\""), "{french}");
+        assert!(prompt_for(&prompts, dana).contains("write in English"));
+        let saved: Vec<(Uuid, String, String)> =
+            sqlx::query_as("select lead_id, language, subject from email_messages where kind = 'initial' order by lead_id").fetch_all(&db).await.unwrap();
+        let language_of = |lead: &Lead| saved.iter().find(|(id, ..)| *id == lead.id).map(|(_, l, s)| (l.clone(), s.clone())).unwrap();
+        assert_eq!(language_of(anna), ("de".to_string(), "Betreff".to_string()));
+        assert_eq!((language_of(camille).0.as_str(), language_of(dana).0.as_str()), ("fr", "en"));
+
+        // They went out, so each gets a follow-up and a text, in the same language.
+        sqlx::query("update email_messages set status = 'sent', sent_at = now() - interval '4 days', message_id = gen_random_uuid()::text where kind = 'initial'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("update leads set status = 'contacted' where project_id = $1").bind(c.project).execute(&db).await.unwrap();
+        let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, written);
+        assert_eq!(super::write_follow_ups(&ctx, c.project, &ids, false, "").await.unwrap(), 3);
+        let prompts = fake::prompts(ctx.run.id);
+        let german = prompt_for(&prompts, anna);
+        assert!(german.contains("Write follow-up number 1") && german.contains("write in German") && german.contains("\"Sie\""), "{german}");
+        assert!(prompt_for(&prompts, camille).contains("write in French"));
+        let follow_up: String = sqlx::query_scalar("select language from email_messages where lead_id = $1 and kind = 'follow_up'")
+            .bind(anna.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(follow_up, "de");
+
+        let ctx = run_ctx(&db, c.project, "write_texts", json!({ "lead_ids": [anna.id] })).await;
+        fake::answer_with(ctx.run.id, written);
+        super::texts_run(&ctx).await.unwrap();
+        let prompts = fake::prompts(ctx.run.id);
+        assert!(prompts.len() == 1 && prompts[0].contains("Write text message number 1") && prompts[0].contains("write in German"), "{prompts:#?}");
+
+        let ctx = run_ctx(&db, c.project, "linkedin_sequence", json!({ "lead_id": camille.id })).await;
+        fake::answer_with(ctx.run.id, written);
+        super::linkedin_run(&ctx).await.unwrap();
+        let prompts = fake::prompts(ctx.run.id);
+        assert!(prompts[0].contains("LinkedIn outreach sequence") && prompts[0].contains("write in French") && prompts[0].contains("\"vous\""), "{prompts:#?}");
+
+        // A campaign set to one language writes everyone in it, whatever their country.
+        sqlx::query("update segments set language = 'es' where id = $1").bind(c.segment).execute(&db).await.unwrap();
+        let ctx = run_ctx(&db, c.project, "linkedin_sequence", json!({ "lead_id": anna.id })).await;
+        fake::answer_with(ctx.run.id, written);
+        super::linkedin_run(&ctx).await.unwrap();
+        let prompt = &fake::prompts(ctx.run.id)[0];
+        assert!(prompt.contains("write in Spanish") && prompt.contains("\"usted\""), "{prompt}");
     }
 
     #[test]
@@ -967,7 +1091,7 @@ mod tests {
         ab_test::assign(&db, &mut leads).await.unwrap();
         let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
         for lead in &leads {
-            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello").await.unwrap();
+            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello", ENGLISH).await.unwrap();
         }
         let first: Vec<(Uuid, Option<Uuid>)> =
             sqlx::query_as("select lead_id, variant_id from email_messages where kind = 'initial' order by created_at").fetch_all(&db).await.unwrap();
@@ -983,7 +1107,7 @@ mod tests {
         let mut lead = leads[0].clone();
         lead.variant_id = Some(c.variants[1]);
         let thread = sqlx::query_as::<_, EmailMessage>("select * from email_messages where lead_id = $1").bind(lead.id).fetch_all(&db).await.unwrap();
-        insert_follow_up(&db, &lead, &thread, 1, "Following on", true, chrono::Utc::now()).await.unwrap();
+        insert_follow_up(&db, &lead, &thread, 1, "Following on", true, chrono::Utc::now(), ENGLISH).await.unwrap();
         let (step, subject, variant): (i32, String, Option<Uuid>) =
             sqlx::query_as("select step, subject, variant_id from email_messages where lead_id = $1 and kind = 'follow_up'")
                 .bind(lead.id)
@@ -1001,7 +1125,7 @@ mod tests {
         let mut leads = add_leads(&db, &c, 1).await;
         ab_test::assign(&db, &mut leads).await.unwrap();
         let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
-        save_initial(&ctx, &leads[0], Some(&segment), "Hi", "Hello").await.unwrap();
+        save_initial(&ctx, &leads[0], Some(&segment), "Hi", "Hello", ENGLISH).await.unwrap();
         let (status, variant): (String, Option<Uuid>) =
             sqlx::query_as("select status, variant_id from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
         assert_eq!((status.as_str(), variant), ("approved", None));
@@ -1061,7 +1185,7 @@ mod tests {
         // The writer is told to open with it plainly.
         let profile = crate::agent::explore::Profile::default();
         let project = sqlx::query_as("select * from projects where id = $1").bind(c.project).fetch_one(&db).await.unwrap();
-        let prompt = super::initial_prompt(&project, &profile, None, None, &super::WriterSettings::default(), "", "");
+        let prompt = super::initial_prompt(&project, &profile, None, None, &super::WriterSettings::default(), "", "", ENGLISH);
         assert!(prompt.contains("A lead's \"history\" means they already know us") && prompt.contains("Never say how we noticed the move"), "{prompt}");
     }
 

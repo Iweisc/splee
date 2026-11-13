@@ -131,6 +131,7 @@ async fn read_and_add(state: &AppState, id: Uuid) -> Result<Option<Import>, Shee
             city: get("city"),
             country_code: get("country_code"),
             phone: get("phone"),
+            language: get("language"),
             segment_id: conn.segment_id,
             ..NewLead::default()
         };

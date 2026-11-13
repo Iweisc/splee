@@ -35,6 +35,9 @@ const LEAD = `{
   "x_url": "https://x.com/sarahchen",
   "city": "Portland",
   "country_code": "US",
+  "language": "",
+  "effective_language": "en",
+  "effective_language_source": "country",
   "source": "agent",
   "status": "contacted",
   "notes": "",
@@ -74,13 +77,15 @@ function endpoints(projectId: string): Endpoint[] {
     {
       method: "GET",
       path: `/projects/${projectId}/campaigns`,
-      summary: "Campaigns of a project with their funnel. spend_micros is in micro-dollars (1,000,000 = $1).",
+      summary:
+        "Campaigns of a project with their funnel. spend_micros is in micro-dollars (1,000,000 = $1). language is what the campaign writes in: lead for each lead's own, the default, or a language code like en or de.",
       response: `[
   {
     "id": "5d0a…",
     "name": "Design studios",
     "description": "Independent design studios in the US",
     "status": "working",
+    "language": "lead",
     "companies": 40,
     "leads": 72,
     "sent": 150,
@@ -97,9 +102,18 @@ function endpoints(projectId: string): Endpoint[] {
       method: "POST",
       path: `/projects/${projectId}/campaigns`,
       summary:
-        "Create a campaign from a description of who to reach, like describing one in the app. The agent names it and sets its targeting in a run you can follow with GET /runs below.",
-      body: `{ "prompt": "Dental clinics in Leeds" }`,
+        "Create a campaign from a description of who to reach, like describing one in the app. The agent names it and sets its targeting in a run you can follow with GET /runs below. language is optional and each lead's own by default.",
+      body: `{ "prompt": "Dental clinics in Leeds", "language": "lead" }`,
       response: `{ "campaign_id": "5d0a…", "run_id": "9b4f…" }`,
+    },
+    {
+      method: "PATCH",
+      path: "/campaigns/5d0a…",
+      summary:
+        "Set the language a campaign writes its emails, follow-ups, texts and LinkedIn messages in. lead writes to each lead in the language set on them, else their country's, else their company website's, else English. Emails already written keep theirs until they're rewritten. Returns the campaign like the list above.",
+      params: [["language", "lead, the default, or one of en, de, fr, es, pt, it, nl, sv, nb, da, fi, pl, cs, sk, ro, bg, hu, el, tr, ru, uk, ar, he, ja, ko, zh, zh-Hant, hi, id, ms, th, vi"]],
+      body: `{ "language": "de" }`,
+      response: `{ "id": "5d0a…", "language": "de", "…": "…" }`,
     },
     {
       method: "GET",
@@ -237,6 +251,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["segment_id", "optional campaign id"],
         ["q", "optional text in the name, email, company or title"],
         ["min_score", "optional, only scores of at least this, 0 to 100"],
+        ["language", "optional language code, matched against effective_language"],
         ["sort", "optional, score for the highest first, or newest"],
         ["page", "1-based page number"],
         ["per_page", "1 to 200, default 50"],
@@ -262,6 +277,7 @@ function endpoints(projectId: string): Endpoint[] {
       "company_name": "Northwind Studio",
       "company_domain": "northwind.studio",
       "linkedin_url": "https://www.linkedin.com/in/…",
+      "language": "de",
       "segment_id": "5d0a…"
     },
     {
@@ -333,10 +349,11 @@ function endpoints(projectId: string): Endpoint[] {
       method: "PATCH",
       path: "/leads/c42e…",
       summary:
-        "Set a lead's status, for example meeting_booked when your calendar books a call or not_interested from your CRM, or replace its notes, the ones your team sees in the inbox. Send either or both. Follow-ups only go to contacted leads, so any other status stops them. Returns the lead like GET.",
+        "Set a lead's status, for example meeting_booked when your calendar books a call or not_interested from your CRM, replace its notes, the ones your team sees in the inbox, or set its language. Send any of them. Follow-ups only go to contacted leads, so any other status stops them. Returns the lead like GET.",
       params: [
         ["status", "new, queued, contacted, replied, hot, meeting_booked, not_interested, bounced, unsubscribed or do_not_contact"],
         ["notes", "up to 5,000 characters, replacing the lead's notes. An empty string clears them."],
+        ["language", "a code like de or a name like German, for campaigns that write in each lead's language. An empty string goes back to their country and website."],
       ],
       body: `{ "status": "meeting_booked", "notes": "Booked for Tuesday 2pm by Calendly." }`,
       response: `{

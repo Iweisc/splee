@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,6 +37,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
+        .route("/v1/campaigns/{id}", patch(update_campaign))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
         .route("/v1/projects/{id}/leads/upsert", post(upsert_lead))
         .route("/v1/projects/{id}/companies", get(list_companies))
@@ -101,6 +102,8 @@ pub(super) struct Campaign {
     name: String,
     description: String,
     status: String,
+    /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
+    language: String,
     companies: i64,
     leads: i64,
     sent: i64,
@@ -122,6 +125,7 @@ impl From<SegmentWithStats> for Campaign {
             name: segment.name,
             description: segment.description,
             status: segment.status,
+            language: segment.language,
             companies,
             leads,
             sent,
@@ -151,6 +155,7 @@ pub(super) async fn list_campaigns(State(state): State<AppState>, auth: ApiKeyAu
 pub(super) struct CampaignBody {
     #[serde(default)]
     prompt: String,
+    language: Option<String>,
 }
 
 /// Like describing a campaign in the app: the agent names it and fills in its targeting from the prompt.
@@ -164,8 +169,28 @@ pub(super) async fn create_campaign(
     if body.prompt.trim().is_empty() {
         return Err(AppError::BadRequest("Describe the campaign in prompt, e.g. dental clinics in Leeds".into()));
     }
-    let (segment, run_id) = segments::insert(&state.db, auth.org_id, id, SegmentBody::from_prompt(body.prompt)).await?;
+    let (segment, run_id) = segments::insert(&state.db, auth.org_id, id, SegmentBody::from_prompt(body.prompt, body.language)).await?;
     Ok(Json(json!({ "campaign_id": segment.id, "run_id": run_id })))
+}
+
+#[derive(Deserialize)]
+pub(super) struct CampaignUpdate {
+    language: String,
+}
+
+/// Sets the language the campaign writes in. Emails already written keep theirs until they're rewritten.
+pub(super) async fn update_campaign(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CampaignUpdate>,
+) -> AppResult<Json<Campaign>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let language = body.language.trim();
+    segments::check_language(language)?;
+    sqlx::query("update segments set language = $2 where id = $1").bind(segment.id).bind(language).execute(&state.db).await?;
+    let row = segments::with_stats(&state.db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)?;
+    Ok(Json(Campaign::from(row)))
 }
 
 pub(super) async fn list_leads(
@@ -280,7 +305,7 @@ async fn update_by_email(db: &PgPool, project_id: Uuid, email: &str, body: &NewL
            title = coalesce(nullif($6, ''), title), company_name = coalesce(nullif($7, ''), company_name),
            company_domain = coalesce($8, company_domain), linkedin_url = coalesce(nullif($9, ''), linkedin_url),
            city = coalesce(nullif($10, ''), city), phone = coalesce($11, phone), segment_id = coalesce($12, segment_id),
-           country_code = coalesce(nullif($13, ''), country_code)
+           country_code = coalesce(nullif($13, ''), country_code), language = coalesce(nullif($14, ''), language)
          where project_id = $1 and email = $2::citext returning *",
     )
     .bind(project_id)
@@ -296,6 +321,7 @@ async fn update_by_email(db: &PgPool, project_id: Uuid, email: &str, body: &NewL
     .bind(phone)
     .bind(body.segment_id)
     .bind(&supplied)
+    .bind(crate::language::parse(&body.language).map_or("", |l| l.code))
     .fetch_optional(db)
     .await?)
 }
@@ -333,34 +359,40 @@ async fn get_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Pat
 }
 
 #[derive(Deserialize)]
-struct LeadUpdateBody {
+pub(super) struct LeadUpdateBody {
     status: Option<String>,
     notes: Option<String>,
+    /// A code from language::LANGUAGES or its name, or "" to go back to their country and site.
+    language: Option<String>,
 }
 
-/// Lets a CRM or calendar mark a lead, e.g. meeting_booked, or write its notes. Follow-ups only go to contacted leads,
-/// so any other status stops them.
-async fn update_lead(
+/// Lets a CRM or calendar mark a lead, e.g. meeting_booked, write its notes or set its language. Follow-ups only go to
+/// contacted leads, so any other status stops them.
+pub(super) async fn update_lead(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
     Json(body): Json<LeadUpdateBody>,
 ) -> AppResult<Json<LeadDetail>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
-    if body.status.is_none() && body.notes.is_none() {
-        return Err(AppError::BadRequest("Send status, notes or both".into()));
+    if body.status.is_none() && body.notes.is_none() && body.language.is_none() {
+        return Err(AppError::BadRequest("Send status, notes, language or a mix".into()));
     }
     if let Some(status) = &body.status {
         util_input::one_of("status", status, LEAD_STATUSES)?;
     }
     let notes = util_input::notes(body.notes.as_deref())?;
+    let language = body.language.as_deref().map(crate::language::lead_setting).transpose().map_err(AppError::BadRequest)?;
     let before = lead.status;
-    let lead = sqlx::query_as::<_, Lead>("update leads set status = coalesce($2, status), notes = coalesce($3, notes) where id = $1 returning *")
-        .bind(lead.id)
-        .bind(&body.status)
-        .bind(notes)
-        .fetch_one(&state.db)
-        .await?;
+    let lead = sqlx::query_as::<_, Lead>(
+        "update leads set status = coalesce($2, status), notes = coalesce($3, notes), language = coalesce($4, language) where id = $1 returning *",
+    )
+    .bind(lead.id)
+    .bind(&body.status)
+    .bind(notes)
+    .bind(language)
+    .fetch_one(&state.db)
+    .await?;
     // No meeting_booked webhook here: it would echo a booking straight back to the tool that sent it.
     if hooks::booked(&before, &lead) {
         ownership::claim(&state.db, lead.id).await;

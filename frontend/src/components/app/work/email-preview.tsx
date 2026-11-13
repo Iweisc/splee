@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
 import { Address, Message, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
+import { languageName } from "@/lib/languages";
 import type { EmailRow } from "@/lib/types";
 import { dateTime } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -117,7 +118,15 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
             {email.lead_name || email.lead_email} <span className="font-normal text-muted-foreground">{email.lead_email && <>&lt;<Address email={email.lead_email} />&gt;</>}</span>
           </p>
           <p className="truncate text-muted-foreground">
-            {[email.company_name, email.segment_name, email.variant_name && `Variant ${email.variant_name}`, showProject && email.project_name]
+            {[
+              email.company_name,
+              // English is the default, so only another language is worth saying. It comes before the campaign's long name, which
+              // a phone cuts off.
+              email.language && email.language !== "en" && languageName(email.language),
+              email.segment_name,
+              email.variant_name && `Variant ${email.variant_name}`,
+              showProject && email.project_name,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </p>

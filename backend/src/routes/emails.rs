@@ -216,9 +216,9 @@ async fn send_test(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     }
     let edits = body.unwrap_or_default().0;
     let to: String = sqlx::query_scalar("select email::text from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
-    let subject = edits.subject.unwrap_or(row.email.subject);
-    let text = edits.body.unwrap_or(row.email.body);
-    match mail::send_test(&state, auth.org_id, &to, &row.email.kind, &subject, &text).await {
+    let subject = edits.subject.unwrap_or_else(|| row.email.subject.clone());
+    let text = edits.body.unwrap_or_else(|| row.email.body.clone());
+    match mail::send_test(&state, auth.org_id, &to, &row.email, &subject, &text).await {
         Ok(true) => Ok(Json(json!({ "sent_to": to }))),
         Ok(false) => Err(AppError::BadRequest("Connect or resume a mailbox first. The test goes out from it.".into())),
         Err(e) => Err(AppError::BadRequest(format!("Couldn't send the test: {e:#}"))),

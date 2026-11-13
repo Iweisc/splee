@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Briefcase, CalendarCheck, Eye, ExternalLink, Link2, Mail, MapPin, MousePointerClick, Pencil, Smartphone, Trash2, UserRoundCheck } from "lucide-react";
+import { Briefcase, CalendarCheck, Eye, ExternalLink, Languages, Link2, Mail, MapPin, MousePointerClick, Pencil, Smartphone, Trash2, UserRoundCheck } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { XIcon } from "@/components/marketing/x-icon";
 import { Address, Avatar, Badge, Favicon, Message, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
+import { LANGUAGE_SOURCES, LANGUAGES, languageName } from "@/lib/languages";
 import type { EmailEvent, EmailMessage, JobChangeFrom, Lead, LeadDetail, LeadStatus } from "@/lib/types";
 import { cn, dateTime, dayTime, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
@@ -195,6 +196,12 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
             {location}
           </Detail>
         )}
+        <Detail label="Language" icon={<Languages className="size-3.5" />} wide>
+          {languageName(lead.effective_language)}
+          <p className="text-xs text-pretty text-muted-foreground">
+            {LANGUAGE_SOURCES[lead.effective_language_source]}. Campaigns set to each lead&apos;s language write to them in it.
+          </p>
+        </Detail>
         {lead.meeting_at && (
           <Detail label="Meeting" icon={<CalendarCheck className="size-3.5" />}>
             Meeting on {dayTime(lead.meeting_at)}
@@ -322,6 +329,7 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
     for (const f of FORM_FIELDS) v[f.key] = lead[f.key] ?? "";
     return v;
   });
+  const [language, setLanguage] = useState(lead.language);
   const [saving, setSaving] = useState(false);
   const unsent = lead.emails.some((m) => m.direction === "outbound" && ["draft", "approved", "scheduled"].includes(m.status));
 
@@ -334,6 +342,7 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
     if ("first_name" in changes || "last_name" in changes) {
       changes.full_name = `${values.first_name.trim()} ${values.last_name.trim()}`.trim();
     }
+    if (language !== lead.language) changes.language = language;
     if (Object.keys(changes).length === 0) return onCancel();
     setSaving(true);
     try {
@@ -359,6 +368,16 @@ function LeadForm({ lead, onCancel, onSave }: { lead: LeadDetail; onCancel: () =
             />
           </Field>
         ))}
+        <Field label="Language">
+          <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
+            <option value="">From their country or website</option>
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
       </div>
       <div className="flex items-center justify-end gap-2">
         {unsent && <p className="mr-auto text-xs text-muted-foreground">Emails already written keep the old details. Rewrite them on the Emails page.</p>}

@@ -38,6 +38,9 @@ pub struct NewLead {
     pub phone: String,
     #[serde(default, deserialize_with = "util_input::blank_as_none")]
     pub segment_id: Option<Uuid>,
+    /// A code like "de" or a name like "German". One Splee doesn't write in is left out, not the lead.
+    #[serde(default)]
+    pub language: String,
     /// Only LinkedIn people search sets it.
     #[serde(skip)]
     pub linkedin_provider_id: String,
@@ -72,6 +75,7 @@ struct Columns {
     phone: Vec<String>,
     segment_id: Vec<Option<Uuid>>,
     linkedin_provider_id: Vec<String>,
+    language: Vec<&'static str>,
 }
 
 /// Validates and inserts leads into a project. Invalid, suppressed and duplicate emails are skipped.
@@ -178,13 +182,14 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
         cols.country_code.push(country);
         cols.segment_id.push(lead.segment_id);
         cols.linkedin_provider_id.push(lead.linkedin_provider_id.trim().to_string());
+        cols.language.push(crate::language::parse(&lead.language).map_or("", |l| l.code));
     }
 
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "insert into leads (project_id, source, email, full_name, first_name, last_name, title, company_name,
-           company_domain, linkedin_url, city, country_code, segment_id, linkedin_provider_id, phone)
+           company_domain, linkedin_url, city, country_code, segment_id, linkedin_provider_id, phone, language)
          select $1, $2, * from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
-           $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[], $14::text[], $15::text[])
+           $9::text[], $10::text[], $11::text[], $12::text[], $13::uuid[], $14::text[], $15::text[], $16::text[])
          on conflict (project_id, email) do nothing returning id",
     )
     .bind(project_id)
@@ -202,6 +207,7 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     .bind(&cols.segment_id)
     .bind(&cols.linkedin_provider_id)
     .bind(&cols.phone)
+    .bind(&cols.language)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;

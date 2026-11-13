@@ -557,9 +557,20 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     let meeting: Uuid = sqlx::query_scalar("select id from meetings where lead_id = $1").bind(s.sarah).fetch_one(s.db()).await.unwrap();
     let deal_stage = || sqlx::query_scalar::<_, String>("select s.name from deals d join deal_stages s on s.id = d.stage_id where d.lead_id = $1").bind(s.sarah).fetch_one(s.db());
     assert_eq!(deal_stage().await.unwrap(), "Interested");
+    // Sarah's campaign writes to each lead in their own language, and hers is set to Dutch.
+    sqlx::query(
+        "with s as (insert into segments (project_id, name, language) values ($1, 'Benelux', 'lead') returning id)
+         update leads set segment_id = (select id from s), language = 'nl' where id = $2",
+    )
+    .bind(s.project)
+    .bind(s.sarah)
+    .execute(s.db())
+    .await
+    .unwrap();
 
     let (outcome, prompt) = run_notes(&s.state, meeting, answer("Proposal")).await;
     assert_eq!(outcome.message, "Wrote the meeting notes, drafted the follow-up and suggested Proposal");
+    assert!(prompt.contains("write in Dutch") && prompt.contains("When unsure, use \"u\"") && prompt.contains("stage reason in English"), "{prompt}");
     assert!(prompt.contains("Guest: Reports. Send me pricing for 40 seats.") && prompt.contains("The deal is in Interested"), "{prompt}");
     assert!(prompt.contains("Interested, Meeting booked, Proposal, Negotiation, Won, Lost") && prompt.contains("They want pricing."), "{prompt}");
     let cost: f64 = sqlx::query_scalar("select cost_usd from agent_runs where kind = 'meeting_notes'").fetch_one(s.db()).await.unwrap();
@@ -578,6 +589,7 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     assert_eq!((draft["kind"].as_str(), draft["subject"].as_str()), (Some("meeting_follow_up"), Some("Re: Quick idea")), "{drafts}");
     assert_eq!(draft["mailbox_id"].as_str(), Some(s.mailbox.to_string().as_str()));
     assert!(draft["body"].as_str().unwrap().starts_with("Hi Sarah, thanks for your time today."));
+    assert_eq!(draft["language"], "nl");
     assert_eq!(drafts["total"], 1);
 
     // A second run for the meeting writes nothing more.

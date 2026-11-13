@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::models::{Lead, Mailbox};
+use crate::models::{EmailMessage, Lead, Mailbox};
 use crate::state::AppState;
 
 pub fn spawn_workers(state: AppState) {
@@ -159,8 +159,8 @@ pub async fn send_invite(state: &AppState, mb: &Mailbox, to: (&str, &str), subje
 
 /// An email as its lead would get it, sent to `to` from the org's first active mailbox. Returns false without one.
 /// The footer's unsubscribe link goes nowhere, so clicking it in the test can't unsubscribe the real lead.
-pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, kind: &str, subject: &str, body: &str) -> anyhow::Result<bool> {
-    let body = sender::with_footer(kind, body, &format!("{}/unsubscribe/test", state.cfg.public_url));
+pub async fn send_test(state: &AppState, org_id: Uuid, to: &str, email: &EmailMessage, subject: &str, body: &str) -> anyhow::Result<bool> {
+    let body = sender::with_footer(&email.kind, body, &format!("{}/unsubscribe/test", state.cfg.public_url), &email.language);
     send_system_email(state, org_id, to, subject, &body).await
 }
 

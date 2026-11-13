@@ -105,11 +105,22 @@ pub(super) struct SegmentBody {
     position: Option<i32>,
     track_clicks: Option<bool>,
     track_opens: Option<bool>,
+    /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
+    language: Option<String>,
+}
+
+/// A campaign's language setting, or a 400 that lists the ones that work.
+pub(super) fn check_language(language: &str) -> AppResult<()> {
+    if language == crate::language::EACH_LEAD || crate::language::find(language).is_some() {
+        return Ok(());
+    }
+    let codes: Vec<&str> = crate::language::LANGUAGES.iter().map(|l| l.code).collect();
+    Err(AppError::BadRequest(format!("language must be \"lead\" for each lead's own, or one of {}", codes.join(", "))))
 }
 
 impl SegmentBody {
-    pub(super) fn from_prompt(prompt: String) -> Self {
-        Self { prompt: Some(prompt), ..Default::default() }
+    pub(super) fn from_prompt(prompt: String, language: Option<String>) -> Self {
+        Self { prompt: Some(prompt), language, ..Default::default() }
     }
 
     fn validate(&self) -> AppResult<()> {
@@ -124,6 +135,9 @@ impl SegmentBody {
         }
         if self.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
             return Err(AppError::BadRequest("Name can't be empty".into()));
+        }
+        if let Some(language) = &self.language {
+            check_language(language)?;
         }
         Ok(())
     }
@@ -150,10 +164,10 @@ pub(super) async fn insert(db: &PgPool, org_id: Uuid, id: Uuid, body: SegmentBod
         (None, None) => return Err(AppError::BadRequest("Give the campaign a name or describe it".into())),
     };
     let segment = sqlx::query_as::<_, Segment>(
-        "insert into segments (project_id, name, description, icon, est_size, fit_score, targeting, pain_points, angle, position)
+        "insert into segments (project_id, name, description, icon, est_size, fit_score, targeting, pain_points, angle, position, language)
          values ($1, $2, coalesce($3, ''), coalesce($4, 'building'), coalesce($5, 0), coalesce($6, 0), coalesce($7, '{}'::jsonb),
                  coalesce($8, ''), coalesce($9, ''),
-                 coalesce($10, (select coalesce(max(position) + 1, 0) from segments where project_id = $1)))
+                 coalesce($10, (select coalesce(max(position) + 1, 0) from segments where project_id = $1)), coalesce($11, 'lead'))
          returning *",
     )
     .bind(id)
@@ -166,6 +180,7 @@ pub(super) async fn insert(db: &PgPool, org_id: Uuid, id: Uuid, body: SegmentBod
     .bind(body.pain_points)
     .bind(body.angle)
     .bind(body.position)
+    .bind(body.language)
     .fetch_one(db)
     .await?;
     let run_id = match prompt {
@@ -204,7 +219,8 @@ async fn update(
            angle = coalesce($10, angle),
            position = coalesce($11, position),
            track_clicks = coalesce($12, track_clicks),
-           track_opens = coalesce($13, track_opens)
+           track_opens = coalesce($13, track_opens),
+           language = coalesce($14, language)
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -220,6 +236,7 @@ async fn update(
     .bind(body.position)
     .bind(body.track_clicks)
     .bind(body.track_opens)
+    .bind(body.language)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))

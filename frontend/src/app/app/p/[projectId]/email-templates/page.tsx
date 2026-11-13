@@ -9,8 +9,8 @@ import { OptionCards } from "@/components/app/settings/option-cards";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { MicroLabel, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Field, Input, NumberInput, Select, Textarea } from "@/components/ui/form";
-import { Badge, Card } from "@/components/ui/misc";
+import { Field, Input, NumberInput, Textarea } from "@/components/ui/form";
+import { Card } from "@/components/ui/misc";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
@@ -25,13 +25,6 @@ const TONES = [
 ];
 
 // Stored as the English name: the agent gets it verbatim in its writing prompt.
-const LANGUAGES = [
-  "English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Swedish", "Norwegian", "Danish",
-  "Finnish", "Polish", "Czech", "Slovak", "Hungarian", "Romanian", "Bulgarian", "Greek", "Turkish", "Russian",
-  "Ukrainian", "Hebrew", "Arabic", "Hindi", "Indonesian", "Malay", "Thai", "Vietnamese", "Japanese", "Korean",
-  "Chinese (Simplified)", "Chinese (Traditional)",
-];
-
 const MIN_WORDS = 30;
 const MAX_WORDS = 250;
 
@@ -60,7 +53,7 @@ export default function EmailTemplatesPage() {
             </div>
           </Section>
 
-          <Section title="Voice" description="Tone and language for every email and follow-up. With Auto the agent picks the language for each lead.">
+          <Section title="Voice" description="The tone of every email and follow-up. Each campaign sets the language it writes in on its own page.">
             <OptionCards
               name="tone"
               value={s.tone}
@@ -68,16 +61,6 @@ export default function EmailTemplatesPage() {
               options={TONES}
               className="@lg:grid-cols-2"
             />
-            <Field label="Language" className="mt-5 max-w-xs">
-              <Select value={s.email_language} onChange={(e) => update({ email_language: e.target.value })}>
-                <option value="auto">Auto</option>
-                {LANGUAGES.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </Select>
-            </Field>
           </Section>
 
           <Section title="Length and call to action" description="The word limit applies to the email body. The call to action is the question each first email ends with.">
@@ -190,7 +173,6 @@ function ExampleEmail({ s }: { s: ProjectSettings }) {
     <Section
       title="Example"
       description="Formatting only. The agent writes the actual words for each lead."
-      actions={s.email_language !== "auto" && <Badge>Written in {s.email_language}</Badge>}
     >
       <Card className="overflow-hidden bg-background shadow-none">
         <div className="space-y-1 border-b border-border px-5 py-3 text-sm">

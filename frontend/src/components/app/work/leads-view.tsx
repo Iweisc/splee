@@ -8,6 +8,7 @@ import { Button, buttonClass, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Modal } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
+import { LANGUAGE_SOURCES, LANGUAGES, languageName } from "@/lib/languages";
 import type { EmailSearchProgress, LeadRow, LeadStatus, Paginated, SegmentWithStats } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
@@ -28,6 +29,8 @@ const STATUS = COMPANY;
 const CONTACTED = "hidden md:table-cell";
 // Below md the owner shows under the name instead.
 const OWNER = "hidden md:table-cell";
+// The modal has it below lg, where the names need the room.
+const LANGUAGE = "hidden lg:table-cell";
 // The email waits for 2xl as well. Next to the owner at 1280px it showed a few letters and wrapped longer names.
 const WIDE = "hidden 2xl:table-cell";
 // The campaign waits for 2xl, since at 1280px its name was cut to a few letters and its width wrapped the Hiring roles.
@@ -43,6 +46,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const [status, setStatus] = useState("");
   const [email, setEmail] = useState("");
   const [minScore, setMinScore] = useState("");
+  const [language, setLanguage] = useState("");
   // "score" or the newest first.
   const [sort, setSort] = useState("");
   const [page, setPage] = useState(1);
@@ -55,7 +59,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const [owner, setOwner] = useOwnerFilter("leads");
 
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
-  const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, sort, owner: owner === "everyone" ? "" : owner };
+  const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, language, sort, owner: owner === "everyone" ? "" : owner };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
 
@@ -86,7 +90,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const findAll = async () => {
     setFinding(true);
     try {
-      const body = { all: true, segment_id: filters.segment_id || null, status, q: query, owner: filters.owner };
+      const body = { all: true, segment_id: filters.segment_id || null, status, q: query, owner: filters.owner, language };
       queued((await api<{ queued: number }>(`/projects/${projectId}/leads/find-emails`, { method: "POST", body })).queued);
     } catch (e) {
       toastError(e);
@@ -99,7 +103,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
     setPicked(new Set());
   };
   useLastPageGuard(data?.total, page, turnPage);
-  const filtered = !!(query || segment || status || email || minScore || owner !== "everyone");
+  const filtered = !!(query || segment || status || email || minScore || language || owner !== "everyone");
   const assign = async (leadId: string, ownerId: string | null) => {
     try {
       await api(`/leads/${leadId}/owner`, { method: "PUT", body: { owner_id: ownerId } });
@@ -181,6 +185,14 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
               <option value="missing">No email</option>
             </Select>
             <ScoreFilter value={minScore} onChange={setFilter(setMinScore)} className="h-9 w-auto flex-auto" />
+            <Select value={language} onChange={filter(setLanguage)} className="h-9 w-auto flex-auto" aria-label="Language">
+              <option value="">Any language</option>
+              {LANGUAGES.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.name}
+                </option>
+              ))}
+            </Select>
             {email === "missing" && !!data?.total && (
               <Button variant="outline" size="sm" onClick={findAll} loading={finding} className="h-9 flex-auto">
                 <MailSearch className="size-3.5" /> Find {plural(data.total, "email")}
@@ -247,6 +259,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                   </Th>
                   <Th className={cn(STATUS, "w-[1%]")}>Status</Th>
                   <Th className={cn(OWNER, "w-[1%]")}>Owner</Th>
+                  <Th className={cn(LANGUAGE, "w-[1%]")}>Language</Th>
                   <Th className={cn(CONTACTED, "w-[1%] text-right whitespace-nowrap")}>Last contacted</Th>
                 </tr>
               </thead>
@@ -300,12 +313,15 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                           className="-ml-1.5 max-w-36 border-transparent bg-transparent"
                         />
                       </Td>
+                      <Td className={cn(LANGUAGE, "whitespace-nowrap text-muted-foreground")} title={LANGUAGE_SOURCES[l.effective_language_source]}>
+                        {languageName(l.effective_language)}
+                      </Td>
                       <Td className={cn(CONTACTED, "text-right whitespace-nowrap text-muted-foreground")}>{l.last_contacted_at ? timeAgo(l.last_contacted_at) : "—"}</Td>
                     </Tr>
                     {whyLead === l.id && (
                       // Spans every column, hidden ones included, so it's the table's full width at any size.
                       <tr className="bg-accent/60">
-                        <td colSpan={9} className="px-4 pt-1 pb-3">
+                        <td colSpan={10} className="px-4 pt-1 pb-3">
                           <ScoreReasons item={l} />
                         </td>
                       </tr>

@@ -396,6 +396,9 @@ pub struct Segment {
     pub track_clicks: bool,
     /// Whether its emails carry a pixel to count opens, which adds an HTML part.
     pub track_opens: bool,
+    /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
+    #[sqlx(default)]
+    pub language: String,
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.
@@ -497,6 +500,9 @@ pub struct Lead {
     /// The team member who works the lead, or None. See ownership.rs.
     #[sqlx(default)]
     pub owner_id: Option<Uuid>,
+    /// The language set on the lead, or "" to go by their country and site. See language.rs.
+    #[sqlx(default)]
+    pub language: String,
 }
 
 /// How a mailbox's last 30 days went, by lead: emailed from it, and of the mail it received, bounces and replies.
@@ -717,6 +723,9 @@ pub struct EmailMessage {
     pub variant_id: Option<Uuid>,
     /// "email", or "sms" or "whatsapp" for a lead's answer to a text. Splee's own texts are in text_messages.
     pub channel: String,
+    /// The language Splee wrote it in, "" for English or an email it didn't write.
+    #[sqlx(default)]
+    pub language: String,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
