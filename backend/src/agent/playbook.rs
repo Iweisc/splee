@@ -198,6 +198,14 @@ pub async fn latest(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Saved>
     .await
 }
 
+/// The project's latest playbook that was written, even while a newer one is being written or failed.
+pub async fn written(db: &PgPool, project_id: Uuid) -> sqlx::Result<Option<Value>> {
+    sqlx::query_scalar("select playbook from playbooks where project_id = $1 and playbook is not null order by created_at desc limit 1")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Question {
     pub question: String,

@@ -69,14 +69,19 @@ impl Session {
     }
 }
 
-/// Days an assignment that hasn't been practiced stays on Today.
+/// Days a 1:1's assignment that isn't done stays on Today. A ramp's stays until it's passed.
 pub const ASSIGNED_DAYS: i32 = 30;
 
-/// An assignment with its practice call, the latest scored one, else the latest started.
+/// An assignment with its practice call, the best scored one, else the latest started. Filter on `DONE` for whether it's done.
 pub const ASSIGNED: &str = "select a.id, a.deal_id, d.project_id, d.lead_id, l.full_name as lead_name, l.company_name as company, a.scenario,
-        a.skill, a.drill, nullif(b.name, '') as assigned_by, a.created_at, d.status = 'open' as open, s.id as session_id, s.score
+        a.skill, a.drill, a.pass_score, a.ramp_id, nullif(b.name, '') as assigned_by, a.created_at, d.status = 'open' as open,
+        s.id as session_id, s.score
      from practice_assignments a join deals d on d.id = a.deal_id join leads l on l.id = d.lead_id left join users b on b.id = a.assigned_by
-     left join lateral (select id, score from practice_sessions where assignment_id = a.id order by score is not null desc, created_at desc limit 1) s on true";
+     left join lateral (select id, score from practice_sessions where assignment_id = a.id
+                        order by (score->>'score')::int desc nulls last, created_at desc limit 1) s on true";
+
+/// An assignment from a 1:1 is done once it's scored, one from a ramp once it scores its pass score.
+pub const DONE: &str = "(s.score is not null and (s.score->>'score')::int >= coalesce(a.pass_score, 0))";
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Assigned {
@@ -89,6 +94,9 @@ pub struct Assigned {
     pub scenario: String,
     pub skill: String,
     pub drill: String,
+    /// The score that passes it, for a ramp's.
+    pub pass_score: Option<i32>,
+    pub ramp_id: Option<Uuid>,
     pub assigned_by: Option<String>,
     pub created_at: Ts,
     pub open: bool,

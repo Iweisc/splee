@@ -650,6 +650,15 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | GET | /projects/:id/playbook | | `{latest, available, min_sources}`. `latest` is `{id, playbook, sources, created_at, status, error}` with status `ready`, `writing` or `failed`, or null. `playbook` is `{summary, fit, avoid, pitch, discovery: [{question, why}], objections: [{they_say, we_say}], competitors: [{name, win_by}], emails: [{lesson, example}], winning, pitfalls}`. `available` and `sources` are `{won, lost, battlecards, campaigns, calls, emails, profile}` |
 | POST | /projects/:id/playbook | | the same, with a playbook being written now. 400 with fewer than `min_sources` things to learn from or while one is being written |
 
+### Ramp plans
+
+`agent/ramp.rs`, `routes/ramps.rs`, migration 0167 and the Ramping new teammates panel on the Playbook page, which opens each plan in its own window. Owners and admins plan anyone's ramp in the organization and see everyone's, everyone else only their own. Written only when someone asks, from the project's latest written playbook (even while a newer one is being written), its open deals (at most 30, as the forecast reads them) and the 5 best coached calls of other teammates. `plan` is `{summary, weeks: [{title, goal, steps, practice: [{deal_id, company, scenario, skill, drill}]}]}`, at most 4 weeks of up to 4 steps, and up to 6 practice calls across them, each on a real open deal and scenario once. Each practice call is assigned to the teammate with a pass score of 70 (see Practice assignments). A new plan for the same teammate and project replaces the old one and its assignments once it's written. Their sessions stay, linked to nothing. The run fails when the project has no open deals.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /projects/:id/ramps | | `{ramps, pass_score}`. Each ramp is a teammate's latest, `{id, user_id, name, plan, requested_by, created_at, status, error, practice}` with status `ready`, `writing` or `failed` and `practice` its assignments as `Assigned` |
+| POST | /projects/:id/ramps/:user_id | | the same, with the teammate's plan being written now. 400 before the playbook is written or while their plan is being written, 403 for someone else's unless an owner or admin, 404 outside the organization |
+
 ### Call coaching
 
 `agent/coaching.rs`, `routes/coaching.rs`, migration 0154, the Coaching page under Outreach and the Coach calls switch on the Autopilot page (`project_settings.coach_calls`, on by default). Every 10 minutes each meeting summarized and each call with a summary and transcript from the last 30 days, without coaching, gets a `call_coaching` row for the lead's owner (the call's owner first) and a coach_call run, 30 a pass. The page shows the average score, talk share, questions per call and share of calls with a next step agreed, a table by rep when more than one rep was coached (a row filters the page to that rep) and each call with its coaching.
@@ -738,7 +747,7 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 |---|---|---|---|
 | GET | /deals/:id/practice | | the deal's last 20 sessions, newest first: `{id, deal_id, scenario, persona, turns, ended, score, user_name, status, error, created_at}`, `turns` `[{who, text}]` with `who` `buyer` or `rep` |
 | POST | /deals/:id/practice | `{scenario, assignment_id?}` | a new session, `preparing`. With `assignment_id`, one of the caller's assignments on this deal, it takes the assignment's scenario. 400 unless the deal is open and the scenario is `next_call`, `pricing` or `competitor`, 404 for an assignment that isn't the caller's on this deal |
-| GET | /deals/:id/practice/assigned | | the caller's assignments on this deal not yet scored, newest first, as `Assigned` (see Practice assignments) |
+| GET | /deals/:id/practice/assigned | | the caller's assignments on this deal not yet done, newest first, as `Assigned` (see Practice assignments) |
 | GET | /practice/:id | | the session |
 | POST | /practice/:id/turns | `{text}` | the session, `thinking`, with the rep's line added. 400 for an empty line or one over 1500 characters, while a step runs, when the call is over or failed, or at 40 turns |
 | POST | /practice/:id/score | | the session, `scoring`, ended. 400 before the rep said anything, while a step runs, or once it's scored |
@@ -773,11 +782,11 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 ### Practice assignments
 
-`agent/practice.rs` (`ASSIGNED`), `routes/one_on_ones.rs`, migration 0166 and the Assign button under the skill in a 1:1 prep. An assignment is a prep's practice call for the teammate it was written for, one per prep, keeping the prep's skill name and drill. The teammate sees it on Today and in the deal's Practice section, starts it from there, and the session links to it (`practice_sessions.assignment_id`). It leaves Today once a session from it is scored, when its deal closes, or after 30 days. `Assigned` is `{id, deal_id, project_id, lead_id, lead_name, company, scenario, skill, drill, assigned_by, created_at, open, session_id, score}`, with `open` whether the deal still is, and the latest scored session from it, else the latest started, as `session_id` and its `score`.
+`agent/practice.rs` (`ASSIGNED`), `routes/one_on_ones.rs`, migration 0166 and the Assign button under the skill in a 1:1 prep. An assignment is a prep's practice call for the teammate it was written for, one per prep, keeping the prep's skill name and drill, or one of a ramp plan's practice calls. A 1:1's is done once a session from it is scored, a ramp's once one scores its `pass_score`. The teammate sees it on Today and in the deal's Practice section, starts it from there, and the session links to it (`practice_sessions.assignment_id`). It leaves Today once it's done or its deal closes, and a 1:1's after 30 days. `Assigned` is `{id, deal_id, project_id, lead_id, lead_name, company, scenario, skill, drill, pass_score, ramp_id, assigned_by, created_at, open, session_id, score}`, with `open` whether the deal still is, and the best scored session from it, else the latest started, as `session_id` and its `score`. The next 1:1 prep reads only 1:1 assignments.
 
 ### Today
 
-`routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, open deals quiet for more than 14 days with whether a nudge waits for approval, and practice calls assigned to you that aren't scored yet. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
+`routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, open deals quiet for more than 14 days with whether a nudge waits for approval, and practice calls assigned to you that aren't done yet. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
 
 | method | path | body | returns |
 |---|---|---|---|

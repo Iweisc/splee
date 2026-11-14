@@ -259,7 +259,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         "select a.skill, a.scenario, l.company_name, current_date - a.created_at::date, s.score
          from practice_assignments a join deals d on d.id = a.deal_id join leads l on l.id = d.lead_id
          left join lateral (select score from practice_sessions where assignment_id = a.id and score is not null order by created_at desc limit 1) s on true
-         where d.org_id = $1 and a.user_id = $2 order by a.created_at desc limit 1",
+         where d.org_id = $1 and a.user_id = $2 and a.one_on_one_id is not null order by a.created_at desc limit 1",
     )
     .bind(org_id)
     .bind(user_id)

@@ -19,6 +19,8 @@ const SCENARIOS: { value: PracticeSession["scenario"]; label: string }[] = [
 ];
 export const scenarioLabel = (s: PracticeSession["scenario"]) => SCENARIOS.find((x) => x.value === s)?.label ?? s;
 const busy = (s: PracticeSession) => s.status === "preparing" || s.status === "thinking" || s.status === "scoring";
+/** A 1:1's assignment is done once it's scored, a ramp's once it scores its pass score. */
+export const done = (a: PracticeAssignment) => !!a.score && a.score.score >= (a.pass_score ?? 0);
 export const tone = (score: number): BadgeTone => (score >= 75 ? "green" : score >= 50 ? "amber" : "red");
 const firstName = (s: PracticeSession) => s.persona?.name.split(" ")[0] ?? "The buyer";
 
@@ -60,13 +62,15 @@ export function PracticeSection({ deal }: { deal: Deal }) {
         <div key={a.id} className="flex flex-col gap-2 rounded-lg bg-brand-50 p-3 text-sm text-pretty sm:flex-row sm:items-center">
           <div className="min-w-0">
             <p className="font-medium text-brand-800">
-              {a.assigned_by ? `${a.assigned_by.split(" ")[0]} asked you to practice` : "Assigned to you"}: {scenarioLabel(a.scenario).toLowerCase()}
+              {a.ramp_id ? "Your ramp" : a.assigned_by ? `${a.assigned_by.split(" ")[0]} asked you to practice` : "Assigned to you"}:{" "}
+              {scenarioLabel(a.scenario).toLowerCase()}
             </p>
             <p className="text-brand-800/80">
               {a.skill}. {a.drill}
+              {a.pass_score !== null && ` Pass with ${a.pass_score}${a.score ? `, your best is ${a.score.score}` : ""}.`}
             </p>
           </div>
-          {a.session_id ? (
+          {a.session_id && !a.score ? (
             <Button type="button" size="sm" variant="outline" className="shrink-0 sm:ml-auto" onClick={() => setOpened(a.session_id)}>
               Carry on
             </Button>
@@ -79,7 +83,7 @@ export function PracticeSection({ deal }: { deal: Deal }) {
               loading={starting === a.id}
               disabled={!!starting}
             >
-              Start it
+              {a.score ? "Try again" : "Start it"}
             </Button>
           )}
         </div>

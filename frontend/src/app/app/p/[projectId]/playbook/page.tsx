@@ -5,6 +5,7 @@ import { BookMarked, Loader2, RefreshCw } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CopyButton } from "@/components/app/settings/copy-button";
+import { RampsPanel } from "@/components/app/work/ramps";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
@@ -208,7 +209,7 @@ export default function PlaybookPage({ params }: PageProps<"/app/p/[projectId]/p
     <>
       <PageHeader
         title="Playbook"
-        description="What your team has learned from its wins, losses, calls and replies, written as the guide a new rep reads first."
+        description="What your team has learned from its wins, losses, calls and replies, written as the guide a new rep reads first, and their first weeks planned from it."
         actions={
           p && (
             <>
@@ -239,13 +240,16 @@ export default function PlaybookPage({ params }: PageProps<"/app/p/[projectId]/p
             </EmptyState>
           </Card>
         ) : (
-          <Card className="mx-auto w-full max-w-3xl p-6 sm:p-8">
-            <Document p={p} />
-            <p className="mt-8 border-t border-border pt-4 text-xs text-pretty text-muted-foreground">
-              Written {timeAgo(latest!.created_at)} from {readFrom(latest!.sources)}.
-              {total(data.available) > total(latest!.sources) && " There's more to learn from now, so writing it again will add it."}
-            </p>
-          </Card>
+          <div className="flex flex-col gap-4">
+            <RampsPanel projectId={projectId} />
+            <Card className="mx-auto w-full max-w-3xl p-6 sm:p-8">
+              <Document p={p} />
+              <p className="mt-8 border-t border-border pt-4 text-xs text-pretty text-muted-foreground">
+                Written {timeAgo(latest!.created_at)} from {readFrom(latest!.sources)}.
+                {total(data.available) > total(latest!.sources) && " There's more to learn from now, so writing it again will add it."}
+              </p>
+            </Card>
+          </div>
         )}
       </PageBody>
     </>

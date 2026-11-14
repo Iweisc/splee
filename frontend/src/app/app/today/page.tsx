@@ -100,14 +100,14 @@ export default function TodayPage() {
                     <Who
                       name={scenarioLabel(a.scenario)}
                       company={a.company}
-                      aside={a.assigned_by ? `From ${a.assigned_by.split(" ")[0]}` : timeAgo(a.created_at)}
+                      aside={a.ramp_id ? "Your ramp" : a.assigned_by ? `From ${a.assigned_by.split(" ")[0]}` : timeAgo(a.created_at)}
                     />
                     <p className="mt-0.5 line-clamp-2 text-sm text-pretty text-muted-foreground">
                       {a.skill}. {a.drill}
                     </p>
-                    {a.session_id && (
+                    {(a.score || a.session_id) && (
                       <div className="mt-1.5">
-                        <Badge>Started, not scored</Badge>
+                        <Badge>{a.score ? `Best ${a.score.score}, passes at ${a.pass_score}` : "Started, not scored"}</Badge>
                       </div>
                     )}
                   </Row>

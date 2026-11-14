@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::inbox;
 use super::util_pagination::PageQuery;
 use crate::agent::nudges::QUIET_DAYS;
-use crate::agent::practice::{ASSIGNED, ASSIGNED_DAYS, Assigned};
+use crate::agent::practice::{ASSIGNED, ASSIGNED_DAYS, Assigned, DONE};
 use crate::auth::Auth;
 use crate::deals::LAST_TOUCH;
 use crate::error::AppResult;
@@ -103,7 +103,7 @@ struct Today {
     calls: Part<CallDue>,
     meetings: Part<Meeting>,
     quiet: Part<Quiet>,
-    /// Practice calls a 1:1 prep assigned to you, on deals still open, until one's scored.
+    /// Practice calls a 1:1 prep or a ramp assigned to you, on deals still open, until they're done. A 1:1's goes after 30 days.
     practice: Part<Assigned>,
 }
 
@@ -233,8 +233,8 @@ async fn quiet(db: &PgPool, org_id: Uuid, owner: &OwnerFilter) -> sqlx::Result<P
 
 async fn practice(db: &PgPool, org_id: Uuid, user_id: Uuid) -> sqlx::Result<Part<Assigned>> {
     let due = format!(
-        "{ASSIGNED} where d.org_id = $1 and a.user_id = $2 and d.status = 'open' and s.score is null
-         and a.created_at > now() - make_interval(days => $3)"
+        "{ASSIGNED} where d.org_id = $1 and a.user_id = $2 and d.status = 'open' and not {DONE}
+         and (a.ramp_id is not null or a.created_at > now() - make_interval(days => $3))"
     );
     let total = sqlx::query_scalar(&format!("select count(*) from ({due}) x")).bind(org_id).bind(user_id).bind(ASSIGNED_DAYS).fetch_one(db).await?;
     let items = sqlx::query_as(&format!("{due} order by a.created_at desc limit $4"))
@@ -254,7 +254,7 @@ mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
-    async fn practice_assigned_to_you_stays_on_today_until_its_scored(db: PgPool) {
+    async fn practice_assigned_to_you_stays_on_today_until_its_done(db: PgPool) {
         use crate::agent::practice::fixture;
         let t = fixture::team(&db).await;
         let prep = fixture::prep(&db, &t, true).await;
@@ -286,6 +286,18 @@ mod tests {
         let part = practice(&db, t.org, t.sam).await.unwrap();
         assert!(part.total == 1 && part.items[0].session_id.is_some(), "started but not scored stays");
         session(Some(serde_json::json!({ "score": 64 }))).await.unwrap();
+        assert_eq!(practice(&db, t.org, t.sam).await.unwrap().total, 0);
+
+        // A ramp's stays until a session scores its pass score.
+        sqlx::query("with r as (insert into ramps (project_id, user_id) values ($1, $2) returning id)
+             update practice_assignments set one_on_one_id = null, ramp_id = (select id from r), pass_score = 70, created_at = now() - interval '40 days'")
+            .bind(t.project)
+            .bind(t.sam)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(practice(&db, t.org, t.sam).await.unwrap().total, 1, "64 doesn't pass, and a ramp's doesn't go after 30 days");
+        session(Some(serde_json::json!({ "score": 70 }))).await.unwrap();
         assert_eq!(practice(&db, t.org, t.sam).await.unwrap().total, 0);
     }
 
