@@ -5,6 +5,7 @@ import { HandCoins, Settings2 } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader, ScreenPage } from "@/components/app/page-header";
 import { amountsOf, DealDialog, moneyList } from "@/components/app/work/deal-dialog";
+import { agentWeighted } from "@/components/app/work/deal-health";
 import { type Kpi, KpiCard } from "@/components/app/work/kpi-card";
 import { OwnerFilterSelect, useMembers, useOwnerFilter } from "@/components/app/work/owner-menu";
 import { type AssignRequest, CloseDialog, type MoveExtras, PipelineBoard, PipelineList } from "@/components/app/work/pipeline-board";
@@ -195,16 +196,20 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
   );
 }
 
-function Forecast({ pipeline: { forecast: f, currency, deals } }: { pipeline: Pipeline }) {
+function Forecast({ pipeline: { forecast: f, currency, deals, stages } }: { pipeline: Pipeline }) {
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
   const open = deals.filter((d) => d.status === "open").length;
   const wonThisMonth = deals.filter((d) => d.status === "won" && d.closed_at && new Date(d.closed_at) >= monthStart).length;
   const closed = f.won + f.lost;
+  // The board lists every open deal, so the agent's weighting can be summed here. See agent/health.rs.
+  const agent = agentWeighted(deals, stages);
   const kpis: Kpi[] = [
     { label: "Open pipeline", value: moneyList(amountsOf(f.amounts, "open"), currency), note: plural(open, "open deal") },
-    { label: "Weighted", value: moneyList(amountsOf(f.amounts, "weighted"), currency), note: "By stage probability" },
+    agent.rated
+      ? { label: "Weighted", value: moneyList(agent.amounts, currency), note: `By the agent's read of ${plural(agent.rated, "deal")}` }
+      : { label: "Weighted", value: moneyList(amountsOf(f.amounts, "weighted"), currency), note: "By stage probability" },
     { label: "Won this month", value: moneyList(amountsOf(f.amounts, "won_this_month"), currency), note: plural(wonThisMonth, "deal") },
     {
       label: "Win rate",

@@ -10,6 +10,7 @@ import { cn, dealMoney, plural, timeAgo } from "@/lib/utils";
 import { moneyList, sumByCurrency } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { PlanProgress } from "./close-plan";
+import { HealthBadge } from "./deal-health";
 import { QuietBadge } from "./quiet-deal";
 
 /** What a move carries besides the stage: the final value of a won deal, the reason for a lost one. */
@@ -68,6 +69,7 @@ function DealCardBody({ deal, onOpen, onAssign, action }: { deal: Deal; onOpen: 
           {deal.meeting_summary && <p className="mt-0.5 line-clamp-2 text-pretty text-foreground/80">{deal.meeting_summary}</p>}
         </div>
       )}
+      <HealthBadge deal={deal} />
       <QuietBadge deal={deal} />
       <PlanProgress deal={deal} />
       <div className="mt-2.5 flex h-5 items-center gap-2 text-xs">

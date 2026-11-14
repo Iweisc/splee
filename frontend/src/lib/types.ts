@@ -206,6 +206,7 @@ export interface ProjectSettings extends CrmStatus {
   /** Writes a brief before each booked call and posts it. */
   meeting_briefs: boolean;
   nudge_quiet_deals: boolean;
+  deal_health: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2057,7 +2058,8 @@ export type RunKind =
   | "buying_committee"
   | "deal_nudge"
   | "close_plan"
-  | "proposal";
+  | "proposal"
+  | "deal_health";
 
 export interface TumblrBlog {
   name: string;
@@ -2273,6 +2275,17 @@ export interface Deal {
   nudge: DealNudge | null;
   /** How far the close plan got, when it has steps. */
   plan: { done: number; total: number } | null;
+  health: DealHealth | null;
+}
+
+/** The agent's latest read on an open deal. `writing` says a new one is on its way. */
+export interface DealHealth {
+  health: "on_track" | "at_risk" | "stalled";
+  likelihood: number;
+  why: string;
+  next_step: string;
+  created_at: Ts;
+  writing: boolean;
 }
 
 /** A nudge the agent drafted while the deal was quiet. A done one without an email was skipped, and `why` says why. */

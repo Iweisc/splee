@@ -13,6 +13,7 @@ import type { Deal, DealAmounts, DealStage, Member, Pipeline, StageKind } from "
 import { dealMoney } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ClosePlanSection } from "./close-plan";
+import { DealHealthSection } from "./deal-health";
 import { ProposalSection } from "./proposal";
 import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
@@ -180,6 +181,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
               </Link>
             </div>
           )}
+          {deal && <DealHealthSection deal={deal} />}
           {deal && <QuietDeal deal={deal} />}
           {deal && <ClosePlanSection deal={deal} />}
           {deal && <ProposalSection deal={deal} />}

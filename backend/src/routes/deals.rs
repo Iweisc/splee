@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/deals/{id}", get(get_deal).patch(update).delete(remove))
         .route("/deals/{id}/move", post(move_deal))
         .route("/deals/{id}/nudge", post(nudge))
+        .route("/deals/{id}/health", post(rate))
 }
 
 #[derive(Deserialize)]
@@ -75,5 +76,19 @@ async fn nudge(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         return Err(AppError::BadRequest("The agent is already writing a nudge for this deal".into()));
     }
     crate::agent::nudges::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
+    Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
+}
+
+/// Has the agent rate the deal's health now. See agent::health.
+async fn rate(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Deal>> {
+    let deal = deals::get(&state.db, auth.org_id, id).await?;
+    if deal.status != "open" {
+        return Err(AppError::BadRequest("Only an open deal gets a health rating".into()));
+    }
+    if deal.health.as_ref().is_some_and(|h| h["writing"] == true) {
+        return Err(AppError::BadRequest("The agent is already rating this deal".into()));
+    }
+    let run = crate::agent::health::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
+    crate::agent::start_now(&state, run).await?;
     Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
 }
