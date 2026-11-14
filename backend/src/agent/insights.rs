@@ -264,7 +264,7 @@ fn squash(s: &str) -> String {
 }
 
 /// Counts each objection by the distinct replies it cites that exist, drops ones with none, keeps a quote only when it's in
-/// a reply, and keeps suggestions that change a field.
+/// one of those replies, and keeps suggestions that change a field.
 fn tidy(a: Answer, bodies: &[String], pain_points: &str, angle: &str) -> Insights {
     let list = |v: Vec<String>, max: usize| v.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(max).collect();
     let squashed: Vec<String> = bodies.iter().map(|b| squash(b)).collect();
@@ -279,7 +279,7 @@ fn tidy(a: Answer, bodies: &[String], pain_points: &str, angle: &str) -> Insight
                 .filter(|&i| i >= 1 && i <= bodies.len())
                 .collect();
             let quote = o.quote.trim().trim_matches('"').trim().to_string();
-            let found = !quote.is_empty() && squashed.iter().any(|b| b.contains(&squash(&quote)));
+            let found = !quote.is_empty() && ids.iter().any(|&i| squashed[i - 1].contains(&squash(&quote)));
             (!ids.is_empty() && !o.theme.trim().is_empty()).then(|| Objection {
                 theme: o.theme.trim().to_string(),
                 count: ids.len(),
@@ -371,7 +371,7 @@ mod tests {
                 "summary": " Most no's already use a competitor. ", "working": ["The missed-call number", " "],
                 "objections": [
                     { "theme": "Already use Weave", "reply_ids": ["r4", "R5", "r5", "r99"], "quote": "\"happy with  Weave\"", "answer": "We work alongside Weave." },
-                    { "theme": "No budget", "reply_ids": ["r1"], "quote": "We have zero budget", "answer": "It pays for itself." },
+                    { "theme": "No budget", "reply_ids": ["r1"], "quote": "Happy with Weave", "answer": "It pays for itself." },
                     { "theme": "Made up", "reply_ids": [], "quote": "", "answer": "" }
                 ],
                 "who": ["Owners of small practices"],
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(got.working, vec!["The missed-call number"]);
         assert_eq!(got.objections.len(), 2, "an objection no reply gives is dropped");
         assert_eq!((got.objections[0].count, got.objections[0].quote.as_str()), (2, "happy with  Weave"), "counted by distinct real replies");
-        assert_eq!(got.objections[1].quote, "", "a quote that isn't in any reply is dropped");
+        assert_eq!(got.objections[1].quote, "", "a quote from a reply the objection doesn't cite is dropped");
         assert_eq!(got.suggestions.len(), 1, "only real changes to real fields");
 
         assert!(apply(&db, segment, id, 0).await.unwrap());
