@@ -102,6 +102,7 @@ pub struct ProjectSettings {
     pub chat_weekly_report: bool,
     /// Writes a brief before each booked call and posts it. See agent/briefs.rs.
     pub meeting_briefs: bool,
+    pub nudge_quiet_deals: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

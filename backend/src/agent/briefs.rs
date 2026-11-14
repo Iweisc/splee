@@ -228,7 +228,7 @@ fn tidy(b: Brief) -> Brief {
 
 /// The conversation, what the lead did, their deal, the team's notes, what they wrote when booking and earlier calls, as
 /// lines for the prompt.
-async fn gather(db: &PgPool, lead: &Lead, org_id: Uuid) -> sqlx::Result<String> {
+pub(super) async fn gather(db: &PgPool, lead: &Lead, org_id: Uuid) -> sqlx::Result<String> {
     let mut lines = vec![];
     let emails: Vec<(String, String, String, Ts)> = sqlx::query_as(
         "select direction, subject, left(body, 1500), coalesce(sent_at, created_at) from email_messages

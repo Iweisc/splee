@@ -189,7 +189,7 @@ where
 }
 
 /// Why no follow-up goes to the lead: no address, or they're off limits.
-async fn follow_up_blocker(conn: &mut sqlx::PgConnection, org_id: Uuid, lead: &Lead) -> sqlx::Result<Option<&'static str>> {
+pub(super) async fn follow_up_blocker(conn: &mut sqlx::PgConnection, org_id: Uuid, lead: &Lead) -> sqlx::Result<Option<&'static str>> {
     let Some(email) = lead.email.as_deref().filter(|e| e.contains('@')) else { return Ok(Some("no email")) };
     if matches!(lead.status.as_str(), "unsubscribed" | "bounced" | "do_not_contact") {
         return Ok(Some("opted out"));

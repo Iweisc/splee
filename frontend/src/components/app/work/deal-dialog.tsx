@@ -11,6 +11,7 @@ import { Badge, type BadgeTone, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Deal, DealAmounts, DealStage, Member, Pipeline, StageKind } from "@/lib/types";
 import { fetcher } from "@/hooks/use-me";
+import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
 
 /** The codes the currency pickers offer. A deal priced in another one through the API keeps it and shows it too. */
@@ -181,6 +182,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
               </Link>
             </div>
           )}
+          {deal && <QuietDeal deal={deal} />}
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
             <Field label={deal?.status === "won" ? "Final value" : "Value"}>
               <NumberInput min={0} step="any" value={values.value} onValueChange={(value) => set({ value: Math.max(0, value) })} autoFocus />

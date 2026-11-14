@@ -82,6 +82,12 @@ export default function AutopilotPage() {
             </div>
           </Section>
 
+          <Section
+            title="Nudge quiet deals"
+            description="When an open deal goes 14 days without an email either way, a call or a stage change, the agent reads the conversation and drafts a short email in the thread with a reason to answer now, like their company's news or a page of yours they read. It waits on the Emails page for your approval, and your chats hear about it. Each quiet stretch gets one nudge."
+            actions={<Switch checked={s.nudge_quiet_deals} onChange={(nudge_quiet_deals) => update({ nudge_quiet_deals })} label="Nudge quiet deals" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"
