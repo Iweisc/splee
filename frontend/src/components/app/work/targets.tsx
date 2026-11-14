@@ -12,6 +12,7 @@ import type { TargetRow, Targets } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
 import { OneOnOneDialog } from "./one-on-one";
 import { CommissionsCard } from "./commissions";
+import { TeamBriefCard } from "./team-brief";
 import { LoadError, MicroLabel, toastError } from "./states";
 
 /** Where a teammate stands: hit it, on track when they're ahead of the month's pace or commit covers the rest, within
@@ -200,6 +201,7 @@ export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
           </Card>
         ))}
       </div>
+      {admin && <TeamBriefCard onPrep={(id) => setPrepFor(v.rows.find((r) => r.user_id === id) ?? null)} />}
       {!target && !admin && (
         <p className="rounded-xl bg-muted/60 px-4 py-3 text-sm text-pretty text-muted-foreground">
           No targets yet. An owner or admin sets each teammate&apos;s monthly target here, and then everyone sees what they won against it.

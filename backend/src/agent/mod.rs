@@ -36,6 +36,7 @@ pub mod one_on_one;
 pub mod playbook;
 pub mod practice;
 pub mod ramp;
+pub mod team_brief;
 pub mod renewals;
 mod prospect;
 mod reddit;
@@ -111,6 +112,7 @@ pub mod kind {
     pub const RENEWAL: &str = "renewal";
     pub const PLAYBOOK: &str = "playbook";
     pub const RAMP: &str = "ramp";
+    pub const TEAM_BRIEF: &str = "team_brief";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -407,6 +409,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::RENEWAL => renewals::run(ctx).await,
         kind::PLAYBOOK => playbook::run(ctx).await,
         kind::RAMP => ramp::run(ctx).await,
+        kind::TEAM_BRIEF => team_brief::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

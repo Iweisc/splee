@@ -780,6 +780,16 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | PUT | /commissions/plan | `{commission_bps, accelerator_pct}` | the same. Owners and admins only. 400 for a rate outside 0 to 10000 or an accelerator outside 100 to 500 |
 | PUT | /commissions/:user_id | `{commission_bps}` | `{commission_bps}`, the teammate's own rate, or null for the team's. Owners and admins only. 404 for someone outside the organization |
 
+### Team brief
+
+`agent/team_brief.rs`, `routes/team_brief.rs`, migration 0169 and the team brief card on the Targets tab, for owners and admins only. The agent reads each member's Targets row, their open deals with the ones the forecast puts at risk, their coached and practice calls from the last 7 days with the average scores, their open practice assignments, how many of their ramp's practice calls they passed, and how many days ago their last 1:1 was prepped. It writes a headline, each teammate in the order to talk to them with a note and one thing to do this week, and up to 3 risks. People it names must be members, each once. Every Monday from 8am in the timezone of the organization's first project, organizations with at least two members and `organizations.team_brief` on (the card's Every Monday switch) get an `auto` one, emailed to each owner and admin as "Your team this week" with a link to `/app/pipeline?view=targets`. One asked for on the card isn't emailed. Each teammate's 1:1 prep button opens their prep.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /team-brief | | `{latest, weekly}`. `latest` is `{id, brief, auto, created_at, status, error}` with status `ready`, `writing` or `failed`, or null. `brief` is `{headline, people: [{user_id, name, note, action}], risks}`. `weekly` is whether the Monday one is on. 403 for members |
+| POST | /team-brief | | the same, with a brief being written now. 400 while one is being written |
+| PUT | /team-brief/weekly | `{on}` | the same |
+
 ### 1:1 prep
 
 `agent/one_on_one.rs`, `routes/one_on_ones.rs`, migration 0163 and the 1:1 prep button on each teammate's row of the Targets tab, which opens the prep in its own window. Owners and admins prep anyone in the organization, everyone else only themselves. Written only when someone asks. The agent reads the teammate's Targets row, the open deals whose lead they own (as the forecast reads them), the deals they won or lost in the last 30 days with their reviews, their coached calls and their scored practice calls from the last 30 days. `month` is their Targets row when it was written, never the model's. Deals it names must be their open deals, at most 4. When the drill is a practice call on one of those open deals, `skill.practice` is `{deal_id, company, scenario}`, and it can be assigned (see Practice assignments). The agent also reads the teammate's latest assignment, with its latest score and how they did on the skill, or that it isn't done. Copy puts the prep on the clipboard as plain text for the meeting's notes.
@@ -1084,6 +1094,7 @@ Reasons and their lines live in `deliverability/thresholds.rs`. Bounce rate (by 
 - Account expansion (hourly, `agent/expansions.rs`): looks at each customer whose company showed news, new job openings or a pricing visit since the last look, in projects with `grow_accounts` on. See Account expansion.
 - Battlecards (hourly, `agent/battlecards.rs`): writes a card for each competitor a deal review names, and again a week later after a newer review, in projects with `write_battlecards` on. See Battlecards.
 - Win-backs (hourly, `agent/win_backs.rs`): plans each deal lost in the last year, brings forward the ones whose buyer came back and writes the ones due, in projects with `win_back_lost_deals` on. See Win-backs.
+- Team briefs (hourly, `agent/team_brief.rs`): queues the Monday brief for each organization where it's due, see Team brief.
 - Optimizer (hourly): per working segment with >= 40 sent emails, sent emails per hot lead < 250 → `scaling`, > 625 → `paused` (once: `auto_paused_at` records it, and a campaign you resume afterwards stays `working`), else `working`. Scaling segments get first pick in the sender. Then A/B auto-pick: per segment with `variant_pick_after` set and no pick yet, once there are two or more active variants, each with at least that many sends (and 30), and the leader beats every other at 95% (as in `GET /segments/:id/variants`), the others get `paused_at` and the segment records `variant_winner_id`, `variant_picked_at` and `variant_pick_note`. Written emails are left alone.
 
 ## Browser extension

@@ -31,11 +31,12 @@ const PER_PROJECT: Partial<Record<View, string>> = { forecast: "forecast", winba
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
 
 export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline">) {
-  // Webhooks and the lead window link here with ?deal= to open that deal, and the Monday forecast in chat with ?view=forecast.
+  // Webhooks and the lead window link here with ?deal= to open that deal, and the Monday forecast in chat with ?view=forecast, and the
+  // Monday team brief email with ?view=targets.
   const { deal: linked, view: linkedView } = use(searchParams);
   const { me } = useMe();
   const [project, setProject] = useState("");
-  const [view, setView] = useState<View>(linkedView === "forecast" ? "forecast" : startView);
+  const [view, setView] = useState<View>(linkedView === "forecast" || linkedView === "targets" ? linkedView : startView);
   const [opened, setOpened] = useState<string | null>(typeof linked === "string" ? linked : null);
   const [closing, setClosing] = useState<{ deal: Deal; stage: DealStage } | null>(null);
   const [editing, setEditing] = useState(false);
