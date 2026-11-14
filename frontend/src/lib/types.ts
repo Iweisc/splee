@@ -2283,6 +2283,41 @@ export interface DealNudge {
   status: "writing" | "done" | "failed";
 }
 
+/** GET /today: what's waiting on you across the organization's projects. A part's `total` counts past the few listed. */
+export interface Today {
+  replies: TodayPart<{
+    lead_id: UUID;
+    project_id: UUID;
+    project_name: string;
+    name: string;
+    company: string;
+    classification: Classification | null;
+    snippet: string;
+    at: Ts;
+  }>;
+  /** Drafts waiting for approval, by project and kind. Everyone's, since approving is the team's job. */
+  approvals: { project_id: UUID; project_name: string; kind: EmailRow["kind"]; count: number }[];
+  calls: TodayPart<{ id: UUID; lead_id: UUID; project_id: UUID; name: string; company: string; due_at: Ts }>;
+  meetings: TodayPart<{ lead_id: UUID; project_id: UUID; name: string; company: string; meeting_at: Ts; brief: boolean }>;
+  quiet: TodayPart<{
+    deal_id: UUID;
+    lead_id: UUID;
+    project_id: UUID;
+    name: string;
+    company: string;
+    stage: string;
+    value_cents: number;
+    currency: string;
+    last_touch_at: Ts;
+    nudge_ready: boolean;
+  }>;
+}
+
+export interface TodayPart<T> {
+  total: number;
+  items: T[];
+}
+
 /** In the order the integrations page offers them. Keep in sync with Provider in backend/src/meetings/mod.rs. */
 export const MEETING_PROVIDERS = ["fireflies", "fathom", "gong", "zoom"] as const;
 export type MeetingProvider = (typeof MEETING_PROVIDERS)[number];

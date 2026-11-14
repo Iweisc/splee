@@ -16,7 +16,7 @@ import { isActive, useProjectRuns } from "./run-progress";
 import { MicroLabel, toastError } from "./states";
 import { EmailStatusBadge } from "./status";
 
-const KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string> = {
+export const EMAIL_KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string> = {
   initial: "First email",
   auto_reply: "Auto-reply",
   manual_reply: "Manual reply",
@@ -140,7 +140,7 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
       <div className="flex flex-wrap items-start justify-between gap-3">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <dt>Type</dt>
-          <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : KINDS[email.kind]}</dd>
+          <dd className="text-foreground">{email.kind === "follow_up" ? `Follow-up ${email.step}` : EMAIL_KINDS[email.kind]}</dd>
           {email.from_email && (
             <>
               <dt>From</dt>
