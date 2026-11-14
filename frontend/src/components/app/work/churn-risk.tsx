@@ -229,7 +229,7 @@ function Group({
   );
 }
 
-/** The pipeline's At risk tab: customers showing warning signs, what to do about each, and the ones that turned out fine. */
+/** The Customers page's At risk tab: customers showing warning signs, what to do about each, and the ones that turned out fine. */
 export function ChurnPanel({ projectId, onOpen }: { projectId: string; onOpen: (dealId: string) => void }) {
   const { data, error, mutate } = useSWR<ChurnRiskView>(`/projects/${projectId}/churn-risks`, fetcher, {
     refreshInterval: (v) => (v?.items.some((r) => r.status === "writing") ? 4000 : 0),

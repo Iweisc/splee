@@ -203,7 +203,7 @@ function Group({
   );
 }
 
-/** The pipeline's Expansion tab: customers whose company changed, the drafts to send, and what the agent passed on. */
+/** The Customers page's Expansion tab: customers whose company changed, the drafts to send, and what the agent passed on. */
 export function ExpansionPanel({ projectId, onOpen }: { projectId: string; onOpen: (dealId: string) => void }) {
   const { data, error, mutate } = useSWR<ExpansionView>(`/projects/${projectId}/expansions`, fetcher, {
     refreshInterval: (v) => (v?.items.some((x) => x.status === "writing") ? 4000 : 0),
