@@ -20,6 +20,7 @@ mod hiring;
 mod job_changes;
 mod ask;
 mod briefs;
+mod committee;
 mod insights;
 mod lead_pages;
 mod local_businesses;
@@ -144,6 +145,7 @@ pub fn router() -> Router<AppState> {
         .merge(briefs::router())
         .merge(insights::router())
         .merge(ask::router())
+        .merge(committee::router())
         .merge(reports::router())
         .merge(variants::router())
         .merge(bookings::router())
