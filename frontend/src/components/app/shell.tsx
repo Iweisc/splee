@@ -137,8 +137,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* The nav doesn't fit a laptop's height, so its edges fade: a cut-off item shows there's more to scroll to. Scrolled
             to either end, they only cover padding: the first group's mt-4 at the top and pb-8 at the bottom. The scroll
-            padding does the same for a link reached with Tab, focus ring included, so it doesn't land half-faded. */}
-        <nav ref={navRef} className="flex-1 scroll-pt-5 scroll-pb-9 overflow-y-auto px-2 pb-8 [mask-image:linear-gradient(transparent,#000_1rem,#000_calc(100%-2rem),transparent)]">
+            padding does the same for a link reached with Tab, focus ring included, so it doesn't land half-faded. relative keeps the
+            badges' sr-only text inside the nav, or it hangs below the sidebar and the whole page scrolls. */}
+        <nav ref={navRef} className="relative flex-1 scroll-pt-5 scroll-pb-9 overflow-y-auto px-2 pb-8 [mask-image:linear-gradient(transparent,#000_1rem,#000_calc(100%-2rem),transparent)]">
           {projectId &&
             projectNav.map((group) => (
               <div key={group.title} className="mt-4">
