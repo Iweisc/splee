@@ -28,6 +28,7 @@ const TITLES: Record<RunKind, string> = {
   meeting_notes: "Write meeting notes",
   research_companies: "Research companies",
   meeting_brief: "Write a meeting brief",
+  campaign_insights: "Read a campaign's replies",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

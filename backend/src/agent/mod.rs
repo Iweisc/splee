@@ -11,6 +11,7 @@ mod discourse;
 mod explore;
 mod hashnode;
 mod hiring;
+pub mod insights;
 mod lemmy;
 mod linkedin;
 mod mastodon;
@@ -65,6 +66,7 @@ pub mod kind {
     pub const MEETING_NOTES: &str = "meeting_notes";
     pub const RESEARCH_COMPANIES: &str = "research_companies";
     pub const MEETING_BRIEF: &str = "meeting_brief";
+    pub const CAMPAIGN_INSIGHTS: &str = "campaign_insights";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -325,6 +327,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::MEETING_NOTES => meetings::notes_run(ctx).await,
         kind::RESEARCH_COMPANIES => research::run(ctx).await,
         kind::MEETING_BRIEF => briefs::run(ctx).await,
+        kind::CAMPAIGN_INSIGHTS => insights::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

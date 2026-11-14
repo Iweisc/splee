@@ -20,6 +20,7 @@ import { SegmentToggle } from "@/components/app/work/segment-toggle";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LeadPagesCard } from "@/components/app/work/lead-page";
+import { InsightsCard } from "@/components/app/work/insights";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { FitScore, SegmentIcon, SegmentStatusDot } from "@/components/app/work/status";
 import { Button } from "@/components/ui/button";
@@ -99,6 +100,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
         {run && <RunProgress key={run.id} run={run} />}
         {segment.sent > 0 && <Results segment={segment} />}
         <Pipeline segment={segment} busy={!!run} />
+        {segment.replies > 0 && <InsightsCard segment={segment} />}
         <Tabs
           value={tab}
           onChange={setTab}
