@@ -51,8 +51,13 @@ export function AskSplee({ projectId }: { projectId: string }) {
 }
 
 function AskPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  // The panel only mounts after a click or a key, so localStorage is there and the first render can read it.
-  const [turns, setTurns] = useState<Turn[]>(() => JSON.parse(localStorage.getItem(storageKey(projectId)) ?? "[]"));
+  // The panel only mounts after a click or a key, so localStorage is there and the first render can read it. A question
+  // whose request was still out when the panel closed never learned its run, so it can only be asked again.
+  const [turns, setTurns] = useState<Turn[]>(() =>
+    (JSON.parse(localStorage.getItem(storageKey(projectId)) ?? "[]") as Turn[]).map((t) =>
+      t.run_id || t.answer !== undefined || t.error ? t : { ...t, error: "The panel closed before this was asked." },
+    ),
+  );
   const [draft, setDraft] = useState("");
   const [lead, setLead] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
