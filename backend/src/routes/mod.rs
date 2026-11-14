@@ -24,6 +24,7 @@ mod ask;
 mod briefs;
 mod committee;
 mod referrals;
+mod stories;
 mod churn;
 mod customers;
 mod practice;
@@ -133,6 +134,7 @@ pub fn router() -> Router<AppState> {
         .merge(battlecards::router())
         .merge(expansions::router())
         .merge(referrals::router())
+        .merge(stories::router())
         .merge(churn::router())
         .merge(customers::router())
         .merge(practice::router())

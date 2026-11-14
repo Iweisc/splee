@@ -24,6 +24,7 @@ import { ProposalSection } from "./proposal";
 import { QualificationSection } from "./qualification";
 import { QuietDeal } from "./quiet-deal";
 import { ReferralSection } from "./referral";
+import { StorySection } from "./story";
 import { toastError } from "./states";
 import { WinBackSection } from "./win-back";
 
@@ -211,6 +212,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
                 <ChurnSection deal={deal} />
                 <ExpansionSection deal={deal} />
                 <ReferralSection deal={deal} />
+                <StorySection deal={deal} />
                 <DealBattlecards deal={deal} />
                 <QualificationSection deal={deal} />
                 <QuietDeal deal={deal} />

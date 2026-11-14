@@ -1457,7 +1457,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask";
   step: number;
   subject: string;
   body: string;
@@ -3083,6 +3083,57 @@ export interface PublicReferralPage {
   value_props: string[];
   sender_name: string;
   booking_url: string | null;
+}
+
+/** A case study the agent drafted from a won deal. The sections never name the customer. See backend/src/agent/stories.rs. */
+export interface StoryDraft {
+  title: string;
+  anonymous_title: string;
+  anonymous_name: string;
+  summary: string;
+  challenge: string;
+  solution: string;
+  results: string;
+  quote: string;
+}
+
+export interface CustomerStory {
+  id: UUID;
+  deal_id: UUID;
+  lead_name: string;
+  company_name: string;
+  status: "writing" | "skipped" | "failed" | "drafted" | "written" | "sent" | "approved" | "declined";
+  story: StoryDraft | null;
+  skipped: string;
+  token: string;
+  email_id: UUID | null;
+  email_subject: string | null;
+  email_body: string | null;
+  views: number;
+  last_viewed_at: string | null;
+  approved_at: string | null;
+  approved_name: string;
+  approved_title: string;
+  named: boolean | null;
+  declined_at: string | null;
+  material_id: UUID | null;
+  created_at: string;
+}
+
+/** The page a customer approves their case study on. */
+export interface PublicStoryPage {
+  first_name: string;
+  full_name: string;
+  job_title: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  story: StoryDraft;
+  status: "waiting" | "approved" | "declined";
+  named: boolean | null;
+  approved_name: string;
+  approved_title: string;
 }
 
 /** A check on whether a customer might leave. See backend/src/agent/churn.rs. */
