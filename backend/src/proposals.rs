@@ -256,7 +256,14 @@ pub async fn accept(state: &AppState, token: &str, a: Acceptance) -> AppResult<(
     let deal = match won {
         Some(stage) => {
             let value = (!items.is_empty()).then_some(total);
-            Some(deals::move_to(state, org_id, deal_id, Move { stage_id: Some(stage), value, ..Default::default() }).await?)
+            match deals::move_to(state, org_id, deal_id, Move { stage_id: Some(stage), value, ..Default::default() }).await {
+                Ok(deal) => Some(deal),
+                Err(e) => {
+                    // Keep this simple until deals::move_to can join a transaction: undo the acceptance so the buyer can try again.
+                    sqlx::query("update proposals set accepted_at = null, accepted_name = '', accepted_title = '' where token = $1").bind(token).execute(db).await?;
+                    return Err(e);
+                }
+            }
         }
         None => None,
     };

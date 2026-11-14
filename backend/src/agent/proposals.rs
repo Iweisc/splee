@@ -108,7 +108,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
     let prices = if kept.is_empty() {
         format!(
-            "4. items: the prices exactly as quoted in the conversation, the deal's notes or our materials, in {currency}, each \
+            "4. items: the prices exactly as quoted to them in the conversation or written in the deal's notes, never from our materials alone, in {currency}, each \
              with a name, a one-line detail, a quantity, a unit price as a number and a period (one_time, month or year), so \
              they add up to what was quoted. When no price was quoted, return no items.",
             currency = deal.currency.to_uppercase()
@@ -151,7 +151,9 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let items = if kept.is_empty() { tidy_items(draft.items.into_iter().take(crate::proposals::MAX_ITEMS).collect()).unwrap_or_default() } else { kept.0 };
 
     sqlx::query(
-        "update proposals set title = $2, intro = $3, sections = $4, items = $5, valid_until = coalesce(valid_until, $6), updated_at = now()
+        // Prices the team saved while the agent wrote stay: the generated ones only fill an empty list.
+        "update proposals set title = $2, intro = $3, sections = $4, items = case when items = '[]'::jsonb then $5 else items end,
+                valid_until = coalesce(valid_until, $6), updated_at = now()
          where id = $1 and accepted_at is null",
     )
     .bind(input.proposal_id)
