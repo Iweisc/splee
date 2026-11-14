@@ -204,7 +204,8 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let call = Call { timeout: Duration::from_secs(2 * 60), budget_usd: 0.25, ..Call::writing(REVIEWER, prompt.clone(), schema()) };
     let a: Answer = ctx.ask(&call).await?;
     let reason = if reasons.contains(&a.reason.as_str()) { a.reason } else { "other".to_string() };
-    let competitor = competitor(&a.competitor, &rivals, &prompt);
+    // The list of competitors we track isn't evidence that this buyer talked about one.
+    let competitor = competitor(&a.competitor, &rivals, &prompt.replace(&rivals_line, ""));
     let clip = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();
 
     sqlx::query("update deal_reviews set reason = $2, story = $3, turning_point = $4, competitor = $5, lesson = $6 where id = $1 and run_id = $7")
@@ -220,19 +221,24 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     Ok(Outcome::new(format!("Reviewed the {} deal with {first}: {}", deal.outcome, reason.replace('_', " "))))
 }
 
-/// The competitor the agent named, spelled as we track it when it's one of ours, or kept only when the evidence it read
-/// names it, so the Win/loss view never counts a made-up rival.
+/// The competitor the agent named, kept only when the evidence it read names it, so the Win/loss view never counts a
+/// made-up rival, and spelled as we track it when it's one of ours.
 fn competitor(named: &str, rivals: &[(String, String)], evidence: &str) -> String {
     let named = named.trim();
     if named.is_empty() {
         return String::new();
     }
     let lower = named.to_lowercase();
+    let evidence = evidence.to_lowercase();
     let root = |domain: &str| domain.split('.').next().unwrap_or_default().to_lowercase();
     if let Some((name, domain)) = rivals.iter().find(|(name, domain)| name.to_lowercase() == lower || domain.to_lowercase() == lower || root(domain) == lower) {
+        let named_in_evidence = [name.to_lowercase(), domain.to_lowercase(), root(domain)].iter().any(|w| !w.is_empty() && evidence.contains(w.as_str()));
+        if !named_in_evidence {
+            return String::new();
+        }
         return if name.is_empty() { domain.clone() } else { name.clone() };
     }
-    if evidence.to_lowercase().contains(&lower) { named.chars().take(80).collect() } else { String::new() }
+    if evidence.contains(&lower) { named.chars().take(80).collect() } else { String::new() }
 }
 
 #[cfg(test)]
@@ -245,8 +251,9 @@ mod tests {
     #[test]
     fn a_competitor_is_spelled_as_tracked_or_dropped_when_nothing_names_it() {
         let rivals = vec![("Gong".to_string(), "gong.io".to_string()), (String::new(), "chorus.ai".to_string())];
-        assert_eq!(competitor(" gong ", &rivals, ""), "Gong");
-        assert_eq!(competitor("Chorus", &rivals, ""), "chorus.ai");
+        assert_eq!(competitor(" gong ", &rivals, "They renewed GONG instead."), "Gong");
+        assert_eq!(competitor("Chorus", &rivals, "they compared us with chorus"), "chorus.ai");
+        assert_eq!(competitor("Gong", &rivals, "they went quiet"), "", "a tracked rival the evidence never names");
         assert_eq!(competitor("Outreach", &rivals, "they went with outreach in the end"), "Outreach");
         assert_eq!(competitor("Salesloft", &rivals, "they went quiet"), "", "the evidence never names it");
     }
