@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import type { TargetRow, Targets } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
 import { OneOnOneDialog } from "./one-on-one";
+import { CommissionsCard } from "./commissions";
 import { LoadError, MicroLabel, toastError } from "./states";
 
 /** Where a teammate stands: hit it, on track when they're ahead of the month's pace or commit covers the rest, within
@@ -219,6 +220,7 @@ export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
           ))}
         </ul>
       </Card>
+      <CommissionsCard admin={admin} />
       <p className="text-xs text-pretty text-muted-foreground">
         A deal counts for whoever owns its lead, in {v.currency.toUpperCase()} only. Commit and best case come from each project&apos;s latest
         forecast

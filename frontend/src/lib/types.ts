@@ -3179,6 +3179,27 @@ export interface TargetRow {
   deals: { deal_id: UUID; name: string; company: string; value_cents: number; category: "commit" | "best_case"; why: string }[];
 }
 
+/** GET /commissions?month=: what each teammate earned on the deals they won that month. See backend/src/routes/commissions.rs. */
+export interface Commissions {
+  /** The first of the month, like 2026-10-01. */
+  month: string;
+  currency: string;
+  /** Null when there's no team rate. */
+  commission_bps: number | null;
+  /** 150 earns 1.5× the rate past target. */
+  accelerator_pct: number;
+  rows: {
+    user_id: UUID;
+    name: string;
+    target_cents: number | null;
+    rate_bps: number | null;
+    own_rate: boolean;
+    won_cents: number;
+    earned_cents: number;
+    deals: { deal_id: UUID; name: string; company: string; closed_at: Ts; value_cents: number; earned_cents: number; accelerated: boolean }[];
+  }[];
+}
+
 export interface Targets {
   currency: string;
   day: number;
