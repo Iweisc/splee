@@ -790,6 +790,16 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | POST | /team-brief | | the same, with a brief being written now. 400 while one is being written |
 | PUT | /team-brief/weekly | `{on}` | the same |
 
+### Contests
+
+`contests.rs`, `routes/contests.rs`, migration 0170, the Contests card on the Targets tab and Contests you're in on Today. An owner or admin starts one with a `name`, a `metric`, an optional `prize` and `ends_at`, and it runs from then. Everyone in the organization is in it, scored on what they did between `starts_at` and `ends_at`: `won_value` and `deals_won` count deals won by lead owner, `pipeline` the value of deals created by lead owner, in the organization's currency like Targets, `calls` the calls marked done by whoever made them, and `practice` the practice sessions that scored at least the ramp's pass score (70). Starting one posts "Contest on" to the organization's chats, once per channel. The worker posts the winner, a tie or that nobody scored. Today shows each running contest with where you stand.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /contests | | `{currency, contests}`, the running ones, the soonest to end first, then those that ended in the last 30 days. Each is `{id, name, metric, prize, starts_at, ends_at, created_by, standings: [{user_id, name, value}]}`, every member the highest first, `value` in cents for `won_value` and `pipeline` |
+| POST | /contests | `{name, metric, prize?, ends_at}` | the same. Owners and admins only. 400 for a name over 80 characters or empty, a prize over 120, another metric, or an end that isn't in the next 92 days |
+| DELETE | /contests/:id | | 204, without telling anyone. Owners and admins only |
+
 ### 1:1 prep
 
 `agent/one_on_one.rs`, `routes/one_on_ones.rs`, migration 0163 and the 1:1 prep button on each teammate's row of the Targets tab, which opens the prep in its own window. Owners and admins prep anyone in the organization, everyone else only themselves. Written only when someone asks. The agent reads the teammate's Targets row, the open deals whose lead they own (as the forecast reads them), the deals they won or lost in the last 30 days with their reviews, their coached calls and their scored practice calls from the last 30 days. `month` is their Targets row when it was written, never the model's. Deals it names must be their open deals, at most 4. When the drill is a practice call on one of those open deals, `skill.practice` is `{deal_id, company, scenario}`, and it can be assigned (see Practice assignments). The agent also reads the teammate's latest assignment, with its latest score and how they did on the skill, or that it isn't done. Copy puts the prep on the clipboard as plain text for the meeting's notes.
@@ -1094,6 +1104,7 @@ Reasons and their lines live in `deliverability/thresholds.rs`. Bounce rate (by 
 - Account expansion (hourly, `agent/expansions.rs`): looks at each customer whose company showed news, new job openings or a pricing visit since the last look, in projects with `grow_accounts` on. See Account expansion.
 - Battlecards (hourly, `agent/battlecards.rs`): writes a card for each competitor a deal review names, and again a week later after a newer review, in projects with `write_battlecards` on. See Battlecards.
 - Win-backs (hourly, `agent/win_backs.rs`): plans each deal lost in the last year, brings forward the ones whose buyer came back and writes the ones due, in projects with `win_back_lost_deals` on. See Win-backs.
+- Contests (every 5 minutes, `contests.rs`): claims each contest that ended and wasn't announced, and posts its winner to the organization's chats.
 - Team briefs (hourly, `agent/team_brief.rs`): queues the Monday brief for each organization where it's due, see Team brief.
 - Optimizer (hourly): per working segment with >= 40 sent emails, sent emails per hot lead < 250 → `scaling`, > 625 → `paused` (once: `auto_paused_at` records it, and a campaign you resume afterwards stays `working`), else `working`. Scaling segments get first pick in the sender. Then A/B auto-pick: per segment with `variant_pick_after` set and no pick yet, once there are two or more active variants, each with at least that many sends (and 30), and the leader beats every other at 95% (as in `GET /segments/:id/variants`), the others get `paused_at` and the segment records `variant_winner_id`, `variant_picked_at` and `variant_pick_note`. Written emails are left alone.
 

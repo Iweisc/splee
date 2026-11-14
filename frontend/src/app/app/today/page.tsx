@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, Sun } from "lucide-react";
+import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, Sun, Trophy } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
+import { ended, endsLine, standing } from "@/components/app/work/contests";
 import { EMAIL_KINDS } from "@/components/app/work/email-preview";
 import { LeadModal } from "@/components/app/work/lead-modal";
 import { scenarioLabel } from "@/components/app/work/practice";
@@ -13,9 +14,9 @@ import { ClassificationBadge } from "@/components/app/work/status";
 import { Select } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
-import type { Today } from "@/lib/types";
+import type { ContestsView, Today } from "@/lib/types";
 import { cn, dayTime, dealMoney, isPast, plural, timeAgo } from "@/lib/utils";
-import { fetcher } from "@/hooks/use-me";
+import { fetcher, useMe } from "@/hooks/use-me";
 
 type Owner = "mine_or_unassigned" | "mine" | "everyone";
 
@@ -25,8 +26,19 @@ export default function TodayPage() {
   const [owner, setOwner] = useState<Owner>("mine_or_unassigned");
   const [lead, setLead] = useState<string | null>(null);
   const { data, error, mutate } = useSWR<Today>(`/today${qs({ owner })}`, fetcher, { refreshInterval: 60_000, keepPreviousData: true });
+  const { me } = useMe();
+  const { data: contests } = useSWR<ContestsView>("/contests", fetcher, { refreshInterval: 60_000 });
+  const running = contests?.contests.filter((c) => !ended(c)) ?? [];
 
-  const empty = data && !data.replies.total && !data.approvals.length && !data.calls.total && !data.meetings.total && !data.quiet.total && !data.practice.total;
+  const empty =
+    data &&
+    !data.replies.total &&
+    !data.approvals.length &&
+    !data.calls.total &&
+    !data.meetings.total &&
+    !data.quiet.total &&
+    !data.practice.total &&
+    !running.length;
   return (
     <>
       <PageHeader
@@ -110,6 +122,16 @@ export default function TodayPage() {
                         <Badge>{a.score ? `Best ${a.score.score}, passes at ${a.pass_score}` : "Started, not scored"}</Badge>
                       </div>
                     )}
+                  </Row>
+                ))}
+              </Part>
+            )}
+            {running.length > 0 && contests && me && (
+              <Part icon={Trophy} title="Contests you're in" total={running.length}>
+                {running.map((c) => (
+                  <Row key={c.id} href="/app/pipeline?view=targets">
+                    <Who name={c.name} company={c.prize} aside={endsLine(c)} />
+                    <p className="mt-0.5 text-sm text-pretty text-muted-foreground">{standing(c, me.user.id, contests.currency)}</p>
                   </Row>
                 ))}
               </Part>

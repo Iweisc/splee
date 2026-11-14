@@ -3379,3 +3379,24 @@ export interface TeamBriefView {
   /** Whether one is written and emailed every Monday. */
   weekly: boolean;
 }
+
+export type ContestMetric = "won_value" | "deals_won" | "pipeline" | "calls" | "practice";
+
+/** A sales contest. Everyone in the organization is in it. See backend/src/contests.rs. */
+export interface Contest {
+  id: UUID;
+  name: string;
+  metric: ContestMetric;
+  prize: string;
+  starts_at: Ts;
+  ends_at: Ts;
+  created_by: string | null;
+  /** Every member, the highest first. `value` is cents for won_value and pipeline, a count otherwise. */
+  standings: { user_id: UUID; name: string; value: number }[];
+}
+
+/** GET /contests: running ones, the soonest to end first, then those that ended in the last 30 days. */
+export interface ContestsView {
+  currency: string;
+  contests: Contest[];
+}
