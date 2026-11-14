@@ -183,6 +183,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
       {active && (
         <CallPanel
           active={active}
+          prep={data?.find((r) => r.id === active.row.id)?.prep ?? active.row.prep}
           onHangUp={hangUp}
           onMute={() => {
             const muted = !active.muted;
@@ -280,12 +281,15 @@ function DoneRow({ row: r, onOpen }: { row: CallRow; onOpen: () => void }) {
 /** Fixed to the bottom corner, or across the bottom on a phone, so the list stays usable while a call is on. */
 function CallPanel({
   active: a,
+  prep,
   onHangUp,
   onMute,
   onLog,
   onClose,
 }: {
   active: Active;
+  /** From the polled list, so a track that lands while it rings shows up. */
+  prep: CallRow["prep"];
   onHangUp: () => void;
   onMute: () => void;
   onLog: (outcome: CallOutcome, notes: string) => Promise<void>;
@@ -325,9 +329,9 @@ function CallPanel({
           {status}
         </p>
         {a.row.instructions && on && <p className="rounded-lg bg-muted px-3 py-2 text-sm text-pretty">{a.row.instructions}</p>}
-        {a.row.prep?.prep && on && (
+        {prep?.prep && on && (
           <div className="max-h-[45vh] overflow-y-auto border-t border-border pt-3">
-            <TalkTrack prep={a.row.prep.prep} ringing={a.phase !== "connected"} />
+            <TalkTrack prep={prep.prep} ringing={a.phase !== "connected"} />
           </div>
         )}
         {on ? (

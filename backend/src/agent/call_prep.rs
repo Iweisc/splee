@@ -86,7 +86,7 @@ async fn start(tx: &mut sqlx::PgConnection, id: Uuid, project_id: Uuid, org_id: 
     Ok(run)
 }
 
-/// Writes the call's talk track again, or for the first time, now.
+/// Writes the call's talk track again, or for the first time, now. One already being written is reused.
 pub async fn request(db: &PgPool, call_id: Uuid, project_id: Uuid, org_id: Uuid) -> sqlx::Result<Uuid> {
     let mut tx = db.begin().await?;
     let id: Uuid = sqlx::query_scalar(
@@ -96,7 +96,15 @@ pub async fn request(db: &PgPool, call_id: Uuid, project_id: Uuid, org_id: Uuid)
     .bind(call_id)
     .fetch_one(&mut *tx)
     .await?;
-    let run = start(&mut tx, id, project_id, org_id).await?;
+    let writing: Option<Uuid> =
+        sqlx::query_scalar("select r.id from call_prep p join agent_runs r on r.id = p.run_id where p.id = $1 and r.status in ('queued', 'running')")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let run = match writing {
+        Some(run) => run,
+        None => start(&mut tx, id, project_id, org_id).await?,
+    };
     tx.commit().await?;
     Ok(run)
 }
@@ -374,10 +382,12 @@ mod tests {
         assert_eq!(prep.objections.len(), 1);
         assert_eq!(prep.reminder, "Ask what missing notes cost before you pitch.");
 
+        sqlx::query("update agent_runs set status = 'succeeded' where id = $1").bind(ctx.run.id).execute(&db).await.unwrap();
         let again = request(&db, due, project, org).await.unwrap();
         let saved = latest(&db, due).await.unwrap().unwrap();
         assert_eq!((saved.status.as_str(), saved.prep.is_none()), ("writing", true), "writing again clears it");
         assert_ne!(again, ctx.run.id);
+        assert_eq!(request(&db, due, project, org).await.unwrap(), again, "a track being written isn't asked for twice");
     }
 
     #[test]
