@@ -53,7 +53,7 @@ pub const SELECT: &str = "select w.id, w.deal_id, d.lead_id, l.full_name as lead
      from deal_win_backs w join deals d on d.id = w.deal_id join leads l on l.id = d.lead_id
      left join users u on u.id = l.owner_id left join agent_runs r on r.id = w.run_id
      left join email_messages e on e.id = w.email_id
-     left join deal_reviews rv on rv.deal_id = w.deal_id and rv.outcome = 'lost'";
+     left join deal_reviews rv on rv.deal_id = w.deal_id and rv.outcome = 'lost' and rv.created_at >= w.lost_at";
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct WinBack {
@@ -90,7 +90,7 @@ pub async fn queue_due(db: &PgPool) -> sqlx::Result<usize> {
            select d.project_id, d.id, d.closed_at from deals d
            join projects p on p.id = d.project_id and p.org_id is not null
            join project_settings s on s.project_id = d.project_id and s.win_back_lost_deals
-           left join deal_reviews rv on rv.deal_id = d.id and rv.outcome = 'lost'
+           left join deal_reviews rv on rv.deal_id = d.id and rv.outcome = 'lost' and rv.created_at >= d.closed_at
            left join deal_win_backs w on w.deal_id = d.id
            where d.status = 'lost' and d.closed_at > now() - make_interval(days => $1) and (w.id is null or w.lost_at < d.closed_at)
              -- Waits a day for the review, so the plan knows why it was lost.
@@ -161,7 +161,8 @@ async fn start(tx: &mut sqlx::PgConnection, id: Uuid, project_id: Uuid, org_id: 
 }
 
 /// Writes the email for a lost deal now, from the deal's window, replacing a draft nobody approved. Keeps the plan's
-/// reasons for the same loss. One already being written is reused. Returns the run.
+/// reasons for the same loss. An email already being written is reused, and a plan being written gives way, since its
+/// save checks the run. Returns the run.
 pub async fn request(db: &PgPool, deal_id: Uuid, project_id: Uuid, org_id: Uuid, lost_at: Ts) -> sqlx::Result<Uuid> {
     let mut tx = db.begin().await?;
     let id: Uuid = sqlx::query_scalar(
@@ -179,7 +180,8 @@ pub async fn request(db: &PgPool, deal_id: Uuid, project_id: Uuid, org_id: Uuid,
     .fetch_one(&mut *tx)
     .await?;
     let writing: Option<Uuid> = sqlx::query_scalar(
-        "select r.id from deal_win_backs w join agent_runs r on r.id = w.run_id where w.id = $1 and r.status in ('queued', 'running')",
+        "select r.id from deal_win_backs w join agent_runs r on r.id = w.run_id
+         where w.id = $1 and r.status in ('queued', 'running') and coalesce((r.input->>'write')::boolean, false)",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -313,9 +315,11 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         }
     }
     let review = sqlx::query_as::<_, Review>(
-        "select reason, story, turning_point, competitor, lesson from deal_reviews where deal_id = $1 and outcome = 'lost' and reason is not null",
+        "select reason, story, turning_point, competitor, lesson from deal_reviews
+         where deal_id = $1 and outcome = 'lost' and reason is not null and created_at >= $2",
     )
     .bind(row.deal_id)
+    .bind(row.lost_at)
     .fetch_optional(db)
     .await?;
     let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(row.lead_id).fetch_one(db).await?;
@@ -667,5 +671,26 @@ mod tests {
         assert!(outcome.message.starts_with("No win-back: they wrote to us since it was planned"), "{}", outcome.message);
         let ran: Uuid = sqlx::query_scalar("select run_id from deal_win_backs where deal_id = $1").bind(s.deal).fetch_one(&db).await.unwrap();
         assert_eq!(ran, run);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_fresh_loss_waits_for_its_own_review_and_write_now_overrides_a_plan_in_flight(db: PgPool) {
+        let s = setup(&db, 0).await;
+        sqlx::query("insert into deal_reviews (project_id, deal_id, outcome, reason, created_at) values ($1, $2, 'lost', 'price', now() - interval '50 days')")
+            .bind(s.project)
+            .bind(s.deal)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(queue_due(&db).await.unwrap(), 0, "the review is from an earlier loss");
+        sqlx::query("update deal_reviews set created_at = now() where deal_id = $1").bind(s.deal).execute(&db).await.unwrap();
+        assert_eq!(queue_due(&db).await.unwrap(), 1, "planned once this loss is reviewed");
+
+        let (org, lost_at): (Uuid, Ts) = sqlx::query_as("select org_id, closed_at from deals where id = $1").bind(s.deal).fetch_one(&db).await.unwrap();
+        let plan: Uuid = sqlx::query_scalar("select run_id from deal_win_backs where deal_id = $1").bind(s.deal).fetch_one(&db).await.unwrap();
+        let write = request(&db, s.deal, s.project, org, lost_at).await.unwrap();
+        assert_ne!(write, plan, "writing now doesn't wait on the plan");
+        assert_eq!(request(&db, s.deal, s.project, org, lost_at).await.unwrap(), write, "but reuses an email being written");
     }
 }
