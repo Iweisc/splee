@@ -26,7 +26,7 @@ Use only what you're given. Never invent facts, numbers, names or quotes. Never 
 \"bumping this\", \"circling back\" or \"following up\". Plain text only, no markdown.";
 
 /// Leads a nudge must not go to: opted out, a call coming up, or an email to them already waiting to go out.
-const NUDGEABLE: &str = "l.email is not null and l.status not in ('unsubscribed', 'bounced', 'do_not_contact')
+pub(super) const NUDGEABLE: &str = "l.email is not null and l.status not in ('unsubscribed', 'bounced', 'do_not_contact')
     and (l.meeting_at is null or l.meeting_at < now())
     and not exists (select 1 from email_messages w where w.lead_id = l.id and w.direction = 'outbound' and w.status in ('draft', 'approved', 'scheduled', 'sending'))";
 

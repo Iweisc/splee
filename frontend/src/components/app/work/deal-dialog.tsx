@@ -19,6 +19,7 @@ import { ProposalSection } from "./proposal";
 import { QualificationSection } from "./qualification";
 import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
+import { WinBackSection } from "./win-back";
 
 /** The codes the currency pickers offer. A deal priced in another one through the API keeps it and shows it too. */
 export const CURRENCIES = [
@@ -198,6 +199,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
               <div className="flex min-w-0 flex-col gap-4">
                 <DealHealthSection deal={deal} />
                 <DealReviewSection deal={deal} />
+                <WinBackSection deal={deal} />
                 <QualificationSection deal={deal} />
                 <QuietDeal deal={deal} />
                 <ClosePlanSection deal={deal} />

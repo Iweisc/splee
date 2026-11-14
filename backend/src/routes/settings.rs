@@ -76,6 +76,7 @@ struct SettingsBody {
     pipeline_forecast: Option<bool>,
     coach_calls: Option<bool>,
     prep_calls: Option<bool>,
+    win_back_lost_deals: Option<bool>,
     /// Empty turns it off.
     bcc_email: Option<String>,
     autopilot: Option<bool>,
@@ -238,7 +239,8 @@ async fn update_settings(
            qualify_deals = coalesce($34, qualify_deals),
            pipeline_forecast = coalesce($35, pipeline_forecast),
            coach_calls = coalesce($36, coach_calls),
-           prep_calls = coalesce($37, prep_calls)
+           prep_calls = coalesce($37, prep_calls),
+           win_back_lost_deals = coalesce($38, win_back_lost_deals)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -278,6 +280,7 @@ async fn update_settings(
     .bind(body.pipeline_forecast)
     .bind(body.coach_calls)
     .bind(body.prep_calls)
+    .bind(body.win_back_lost_deals)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

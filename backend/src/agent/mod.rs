@@ -39,6 +39,7 @@ pub mod social;
 mod stackexchange;
 mod threads;
 mod tumblr;
+pub mod win_backs;
 pub(crate) mod write;
 pub mod x;
 mod youtube;
@@ -91,6 +92,7 @@ pub mod kind {
     pub const BUYER_PROFILE: &str = "buyer_profile";
     pub const COACH_CALL: &str = "coach_call";
     pub const CALL_PREP: &str = "call_prep";
+    pub const WIN_BACK: &str = "win_back";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -377,6 +379,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::BUYER_PROFILE => buyers::run(ctx).await,
         kind::COACH_CALL => coaching::run(ctx).await,
         kind::CALL_PREP => call_prep::run(ctx).await,
+        kind::WIN_BACK => win_backs::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

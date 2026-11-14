@@ -31,6 +31,7 @@ mod local_businesses;
 mod lookalikes;
 mod tech;
 mod visitors;
+mod win_backs;
 pub mod linkedin;
 pub(crate) mod calendar;
 mod close_plans;
@@ -113,6 +114,7 @@ pub fn router() -> Router<AppState> {
         .merge(research::router())
         .merge(scores::router())
         .merge(visitors::router())
+        .merge(win_backs::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())
