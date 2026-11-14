@@ -34,6 +34,7 @@ const TITLES: Record<RunKind, string> = {
   deal_nudge: "Nudge a quiet deal",
   close_plan: "Write a close plan",
   proposal: "Write a proposal",
+  deal_health: "Rate a deal",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

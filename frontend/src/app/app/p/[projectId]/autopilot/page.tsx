@@ -88,6 +88,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.nudge_quiet_deals} onChange={(nudge_quiet_deals) => update({ nudge_quiet_deals })} label="Nudge quiet deals" />}
           />
 
+          <Section
+            title="Rate deal health"
+            description="The agent reads each open deal's conversation, close plan and proposal, and rates it on track, at risk or stalled, with how likely it is to close, why, and the next step. It shows on the pipeline and weights the forecast. A deal is rated again when it changes, or every 3 days."
+            actions={<Switch checked={s.deal_health} onChange={(deal_health) => update({ deal_health })} label="Rate deal health" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

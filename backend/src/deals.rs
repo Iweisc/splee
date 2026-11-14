@@ -90,6 +90,10 @@ pub struct Deal {
     pub nudge: Option<Value>,
     /// How far the close plan got, {done, total}, when it has steps. See close_plans.rs.
     pub plan: Option<Value>,
+    /// The agent's latest finished rating, {health, likelihood, why, next_step, created_at}. See agent/health.rs.
+    pub health: Option<Value>,
+    /// Whether a rating is being written now, the first one included.
+    pub health_writing: bool,
 }
 
 /// When the deal last moved: a stage change, an email either way or a call that happened. The board's Quiet badge and
@@ -117,7 +121,11 @@ const DEAL_SELECT: &str = concat!("select d.id, d.project_id, p.name as project_
           from deal_nudges n left join email_messages e on e.id = n.email_id left join agent_runs r on r.id = n.run_id
           where n.deal_id = d.id order by n.created_at desc limit 1) as nudge,
        (select json_build_object('done', count(*) filter (where st.done_at is not null), 'total', count(*))
-          from close_plans cp join close_plan_steps st on st.plan_id = cp.id where cp.deal_id = d.id having count(*) > 0) as plan
+          from close_plans cp join close_plan_steps st on st.plan_id = cp.id where cp.deal_id = d.id having count(*) > 0) as plan,
+       (select json_build_object('health', h.health, 'likelihood', h.likelihood, 'why', h.why, 'next_step', h.next_step, 'created_at', h.created_at)
+          from deal_health h where h.deal_id = d.id and h.health is not null order by h.created_at desc limit 1) as health,
+       exists (select 1 from deal_health w join agent_runs r on r.id = w.run_id
+               where w.deal_id = d.id and r.status in ('queued', 'running')) as health_writing
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
      left join users u on u.id = l.owner_id
      left join lateral (select m.id, m.title, m.started_at, m.summary from meetings m where m.lead_id = d.lead_id

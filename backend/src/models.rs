@@ -103,6 +103,8 @@ pub struct ProjectSettings {
     /// Writes a brief before each booked call and posts it. See agent/briefs.rs.
     pub meeting_briefs: bool,
     pub nudge_quiet_deals: bool,
+    /// Rates each open deal's health. See agent/health.rs.
+    pub deal_health: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,
