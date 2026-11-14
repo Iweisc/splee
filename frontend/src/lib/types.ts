@@ -2094,7 +2094,8 @@ export type RunKind =
   | "expansion"
   | "referral_ask"
   | "churn_risk"
-  | "practice";
+  | "practice"
+  | "one_on_one";
 
 export interface TumblrBlog {
   name: string;
@@ -3176,4 +3177,25 @@ export interface Targets {
   day: number;
   days: number;
   rows: TargetRow[];
+}
+
+/** A teammate's 1:1 prep. `month` is their Targets row when it was written. See backend/src/agent/one_on_one.rs. */
+export interface OneOnOnePrep {
+  headline: string;
+  month: { currency: string; day: number; days: number; target_cents: number | null; won_cents: number; commit_cents: number; best_case_cents: number };
+  recognize: string[];
+  deals: { deal_id: UUID; company: string; why: string; ask: string }[];
+  skill: { name: string; evidence: string; drill: string };
+  commitment: string;
+}
+
+export interface OneOnOneView {
+  latest: {
+    id: UUID;
+    prep: OneOnOnePrep | null;
+    requested_by: string | null;
+    created_at: Ts;
+    status: "ready" | "writing" | "failed";
+    error: string | null;
+  } | null;
 }
