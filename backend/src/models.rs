@@ -105,6 +105,8 @@ pub struct ProjectSettings {
     pub nudge_quiet_deals: bool,
     /// Rates each open deal's health. See agent/health.rs.
     pub deal_health: bool,
+    /// Fills in a MEDDICC scorecard for each open deal. See agent/qualify.rs.
+    pub qualify_deals: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

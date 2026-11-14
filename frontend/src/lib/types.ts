@@ -207,6 +207,7 @@ export interface ProjectSettings extends CrmStatus {
   meeting_briefs: boolean;
   nudge_quiet_deals: boolean;
   deal_health: boolean;
+  qualify_deals: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2060,7 +2061,8 @@ export type RunKind =
   | "close_plan"
   | "proposal"
   | "deal_health"
-  | "deal_review";
+  | "deal_review"
+  | "qualify_deal";
 
 export interface TumblrBlog {
   name: string;
@@ -2281,6 +2283,18 @@ export interface Deal {
   health_writing: boolean;
   /** Once it's won or lost, the agent's review of why. */
   review: DealReview | null;
+  /** The agent's latest finished MEDDICC scorecard on an open deal. */
+  qualification: { items: QualificationItem[]; confirmed: number; created_at: Ts } | null;
+  /** A scorecard is being written now, the first one included. */
+  qualification_writing: boolean;
+}
+
+/** One MEDDICC element. `evidence` is empty when unknown, and `ask` is empty when confirmed. */
+export interface QualificationItem {
+  key: string;
+  status: "confirmed" | "partial" | "unknown";
+  evidence: string;
+  ask: string;
 }
 
 /** Why the agent thinks a closed deal was won or lost. `reason` is null until it's written, and `writing` says one is on its way. */
