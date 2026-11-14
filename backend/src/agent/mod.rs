@@ -28,6 +28,7 @@ mod prospect;
 mod reddit;
 mod replies;
 pub mod research;
+pub mod reviews;
 pub mod sdk;
 pub mod social;
 mod stackexchange;
@@ -79,6 +80,7 @@ pub mod kind {
     pub const CLOSE_PLAN: &str = "close_plan";
     pub const PROPOSAL: &str = "proposal";
     pub const DEAL_HEALTH: &str = "deal_health";
+    pub const DEAL_REVIEW: &str = "deal_review";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -359,6 +361,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::CLOSE_PLAN => close_plans::run(ctx).await,
         kind::PROPOSAL => proposals::run(ctx).await,
         kind::DEAL_HEALTH => health::run(ctx).await,
+        kind::DEAL_REVIEW => reviews::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

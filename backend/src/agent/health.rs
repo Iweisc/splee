@@ -122,7 +122,7 @@ struct SentProposal {
 }
 
 /// What the buyer did with the close plan and proposal, in a line each, or nothing.
-async fn shared(db: &PgPool, deal_id: Uuid) -> sqlx::Result<String> {
+pub(super) async fn shared(db: &PgPool, deal_id: Uuid) -> sqlx::Result<String> {
     let mut lines = vec![];
     let plan: Option<(i64, i64, i64, Option<Ts>)> = sqlx::query_as(
         "select count(s.id), count(s.id) filter (where s.done_at is not null),

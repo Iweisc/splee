@@ -94,6 +94,9 @@ pub struct Deal {
     pub health: Option<Value>,
     /// Whether a rating is being written now, the first one included.
     pub health_writing: bool,
+    /// Once it's won or lost, the agent's review, {reason, story, turning_point, competitor, lesson, created_at, writing},
+    /// where reason is null until it's written. See agent/reviews.rs.
+    pub review: Option<Value>,
 }
 
 /// When the deal last moved: a stage change, an email either way or a call that happened. The board's Quiet badge and
@@ -125,7 +128,10 @@ const DEAL_SELECT: &str = concat!("select d.id, d.project_id, p.name as project_
        (select json_build_object('health', h.health, 'likelihood', h.likelihood, 'why', h.why, 'next_step', h.next_step, 'created_at', h.created_at)
           from deal_health h where h.deal_id = d.id and h.health is not null order by h.created_at desc limit 1) as health,
        exists (select 1 from deal_health w join agent_runs r on r.id = w.run_id
-               where w.deal_id = d.id and r.status in ('queued', 'running')) as health_writing
+               where w.deal_id = d.id and r.status in ('queued', 'running')) as health_writing,
+       (select json_build_object('reason', r.reason, 'story', r.story, 'turning_point', r.turning_point, 'competitor', r.competitor,
+                                 'lesson', r.lesson, 'created_at', r.created_at, 'writing', coalesce(ar.status in ('queued', 'running'), false))
+          from deal_reviews r left join agent_runs ar on ar.id = r.run_id where r.deal_id = d.id and r.outcome = d.status) as review
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
      left join users u on u.id = l.owner_id
      left join lateral (select m.id, m.title, m.started_at, m.summary from meetings m where m.lead_id = d.lead_id

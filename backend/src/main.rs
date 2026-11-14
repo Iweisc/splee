@@ -148,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
     agent::briefs::spawn_worker(state.db.clone());
     agent::nudges::spawn_worker(state.clone());
     agent::health::spawn_worker(state.clone());
+    agent::reviews::spawn_worker(state.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
