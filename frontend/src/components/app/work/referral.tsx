@@ -228,7 +228,7 @@ function Group({
   );
 }
 
-/** The pipeline's Referrals tab: asks to send, asks sent with how their pages did, and the leads customers sent. */
+/** The Customers page's Referrals tab: asks to send, asks sent with how their pages did, and the leads customers sent. */
 export function ReferralPanel({ projectId, onOpen }: { projectId: string; onOpen: (dealId: string) => void }) {
   const { data, error, mutate } = useSWR<ReferralView>(`/projects/${projectId}/referrals`, fetcher, {
     refreshInterval: (v) => (v?.items.some((r) => r.status === "writing") ? 4000 : 0),

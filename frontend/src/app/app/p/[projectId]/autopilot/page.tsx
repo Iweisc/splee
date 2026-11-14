@@ -132,19 +132,19 @@ export default function AutopilotPage() {
 
           <Section
             title="Grow customers"
-            description="A month after a deal is won, the agent watches the customer's company. When there's news, new job openings or someone there reads your pricing, it decides whether there's room to sell more and drafts the email to the person who bought, for your approval. The Pipeline page's Expansion tab lists them."
+            description="A month after a deal is won, the agent watches the customer's company. When there's news, new job openings or someone there reads your pricing, it decides whether there's room to sell more and drafts the email to the person who bought, for your approval. The Customers page's Expansion tab lists them."
             actions={<Switch checked={s.grow_accounts} onChange={(grow_accounts) => update({ grow_accounts })} label="Grow customers" />}
           />
 
           <Section
             title="Ask for referrals"
-            description="Six weeks after a deal is won, the agent reads whether the customer is happy. If they are, it drafts an email asking whether they know someone at a few companies like theirs, with a page of their own to forward. Whoever leaves their details there becomes a lead credited to them. The Pipeline page's Referrals tab lists them."
+            description="Six weeks after a deal is won, the agent reads whether the customer is happy. If they are, it drafts an email asking whether they know someone at a few companies like theirs, with a page of their own to forward. Whoever leaves their details there becomes a lead credited to them. The Customers page's Referrals tab lists them."
             actions={<Switch checked={s.ask_for_referrals} onChange={(ask_for_referrals) => update({ ask_for_referrals })} label="Ask for referrals" />}
           />
 
           <Section
             title="Catch customers about to leave"
-            description="The agent watches every customer for warning signs: the person who bought leaving the company, a refund, payments that stop coming, or a reply that reads as unhappy. It says how likely they are to leave and what to do, and drafts an email in the thread when one would help. High risks go to your chats. The Pipeline page's At risk tab lists them."
+            description="The agent watches every customer for warning signs: the person who bought leaving the company, a refund, payments that stop coming, or a reply that reads as unhappy. It says how likely they are to leave and what to do, and drafts an email in the thread when one would help. High risks go to your chats. The Customers page's At risk tab lists them."
             actions={<Switch checked={s.watch_churn} onChange={(watch_churn) => update({ watch_churn })} label="Catch customers about to leave" />}
           />
 

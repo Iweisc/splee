@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import useSWR, { SWRConfig } from "swr";
-import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, SquareKanban, Sun, X } from "lucide-react";
+import { ArrowUpRight, ChevronsUpDown, HeartHandshake, Inbox, LogOut, Mail, Menu, Plus, SquareKanban, Sun, X } from "lucide-react";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
@@ -159,6 +159,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<NeedsReplyCount />} />
             <NavLink href="/app/emails" icon={Mail} label="Emails" active={pathname === "/app/emails"} />
             <NavLink href="/app/pipeline" icon={SquareKanban} label="Pipeline" active={pathname === "/app/pipeline"} />
+            <NavLink href="/app/customers" icon={HeartHandshake} label="Customers" active={pathname === "/app/customers"} />
           </div>
 
           <div className="mt-4">
@@ -207,6 +208,7 @@ const EXTRA_ORG_PAGES: Record<string, string> = {
   "/app/inbox": "Inbox",
   "/app/emails": "Emails",
   "/app/pipeline": "Pipeline",
+  "/app/customers": "Customers",
   "/app/onboarding": "New project",
 };
 

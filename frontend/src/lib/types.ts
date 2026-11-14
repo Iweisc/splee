@@ -3100,3 +3100,29 @@ export interface ChurnRiskView {
   customers: number;
   items: ChurnRisk[];
 }
+
+/** A won deal on the Customers page. See backend/src/routes/customers.rs. */
+export interface Customer {
+  deal_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  company_domain: string | null;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  won_at: string | null;
+  /** Paid in the last 12 months in the deal's currency, refunds taken off. */
+  revenue_cents: number;
+  last_paid_at: string | null;
+  last_contact_at: string | null;
+  /** From the latest check on whether they might leave. */
+  risk: ChurnRisk["risk"];
+  risk_why: string | null;
+  /** The opening behind an expansion draft waiting to be sent. */
+  growth: string | null;
+  /** Whether the referral ask went out. */
+  asked: boolean;
+  page_views: number;
+  referred: number;
+}

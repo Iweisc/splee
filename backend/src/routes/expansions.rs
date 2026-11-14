@@ -1,4 +1,4 @@
-//! Account expansion: the Pipeline's Expansion tab, the section in a won deal's window, looking now and dropping one.
+//! Account expansion: the Customers page's Expansion tab, the section in a won deal's window, looking now and dropping one.
 //! See agent::expansions.
 
 use axum::extract::{Path, State};

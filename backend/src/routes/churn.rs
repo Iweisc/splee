@@ -1,4 +1,4 @@
-//! Customers at risk: the Pipeline's At risk tab, the section in a won deal's window, checking now and dropping one.
+//! Customers at risk: the Customers page's At risk tab, the section in a won deal's window, checking now and dropping one.
 //! See agent::churn.
 
 use axum::extract::{Path, State};

@@ -32,7 +32,7 @@ account manager. Use only what you're given. Never invent facts, numbers, names,
 never offer discounts or promise anything, and never write \"just checking in\", \"circling back\" or \"following up\". \
 Plain text only, no markdown.";
 
-/// A look as the Pipeline's At risk tab and a won deal's window show it. `status` is writing, failed, skipped (the deal
+/// A look as the Customers page's At risk tab and a won deal's window show it. `status` is writing, failed, skipped (the deal
 /// isn't won anymore, or the switch was off) or done. `email_status` is the draft's, or null when there's none or it was
 /// deleted.
 pub const SELECT: &str = "select c.id, c.deal_id, d.lead_id, l.full_name as lead_name, l.company_name,

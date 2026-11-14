@@ -1,5 +1,5 @@
 //! Referrals: the public page a customer forwards (/r/{token}, which the frontend renders) with its view and sign-up, the
-//! Pipeline's Referrals tab, the section in a won deal's window, writing the ask now and dropping it. See agent::referrals.
+//! Customers page's Referrals tab, the section in a won deal's window, writing the ask now and dropping it. See agent::referrals.
 
 use std::net::SocketAddr;
 
