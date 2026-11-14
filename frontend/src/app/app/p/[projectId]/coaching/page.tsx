@@ -47,6 +47,8 @@ export default function CoachingPage({ params }: PageProps<"/app/p/[projectId]/c
 
   const coached = (data?.items ?? []).filter((i): i is Coached => i.status === "ready" && !!i.coaching);
   const writing = (data?.items ?? []).filter((i) => i.status === "writing").length;
+  const failed = (data?.items ?? []).filter((i) => i.status === "failed").length;
+  const failedNote = failed > 0 && `The agent couldn't coach ${plural(failed, "call")}.`;
   const reps = new Map<string, { name: string; calls: Coached[] }>();
   for (const c of coached) {
     const key = c.owner_id ?? NOBODY;
@@ -98,11 +100,13 @@ export default function CoachingPage({ params }: PageProps<"/app/p/[projectId]/c
           <Card>
             <EmptyState
               icon={writing ? <Loader2 className="size-5 animate-spin" /> : <GraduationCap className="size-5" />}
-              title={writing ? "Coaching your calls" : "No calls coached yet"}
+              title={writing ? "Coaching your calls" : failed ? "Coaching didn't finish" : "No calls coached yet"}
             >
               {writing
                 ? `The agent is listening to ${plural(writing, "call")}. Scores show up here in a minute.`
-                : "Connect a call recorder like Fireflies, Fathom, Gong or Zoom on the Integrations page, or turn on transcription for calls made from Splee. Each one is coached after it's summarized."}
+                : failedNote
+                  ? `${failedNote} New calls are coached once they're summarized.`
+                  : "Connect a call recorder like Fireflies, Fathom, Gong or Zoom on the Integrations page, or turn on transcription for calls made from Splee. Each one is coached after it's summarized."}
             </EmptyState>
           </Card>
         ) : (
@@ -156,6 +160,7 @@ export default function CoachingPage({ params }: PageProps<"/app/p/[projectId]/c
                   <Loader2 className="size-3.5 animate-spin" /> Coaching {plural(writing, "more call")}…
                 </p>
               )}
+              {failedNote && <p className="text-sm text-muted-foreground">{failedNote}</p>}
               {shown.map((c) => (
                 <CallRow key={c.id} call={c} openLead={() => setLeadId(c.lead_id)} />
               ))}

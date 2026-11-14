@@ -197,6 +197,11 @@ struct Row {
     done: bool,
 }
 
+/// The talk share and questions are counted on the whole call, and only the model's copy is cut short.
+fn clip(transcript: &str) -> String {
+    transcript.chars().take(PROMPT_CHARS).collect()
+}
+
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let input: Input = ctx.input()?;
     let db = ctx.db();
@@ -212,16 +217,16 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(row.lead_id).fetch_one(db).await?;
     let (transcript, what, counted) = match (row.meeting_id, row.call_id) {
         (Some(id), _) => {
-            let (transcript, attendees, title): (String, Value, String) =
-                sqlx::query_as("select left(transcript, $2), attendees, title from meetings where id = $1").bind(id).bind(PROMPT_CHARS as i32).fetch_one(db).await?;
-            let speakers = speakers(&transcript);
-            let counted = talk(&transcript, our_speaker(&attendees, &lead));
-            (transcript, format!("a sales meeting, \"{title}\". Speakers: {}", speakers.join(", ")), counted)
+            let (full, attendees, title): (String, Value, String) =
+                sqlx::query_as("select transcript, attendees, title from meetings where id = $1").bind(id).fetch_one(db).await?;
+            let counted = talk(&full, our_speaker(&attendees, &lead));
+            let transcript = clip(&full);
+            (transcript, format!("a sales meeting, \"{title}\". Speakers: {}", speakers(&full).join(", ")), counted)
         }
         (_, Some(id)) => {
-            let transcript: String = sqlx::query_scalar("select left(transcript, $2) from calls where id = $1").bind(id).bind(PROMPT_CHARS as i32).fetch_one(db).await?;
-            let counted = talk(&transcript, |s| s == "Us");
-            (transcript, "a phone call. \"Us\" is our caller and \"Lead\" the person called, from speech recognition, so expect small errors".to_string(), counted)
+            let full: String = sqlx::query_scalar("select transcript from calls where id = $1").bind(id).fetch_one(db).await?;
+            let counted = talk(&full, |s| s == "Us");
+            (clip(&full), "a phone call. \"Us\" is our caller and \"Lead\" the person called, from speech recognition, so expect small errors".to_string(), counted)
         }
         _ => anyhow::bail!("the coaching has neither a meeting nor a call"),
     };
@@ -374,5 +379,39 @@ mod tests {
         assert_eq!(c.improve.len(), 2);
         assert_eq!((c.improve[0].quote.as_str(), c.improve[1].quote.as_str()), ("how many  AEs do you have?", ""), "a quote the transcript lacks is dropped");
         assert_eq!(c.covered, vec!["metrics", "pain"], "known elements, in order");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_long_call_is_counted_whole_though_the_model_reads_the_start(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1)").bind(project).execute(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, full_name, first_name) values ($1, 'Noor Haddad', 'Noor') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let transcript = format!("Noor: {}\nDana Reyes: {}\nDana Reyes: Can we meet Tuesday?", "notes ".repeat(7500), "notes ".repeat(7500));
+        let meeting: Uuid = sqlx::query_scalar(
+            "insert into meetings (org_id, project_id, lead_id, provider, external_id, started_at, transcript, summary, summarized_at)
+             values ($1, $2, $3, 'fireflies', 'x1', now(), $4, 'Long.', now()) returning id",
+        )
+        .bind(org)
+        .bind(project)
+        .bind(lead)
+        .bind(&transcript)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        queue_due(&db).await.unwrap();
+        let started = sqlx::query_as::<_, AgentRun>("update agent_runs set status = 'running' where kind = 'coach_call' returning *").fetch_one(&db).await.unwrap();
+        let ctx = Ctx { state: crate::autopilot::tests::state(db.clone()), run: started, step: AtomicI32::new(0) };
+        super::super::fake::answer_with(ctx.run.id, |_| json!({ "score": 6, "next_step_agreed": false, "next_step": "", "strengths": [], "improve": [], "covered": [] }));
+        run(&ctx).await.unwrap();
+        let prompt = &super::super::fake::prompts(ctx.run.id)[0];
+        assert!(!prompt.contains("Tuesday") && prompt.contains("We spoke 50% of the words and asked 1 questions."), "{}", &prompt[..200]);
+        let counted: (Option<i32>, i32) = sqlx::query_as("select talk_share, questions from call_coaching where meeting_id = $1").bind(meeting).fetch_one(&db).await.unwrap();
+        assert_eq!(counted, (Some(50), 1));
     }
 }
