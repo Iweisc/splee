@@ -6,6 +6,7 @@ mod bluesky;
 pub mod briefs;
 mod calls;
 mod channels;
+pub mod committee;
 mod directory;
 mod places;
 mod discourse;
@@ -69,6 +70,7 @@ pub mod kind {
     pub const MEETING_BRIEF: &str = "meeting_brief";
     pub const CAMPAIGN_INSIGHTS: &str = "campaign_insights";
     pub const ASK: &str = "ask";
+    pub const BUYING_COMMITTEE: &str = "buying_committee";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -344,6 +346,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::MEETING_BRIEF => briefs::run(ctx).await,
         kind::CAMPAIGN_INSIGHTS => insights::run(ctx).await,
         kind::ASK => ask::run(ctx).await,
+        kind::BUYING_COMMITTEE => committee::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

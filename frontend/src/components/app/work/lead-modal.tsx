@@ -20,20 +20,24 @@ import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { LeadNews } from "./news";
 import { LeadPageLink } from "./lead-page";
+import { BuyingCommitteeCard } from "./committee";
 import { MeetingBriefCard } from "./meeting-brief";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
 
 export function LeadModal({ leadId, onClose }: { leadId: string | null; onClose: () => void }) {
+  // A colleague picked in the buying committee shows in the same window, until another lead is opened from outside.
+  const [colleague, setColleague] = useState<{ from: string; id: string } | null>(null);
+  const shown = colleague && colleague.from === leadId ? colleague.id : leadId;
   return (
     <Modal open={!!leadId} onClose={onClose} className="max-w-2xl">
-      {leadId && <LeadBody leadId={leadId} onClose={onClose} />}
+      {leadId && shown && <LeadBody key={shown} leadId={shown} onClose={onClose} openLead={(id) => setColleague({ from: leadId, id })} />}
     </Modal>
   );
 }
 
-function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) {
+function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () => void; openLead: (id: string) => void }) {
   const { mutate: mutateAll } = useSWRConfig();
   const { data: lead, error, mutate } = useSWR<LeadDetail>(`/leads/${leadId}`, fetcher);
   const [removing, setRemoving] = useState(false);
@@ -216,6 +220,10 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
 
       {(lead.meeting_at || lead.status === "hot" || lead.status === "meeting_booked") && (
         <MeetingBriefCard leadId={lead.id} meetingAt={lead.meeting_at} />
+      )}
+
+      {lead.company_domain && (
+        <BuyingCommitteeCard leadId={lead.id} company={lead.company_name || lead.company_domain} campaign={lead.segment_name} openLead={openLead} />
       )}
 
       <div>

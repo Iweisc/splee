@@ -291,7 +291,7 @@ pub async fn find_people_for_top_segment(ctx: &Ctx, project_id: Uuid, cap: usize
     let segment = explore::top_segment(ctx, project_id).await?;
     let (project, profile) = load_project(ctx, project_id).await?;
     let companies = best_companies(ctx.db(), segment.id, cap).await?;
-    let saved = find_people(ctx, &project, &profile, &segment, companies, 2, cap).await?;
+    let saved = find_people(ctx, &project, &profile, &segment, companies, 2, cap, None).await?;
     anyhow::ensure!(saved > 0, "no reachable decision makers found at these companies");
     Ok(())
 }
@@ -310,8 +310,10 @@ async fn best_companies(db: &sqlx::PgPool, segment_id: Uuid, cap: usize) -> anyh
     .await?)
 }
 
-/// Researches people at `companies` in batches and saves the reachable ones. Returns how many leads were saved.
-async fn find_people(
+/// Researches people at `companies` in batches and saves the reachable ones. Returns how many leads were saved. `roles`
+/// replaces the campaign's preferred roles, like the ones a buying committee lacks.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn find_people(
     ctx: &Ctx,
     project: &Project,
     profile: &Profile,
@@ -319,15 +321,22 @@ async fn find_people(
     companies: Vec<Company>,
     max_per_company: usize,
     cap: usize,
+    roles: Option<&str>,
 ) -> anyhow::Result<usize> {
     let suppressed = suppressions(ctx, project).await?;
     let resolver = mail::dns::resolver()?;
     let mut mx_cache: HashMap<String, bool> = HashMap::new();
-    let roles = segment.targeting["roles"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| "Owner, Founder, Managing Director".into());
+    let roles = match roles {
+        Some(roles) => format!("Only people in these roles: {roles}."),
+        None => {
+            let preferred = segment.targeting["roles"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| "Owner, Founder, Managing Director".into());
+            format!("Preferred roles: {preferred}. At small businesses the owner or founder is usually right.")
+        }
+    };
     let schema = json!({
         "type": "object",
         "properties": {"people": {"type": "array", "items": {
@@ -373,18 +382,33 @@ async fn find_people(
             .map(|c| format!("- {} ({}, {}): {}", c.domain, c.name, if c.city.is_empty() { &c.country_code } else { &c.city }, c.description))
             .collect::<Vec<_>>()
             .join("\n");
+        // A company picked by hand, or a buying committee's, can have leads already. Naming them gets other people.
+        let ids: Vec<Uuid> = batch.iter().map(|c| c.id).collect();
+        let known: Vec<(String, String, String)> = sqlx::query_as(
+            "select c.domain, l.full_name, l.title from companies c
+             join leads l on l.project_id = c.project_id and (l.company_id = c.id or (l.company_id is null and l.company_domain = c.domain))
+             where c.id = any($1) order by l.created_at",
+        )
+        .bind(&ids)
+        .fetch_all(ctx.db())
+        .await?;
+        let known = if known.is_empty() {
+            String::new()
+        } else {
+            let lines = known.iter().map(|(domain, name, title)| format!("- {domain}: {name}, {title}")).collect::<Vec<_>>().join("\n");
+            format!("\n\nThese people are leads already, so find others:\n{lines}")
+        };
         ctx.log(format!("looking for decision makers at {}…", batch.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))).await?;
         let prompt = format!(
             "We sell:\n{}\n\nFind the people to email at these prospects (segment \"{}\"):\n{list}\n\n\
-             For each company find up to {max_per_company} decision makers for buying our offer. Preferred roles: {roles}. At small businesses \
-             the owner or founder is usually right. {how}\n\n\
+             For each company find up to {max_per_company} decision makers for buying our offer. {roles} {how}\n\n\
              For each person: their name, their job title only (e.g. \"Owner\", no notes or sources), linkedin_url and x_url (their X profile) if you saw them (else \"\"), city and country_code, a hook \
              (one specific fact about their business that makes a good first line, e.g. a recent project, a specialty, an award) and \
              2 to 4 short facts you saw on the web.\n\
              Email: if you saw this person's address published, use it with email_source \"published\". Otherwise guess it on the \
              company's domain with email_source \"pattern\": copy the pattern of any published address at the company (first@, \
              first.last@, f.last@...), else use first@domain for companies under 20 people and first.last@domain for larger ones.\n\
-             Only include real people you found on the web. Skip a company if you find nobody.",
+             Only include real people you found on the web. Skip a company if you find nobody.{known}",
             profile.brief(project.domain.as_deref()),
             segment.name,
         );
@@ -456,7 +480,12 @@ async fn find_people(
         }
         for company in batch {
             let status = if per_company.contains_key(&company.id) { "people_found" } else { "no_people" };
-            sqlx::query("update companies set status = $2 where id = $1").bind(company.id).bind(status).execute(ctx.db()).await?;
+            // A company that had people keeps saying so when a later search finds no one new.
+            sqlx::query("update companies set status = $2 where id = $1 and (status = 'new' or $2 = 'people_found')")
+                .bind(company.id)
+                .bind(status)
+                .execute(ctx.db())
+                .await?;
         }
     }
     ctx.log(format!("found {saved} decision makers…")).await?;
@@ -542,7 +571,7 @@ pub async fn find_people_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         None => (best_companies(ctx.db(), segment.id, 20).await?, 20),
     };
     anyhow::ensure!(!companies.is_empty(), "there are no new companies in this campaign to search");
-    let saved = find_people(ctx, &project, &profile, &segment, companies, max_per, cap).await?;
+    let saved = find_people(ctx, &project, &profile, &segment, companies, max_per, cap, None).await?;
     Ok(Outcome::new(format!("Found {saved} decision makers")))
 }
 

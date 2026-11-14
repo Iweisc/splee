@@ -2052,7 +2052,8 @@ export type RunKind =
   | "research_companies"
   | "meeting_brief"
   | "campaign_insights"
-  | "ask";
+  | "ask"
+  | "buying_committee";
 
 export interface TumblrBlog {
   name: string;
@@ -2620,4 +2621,18 @@ export interface CampaignInsightsView {
   /** Replies there are to read now, and how many it takes. */
   replies: number;
   min_replies: number;
+}
+
+export type CommitteeRole = "decision_maker" | "champion" | "influencer" | "user" | "unknown";
+
+export interface BuyingCommittee {
+  summary: string;
+  members: { lead_id: UUID; role: CommitteeRole; note: string }[];
+  /** Roles nobody filled, as job titles to search for. */
+  missing: { role: string; why: string }[];
+}
+
+export interface BuyingCommitteeView {
+  people: { id: UUID; full_name: string; title: string; status: LeadStatus; created_at: Ts }[];
+  latest: { id: UUID; committee: BuyingCommittee | null; found: number; created_at: Ts; status: "ready" | "working" | "failed" } | null;
 }
