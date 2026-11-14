@@ -51,6 +51,7 @@ mod phone;
 mod places;
 mod plays;
 mod porkbun;
+mod proposals;
 mod reddit;
 mod reports;
 mod rest_hooks;

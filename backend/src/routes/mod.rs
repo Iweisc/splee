@@ -61,6 +61,7 @@ mod meta;
 mod crm_oauth;
 mod bots;
 mod calls;
+mod proposals;
 pub mod meetings;
 pub mod settings;
 pub mod materials;
@@ -164,6 +165,7 @@ pub fn router() -> Router<AppState> {
         .merge(meetings::router())
         .merge(deals::router())
         .merge(close_plans::router())
+        .merge(proposals::router())
         .merge(sheets::router())
         .merge(outreach::router())
         .merge(payments::router())

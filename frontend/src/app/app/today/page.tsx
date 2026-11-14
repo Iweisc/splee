@@ -5,7 +5,6 @@ import Link from "next/link";
 import { CalendarClock, FileCheck2, Hourglass, MessageSquareReply, PhoneCall, Sun } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { dealMoney } from "@/components/app/work/deal-dialog";
 import { EMAIL_KINDS } from "@/components/app/work/email-preview";
 import { LeadModal } from "@/components/app/work/lead-modal";
 import { LoadError } from "@/components/app/work/states";
@@ -14,7 +13,7 @@ import { Select } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
 import type { Today } from "@/lib/types";
-import { cn, dayTime, isPast, plural, timeAgo } from "@/lib/utils";
+import { cn, dayTime, dealMoney, isPast, plural, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 type Owner = "mine_or_unassigned" | "mine" | "everyone";
