@@ -13,6 +13,7 @@ import { StageEditor } from "@/components/app/work/stage-editor";
 import { WinLoss } from "@/components/app/work/win-loss";
 import { ForecastPanel } from "@/components/app/work/forecast";
 import { ExpansionPanel } from "@/components/app/work/expansion";
+import { ReferralPanel } from "@/components/app/work/referral";
 import { WinBackPanel } from "@/components/app/work/win-back";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
@@ -23,9 +24,9 @@ import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list" | "winloss" | "winback" | "expansion" | "forecast";
+type View = "board" | "list" | "winloss" | "winback" | "expansion" | "referrals" | "forecast";
 // Each project has its own of these, so they need one picked.
-const perProject = (v: View) => v === "forecast" || v === "winback" || v === "expansion";
+const PER_PROJECT: Partial<Record<View, string>> = { forecast: "forecast", winback: "win-backs", expansion: "expansions", referrals: "referrals" };
 
 // Phones can't drag, so they start on the list. md is where the sidebar's phone menu ends too.
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
@@ -131,6 +132,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "winloss", label: "Win/loss" },
                 { value: "winback", label: "Win-back" },
                 { value: "expansion", label: "Expansion" },
+                { value: "referrals", label: "Referrals" },
                 { value: "forecast", label: "Forecast" },
               ]}
               className="max-sm:flex-1 max-sm:[&>button]:flex-1"
@@ -159,12 +161,11 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           <>
             <Forecast pipeline={data} />
             {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
-            {perProject(view) ? (
+            {PER_PROJECT[view] ? (
               !forecastProject ? (
                 <Card>
                   <EmptyState icon={<TrendingUp className="size-5" />} title="Pick a project">
-                    Each project gets its own {view === "forecast" ? "forecast" : view === "winback" ? "win-backs" : "expansions"}. Choose one above
-                    to see it.
+                    Each project gets its own {PER_PROJECT[view]}. Choose one above to see it.
                   </EmptyState>
                 </Card>
               ) : view === "forecast" ? (
@@ -176,8 +177,10 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 />
               ) : view === "winback" ? (
                 <WinBackPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
-              ) : (
+              ) : view === "expansion" ? (
                 <ExpansionPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
+              ) : (
+                <ReferralPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
               )
             ) : view === "winloss" ? (
               <WinLoss deals={data.deals} currency={data.currency} projectId={forecastProject} onOpen={(d) => setOpened(d.id)} />

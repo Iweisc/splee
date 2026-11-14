@@ -136,6 +136,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.grow_accounts} onChange={(grow_accounts) => update({ grow_accounts })} label="Grow customers" />}
           />
 
+          <Section
+            title="Ask for referrals"
+            description="Six weeks after a deal is won, the agent reads whether the customer is happy. If they are, it drafts an email asking whether they know someone at a few companies like theirs, with a page of their own to forward. Whoever leaves their details there becomes a lead credited to them. The Pipeline page's Referrals tab lists them."
+            actions={<Switch checked={s.ask_for_referrals} onChange={(ask_for_referrals) => update({ ask_for_referrals })} label="Ask for referrals" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

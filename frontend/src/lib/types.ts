@@ -216,6 +216,8 @@ export interface ProjectSettings extends CrmStatus {
   write_battlecards: boolean;
   /** Drafts an email to a customer whose company shows room to buy more. See backend/src/agent/expansions.rs. */
   grow_accounts: boolean;
+  /** Asks happy customers for introductions. See backend/src/agent/referrals.rs. */
+  ask_for_referrals: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1068,7 +1070,7 @@ export interface Lead extends Scored {
   company_domain: string | null;
   city: string;
   country_code: string;
-  source: "agent" | "import" | "api" | "form" | "linkedin" | "google_maps" | "chat";
+  source: "agent" | "import" | "api" | "form" | "linkedin" | "google_maps" | "chat" | "referral";
   status: LeadStatus;
   personalization: { hook?: string; facts?: string[] };
   notes: string;
@@ -1453,7 +1455,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask";
   step: number;
   subject: string;
   body: string;
@@ -2088,7 +2090,8 @@ export type RunKind =
   | "call_prep"
   | "win_back"
   | "battlecard"
-  | "expansion";
+  | "expansion"
+  | "referral_ask";
 
 export interface TumblrBlog {
   name: string;
@@ -3011,4 +3014,52 @@ export interface Expansion {
 export interface ExpansionView {
   enabled: boolean;
   items: Expansion[];
+}
+
+/** Asking a customer for introductions, with the page they forward. See backend/src/agent/referrals.rs. */
+export interface Referral {
+  id: UUID;
+  deal_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  won_at: string | null;
+  why: string;
+  /** Companies like theirs the email names. */
+  companies: { name: string; domain: string; why: string }[];
+  skipped: string;
+  email_id: UUID | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_status: EmailMessage["status"] | null;
+  status: "writing" | "drafted" | "sent" | "skipped" | "failed";
+  token: string;
+  views: number;
+  last_viewed_at: string | null;
+  /** Leads who left their details on the page. */
+  referred: number;
+  created_at: string;
+}
+
+export interface ReferralView {
+  enabled: boolean;
+  items: Referral[];
+  referred: { lead_id: UUID; full_name: string; company_name: string; status: Lead["status"]; referral_id: UUID; created_at: string }[];
+}
+
+/** The page a customer forwards, at /r/:token. */
+export interface PublicReferralPage {
+  first_name: string;
+  full_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  description: string;
+  value_props: string[];
+  sender_name: string;
+  booking_url: string | null;
 }
