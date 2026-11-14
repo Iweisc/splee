@@ -35,6 +35,7 @@ mod coaching;
 mod forecast;
 mod one_on_ones;
 mod commissions;
+mod capacity;
 mod contests;
 mod deal_desk;
 mod playbook;
@@ -144,6 +145,7 @@ pub fn router() -> Router<AppState> {
         .merge(playbook::router())
         .merge(commissions::router())
         .merge(contests::router())
+        .merge(capacity::router())
         .merge(deal_desk::router())
         .merge(ramps::router())
         .merge(team_brief::router())
