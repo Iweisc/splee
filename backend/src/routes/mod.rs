@@ -23,6 +23,7 @@ mod briefs;
 mod committee;
 mod today;
 mod buyers;
+mod coaching;
 mod forecast;
 mod insights;
 mod lead_pages;
@@ -151,6 +152,7 @@ pub fn router() -> Router<AppState> {
         .merge(insights::router())
         .merge(forecast::router())
         .merge(buyers::router())
+        .merge(coaching::router())
         .merge(ask::router())
         .merge(committee::router())
         .merge(today::router())

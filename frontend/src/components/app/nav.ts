@@ -9,6 +9,7 @@ import {
   CalendarClock,
   CircleUser,
   FileText,
+  GraduationCap,
   Globe,
   Gauge,
   Inbox,
@@ -59,6 +60,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "LinkedIn", href: (p) => `/app/p/${p}/linkedin-sequence`, icon: UserPlus }, // D1
       { label: "Texts", href: (p) => `/app/p/${p}/texts`, icon: Smartphone },
       { label: "Calls", href: (p) => `/app/p/${p}/calls`, icon: Phone },
+      { label: "Coaching", href: (p) => `/app/p/${p}/coaching`, icon: GraduationCap },
       { label: "Social", href: (p) => `/app/p/${p}/social`, icon: Megaphone },
       { label: "Import", href: (p) => `/app/p/${p}/import`, icon: Upload }, // D1
       { label: "Agent runs", href: (p) => `/app/p/${p}/runs`, icon: Bot },
