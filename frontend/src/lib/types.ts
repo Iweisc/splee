@@ -2051,7 +2051,8 @@ export type RunKind =
   | "meeting_notes"
   | "research_companies"
   | "meeting_brief"
-  | "campaign_insights";
+  | "campaign_insights"
+  | "ask";
 
 export interface TumblrBlog {
   name: string;

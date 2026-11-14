@@ -213,11 +213,17 @@ async fn stateless(state: &AppState, org_id: Uuid, headers: &HeaderMap, message:
 async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Value, (i64, String)> {
     let name = params["name"].as_str().unwrap_or_default();
     let args = Some(&params["arguments"]).filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
-    let Some(outcome) = run(state, ApiKeyAuth { org_id }, name, args).await else {
+    let Some((text, is_error)) = call(state, org_id, name, args).await else {
         return Err((-32602, format!("Unknown tool {name}")));
     };
+    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+}
+
+/// Runs a tool for the organization, as the text the model reads and whether it failed. None for a tool that doesn't exist.
+/// Also how Ask Splee reads the pipeline (agent/ask.rs).
+pub(crate) async fn call(state: &AppState, org_id: Uuid, name: &str, args: Value) -> Option<(String, bool)> {
     // A failed call is a result the model reads and can recover from, like a wrong id, not a protocol error.
-    let (text, is_error) = match outcome {
+    Some(match run(state, ApiKeyAuth { org_id }, name, args).await? {
         Ok(value) => (value.to_string(), false),
         Err(e) => {
             if let AppError::Internal(err) = &e {
@@ -225,8 +231,13 @@ async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Val
             }
             (e.public_message(), true)
         }
-    };
-    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+    })
+}
+
+/// The tools that only read, for Ask Splee. Local business search is left out because it spends the organization's Google
+/// Maps calls.
+pub(crate) fn read_tools() -> Vec<Value> {
+    tools().into_iter().filter(|t| t["annotations"]["readOnlyHint"] == json!(true) && t["name"] != "search_local_businesses").collect()
 }
 
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";

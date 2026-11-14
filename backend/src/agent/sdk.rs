@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{
-    Ctx, bluesky, channels, directory, discourse, hashnode, hiring, lemmy, linkedin, mastodon, nostr, places, reddit, stackexchange, threads, tumblr, x,
+    Ctx, ask, bluesky, channels, directory, discourse, hashnode, hiring, lemmy, linkedin, mastodon, nostr, places, reddit, stackexchange, threads, tumblr, x,
     youtube,
 };
 use crate::events;
@@ -285,6 +285,7 @@ async fn report_tool(state: &AppState, ctx: &Ctx, name: &str, input: Value) {
         nostr::READ | tumblr::READ | hashnode::READ | channels::DISCORD_READ | channels::TELEGRAM_READ => {
             format!("reading {}…", short_url(input["link"].as_str().unwrap_or_default()))
         }
+        other if other.starts_with(ask::PREFIX) => ask::progress(other),
         other => format!("{other}…"),
     };
     let step = ctx.step();

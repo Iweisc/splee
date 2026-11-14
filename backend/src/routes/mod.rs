@@ -18,6 +18,7 @@ mod extension;
 mod forms;
 mod hiring;
 mod job_changes;
+mod ask;
 mod briefs;
 mod insights;
 mod lead_pages;
@@ -66,7 +67,7 @@ pub mod notifications;
 pub(crate) mod analytics;
 pub mod api_keys;
 pub mod api_v1;
-mod mcp;
+pub(crate) mod mcp;
 mod rest_hooks;
 pub mod oauth;
 pub mod stats;
@@ -142,6 +143,7 @@ pub fn router() -> Router<AppState> {
         .merge(lead_pages::router())
         .merge(briefs::router())
         .merge(insights::router())
+        .merge(ask::router())
         .merge(reports::router())
         .merge(variants::router())
         .merge(bookings::router())
