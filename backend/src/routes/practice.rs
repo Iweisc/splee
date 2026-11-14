@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::agent::practice::{self, ASSIGNED, Assigned, MAX_LINE, MAX_TURNS, SCENARIOS, SELECT, Session, Turn};
+use crate::agent::practice::{self, ASSIGNED, Assigned, DONE, MAX_LINE, MAX_TURNS, SCENARIOS, SELECT, Session, Turn};
 use crate::auth::Auth;
 use crate::deals;
 use crate::error::{AppError, AppResult};
@@ -33,11 +33,11 @@ async fn for_deal(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid
     Ok(Json(sessions.into_iter().map(Session::for_rep).collect()))
 }
 
-/// What the caller was assigned to practice on the deal and hasn't been scored on yet.
+/// What the caller was assigned to practice on the deal and hasn't done yet.
 async fn assigned(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Assigned>>> {
     let deal = deals::get(&state.db, auth.org_id, id).await?;
     Ok(Json(
-        sqlx::query_as(&format!("{ASSIGNED} where a.deal_id = $1 and a.user_id = $2 and s.score is null order by a.created_at desc"))
+        sqlx::query_as(&format!("{ASSIGNED} where a.deal_id = $1 and a.user_id = $2 and not {DONE} order by a.created_at desc"))
             .bind(deal.id)
             .bind(auth.user_id)
             .fetch_all(&state.db)

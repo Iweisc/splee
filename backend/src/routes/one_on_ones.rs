@@ -35,7 +35,7 @@ async fn view(state: &AppState, auth: &Auth, user_id: Uuid) -> AppResult<Json<Vi
 }
 
 /// Their own, or anyone's in the organization for an owner or admin.
-async fn allowed(state: &AppState, auth: &Auth, user_id: Uuid) -> AppResult<()> {
+pub(super) async fn allowed(state: &AppState, auth: &Auth, user_id: Uuid) -> AppResult<()> {
     if user_id != auth.user_id {
         auth.require_admin()?;
     }

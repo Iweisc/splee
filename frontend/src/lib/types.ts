@@ -3213,12 +3213,44 @@ export interface PracticeAssignment {
   scenario: PracticeSession["scenario"];
   skill: string;
   drill: string;
+  /** The score that passes it, for a ramp's. A 1:1's is done once it's scored. */
+  pass_score: number | null;
+  ramp_id: UUID | null;
   assigned_by: string | null;
   created_at: Ts;
   /** Whether the deal is still open, so it can be practiced. */
   open: boolean;
   session_id: UUID | null;
   score: NonNullable<PracticeSession["score"]> | null;
+}
+
+/** A teammate's ramp plan, written from the project's playbook. See backend/src/agent/ramp.rs. */
+export interface RampPlan {
+  summary: string;
+  weeks: {
+    title: string;
+    goal: string;
+    steps: string[];
+    practice: { deal_id: UUID; company: string; scenario: PracticeSession["scenario"]; skill: string; drill: string }[];
+  }[];
+}
+
+export interface Ramp {
+  id: UUID;
+  user_id: UUID;
+  name: string;
+  plan: RampPlan | null;
+  requested_by: string | null;
+  created_at: Ts;
+  status: "ready" | "writing" | "failed";
+  error: string | null;
+  practice: PracticeAssignment[];
+}
+
+/** GET /projects/:id/ramps: each teammate's latest for owners and admins, only your own otherwise. */
+export interface RampsView {
+  ramps: Ramp[];
+  pass_score: number;
 }
 
 export interface OneOnOneView {
