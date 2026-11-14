@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import type { TargetRow, Targets } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
 import { OneOnOneDialog } from "./one-on-one";
+import { CapacityCard } from "./capacity";
 import { CommissionsCard } from "./commissions";
 import { ContestsCard } from "./contests";
 import { TeamBriefCard } from "./team-brief";
@@ -225,6 +226,7 @@ export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
       </Card>
       <ContestsCard admin={admin} />
       <CommissionsCard admin={admin} />
+      {admin && <CapacityCard />}
       <p className="text-xs text-pretty text-muted-foreground">
         A deal counts for whoever owns its lead, in {v.currency.toUpperCase()} only. Commit and best case come from each project&apos;s latest
         forecast

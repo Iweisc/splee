@@ -3242,6 +3242,31 @@ export interface TargetRow {
   deals: { deal_id: UUID; name: string; company: string; value_cents: number; category: "commit" | "best_case"; why: string }[];
 }
 
+/** What the capacity plan assumes, as the query changes it and as history gives it (null when there's too little). See
+ * backend/src/routes/capacity.rs. */
+export interface CapacityAssumptions {
+  win_rate: number | null;
+  deal_cents: number | null;
+  cycle_days: number | null;
+  deals_per_rep: number | null;
+  ramp_months: number | null;
+  target_cents: number | null;
+  growth_pct: number | null;
+}
+
+export interface Capacity {
+  currency: string;
+  reps: number;
+  history: CapacityAssumptions;
+  used: { [K in keyof CapacityAssumptions]: number };
+  plan: {
+    per_rep_cents: number;
+    months: { month: string; target_cents: number; team_cents: number; hires_cents: number }[];
+    hires: { start_by: string; full_speed: string; closing_from: string }[];
+    short: string[];
+  };
+}
+
 /** GET /commissions?month=: what each teammate earned on the deals they won that month. See backend/src/routes/commissions.rs. */
 export interface Commissions {
   /** The first of the month, like 2026-10-01. */
