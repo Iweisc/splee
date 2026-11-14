@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod auth;
 pub(crate) mod ads;
+mod battlecards;
 mod blogs;
 pub(crate) mod bookings;
 mod chat;
@@ -115,6 +116,7 @@ pub fn router() -> Router<AppState> {
         .merge(scores::router())
         .merge(visitors::router())
         .merge(win_backs::router())
+        .merge(battlecards::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

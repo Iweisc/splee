@@ -212,6 +212,8 @@ export interface ProjectSettings extends CrmStatus {
   coach_calls: boolean;
   prep_calls: boolean;
   win_back_lost_deals: boolean;
+  /** Writes a battlecard for each competitor a deal was won or lost against. See backend/src/agent/battlecards.rs. */
+  write_battlecards: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2082,7 +2084,8 @@ export type RunKind =
   | "buyer_profile"
   | "coach_call"
   | "call_prep"
-  | "win_back";
+  | "win_back"
+  | "battlecard";
 
 export interface TumblrBlog {
   name: string;
@@ -2945,4 +2948,36 @@ export interface CoachedCall {
 export interface CoachingView {
   enabled: boolean;
   items: CoachedCall[];
+}
+
+/** How to sell against a competitor, written by the agent. See backend/src/agent/battlecards.rs. */
+export interface Battlecard {
+  summary: string;
+  /** Empty when their pricing isn't public. */
+  pricing: string;
+  strengths: string[];
+  wins: { point: string; evidence: string }[];
+  losses: { point: string; evidence: string }[];
+  /** Questions that bring out where you're stronger. */
+  landmines: string[];
+  objections: { they_say: string; we_say: string }[];
+  /** Buyers' words, checked against their emails and calls. */
+  quotes: { quote: string; who: string }[];
+}
+
+/** A competitor with its record in reviewed deals and its battlecard. status is null before one was asked for. */
+export interface BattlecardItem {
+  competitor_id: UUID;
+  name: string;
+  domain: string;
+  won: number;
+  lost: number;
+  card: Battlecard | null;
+  written_at: string | null;
+  status: "writing" | "ready" | "failed" | null;
+}
+
+export interface BattlecardView {
+  enabled: boolean;
+  items: BattlecardItem[];
 }
