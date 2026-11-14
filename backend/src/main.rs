@@ -152,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
     agent::qualify::spawn_worker(state.clone());
     agent::forecast::spawn_worker(state.clone());
     agent::coaching::spawn_worker(state.clone());
+    agent::call_prep::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());

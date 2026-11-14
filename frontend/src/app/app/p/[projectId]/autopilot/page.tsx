@@ -112,6 +112,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.coach_calls} onChange={(coach_calls) => update({ coach_calls })} label="Coach calls" />}
           />
 
+          <Section
+            title="Prep calls"
+            description="Before a call comes due, the agent writes its talk track from what Splee knows about the lead: an opener tied to something they did, questions to ask, the objections they're likely to raise with answers, a voicemail and one reminder from the caller's coaching. It shows on the Calls page and beside the dialer."
+            actions={<Switch checked={s.prep_calls} onChange={(prep_calls) => update({ prep_calls })} label="Prep calls" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"
