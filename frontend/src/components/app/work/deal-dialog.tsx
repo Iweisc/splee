@@ -10,7 +10,7 @@ import { Field, Input, NumberInput, Select, Textarea } from "@/components/ui/for
 import { Badge, type BadgeTone, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Deal, DealAmounts, DealStage, Member, Pipeline, StageKind } from "@/lib/types";
-import { dealMoney } from "@/lib/utils";
+import { cn, dealMoney } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ClosePlanSection } from "./close-plan";
 import { DealHealthSection } from "./deal-health";
@@ -157,11 +157,17 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
   };
 
   return (
-    <Modal open onClose={onClose} title={deal ? (deal.company_name || deal.lead_name) : "Create deal"} className={deal ? "max-w-xl" : undefined}>
+    <Modal
+      open
+      onClose={onClose}
+      title={deal ? deal.company_name || deal.lead_name : "Create deal"}
+      className={deal ? "max-w-xl lg:max-w-5xl" : undefined}
+    >
       {deal && deleting ? (
         <div className="flex flex-col gap-5">
           <p className="text-sm text-muted-foreground">
-            The deal with {deal.lead_name || deal.company_name} comes off the pipeline and out of the forecast. The lead stays. You can&apos;t undo this.
+            The deal with {deal.lead_name || deal.company_name} comes off the pipeline and out of the forecast. The lead stays. You can&apos;t undo
+            this.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setDeleting(null)} autoFocus>
@@ -178,86 +184,98 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
             <div className="-mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
               <DealStageBadge deal={deal} />
               <span>{[deal.lead_name, deal.lead_title].filter(Boolean).join(", ")}</span>
-              <Link href={`/app/p/${deal.project_id}/inbox?lead=${deal.lead_id}`} className="inline-flex items-center gap-1 text-foreground hover:underline">
+              <Link
+                href={`/app/p/${deal.project_id}/inbox?lead=${deal.lead_id}`}
+                className="inline-flex items-center gap-1 text-foreground hover:underline"
+              >
                 <MessageSquare className="size-3.5" /> Open the conversation
               </Link>
             </div>
           )}
-          {deal && <DealHealthSection deal={deal} />}
-          {deal && <DealReviewSection deal={deal} />}
-          {deal && <QualificationSection deal={deal} />}
-          {deal && <QuietDeal deal={deal} />}
-          {deal && <ClosePlanSection deal={deal} />}
-          {deal && <ProposalSection deal={deal} />}
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
-            <Field label={deal?.status === "won" ? "Final value" : "Value"}>
-              <NumberInput min={0} step="any" value={values.value} onValueChange={(value) => set({ value: Math.max(0, value) })} autoFocus />
-            </Field>
-            <Field label="Currency">
-              <Select value={picked} onChange={(e) => set({ currency: e.target.value })}>
-                {currencies.map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-          {!deal && (
-            <Field label="Stage">
-              <Select value={stageId} onChange={(e) => set({ stage_id: e.target.value })}>
-                {open.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Expected close">
-              <Input type="date" value={values.close_date} onChange={(e) => set({ close_date: e.target.value })} />
-            </Field>
-            <Field label="Owner">
-              <Select value={values.owner_id} onChange={(e) => set({ owner_id: e.target.value })}>
-                <option value="">Unassigned</option>
-                {members?.map((m) => (
-                  <option key={m.user_id} value={m.user_id}>
-                    {m.name || m.email}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-          {deal?.status === "lost" && (
-            <Field label="Why it was lost">
-              <Input value={values.lost_reason} maxLength={500} onChange={(e) => set({ lost_reason: e.target.value })} />
-            </Field>
-          )}
-          <Field label="Notes">
-            <Textarea
-              value={values.notes}
-              onChange={(e) => set({ notes: e.target.value })}
-              placeholder="What they need, who signs, what's next"
-              className="min-h-20"
-            />
-          </Field>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          {/* Wide screens put the agent's reads on the left and the deal's fields beside them, where they stay in view. */}
+          <div className={cn("flex flex-col gap-4", deal && "lg:grid lg:grid-cols-[minmax(0,1fr)_19rem] lg:items-start lg:gap-6")}>
             {deal && (
-              <Button type="button" variant="ghost" className="mr-auto text-danger" onClick={() => setDeleting("ask")}>
-                <Trash2 className="size-4" /> Delete
-              </Button>
+              <div className="flex min-w-0 flex-col gap-4">
+                <DealHealthSection deal={deal} />
+                <DealReviewSection deal={deal} />
+                <QualificationSection deal={deal} />
+                <QuietDeal deal={deal} />
+                <ClosePlanSection deal={deal} />
+                <ProposalSection deal={deal} />
+              </div>
             )}
-            <Button type="button" variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            {deal ? (
-              <Button type="submit" loading={saving}>
-                Save
-              </Button>
-            ) : (
-              <Button type="submit" loading={saving}>
-                <Plus className="size-4" /> Create deal
-              </Button>
-            )}
+            <div className={cn("flex flex-col gap-4", deal && "lg:sticky lg:top-0")}>
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
+                <Field label={deal?.status === "won" ? "Final value" : "Value"}>
+                  <NumberInput min={0} step="any" value={values.value} onValueChange={(value) => set({ value: Math.max(0, value) })} autoFocus />
+                </Field>
+                <Field label="Currency">
+                  <Select value={picked} onChange={(e) => set({ currency: e.target.value })}>
+                    {currencies.map((c) => (
+                      <option key={c}>{c}</option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              {!deal && (
+                <Field label="Stage">
+                  <Select value={stageId} onChange={(e) => set({ stage_id: e.target.value })}>
+                    {open.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
+              <div className={cn("grid gap-4 sm:grid-cols-2", deal && "lg:grid-cols-1")}>
+                <Field label="Expected close">
+                  <Input type="date" value={values.close_date} onChange={(e) => set({ close_date: e.target.value })} />
+                </Field>
+                <Field label="Owner">
+                  <Select value={values.owner_id} onChange={(e) => set({ owner_id: e.target.value })}>
+                    <option value="">Unassigned</option>
+                    {members?.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.name || m.email}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              {deal?.status === "lost" && (
+                <Field label="Why it was lost">
+                  <Input value={values.lost_reason} maxLength={500} onChange={(e) => set({ lost_reason: e.target.value })} />
+                </Field>
+              )}
+              <Field label="Notes">
+                <Textarea
+                  value={values.notes}
+                  onChange={(e) => set({ notes: e.target.value })}
+                  placeholder="What they need, who signs, what's next"
+                  className="min-h-20"
+                />
+              </Field>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {deal && (
+                  <Button type="button" variant="ghost" className="mr-auto text-danger" onClick={() => setDeleting("ask")}>
+                    <Trash2 className="size-4" /> Delete
+                  </Button>
+                )}
+                <Button type="button" variant="ghost" onClick={onClose}>
+                  Cancel
+                </Button>
+                {deal ? (
+                  <Button type="submit" loading={saving}>
+                    Save
+                  </Button>
+                ) : (
+                  <Button type="submit" loading={saving}>
+                    <Plus className="size-4" /> Create deal
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </form>
       )}
