@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, MessagesSquare, RefreshCw } from "lucide-react";
+import { Headset, Loader2, MessagesSquare, RefreshCw } from "lucide-react";
 import useSWR from "swr";
 import { CopyButton } from "@/components/app/settings/copy-button";
 import { Button } from "@/components/ui/button";
-import { EmptyState, Modal } from "@/components/ui/misc";
-import { fetcher } from "@/hooks/use-me";
+import { Badge, EmptyState, Modal } from "@/components/ui/misc";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { OneOnOnePrep, OneOnOneView } from "@/lib/types";
+import type { OneOnOnePrep, OneOnOneView, PracticeAssignment } from "@/lib/types";
 import { dealMoney, timeAgo } from "@/lib/utils";
+import { scenarioLabel, tone } from "./practice";
 import { MicroLabel, toastError } from "./states";
 
 /** The month the prep was written in, like "$7,200 won of $12,000 on day 14 of 30, $4,800 in commit, $2,000 best case". */
@@ -32,6 +33,24 @@ function asText(name: string, p: OneOnOnePrep) {
   return lines.join("\n");
 }
 
+/** How the drill they were assigned is going: waiting on their Today, started, scored, or the deal closed first. */
+function Assignment({ a, first }: { a: PracticeAssignment; first: string }) {
+  return (
+    <div className="mt-3 flex items-start gap-2 border-t border-border pt-3">
+      {a.score ? <Badge tone={tone(a.score.score)}>{a.score.score}</Badge> : <Badge>{a.session_id ? "Started" : "Assigned"}</Badge>}
+      <p className="text-muted-foreground">
+        {a.score
+          ? `${first} practiced ${scenarioLabel(a.scenario).toLowerCase()} on ${a.company}. ${a.score.skill ?? a.score.summary}`
+          : !a.open
+            ? `The ${a.company} deal closed before ${first} practiced it.`
+            : a.session_id
+              ? `${first} started the practice call on ${a.company} but hasn't been scored yet.`
+              : `Assigned ${timeAgo(a.created_at)}. It's on ${first}'s Today until they practice it.`}
+      </p>
+    </div>
+  );
+}
+
 /** A teammate's 1:1 prep in its own window: the latest, writing a new one, and the deals it names opening their deal. */
 export function OneOnOneDialog({
   userId,
@@ -46,7 +65,9 @@ export function OneOnOneDialog({
 }) {
   const key = `/one-on-ones/${userId}`;
   const { data, mutate } = useSWR<OneOnOneView>(key, fetcher, { refreshInterval: (v) => (v?.latest?.status === "writing" ? 2000 : 0) });
+  const { me } = useMe();
   const [busy, setBusy] = useState(false);
+  const [assigning, setAssigning] = useState(false);
   const first = name.split(" ")[0];
   const latest = data?.latest;
   const writing = latest?.status === "writing";
@@ -60,6 +81,16 @@ export function OneOnOneDialog({
       toastError(e);
     } finally {
       setBusy(false);
+    }
+  };
+  const assign = async () => {
+    setAssigning(true);
+    try {
+      await mutate(api<OneOnOneView>(`${key}/practice`, { method: "POST" }), { revalidate: false });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setAssigning(false);
     }
   };
   const writeButton = (
@@ -131,6 +162,14 @@ export function OneOnOneDialog({
             <p className="mt-1">
               <span className="font-medium">Drill:</span> {p.skill.drill}
             </p>
+            {p.skill.practice &&
+              (data.assignment ? (
+                <Assignment a={data.assignment} first={first} />
+              ) : (
+                <Button type="button" size="sm" variant="outline" className="mt-3" onClick={assign} loading={assigning}>
+                  <Headset className="size-3.5" /> {me?.user.id === userId ? "Put it on my Today" : `Assign it to ${first}`}
+                </Button>
+              ))}
           </div>
           <div>
             <MicroLabel>Commitment for the week</MicroLabel>

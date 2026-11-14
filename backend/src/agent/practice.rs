@@ -2,7 +2,8 @@
 //! Splee knows about the deal (the conversation, the gaps in its qualification and the competitors it's up against, with
 //! their battlecards' objections) and builds the buyer, kept from the rep, with the line they open with. Each reply is one
 //! short call in character. Scoring reads the whole call against what the buyer cared about and would agree to.
-//! A session has one step running at a time, its `run_id`.
+//! A session has one step running at a time, its `run_id`. A session started from an assignment, the practice call a 1:1 prep
+//! suggested, has the buyer test the skill and the score say how it went.
 
 use std::time::Duration;
 
@@ -68,6 +69,33 @@ impl Session {
     }
 }
 
+/// Days an assignment that hasn't been practiced stays on Today.
+pub const ASSIGNED_DAYS: i32 = 30;
+
+/// An assignment with its practice call, the latest scored one, else the latest started.
+pub const ASSIGNED: &str = "select a.id, a.deal_id, d.project_id, d.lead_id, l.full_name as lead_name, l.company_name as company, a.scenario,
+        a.skill, a.drill, nullif(b.name, '') as assigned_by, a.created_at, d.status = 'open' as open, s.id as session_id, s.score
+     from practice_assignments a join deals d on d.id = a.deal_id join leads l on l.id = d.lead_id left join users b on b.id = a.assigned_by
+     left join lateral (select id, score from practice_sessions where assignment_id = a.id order by score is not null desc, created_at desc limit 1) s on true";
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct Assigned {
+    pub id: Uuid,
+    pub deal_id: Uuid,
+    pub project_id: Uuid,
+    pub lead_id: Uuid,
+    pub lead_name: String,
+    pub company: String,
+    pub scenario: String,
+    pub skill: String,
+    pub drill: String,
+    pub assigned_by: Option<String>,
+    pub created_at: Ts,
+    pub open: bool,
+    pub session_id: Option<Uuid>,
+    pub score: Option<Value>,
+}
+
 pub async fn load(db: &PgPool, id: Uuid) -> sqlx::Result<Option<Session>> {
     sqlx::query_as::<_, Session>(&format!("{SELECT} where s.id = $1")).bind(id).fetch_optional(db).await
 }
@@ -102,6 +130,8 @@ struct Row {
     value_cents: i64,
     currency: String,
     notes: String,
+    skill: Option<String>,
+    drill: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -136,6 +166,9 @@ struct Score {
     went_well: Vec<String>,
     try_next: Vec<String>,
     moments: Vec<Moment>,
+    /// How they did on the skill they were assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    skill: Option<String>,
 }
 
 fn list(items: &[String]) -> String {
@@ -151,8 +184,9 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let input: Input = ctx.input()?;
     let db = ctx.db();
     let row = sqlx::query_as::<_, Row>(
-        "select s.deal_id, s.scenario, s.persona, s.turns, d.lead_id, st.name as stage, d.value_cents, d.currency, d.notes
+        "select s.deal_id, s.scenario, s.persona, s.turns, d.lead_id, st.name as stage, d.value_cents, d.currency, d.notes, a.skill, a.drill
          from practice_sessions s join deals d on d.id = s.deal_id join deal_stages st on st.id = d.stage_id
+         left join practice_assignments a on a.id = s.assignment_id
          where s.id = $1 and s.project_id = $2 and s.run_id = $3",
     )
     .bind(input.session_id)
@@ -198,7 +232,7 @@ async fn setup(ctx: &Ctx, id: Uuid, row: &Row) -> anyhow::Result<Outcome> {
         "Build the buyer for a practice call, from what we know about them.\n\n\
          Them: {who}, {title}.\nTheir deal is in {stage}{value}.{notes}\n\n\
          What we sell: {name}. {description}\n\nThe conversation and what else Splee knows:\n{context}\n{gaps}{against}\n\n\
-         The practice: {scenario}\n\n\
+         The practice: {scenario}{assigned}\n\n\
          1. name, title, company: theirs.\n\
          2. situation: two or three sentences, where they stand now, from what they said and did.\n\
          3. cares_about: up to 3 things that matter to them in this decision, from the evidence.\n\
@@ -214,6 +248,12 @@ async fn setup(ctx: &Ctx, id: Uuid, row: &Row) -> anyhow::Result<Outcome> {
         description = profile.description,
         gaps = if gaps.is_empty() { String::new() } else { format!("What we still don't know about the deal:\n{gaps}\n") },
         against = if against.is_empty() { String::new() } else { format!("Competitors in this deal: {}.", against.join("; ")) },
+        assigned = match (&row.skill, &row.drill) {
+            (Some(skill), Some(drill)) => {
+                format!(" The rep's manager asked them to work on {skill}, with this drill: {}. Give the buyer a moment that tests it.", drill.trim_end_matches('.'))
+            }
+            _ => String::new(),
+        },
     );
     let schema = json!({
         "type": "object",
@@ -305,11 +345,14 @@ async fn score(ctx: &Ctx, id: Uuid, row: &Row, turns: &[Turn]) -> anyhow::Result
          3. went_well: up to 3 things to keep doing, each tied to what they said.\n\
          4. try_next: up to 3 things to change, each tied to the brief: what {first} cared about, an objection or what they'd \
          agree to.\n\
-         5. moments: up to 3 lines of the rep's to say differently: you_said exactly as written, and try, what to say instead.",
+         5. moments: up to 3 lines of the rep's to say differently: you_said exactly as written, and try, what to say instead.{assigned}",
         brief = brief(&persona),
         transcript = transcript(turns, &first),
+        assigned = row.skill.as_ref().map_or(String::new(), |s| format!(
+            "\n6. skill: their manager asked them to work on {s}. One or two sentences on how they did on it, tied to what they said."
+        )),
     );
-    let schema = json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "score": { "type": "integer" }, "summary": { "type": "string" },
@@ -320,6 +363,10 @@ async fn score(ctx: &Ctx, id: Uuid, row: &Row, turns: &[Turn]) -> anyhow::Result
         },
         "required": ["score", "summary", "went_well", "try_next", "moments"]
     });
+    if row.skill.is_some() {
+        schema["properties"]["skill"] = json!({ "type": "string" });
+        schema["required"].as_array_mut().context("the schema lists what's required")?.push(json!("skill"));
+    }
     ctx.log("scoring the call…").await?;
     let call = Call { budget_usd: 0.2, ..Call::writing(COACH, prompt, schema) };
     let mut score: Score = ctx.ask(&call).await?;
@@ -337,6 +384,82 @@ async fn score(ctx: &Ctx, id: Uuid, row: &Row, turns: &[Turn]) -> anyhow::Result
         .execute(ctx.db())
         .await?;
     Ok(Outcome::new(format!("Scored {} out of 100", score.score)))
+}
+
+/// A team with a 1:1 prep whose drill can be assigned, for the tests of assigning and practicing it.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use serde_json::json;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    pub struct Team {
+        pub org: Uuid,
+        pub project: Uuid,
+        /// The owner, who preps Sam's 1:1.
+        pub dana: Uuid,
+        pub sam: Uuid,
+        pub deal: Uuid,
+    }
+
+    pub async fn team(db: &PgPool) -> Team {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name, company) values ($1, 'Acme', '{\"name\": \"Fieldnote\"}') returning id")
+            .bind(org)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut users = vec![];
+        for (name, role) in [("Dana Reyes", "owner"), ("Sam Ito", "member")] {
+            let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values (gen_random_uuid() || '@acme.test', $1, 'x') returning id")
+                .bind(name)
+                .fetch_one(db)
+                .await
+                .unwrap();
+            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, $3)").bind(org).bind(user).bind(role).execute(db).await.unwrap();
+            users.push(user);
+        }
+        let lead: Uuid = sqlx::query_scalar(
+            "insert into leads (project_id, full_name, title, company_name, owner_id) values ($1, 'Ines Duarte', 'VP Sales', 'Lumenfold', $2) returning id",
+        )
+        .bind(project)
+        .bind(users[1])
+        .fetch_one(db)
+        .await
+        .unwrap();
+        let stage: Uuid = sqlx::query_scalar("insert into deal_stages (org_id, name, kind, position) values ($1, 'Proposal', 'open', 3) returning id")
+            .bind(org)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let deal: Uuid = sqlx::query_scalar("insert into deals (org_id, project_id, lead_id, stage_id, value_cents, currency) values ($1, $2, $3, $4, 480000, 'usd') returning id")
+            .bind(org)
+            .bind(project)
+            .bind(lead)
+            .bind(stage)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        Team { org, project, dana: users[0], sam: users[1], deal }
+    }
+
+    /// A written 1:1 prep for Sam, whose drill is a pricing practice on the deal when `practice` is set.
+    pub async fn prep(db: &PgPool, t: &Team, practice: bool) -> Uuid {
+        let drill = practice.then(|| json!({ "deal_id": t.deal, "company": "Lumenfold", "scenario": "pricing" }));
+        let prep = json!({
+            "headline": "Ahead of pace.", "recognize": [], "deals": [], "commitment": "Hold price on Lumenfold",
+            "month": { "currency": "usd", "day": 3, "days": 30, "target_cents": null, "won_cents": 0, "commit_cents": 0, "best_case_cents": 0 },
+            "skill": { "name": "Holding price", "evidence": "Discounted at once", "drill": "A pricing practice on Lumenfold.", "practice": drill },
+        });
+        sqlx::query_scalar("insert into one_on_ones (org_id, user_id, requested_by, prep) values ($1, $2, $3, $4) returning id")
+            .bind(t.org)
+            .bind(t.sam)
+            .bind(t.dana)
+            .bind(prep)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -447,5 +570,43 @@ mod tests {
         let score = s.score.unwrap();
         assert_eq!((s.status.as_str(), score["score"].as_i64(), score["moments"].as_array().unwrap().len()), ("scored", Some(100), 1), "a line never said is dropped");
         assert_eq!(s.persona.unwrap()["agrees_if"], "The rep offers a trial on their own calls.", "revealed once scored");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_practice_call_from_an_assignment_tests_the_skill_and_scores_it(db: PgPool) {
+        let t = fixture::team(&db).await;
+        let prep = fixture::prep(&db, &t, true).await;
+        let session: Uuid = sqlx::query_scalar(
+            "with a as (insert into practice_assignments (one_on_one_id, deal_id, user_id, scenario, skill, drill)
+                        values ($1, $2, $3, 'pricing', 'Holding price', 'A pricing practice on Lumenfold.') returning id)
+             insert into practice_sessions (project_id, deal_id, user_id, scenario, assignment_id) select $4, $2, $3, 'pricing', id from a returning id",
+        )
+        .bind(prep)
+        .bind(t.deal)
+        .bind(t.sam)
+        .bind(t.project)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        step(&db, session, t.project, t.org, "setup").await;
+        let persona = json!({ "name": "Ines Duarte", "title": "VP Sales", "company": "Lumenfold", "situation": "Budget is tight.",
+                              "cares_about": ["Price"], "objections": ["Too expensive"], "agrees_if": "A clear ROI.", "opening": "Hi." });
+        let prompt = run_next(&db, persona).await;
+        assert!(prompt.contains("work on Holding price, with this drill: A pricing practice on Lumenfold. Give the buyer a moment that tests it."), "{prompt}");
+
+        sqlx::query("update practice_sessions set ended = true, turns = turns || '[{\"who\": \"rep\", \"text\": \"The price holds.\"}]' where id = $1")
+            .bind(session)
+            .execute(&db)
+            .await
+            .unwrap();
+        step(&db, session, t.project, t.org, "score").await;
+        let prompt = run_next(
+            &db,
+            json!({ "score": 70, "summary": "Held firm.", "went_well": [], "try_next": [], "moments": [], "skill": "Held list price when pushed." }),
+        )
+        .await;
+        assert!(prompt.contains("6. skill: their manager asked them to work on Holding price."), "{prompt}");
+        assert_eq!(load(&db, session).await.unwrap().unwrap().score.unwrap()["skill"], "Held list price when pushed.");
     }
 }

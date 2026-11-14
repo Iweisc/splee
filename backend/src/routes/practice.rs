@@ -1,5 +1,5 @@
-//! Practice calls: starting one on an open deal, the rep's lines, scoring it, trying a failed step again, and the deal's
-//! past sessions. See agent::practice.
+//! Practice calls: starting one on an open deal, the rep's lines, scoring it, trying a failed step again, the deal's past
+//! sessions and what the caller was assigned to practice on it. See agent::practice.
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::agent::practice::{self, MAX_LINE, MAX_TURNS, SCENARIOS, SELECT, Session, Turn};
+use crate::agent::practice::{self, ASSIGNED, Assigned, MAX_LINE, MAX_TURNS, SCENARIOS, SELECT, Session, Turn};
 use crate::auth::Auth;
 use crate::deals;
 use crate::error::{AppError, AppResult};
@@ -16,6 +16,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/deals/{id}/practice", get(for_deal).post(begin))
+        .route("/deals/{id}/practice/assigned", get(assigned))
         .route("/practice/{id}", get(show))
         .route("/practice/{id}/turns", post(say))
         .route("/practice/{id}/score", post(score))
@@ -32,9 +33,23 @@ async fn for_deal(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid
     Ok(Json(sessions.into_iter().map(Session::for_rep).collect()))
 }
 
+/// What the caller was assigned to practice on the deal and hasn't been scored on yet.
+async fn assigned(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Assigned>>> {
+    let deal = deals::get(&state.db, auth.org_id, id).await?;
+    Ok(Json(
+        sqlx::query_as(&format!("{ASSIGNED} where a.deal_id = $1 and a.user_id = $2 and s.score is null order by a.created_at desc"))
+            .bind(deal.id)
+            .bind(auth.user_id)
+            .fetch_all(&state.db)
+            .await?,
+    ))
+}
+
 #[derive(Deserialize)]
 struct Begin {
     scenario: String,
+    /// Practicing what the caller was assigned on this deal, whose scenario it takes.
+    assignment_id: Option<Uuid>,
 }
 
 /// Starts a practice call on an open deal and has the agent get the buyer ready.
@@ -43,15 +58,28 @@ async fn begin(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, 
     if deal.status != "open" {
         return Err(AppError::BadRequest("Practice the next call on an open deal".into()));
     }
-    if !SCENARIOS.contains(&body.scenario.as_str()) {
+    let scenario = match body.assignment_id {
+        Some(a) => sqlx::query_scalar::<_, String>("select scenario from practice_assignments where id = $1 and deal_id = $2 and user_id = $3")
+            .bind(a)
+            .bind(deal.id)
+            .bind(auth.user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(AppError::NotFound)?,
+        None => body.scenario,
+    };
+    if !SCENARIOS.contains(&scenario.as_str()) {
         return Err(AppError::BadRequest("Pick what to practice".into()));
     }
     let mut tx = state.db.begin().await?;
-    let session: Uuid = sqlx::query_scalar("insert into practice_sessions (project_id, deal_id, user_id, scenario) values ($1, $2, $3, $4) returning id")
-        .bind(deal.project_id)
-        .bind(deal.id)
-        .bind(auth.user_id)
-        .bind(&body.scenario)
+    let session: Uuid = sqlx::query_scalar(
+        "insert into practice_sessions (project_id, deal_id, user_id, scenario, assignment_id) values ($1, $2, $3, $4, $5) returning id",
+    )
+    .bind(deal.project_id)
+    .bind(deal.id)
+    .bind(auth.user_id)
+    .bind(&scenario)
+    .bind(body.assignment_id)
         .fetch_one(&mut *tx)
         .await?;
     let run = practice::start(&mut tx, session, deal.project_id, auth.org_id, "setup").await?;

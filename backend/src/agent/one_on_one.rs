@@ -2,6 +2,7 @@
 //! each, what they won and lost lately, their call coaching and their practice calls, and writes what to bring to their
 //! one-on-one: what to recognize, the deals to dig into with the question to ask, one skill to work on with the evidence and
 //! a drill, and a commitment for the week. The numbers are kept from the Targets tab as they were, never asked of the model.
+//! A drill that's a practice call on one of their deals can be assigned to them, and the next prep reads how it went.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -14,6 +15,7 @@ use uuid::Uuid;
 
 use super::forecast::{OPEN_DEALS, OpenDeal, describe};
 use super::sdk::Call;
+use super::practice::SCENARIOS;
 use super::{Ctx, Outcome, kind};
 use crate::deals::{LAST_TOUCH, amount};
 use crate::models::Ts;
@@ -40,6 +42,16 @@ pub struct Skill {
     pub name: String,
     pub evidence: String,
     pub drill: String,
+    /// The practice call the drill is, when it's one on their open deals. See routes::one_on_ones::assign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub practice: Option<Drill>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Drill {
+    pub deal_id: Uuid,
+    pub company: String,
+    pub scenario: String,
 }
 
 /// The teammate's month when the prep was written, from the Targets tab.
@@ -125,8 +137,17 @@ struct Answer {
     headline: String,
     recognize: Vec<String>,
     deals: Vec<AnswerPick>,
-    skill: Skill,
+    skill: AnswerSkill,
     commitment: String,
+}
+
+#[derive(Deserialize)]
+struct AnswerSkill {
+    name: String,
+    evidence: String,
+    drill: String,
+    deal: String,
+    scenario: String,
 }
 
 #[derive(Deserialize)]
@@ -144,7 +165,10 @@ fn schema() -> Value {
             "headline": text,
             "recognize": { "type": "array", "items": text },
             "deals": { "type": "array", "items": { "type": "object", "properties": { "id": text, "why": text, "ask": text }, "required": ["id", "why", "ask"] } },
-            "skill": { "type": "object", "properties": { "name": text, "evidence": text, "drill": text }, "required": ["name", "evidence", "drill"] },
+            "skill": { "type": "object",
+                       "properties": { "name": text, "evidence": text, "drill": text, "deal": text,
+                                       "scenario": { "type": "string", "enum": ["next_call", "pricing", "competitor", "none"] } },
+                       "required": ["name", "evidence", "drill", "deal", "scenario"] },
             "commitment": text,
         },
         "required": ["headline", "recognize", "deals", "skill", "commitment"]
@@ -231,6 +255,16 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .bind(DAYS)
     .fetch_all(db)
     .await?;
+    let assigned: Option<(String, String, String, i32, Option<Value>)> = sqlx::query_as(
+        "select a.skill, a.scenario, l.company_name, current_date - a.created_at::date, s.score
+         from practice_assignments a join deals d on d.id = a.deal_id join leads l on l.id = d.lead_id
+         left join lateral (select score from practice_sessions where assignment_id = a.id and score is not null order by created_at desc limit 1) s on true
+         where d.org_id = $1 and a.user_id = $2 order by a.created_at desc limit 1",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
     anyhow::ensure!(
         !open.is_empty() || !closed.is_empty() || !coached.is_empty() || !practiced.is_empty(),
         "{first} has no open deals, nothing won or lost, and no coached or practice calls in the last {DAYS} days, so there's nothing to prep from yet"
@@ -269,6 +303,17 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
             })
             .collect(),
     );
+    let assigned = match assigned {
+        None => "None.".to_string(),
+        Some((skill, scenario, company, days, score)) => format!(
+            "{skill}, a {} practice on {company}, {days} days ago. {}",
+            scenario.replace('_', " "),
+            match score {
+                Some(s) => format!("Scored {}/100. {}", s["score"], [text(&s, "skill"), text(&s, "summary")].into_iter().find(|t| !t.is_empty()).unwrap_or_default()),
+                None => "Not practiced yet.".to_string(),
+            }
+        ),
+    };
     let practiced = or_none(practiced.iter().map(|(company, scenario, s)| format!("- {} with {company}: {}/100. {}", scenario.replace('_', " "), s["score"], text(s, "summary"))).collect());
 
     let prompt = format!(
@@ -277,12 +322,16 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          Won or lost in the last {DAYS} days:\n{closed}\n\n\
          Coached calls in the last {DAYS} days, newest first:\n{coached}\n\n\
          Practice calls in the last {DAYS} days:\n{practiced}\n\n\
+         Practice assigned at the last one-on-one:\n{assigned}\n\n\
          1. headline: 2 sentences on how {first}'s month is going against the numbers and what matters most in this one-on-one.\n\
          2. recognize: up to 3 specific things {first} did well, each tied to a deal or call above, under 20 words. Empty if nothing earns it.\n\
          3. deals: up to {MAX_PICKS} open deal ids worth the manager's time, with why in under 20 words citing the evidence, and ask: \
          the one question to ask {first} about it, in their words to {first}.\n\
          4. skill: the one skill that would help {first} most: name in under 6 words, evidence from the coaching, practice or \
-         deals in under 30 words, and drill: one practice to do this week, like a practice call on a named deal, in under 25 words.\n\
+         deals in under 30 words, and drill: one practice to do this week, like a practice call on a named deal, in under 25 words. \
+         When the drill is a practice call on one of the open deals above, deal is its id and scenario is next_call (the next call \
+         as it stands), pricing (price pushback) or competitor. Otherwise deal is empty and scenario is none. If last time's \
+         practice isn't done or went badly, the skill can stay the same.\n\
          5. commitment: one thing {first} should commit to by the next one-on-one, measurable, under 20 words.",
     );
     ctx.log(format!("reading {}'s month…", first)).await?;
@@ -314,7 +363,14 @@ fn tidy(a: Answer, deals: &[OpenDeal], month: Month) -> Prep {
         month,
         recognize: a.recognize.iter().map(|r| clip(r, 200)).filter(|r| !r.is_empty()).take(3).collect(),
         deals: picks,
-        skill: Skill { name: clip(&a.skill.name, 80), evidence: clip(&a.skill.evidence, 300), drill: clip(&a.skill.drill, 240) },
+        skill: Skill {
+            name: clip(&a.skill.name, 80),
+            evidence: clip(&a.skill.evidence, 300),
+            drill: clip(&a.skill.drill, 240),
+            practice: deal(&a.skill.deal)
+                .filter(|_| SCENARIOS.contains(&a.skill.scenario.as_str()))
+                .map(|d| Drill { deal_id: d.id, company: d.company.clone(), scenario: a.skill.scenario.clone() }),
+        },
         commitment: clip(&a.commitment, 240),
     }
 }
@@ -400,11 +456,23 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
-        sqlx::query("insert into practice_sessions (project_id, deal_id, user_id, scenario, persona, score) values ($1, $2, $3, 'pricing', '{}', $4)")
-            .bind(project)
-            .bind(lumenfold)
+        // Last month's 1:1 assigned Sam a pricing practice, which went badly.
+        let last: Uuid = sqlx::query_scalar("insert into one_on_ones (org_id, user_id, created_at) values ($1, $2, now() - interval '9 days') returning id")
+            .bind(org)
             .bind(sam)
-            .bind(json!({ "score": 42, "summary": "Never answered the two-tools worry." }))
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "with a as (insert into practice_assignments (one_on_one_id, deal_id, user_id, scenario, skill, drill, created_at)
+                        values ($1, $2, $3, 'pricing', 'Holding price', 'Practice price pushback', now() - interval '9 days') returning id)
+             insert into practice_sessions (project_id, deal_id, user_id, scenario, persona, score, assignment_id) select $4, $2, $3, 'pricing', '{}', $5, id from a",
+        )
+        .bind(last)
+        .bind(lumenfold)
+        .bind(sam)
+        .bind(project)
+        .bind(json!({ "score": 42, "summary": "Never answered the two-tools worry.", "skill": "Dropped the price at the first push." }))
             .execute(&db)
             .await
             .unwrap();
@@ -417,7 +485,8 @@ mod tests {
             json!({ "headline": "Ahead of pace on one win.", "recognize": ["Closed Ledgerly", ""],
                     "deals": [{ "id": "d1", "why": "At risk and quiet", "ask": "What does Ines need to see?" }, { "id": "d1", "why": "Twice", "ask": "" },
                               { "id": "d7", "why": "Not a deal", "ask": "" }],
-                    "skill": { "name": "Holding price", "evidence": "Discounted at once on Lumenfold", "drill": "A pricing practice on Lumenfold" },
+                    "skill": { "name": "Holding price", "evidence": "Discounted at once on Lumenfold", "drill": "A pricing practice on Lumenfold",
+                               "deal": "d1", "scenario": "pricing" },
                     "commitment": "Book the Lumenfold follow-up by Friday" })
         });
         run_ctx(&ctx).await;
@@ -427,6 +496,7 @@ mod tests {
         assert!(prompt.contains("won Ledgerly, 7,200 USD"), "{prompt}");
         assert!(prompt.contains("- Lumenfold: 6/10, talked 71% of the time, asked 2 questions, no next step agreed. Did well: Named the HubSpot pain. To change: Pricing came up"), "{prompt}");
         assert!(prompt.contains("- pricing with Lumenfold: 42/100. Never answered the two-tools worry."), "{prompt}");
+        assert!(prompt.contains("Holding price, a pricing practice on Lumenfold, 9 days ago. Scored 42/100. Dropped the price at the first push."), "{prompt}");
 
         let saved = latest(&db, org, sam).await.unwrap().unwrap();
         assert_eq!(saved.status, "ready");
@@ -434,6 +504,7 @@ mod tests {
         let prep: Prep = serde_json::from_value(saved.prep.unwrap()).unwrap();
         assert_eq!(prep.deals, vec![DealPick { deal_id: lumenfold, company: "Lumenfold".into(), why: "At risk and quiet".into(), ask: "What does Ines need to see?".into() }]);
         assert_eq!(prep.recognize, vec!["Closed Ledgerly"]);
+        assert_eq!(prep.skill.practice, Some(Drill { deal_id: lumenfold, company: "Lumenfold".into(), scenario: "pricing".into() }), "the drill names a real deal");
         assert_eq!((prep.month.target_cents, prep.month.won_cents), (Some(1_200_000), 720_000), "the numbers come from Targets, not the model");
     }
 

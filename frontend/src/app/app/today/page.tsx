@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { CalendarClock, FileCheck2, Hourglass, MessageSquareReply, PhoneCall, Sun } from "lucide-react";
+import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, Sun } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { EMAIL_KINDS } from "@/components/app/work/email-preview";
 import { LeadModal } from "@/components/app/work/lead-modal";
+import { scenarioLabel } from "@/components/app/work/practice";
 import { LoadError } from "@/components/app/work/states";
 import { ClassificationBadge } from "@/components/app/work/status";
 import { Select } from "@/components/ui/form";
@@ -25,12 +26,12 @@ export default function TodayPage() {
   const [lead, setLead] = useState<string | null>(null);
   const { data, error, mutate } = useSWR<Today>(`/today${qs({ owner })}`, fetcher, { refreshInterval: 60_000, keepPreviousData: true });
 
-  const empty = data && !data.replies.total && !data.approvals.length && !data.calls.total && !data.meetings.total && !data.quiet.total;
+  const empty = data && !data.replies.total && !data.approvals.length && !data.calls.total && !data.meetings.total && !data.quiet.total && !data.practice.total;
   return (
     <>
       <PageHeader
         title="Today"
-        description="What's waiting on you across your projects: replies to answer, calls and meetings coming up, drafts to approve and deals gone quiet."
+        description="What's waiting on you across your projects: replies to answer, calls and meetings coming up, drafts to approve, deals gone quiet and practice you were assigned."
         actions={
           <Select value={owner} onChange={(e) => setOwner(e.target.value as Owner)} className="h-9 w-auto" aria-label="Whose leads">
             <option value="mine_or_unassigned">Mine and unassigned</option>
@@ -51,7 +52,7 @@ export default function TodayPage() {
         ) : empty ? (
           <Card>
             <EmptyState icon={<Sun className="size-5" />} title="Nothing is waiting on you">
-              Replies, calls, meetings, drafts and quiet deals show up here as they come in.
+              Replies, calls, meetings, drafts, quiet deals and assigned practice show up here as they come in.
             </EmptyState>
           </Card>
         ) : (
@@ -88,6 +89,27 @@ export default function TodayPage() {
                         <span className="text-xs text-muted-foreground">Brief comes a day before</span>
                       )}
                     </div>
+                  </Row>
+                ))}
+              </Part>
+            )}
+            {data.practice.total > 0 && (
+              <Part icon={Headset} title="Practice assigned to you" total={data.practice.total} shown={data.practice.items.length}>
+                {data.practice.items.map((a) => (
+                  <Row key={a.id} href={`/app/pipeline${qs({ deal: a.deal_id })}`}>
+                    <Who
+                      name={scenarioLabel(a.scenario)}
+                      company={a.company}
+                      aside={a.assigned_by ? `From ${a.assigned_by.split(" ")[0]}` : timeAgo(a.created_at)}
+                    />
+                    <p className="mt-0.5 line-clamp-2 text-sm text-pretty text-muted-foreground">
+                      {a.skill}. {a.drill}
+                    </p>
+                    {a.session_id && (
+                      <div className="mt-1.5">
+                        <Badge>Started, not scored</Badge>
+                      </div>
+                    )}
                   </Row>
                 ))}
               </Part>
