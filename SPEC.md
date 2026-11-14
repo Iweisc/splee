@@ -555,6 +555,14 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 |---|---|---|---|
 | POST | /deals/:id/nudge | | the deal, with a nudge being written now, whether or not it's quiet or the switch is on. A draft the last nudge left that nobody approved is deleted. 400 for a closed deal or while one is being written |
 
+### Today
+
+`routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, and open deals quiet for more than 14 days with whether a nudge waits for approval. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /today?owner= | | `{replies: {total, items: [{lead_id, project_id, project_name, name, company, classification, snippet, at}]}, approvals: [{project_id, project_name, kind, count}], calls: {total, items: [{id, lead_id, project_id, name, company, due_at}]}, meetings: [{lead_id, project_id, name, company, meeting_at, brief}], quiet: {total, items: [{deal_id, lead_id, project_id, name, company, stage, value_cents, currency, last_touch_at, nudge_ready}]}}`. `owner` is `mine_or_unassigned` (the default), `mine`, `unassigned`, `everyone` or a user id |
+
 ### Job changes
 
 `jobchanges.rs`, `routes/job_changes.rs`, migration 0134. Each project watches the people who know it (`watched_people`): leads with a won deal (`relationship` `won`), a booked meeting (`booked`, status `meeting_booked` or a `meeting_at`) or a hot reply (`hot`, status `hot` or a received email classified `hot`), added by the worker and backfilled by the migration, each at its strongest relationship, plus people added by hand or CSV. An entry keeps the company, domain, LinkedIn company id and title last seen. It's unique per project by `lead_id`, by `email` and by `linkedin_key` (the public id in `/in/:id`, lowercased).

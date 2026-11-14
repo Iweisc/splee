@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import useSWR, { SWRConfig } from "swr";
-import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, SquareKanban, X } from "lucide-react";
+import { ArrowUpRight, ChevronsUpDown, Inbox, LogOut, Mail, Menu, Plus, SquareKanban, Sun, X } from "lucide-react";
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
@@ -154,6 +154,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="mt-4">
             <p className="px-2 pb-1 font-mono text-[11px] tracking-wide text-muted-foreground uppercase">All projects</p>
+            <NavLink href="/app/today" icon={Sun} label="Today" active={pathname === "/app/today"} />
             <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<NeedsReplyCount />} />
             <NavLink href="/app/emails" icon={Mail} label="Emails" active={pathname === "/app/emails"} />
             <NavLink href="/app/pipeline" icon={SquareKanban} label="Pipeline" active={pathname === "/app/pipeline"} />
@@ -201,6 +202,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 // Project pages that aren't in the sidebar.
 const EXTRA_PROJECT_PAGES: Record<string, string> = { new: "New campaign", docs: "API docs" };
 const EXTRA_ORG_PAGES: Record<string, string> = {
+  "/app/today": "Today",
   "/app/inbox": "Inbox",
   "/app/emails": "Emails",
   "/app/pipeline": "Pipeline",
