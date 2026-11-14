@@ -150,6 +150,15 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     if row.written {
         return Ok(Outcome::new("The nudge is already written"));
     }
+    if row.auto {
+        let on: bool = sqlx::query_scalar("select coalesce((select nudge_quiet_deals from project_settings where project_id = $1), true)")
+            .bind(ctx.project_id()?)
+            .fetch_one(db)
+            .await?;
+        if !on {
+            return skip(db, input.nudge_id, "nudging quiet deals was switched off").await;
+        }
+    }
     let deal = sqlx::query_as::<_, DealNow>(&format!(
         "select d.lead_id, d.status, s.name as stage, d.value_cents, d.currency, d.notes, {LAST_TOUCH} as last_touch
          from deals d join deal_stages s on s.id = d.stage_id where d.id = $1"
@@ -377,7 +386,11 @@ mod tests {
         assert_eq!(queue_due(&db).await.unwrap(), 0, "a call is booked");
 
         sqlx::query("update leads set meeting_at = null").execute(&db).await.unwrap();
+        assert_eq!(queue_due(&db).await.unwrap(), 1);
         sqlx::query("update project_settings set nudge_quiet_deals = false where project_id = $1").bind(s.project).execute(&db).await.unwrap();
+        let (outcome, _) = run_queued(&db, nudge()).await;
+        assert_eq!(outcome.message, "No nudge: nudging quiet deals was switched off", "switched off after it was queued");
+        sqlx::query("delete from deal_nudges").execute(&db).await.unwrap();
         assert_eq!(queue_due(&db).await.unwrap(), 0, "switched off");
 
         // Asking from the deal's window works even when it's switched off.
