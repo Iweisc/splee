@@ -100,6 +100,8 @@ pub struct ProjectSettings {
     pub webhook_secret: String,
     /// Posts the last 7 days' numbers to the project's chats every Monday.
     pub chat_weekly_report: bool,
+    /// Writes a brief before each booked call and posts it. See agent/briefs.rs.
+    pub meeting_briefs: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

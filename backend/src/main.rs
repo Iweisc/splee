@@ -143,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
     score::spawn_worker(state.db.clone());
     signals::spawn_worker(state.db.clone(), &cfg);
     plays::spawn(state.clone());
+    agent::briefs::spawn_worker(state.db.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
