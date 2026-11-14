@@ -1381,7 +1381,19 @@ function AutomationSection({ projectId }: { projectId: string }) {
 }
 
 /** The chats that get the project's alerts. */
-function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; weekly: boolean; setWeekly: (on: boolean) => void }) {
+function ChatSection({
+  projectId,
+  weekly,
+  setWeekly,
+  briefs,
+  setBriefs,
+}: {
+  projectId: string;
+  weekly: boolean;
+  setWeekly: (on: boolean) => void;
+  briefs: boolean;
+  setBriefs: (on: boolean) => void;
+}) {
   const { data } = useSWR<Endpoint[]>(`/projects/${projectId}/chat-channels`, fetcher);
   const { data: slack } = useSWR<SlackStatus>("/organization/slack", fetcher);
   return (
@@ -1418,6 +1430,16 @@ function ChatSection({ projectId, weekly, setWeekly }: { projectId: string; week
           <span className="block text-xs text-muted-foreground">Mondays at 08:00 UTC: emails, replies, hot leads and spend.</span>
         </span>
         <Switch checked={weekly} onChange={setWeekly} disabled={!data?.length} label="Weekly report" />
+      </div>
+      <div className="mt-2 flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
+        <span>
+          <span className="block text-sm font-medium">Meeting briefs</span>
+          <span className="block text-xs text-pretty text-muted-foreground">
+            A day before each booked call, the agent writes who they are, what was said and what to ask. It posts here and emails the lead&apos;s
+            owner, or the team when nobody owns the lead.
+          </span>
+        </span>
+        <Switch checked={briefs} onChange={setBriefs} label="Meeting briefs" />
       </div>
     </Section>
   );
@@ -3891,7 +3913,13 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
     >
       {(s, update) => (
         <>
-          <ChatSection projectId={projectId} weekly={s.chat_weekly_report} setWeekly={(chat_weekly_report) => update({ chat_weekly_report })} />
+          <ChatSection
+            projectId={projectId}
+            weekly={s.chat_weekly_report}
+            setWeekly={(chat_weekly_report) => update({ chat_weekly_report })}
+            briefs={s.meeting_briefs}
+            setBriefs={(meeting_briefs) => update({ meeting_briefs })}
+          />
 
           <CrmSection projectId={projectId} settings={s} />
           <GoogleSheetsSection projectId={projectId} />

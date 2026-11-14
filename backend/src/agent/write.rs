@@ -77,7 +77,7 @@ pub fn signature<'a>(signature: &'a str, sender_name: &'a str) -> &'a str {
     if signature.trim().is_empty() { sender_name.trim() } else { signature.trim() }
 }
 
-async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
+pub(super) async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
     let rows: Vec<(String, String, String, String)> =
         sqlx::query_as("select kind, title, content, url from materials where project_id = $1 order by created_at limit 12")
             .bind(project_id)
@@ -95,7 +95,7 @@ async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
 
 /// What's known about each lead's company beyond the lead itself, by lowercase domain, and how we know the lead.
 #[derive(Default)]
-struct CompanySignals {
+pub(super) struct CompanySignals {
     /// Open roles that match the project's hiring signals. Two at most, newest first.
     posts: HashMap<String, Vec<Value>>,
     /// "Uses HubSpot and Intercom", naming only the project's tech picks.
@@ -108,7 +108,7 @@ struct CompanySignals {
     research: HashMap<String, Vec<Value>>,
 }
 
-async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
+pub(super) async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
     let Some(project_id) = leads.first().map(|l| l.project_id) else { return Ok(CompanySignals::default()) };
     let domains: Vec<String> = leads.iter().filter_map(|l| l.company_domain.clone()).collect();
     let mut posts: HashMap<String, Vec<Value>> = HashMap::new();
@@ -125,7 +125,7 @@ async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySi
     Ok(CompanySignals { posts, tech, history, news, research })
 }
 
-fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
+pub(super) fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     let location = [lead.city.as_str(), lead.country_code.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
     let mut brief = json!({
         "lead_id": lead.id,

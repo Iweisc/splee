@@ -2,6 +2,7 @@
 //! Routes call `enqueue` (and `leads_without_initial` to refuse empty write runs). The worker, SDK wrapper and task implementations live in this module.
 
 mod bluesky;
+pub mod briefs;
 mod calls;
 mod channels;
 mod directory;
@@ -63,6 +64,7 @@ pub mod kind {
     pub const SUMMARIZE_CALL: &str = "summarize_call";
     pub const MEETING_NOTES: &str = "meeting_notes";
     pub const RESEARCH_COMPANIES: &str = "research_companies";
+    pub const MEETING_BRIEF: &str = "meeting_brief";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -322,6 +324,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::SUMMARIZE_CALL => calls::summarize_run(ctx).await,
         kind::MEETING_NOTES => meetings::notes_run(ctx).await,
         kind::RESEARCH_COMPANIES => research::run(ctx).await,
+        kind::MEETING_BRIEF => briefs::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

@@ -20,6 +20,7 @@ import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { LeadNews } from "./news";
 import { LeadPageLink } from "./lead-page";
+import { MeetingBriefCard } from "./meeting-brief";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
@@ -212,6 +213,10 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
       </dl>
 
       {lead.job_change && <JobChangeNote change={lead.job_change} />}
+
+      {(lead.meeting_at || lead.status === "hot" || lead.status === "meeting_booked") && (
+        <MeetingBriefCard leadId={lead.id} meetingAt={lead.meeting_at} />
+      )}
 
       <div>
         <MicroLabel className="mb-2">Score</MicroLabel>

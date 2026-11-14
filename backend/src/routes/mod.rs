@@ -18,6 +18,7 @@ mod extension;
 mod forms;
 mod hiring;
 mod job_changes;
+mod briefs;
 mod lead_pages;
 mod local_businesses;
 mod lookalikes;
@@ -138,6 +139,7 @@ pub fn router() -> Router<AppState> {
         .merge(unsubscribe::router())
         .merge(tracking::router())
         .merge(lead_pages::router())
+        .merge(briefs::router())
         .merge(reports::router())
         .merge(variants::router())
         .merge(bookings::router())

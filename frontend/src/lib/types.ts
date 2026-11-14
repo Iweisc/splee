@@ -203,6 +203,8 @@ export interface ProjectSettings extends CrmStatus {
   webhook_secret: string;
   /** Posts the last 7 days' numbers to the project's chats every Monday. */
   chat_weekly_report: boolean;
+  /** Writes a brief before each booked call and posts it. */
+  meeting_briefs: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2047,7 +2049,8 @@ export type RunKind =
   | "write_texts"
   | "summarize_call"
   | "meeting_notes"
-  | "research_companies";
+  | "research_companies"
+  | "meeting_brief";
 
 export interface TumblrBlog {
   name: string;
@@ -2569,4 +2572,24 @@ export interface PlayFiring {
 export interface PlaysOverview {
   plays: Play[];
   firings: PlayFiring[];
+}
+
+/** What the agent wrote for a call with a lead. See agent/briefs.rs. */
+export interface MeetingBriefContent {
+  summary: string;
+  about: string[];
+  so_far: string;
+  signals: string[];
+  talking_points: string[];
+  questions: string[];
+  watch_outs: string[];
+}
+
+/** A lead's latest meeting brief. `brief` is set once it's ready. */
+export interface MeetingBrief {
+  id: string;
+  meeting_at: Ts | null;
+  brief: MeetingBriefContent | null;
+  written_at: Ts | null;
+  status: "ready" | "writing" | "failed";
 }

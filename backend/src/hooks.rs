@@ -670,13 +670,13 @@ pub fn booked(before: &str, lead: &Lead) -> bool {
 }
 
 /// A meeting's start in the project's timezone, like "Tue 10 Nov at 14:00 GMT". An unknown timezone falls back to UTC.
-fn meeting_time(at: Ts, timezone: &str) -> String {
+pub fn meeting_time(at: Ts, timezone: &str) -> String {
     let tz: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
     at.with_timezone(&tz).format("%a %-d %b at %H:%M %Z").to_string()
 }
 
 /// "Sarah Chen (Brightline) for Acme, Tue 10 Nov at 14:00 GMT", the time in the project's timezone, for meeting alerts.
-async fn meeting_summary(db: &sqlx::PgPool, lead: &Lead, at: Option<Ts>) -> String {
+pub async fn meeting_summary(db: &sqlx::PgPool, lead: &Lead, at: Option<Ts>) -> String {
     let (project, timezone): (String, String) = sqlx::query_as(
         "select p.name, coalesce(s.timezone, 'UTC') from projects p left join project_settings s on s.project_id = p.id where p.id = $1",
     )
