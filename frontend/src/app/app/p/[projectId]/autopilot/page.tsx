@@ -124,6 +124,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.win_back_lost_deals} onChange={(win_back_lost_deals) => update({ win_back_lost_deals })} label="Win back lost deals" />}
           />
 
+          <Section
+            title="Write battlecards"
+            description="When a deal is won or lost against a competitor, the agent reads their website, your deals against them and what buyers said about them, and writes how to sell against them. A newer deal rewrites it after a week. The Competitors page and the window of a deal that mentions them show it."
+            actions={<Switch checked={s.write_battlecards} onChange={(write_battlecards) => update({ write_battlecards })} label="Write battlecards" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

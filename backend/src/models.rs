@@ -115,6 +115,8 @@ pub struct ProjectSettings {
     pub prep_calls: bool,
     /// Plans when to try each lost deal again and drafts that email. See agent/win_backs.rs.
     pub win_back_lost_deals: bool,
+    /// Writes a battlecard for each competitor a deal was won or lost against. See agent/battlecards.rs.
+    pub write_battlecards: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,
