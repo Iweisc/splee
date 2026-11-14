@@ -211,6 +211,7 @@ export interface ProjectSettings extends CrmStatus {
   pipeline_forecast: boolean;
   coach_calls: boolean;
   prep_calls: boolean;
+  win_back_lost_deals: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1448,7 +1449,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back";
   step: number;
   subject: string;
   body: string;
@@ -2080,7 +2081,8 @@ export type RunKind =
   | "pipeline_forecast"
   | "buyer_profile"
   | "coach_call"
-  | "call_prep";
+  | "call_prep"
+  | "win_back";
 
 export interface TumblrBlog {
   name: string;
@@ -2352,6 +2354,40 @@ export interface QualificationItem {
   status: "confirmed" | "partial" | "unknown";
   evidence: string;
   ask: string;
+}
+
+/** When to try a lost deal again, and the email for that day. See backend/src/agent/win_backs.rs. */
+export interface WinBack {
+  id: string;
+  deal_id: string;
+  lead_id: string;
+  lead_name: string;
+  company_name: string;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  deal_status: string;
+  lost_at: Ts;
+  /** The deal review's reason, once it's written. */
+  reason: string | null;
+  /** YYYY-MM-DD, or null until it's planned. */
+  reach_out_on: string | null;
+  why: string;
+  angle: string;
+  /** What brought the day forward, like a visit to the pricing page. */
+  came_back: string;
+  /** Why there's no email, once the agent decided against one. */
+  skipped: string;
+  email_id: string | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_status: EmailRow["status"] | null;
+  status: "planning" | "waiting" | "writing" | "drafted" | "skipped" | "failed";
+}
+
+export interface WinBackView {
+  enabled: boolean;
+  items: WinBack[];
 }
 
 /** Why the agent thinks a closed deal was won or lost. `reason` is null until it's written, and `writing` says one is on its way. */

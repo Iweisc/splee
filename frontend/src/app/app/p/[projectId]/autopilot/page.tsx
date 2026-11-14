@@ -118,6 +118,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.prep_calls} onChange={(prep_calls) => update({ prep_calls })} label="Prep calls" />}
           />
 
+          <Section
+            title="Win back lost deals"
+            description="When a deal is lost, the agent reads why and picks the day to try again, like a month before the contract they chose renews. On that day, or sooner if they come back to your website, it drafts an email in the thread for your approval. The Pipeline page's Win-back tab lists them."
+            actions={<Switch checked={s.win_back_lost_deals} onChange={(win_back_lost_deals) => update({ win_back_lost_deals })} label="Win back lost deals" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

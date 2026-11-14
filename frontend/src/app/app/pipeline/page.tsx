@@ -12,6 +12,7 @@ import { type AssignRequest, CloseDialog, type MoveExtras, PipelineBoard, Pipeli
 import { StageEditor } from "@/components/app/work/stage-editor";
 import { WinLoss } from "@/components/app/work/win-loss";
 import { ForecastPanel } from "@/components/app/work/forecast";
+import { WinBackPanel } from "@/components/app/work/win-back";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
@@ -21,7 +22,7 @@ import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list" | "winloss" | "forecast";
+type View = "board" | "list" | "winloss" | "winback" | "forecast";
 
 // Phones can't drag, so they start on the list. md is where the sidebar's phone menu ends too.
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
@@ -125,6 +126,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "board", label: "Board" },
                 { value: "list", label: "List" },
                 { value: "winloss", label: "Win/loss" },
+                { value: "winback", label: "Win-back" },
                 { value: "forecast", label: "Forecast" },
               ]}
               className="max-sm:flex-1 max-sm:[&>button]:flex-1"
@@ -153,8 +155,14 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           <>
             <Forecast pipeline={data} />
             {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
-            {view === "forecast" ? (
-              forecastProject ? (
+            {view === "forecast" || view === "winback" ? (
+              !forecastProject ? (
+                <Card>
+                  <EmptyState icon={<TrendingUp className="size-5" />} title="Pick a project">
+                    Each project gets its own {view === "forecast" ? "forecast" : "win-backs"}. Choose one above to see it.
+                  </EmptyState>
+                </Card>
+              ) : view === "forecast" ? (
                 <ForecastPanel
                   key={forecastProject}
                   projectId={forecastProject}
@@ -162,11 +170,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                   onOpen={(d) => setOpened(d.id)}
                 />
               ) : (
-                <Card>
-                  <EmptyState icon={<TrendingUp className="size-5" />} title="Pick a project">
-                    Each project gets its own forecast. Choose one above to see it.
-                  </EmptyState>
-                </Card>
+                <WinBackPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
               )
             ) : view === "winloss" ? (
               <WinLoss deals={data.deals} currency={data.currency} projectId={forecastProject} onOpen={(d) => setOpened(d.id)} />

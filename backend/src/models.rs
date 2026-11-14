@@ -113,6 +113,8 @@ pub struct ProjectSettings {
     pub coach_calls: bool,
     /// Writes a talk track for each open call before it comes due. See agent/call_prep.rs.
     pub prep_calls: bool,
+    /// Plans when to try each lost deal again and drafts that email. See agent/win_backs.rs.
+    pub win_back_lost_deals: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

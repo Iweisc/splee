@@ -41,6 +41,7 @@ const TITLES: Record<RunKind, string> = {
   buyer_profile: "Find who buys",
   coach_call: "Coach a call",
   call_prep: "Prep a call",
+  win_back: "Win back a lost deal",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.
