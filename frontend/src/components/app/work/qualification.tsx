@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ListChecks, Loader2, RefreshCw } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
@@ -31,24 +31,25 @@ const LOOK: Record<QualificationItem["status"], { bar: string; text: string; lab
 /** In an open deal's window: the agent's MEDDICC scorecard, what each element rests on and what to ask next. See backend/src/agent/qualify.rs. */
 export function QualificationSection({ deal: initial }: { deal: Deal }) {
   const key = `/deals/${initial.id}`;
-  const { mutate: mutateAll } = useSWRConfig();
   const { data: deal = initial, mutate } = useSWR<Deal>(key, fetcher, {
     fallbackData: initial,
-    refreshInterval: (d) => (d?.qualification?.writing ? 2500 : 0),
+    refreshInterval: (d) => (d?.qualification_writing ? 2500 : 0),
   });
   const [busy, setBusy] = useState(false);
-  const [asked, setAsked] = useState(false);
+  // When the team asked, the scorecard that was showing then. Still showing once nothing is being written means the run failed.
+  const [askedOver, setAskedOver] = useState<string | null | undefined>(undefined);
   const [open, setOpen] = useState(false);
   if (deal.status !== "open") return null;
   const q = deal.qualification;
-  const writing = q?.writing || (asked && !q);
+  const writing = deal.qualification_writing;
+  const failed = askedOver !== undefined && !writing && (q?.created_at ?? null) === askedOver;
 
   const qualify = async () => {
     setBusy(true);
     try {
+      const before = q?.created_at ?? null;
       await mutate(api<Deal>(`${key}/qualify`, { method: "POST" }), { revalidate: false });
-      setAsked(true);
-      mutateAll((k) => typeof k === "string" && k.startsWith("/pipeline"));
+      setAskedOver(before);
     } catch (e) {
       toastError(e);
     } finally {
@@ -94,6 +95,7 @@ export function QualificationSection({ deal: initial }: { deal: Deal }) {
                 : "The agent hasn't qualified this deal yet. It checks MEDDICC against what the buyer said, and says what to ask to fill each gap."}
             </p>
           )}
+          {failed && <p className="mt-1 text-sm text-danger">The agent couldn&apos;t qualify it. Try again.</p>}
         </div>
         {writing ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />

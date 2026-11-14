@@ -164,6 +164,22 @@ async fn committee_line(db: &PgPool, lead: &Lead) -> anyhow::Result<String> {
     Ok(if list.is_empty() { String::new() } else { format!("\nThe buying committee we mapped at their company: {}.", list.join("; ")) })
 }
 
+/// What the last scorecard found the buyer said or did, so a fact confirmed from an email that's since dropped out of the
+/// latest few isn't lost.
+async fn earlier_evidence(db: &PgPool, deal_id: Uuid) -> sqlx::Result<String> {
+    let items: Option<Value> = sqlx::query_scalar("select items from deal_qualification where deal_id = $1 and items is not null order by created_at desc limit 1")
+        .bind(deal_id)
+        .fetch_optional(db)
+        .await?;
+    let items: Vec<Item> = items.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let lines: Vec<String> = items.iter().filter(|i| i.status != "unknown").map(|i| format!("- {} ({}): {}", i.key, i.status, i.evidence)).collect();
+    Ok(if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nWhat the buyer said or did that our last scorecard found, still evidence unless newer conversation contradicts it:\n{}", lines.join("\n"))
+    })
+}
+
 pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let input: Input = ctx.input()?;
     let db = ctx.db();
@@ -185,6 +201,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let context = briefs::gather(db, &lead, org_id).await?;
     let shared = health::shared(db, deal_id).await?;
     let committee = committee_line(db, &lead).await?;
+    let earlier = earlier_evidence(db, deal_id).await?;
 
     let notes = if notes.trim().is_empty() { String::new() } else { format!("\nThe deal's notes: {}", notes.trim()) };
     let shared = if shared.is_empty() { String::new() } else { format!("\n{shared}") };
@@ -192,7 +209,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let prompt = format!(
         "{us} has an open deal with this lead in the {stage} stage.{notes}{shared}{committee}\n\n\
          What we sell: {name}. {description}\n\n\
-         The lead and their company:\n{about}\n\nWhat else Splee knows:\n{context}\n\n\
+         The lead and their company:\n{about}\n\nWhat else Splee knows:\n{context}{earlier}\n\n\
          Fill in a MEDDICC scorecard for the deal, one item for each of these:\n{elements}\n\n\
          For each item:\n\
          - status: confirmed when the buyer said or showed it clearly, partial when there's a hint but not enough, unknown when \
@@ -280,6 +297,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(queue_due(&db).await.unwrap(), 1);
+        let pending = crate::deals::get(&db, org, deal).await.unwrap();
+        assert!(pending.qualification.is_none() && pending.qualification_writing, "the first one shows as being written");
         assert_eq!(queue_due(&db).await.unwrap(), 0, "not while one is being written");
 
         let started = sqlx::query_as::<_, AgentRun>("update agent_runs set status = 'running' where kind = 'qualify_deal' returning *").fetch_one(&db).await.unwrap();
@@ -311,6 +330,12 @@ mod tests {
         assert_eq!(queue_due(&db).await.unwrap(), 0, "nothing new happened");
         sqlx::query("update deals set stage_changed_at = now() where id = $1").bind(deal).execute(&db).await.unwrap();
         assert_eq!(queue_due(&db).await.unwrap(), 1, "it moved, so it's qualified again");
+        let again = sqlx::query_as::<_, AgentRun>("update agent_runs set status = 'running' where kind = 'qualify_deal' and status = 'queued' returning *").fetch_one(&db).await.unwrap();
+        let ctx = Ctx { state: crate::autopilot::tests::state(db.clone()), run: again, step: AtomicI32::new(0) };
+        super::super::fake::answer_with(ctx.run.id, |_| json!({ "items": [] }));
+        run(&ctx).await.unwrap();
+        let prompt = &super::super::fake::prompts(ctx.run.id)[0];
+        assert!(prompt.contains("- champion (confirmed): Noor pushed the pilot.") && !prompt.contains("- metrics ("), "the last scorecard's evidence: {prompt}");
         sqlx::query("update agent_runs set status = 'succeeded'").execute(&db).await.unwrap();
         sqlx::query("update deals set stage_changed_at = now() + interval '1 minute' where id = $1").bind(deal).execute(&db).await.unwrap();
         sqlx::query("update project_settings set qualify_deals = false").execute(&db).await.unwrap();

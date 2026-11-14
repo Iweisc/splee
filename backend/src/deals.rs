@@ -97,9 +97,10 @@ pub struct Deal {
     /// Once it's won or lost, the agent's review, {reason, story, turning_point, competitor, lesson, created_at, writing},
     /// where reason is null until it's written. See agent/reviews.rs.
     pub review: Option<Value>,
-    /// The agent's latest MEDDICC scorecard, {items, confirmed, created_at, writing}, where writing says a new one is on its
-    /// way. See agent/qualify.rs.
+    /// The agent's latest finished MEDDICC scorecard, {items, confirmed, created_at}. See agent/qualify.rs.
     pub qualification: Option<Value>,
+    /// Whether a scorecard is being written now, the first one included.
+    pub qualification_writing: bool,
 }
 
 /// When the deal last moved: a stage change, an email either way or a call that happened. The board's Quiet badge and
@@ -136,10 +137,10 @@ const DEAL_SELECT: &str = concat!("select d.id, d.project_id, p.name as project_
                                  'lesson', r.lesson, 'created_at', r.created_at, 'writing', coalesce(ar.status in ('queued', 'running'), false))
           from deal_reviews r left join agent_runs ar on ar.id = r.run_id where r.deal_id = d.id and r.outcome = d.status) as review,
        (select json_build_object('items', q.items, 'created_at', q.created_at,
-                                 'confirmed', (select count(*) from jsonb_array_elements(q.items) i where i->>'status' = 'confirmed'),
-                                 'writing', exists (select 1 from deal_qualification w join agent_runs r on r.id = w.run_id
-                                                    where w.deal_id = d.id and r.status in ('queued', 'running')))
-          from deal_qualification q where q.deal_id = d.id and q.items is not null order by q.created_at desc limit 1) as qualification
+                                 'confirmed', (select count(*) from jsonb_array_elements(q.items) i where i->>'status' = 'confirmed'))
+          from deal_qualification q where q.deal_id = d.id and q.items is not null order by q.created_at desc limit 1) as qualification,
+       exists (select 1 from deal_qualification w join agent_runs r on r.id = w.run_id
+               where w.deal_id = d.id and r.status in ('queued', 'running')) as qualification_writing
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
      left join users u on u.id = l.owner_id
      left join lateral (select m.id, m.title, m.started_at, m.summary from meetings m where m.lead_id = d.lead_id

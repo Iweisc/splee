@@ -2283,8 +2283,10 @@ export interface Deal {
   health_writing: boolean;
   /** Once it's won or lost, the agent's review of why. */
   review: DealReview | null;
-  /** The agent's latest MEDDICC scorecard on an open deal. `writing` says a new one is on its way. */
-  qualification: { items: QualificationItem[]; confirmed: number; created_at: Ts; writing: boolean } | null;
+  /** The agent's latest finished MEDDICC scorecard on an open deal. */
+  qualification: { items: QualificationItem[]; confirmed: number; created_at: Ts } | null;
+  /** A scorecard is being written now, the first one included. */
+  qualification_writing: boolean;
 }
 
 /** One MEDDICC element. `evidence` is empty when unknown, and `ask` is empty when confirmed. */

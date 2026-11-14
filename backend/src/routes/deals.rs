@@ -115,7 +115,7 @@ async fn qualify(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
     if deal.status != "open" {
         return Err(AppError::BadRequest("Only an open deal gets qualified".into()));
     }
-    if deal.qualification.as_ref().is_some_and(|q| q["writing"] == true) {
+    if deal.qualification_writing {
         return Err(AppError::BadRequest("The agent is already qualifying this deal".into()));
     }
     let run = crate::agent::qualify::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
