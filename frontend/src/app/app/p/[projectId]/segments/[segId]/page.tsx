@@ -19,6 +19,7 @@ import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-
 import { SegmentToggle } from "@/components/app/work/segment-toggle";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
+import { LeadPagesCard } from "@/components/app/work/lead-page";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { FitScore, SegmentIcon, SegmentStatusDot } from "@/components/app/work/status";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
           <LanguageCard segment={segment} />
           <TrackingCard segment={segment} />
+          <LeadPagesCard segment={segment} />
           <SegmentEditor key={editorKey(segment)} segment={segment} />
         </div>
         {tab === "companies" && <CompaniesTable projectId={projectId} segmentId={segId} />}

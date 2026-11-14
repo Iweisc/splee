@@ -31,6 +31,7 @@ mod hooks;
 mod jobchanges;
 mod jobs;
 mod language;
+mod lead_pages;
 mod lemmy;
 mod local_businesses;
 mod lookalikes;

@@ -215,7 +215,9 @@ pub fn html_document(fragment: &str, pixel: Option<&str>) -> String {
 /// Links that keep their own address: the unsubscribe page, which must work without Splee in the way.
 fn left_alone(url: &str, cfg: &Config) -> bool {
     let unsub = cfg.unsubscribe_url.trim_end_matches('/');
-    [format!("{unsub}/unsubscribe/"), format!("{unsub}/api/unsubscribe/")].iter().any(|prefix| url.starts_with(prefix.as_str()))
+    // A lead page counts its own views (lead_pages.rs), so a click through tracking would count the same visit twice.
+    let pages = crate::lead_pages::url(&cfg.public_url, "");
+    [format!("{unsub}/unsubscribe/"), format!("{unsub}/api/unsubscribe/"), pages].iter().any(|prefix| url.starts_with(prefix.as_str()))
 }
 
 /// Whether the email gets (click, open) tracking: its campaign's settings for first emails and follow-ups, and the

@@ -19,6 +19,7 @@ import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
 import { LeadNews } from "./news";
+import { LeadPageLink } from "./lead-page";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
@@ -300,6 +301,8 @@ function LeadBody({ leadId, onClose }: { leadId: string; onClose: () => void }) 
           </ol>
         </div>
       )}
+
+      <LeadPageLink leadId={lead.id} />
 
       <div>
         <MicroLabel className="mb-2">Emails</MicroLabel>

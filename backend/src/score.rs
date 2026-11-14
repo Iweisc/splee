@@ -73,8 +73,11 @@ pub const CLICK: Signal = Signal { key: "click", label: "Clicked links", weight:
 /// (signals/). Money is the clearest sign of new budget, so other news counts half.
 pub const NEWS: Signal = Signal { key: "news", label: "Funding and news", weight: 20.0, half_life: 30.0, window: crate::signals::WINDOW_DAYS };
 
-pub const SIGNALS: [&Signal; 14] =
-    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE, &CLICK, &NEWS];
+/// The lead opened the personal page their email linked to, scanners and repeat loads aside (lead_pages.rs). It counts more
+/// than a click, since only a person who wants to know more reads a page written for them.
+pub const PAGE: Signal = Signal { key: "page", label: "Opened their page", weight: 20.0, half_life: 3.0, window: 14 };
+pub const SIGNALS: [&Signal; 15] =
+    [&COUNTRY, &SIZE, &INDUSTRY, &TECH, &NO_COMPETITOR, &PERSONA, &HIRING, &VISIT, &INTENT_PAGE, &QUESTION, &DEAL, &JOB_CHANGE, &CLICK, &NEWS, &PAGE];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reason {
@@ -144,6 +147,8 @@ pub struct LeadFacts {
     pub moved: Option<(String, String, Ts)>,
     /// Each counted click on a link in their emails in the CLICK window, as (link, when), oldest first.
     pub clicks: Vec<(String, Ts)>,
+    /// Each counted view of their lead page in the PAGE window, oldest first.
+    pub page_views: Vec<Ts>,
     pub replied: bool,
 }
 
@@ -266,6 +271,16 @@ pub fn score(t: &Targeting, company: &CompanyFacts, lead: Option<&LeadFacts>) ->
         }
         if let Some(click) = clicked(t, lead) {
             intents.push(click);
+        }
+        if let Some(&last) = lead.page_views.last()
+            && let Some(points) = t.fade(&PAGE, last)
+        {
+            let when = t.when(last);
+            let text = match lead.page_views.len() {
+                1 => format!("Opened their page {when}"),
+                n => format!("Opened their page {n} times, last {when}"),
+            };
+            intents.push((points, text));
         }
     }
     let intent = intents.iter().map(|r| r.0).sum::<f64>().min(INTENT_MAX);
@@ -449,6 +464,7 @@ pub async fn due(db: &PgPool) -> sqlx::Result<Vec<Uuid>> {
                 or exists (select 1 from email_messages e where e.project_id = p.id and e.status = 'received' and e.created_at > s.scored_at)
                 or exists (select 1 from tracking_hits h where h.project_id = p.id and h.created_at > s.scored_at and h.kind = 'click'
                            and h.filter_reason is null)
+                or exists (select 1 from lead_page_views v where v.project_id = p.id and v.created_at > s.scored_at and v.filter_reason is null)
                 or exists (select 1 from deals d where d.project_id = p.id
                            and (d.created_at > s.scored_at or d.stage_changed_at > s.scored_at or d.closed_at > s.scored_at))
                 or exists (select 1 from job_changes j where j.project_id = p.id and (j.seen_at > s.scored_at or j.dismissed_at > s.scored_at)))))
@@ -560,6 +576,7 @@ struct LeadRow {
     moved_at: Option<Ts>,
     click_urls: Option<Vec<String>>,
     click_ats: Option<Vec<Ts>>,
+    page_view_ats: Option<Vec<Ts>>,
     replied: bool,
 }
 
@@ -648,7 +665,7 @@ fn with_signals(mut facts: CompanyFacts, signals: Option<&DomainRow>) -> Company
 
 const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_domain::text, ''), c.domain::text)) as domain, l.segment_id,
        l.title, l.country_code, l.company_name, q.at as question_at, d.stage as deal_stage, d.at as deal_at,
-       m.old_company as moved_from, m.relationship as moved_relationship, m.seen_at as moved_at, k.urls as click_urls, k.ats as click_ats,
+       m.old_company as moved_from, m.relationship as moved_relationship, m.seen_at as moved_at, k.urls as click_urls, k.ats as click_ats, v.ats as page_view_ats,
        exists (select 1 from email_messages r where r.lead_id = l.id and r.direction = 'inbound' and r.classification is distinct from 'bounce') as replied
      from leads l
      left join companies c on c.id = l.company_id
@@ -664,6 +681,8 @@ const LEADS: &str = "select l.id, l.company_id, lower(coalesce(nullif(l.company_
                         from tracking_hits h join tracked_links t on t.token = h.link_token
                         where h.lead_id = l.id and h.kind = 'click' and h.filter_reason is null
                           and h.created_at > now() - make_interval(days => $4)) k on true
+     left join lateral (select array_agg(v.created_at order by v.created_at) as ats from lead_page_views v
+                        where v.lead_id = l.id and v.filter_reason is null and v.created_at > now() - make_interval(days => $5)) v on true
      where l.project_id = $1 and ($2::uuid is null or l.id = $2)";
 
 const COMPANIES: &str = "select c.id, lower(c.domain::text) as domain, c.segment_id, c.country_code, c.employees,
@@ -692,6 +711,7 @@ fn lead_score(t: &Targeting, l: &LeadRow, companies: &HashMap<Uuid, CompanyFacts
         deal: l.deal_stage.clone().zip(l.deal_at),
         moved,
         clicks,
+        page_views: l.page_view_ats.clone().unwrap_or_default(),
         replied: l.replied,
     };
     score(t, &facts, Some(&lead))
@@ -723,7 +743,7 @@ pub async fn recompute(db: &PgPool, project_id: Uuid) -> anyhow::Result<usize> {
     let rows = companies(db, project_id, None, &signals).await?;
     let domains: Vec<(Uuid, String)> = rows.iter().map(|(id, domain, _)| (*id, domain.clone())).collect();
     let companies: HashMap<Uuid, CompanyFacts> = rows.into_iter().map(|(id, _, facts)| (id, facts)).collect();
-    let leads: Vec<LeadRow> = sqlx::query_as(LEADS).bind(project_id).bind(None::<Uuid>).bind(QUESTION.window).bind(CLICK.window).fetch_all(db).await?;
+    let leads: Vec<LeadRow> = sqlx::query_as(LEADS).bind(project_id).bind(None::<Uuid>).bind(QUESTION.window).bind(CLICK.window).bind(PAGE.window).fetch_all(db).await?;
     let scored: Vec<(Uuid, Score)> = leads.iter().map(|l| (l.id, lead_score(&t, l, &companies, &signals))).collect();
     write(db, "leads", &scored).await?;
 
@@ -746,7 +766,7 @@ pub async fn refresh_lead(db: &PgPool, lead_id: Uuid) -> anyhow::Result<Option<S
         return Ok(None);
     };
     let t = targeting(db, project_id).await?;
-    let Some(lead) = sqlx::query_as::<_, LeadRow>(LEADS).bind(project_id).bind(lead_id).bind(QUESTION.window).bind(CLICK.window).fetch_optional(db).await? else {
+    let Some(lead) = sqlx::query_as::<_, LeadRow>(LEADS).bind(project_id).bind(lead_id).bind(QUESTION.window).bind(CLICK.window).bind(PAGE.window).fetch_optional(db).await? else {
         return Ok(None);
     };
     let signals = match &lead.domain {

@@ -105,6 +105,7 @@ pub(super) struct SegmentBody {
     position: Option<i32>,
     track_clicks: Option<bool>,
     track_opens: Option<bool>,
+    lead_pages: Option<bool>,
     /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
     language: Option<String>,
 }
@@ -220,7 +221,8 @@ async fn update(
            position = coalesce($11, position),
            track_clicks = coalesce($12, track_clicks),
            track_opens = coalesce($13, track_opens),
-           language = coalesce($14, language)
+           language = coalesce($14, language),
+           lead_pages = coalesce($15, lead_pages)
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -237,6 +239,7 @@ async fn update(
     .bind(body.track_clicks)
     .bind(body.track_opens)
     .bind(body.language)
+    .bind(body.lead_pages)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
