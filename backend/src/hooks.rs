@@ -650,16 +650,32 @@ fn html(text: &str) -> String {
 /// Posts an alert to each of the project's chats at once, so a slow or broken one doesn't hold up the rest, and records
 /// how each went for the integrations page.
 pub async fn post_chat(db: &sqlx::PgPool, project_id: Uuid, alert: &ChatAlert<'_>) {
-    let urls: Vec<String> = match sqlx::query_scalar("select url from chat_channels where project_id = $1").bind(project_id).fetch_all(db).await {
-        Ok(urls) => urls,
+    let channels = sqlx::query_as("select project_id, url from chat_channels where project_id = $1").bind(project_id).fetch_all(db).await;
+    post_to(db, channels, alert).await;
+}
+
+/// Posts to every chat of the organization's projects, once per channel when two projects share one.
+pub async fn post_org_chat(db: &sqlx::PgPool, org_id: Uuid, alert: &ChatAlert<'_>) {
+    let channels = sqlx::query_as(
+        "select distinct on (c.url) c.project_id, c.url from chat_channels c join projects p on p.id = c.project_id where p.org_id = $1 order by c.url, p.created_at",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await;
+    post_to(db, channels, alert).await;
+}
+
+async fn post_to(db: &sqlx::PgPool, channels: sqlx::Result<Vec<(Uuid, String)>>, alert: &ChatAlert<'_>) {
+    let channels = match channels {
+        Ok(channels) => channels,
         Err(e) => return tracing::warn!(error = %e, "couldn't load the chat channels"),
     };
-    futures::future::join_all(urls.iter().map(|url| async move {
+    futures::future::join_all(channels.iter().map(|(project_id, url)| async move {
         let result = post_json_retrying(&chat_endpoint(url), &chat_payload(url, alert), None).await;
         if let Err(e) = &result {
             tracing::warn!(error = %e, "chat notification failed");
         }
-        record(db, project_id, Alert::Chat, url, &result).await;
+        record(db, *project_id, Alert::Chat, url, &result).await;
     }))
     .await;
 }

@@ -12,6 +12,7 @@ mod calls;
 mod chat;
 mod close_plans;
 mod config;
+mod contests;
 mod crm;
 mod crypto;
 mod deals;
@@ -160,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
     agent::churn::spawn_worker(state.clone());
     agent::renewals::spawn_worker(state.clone());
     agent::team_brief::spawn_worker(state.clone());
+    contests::spawn_worker(state.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
