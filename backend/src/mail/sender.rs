@@ -17,12 +17,13 @@ use crate::verify::{self, Lookup, Verdict};
 
 /// Replies people are waiting for, the follow-up after a sales meeting (agent/meetings.rs), the nudge on a quiet deal
 /// (agent/nudges.rs), the email that tries a lost deal again (agent/win_backs.rs), the one that offers a customer more
-/// (agent/expansions.rs) and the one that asks a customer for introductions (agent/referrals.rs). They skip the send
-/// window, the pause switch and the daily email limit.
-const REPLY_KINDS: [&str; 7] = ["auto_reply", "manual_reply", "meeting_follow_up", "deal_nudge", "win_back", "expansion", "referral_ask"];
+/// (agent/expansions.rs), the one that asks a customer for introductions (agent/referrals.rs) and the one to a customer
+/// who might leave (agent/churn.rs). They skip the send window, the pause switch and the daily email limit.
+const REPLY_KINDS: [&str; 8] = ["auto_reply", "manual_reply", "meeting_follow_up", "deal_nudge", "win_back", "expansion", "referral_ask", "retention"];
 /// The kinds Splee writes, ending with the signature WriterSettings::sign added. A reply someone typed is sent as they
 /// wrote it.
-const WRITTEN_KINDS: [&str; 8] = ["initial", "follow_up", "auto_reply", "meeting_follow_up", "deal_nudge", "win_back", "expansion", "referral_ask"];
+const WRITTEN_KINDS: [&str; 9] =
+    ["initial", "follow_up", "auto_reply", "meeting_follow_up", "deal_nudge", "win_back", "expansion", "referral_ask", "retention"];
 
 pub fn new_message_id(sender_email: &str) -> String {
     let domain = sender_email.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("splee.local");
