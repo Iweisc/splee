@@ -100,6 +100,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.qualify_deals} onChange={(qualify_deals) => update({ qualify_deals })} label="Qualify deals" />}
           />
 
+          <Section
+            title="Forecast the pipeline"
+            description="Every Monday morning the agent sorts the project's open deals into what will close this month, what could and what won't, from their health, qualification, close plan and proposal. It picks the deals to work on this week and the ones slipping, shows it on the Pipeline page's Forecast tab and posts it to your chats."
+            actions={<Switch checked={s.pipeline_forecast} onChange={(pipeline_forecast) => update({ pipeline_forecast })} label="Forecast the pipeline" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

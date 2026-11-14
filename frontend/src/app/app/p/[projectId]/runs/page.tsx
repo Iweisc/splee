@@ -37,6 +37,7 @@ const TITLES: Record<RunKind, string> = {
   deal_health: "Rate a deal",
   deal_review: "Review a won or lost deal",
   qualify_deal: "Qualify a deal",
+  pipeline_forecast: "Forecast the pipeline",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

@@ -107,6 +107,8 @@ pub struct ProjectSettings {
     pub deal_health: bool,
     /// Fills in a MEDDICC scorecard for each open deal. See agent/qualify.rs.
     pub qualify_deals: bool,
+    /// Writes a forecast of the pipeline every Monday and posts it. See agent/forecast.rs.
+    pub pipeline_forecast: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,
