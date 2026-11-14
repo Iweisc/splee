@@ -731,6 +731,15 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 |---|---|---|---|
 | GET | /projects/:id/customers | | the project's won deals, at most 500, high risk first, then watch, then by value and the newest win: `{deal_id, lead_id, lead_name, company_name, company_domain, owner_name, value_cents, currency, won_at, revenue_cents, last_paid_at, last_contact_at, risk, risk_why, growth, asked, page_views, referred}`. Someone at the customer is the deal's lead or a lead with its company's domain. `revenue_cents` sums their payments and refunds of the last 12 months in the deal's currency, and `last_paid_at` is their newest payment then. `last_contact_at` is the newest email from the deal's lead or sent to them. `risk` and `risk_why` are the latest churn check that has a risk, null once it's dropped. `growth` is the `why` of the newest expansion not dropped whose email is a draft. `asked` is true once the referral ask is approved or sent, `page_views` its page's views and `referred` the leads it brought |
 
+### Targets
+
+`routes/targets.rs`, migration 0162 (`memberships.monthly_target_cents`) and the Targets tab on the Pipeline page, for the whole organization. A deal is the teammate's when they own its lead, and only deals in the organization's currency count. Won is deals won since the start of the calendar month in UTC. Commit and best case are open deals the latest forecast of each project put there, when that forecast's `month_end` is today or later. A teammate is on track when what they won is ahead of their target times the share of the month gone, or won and commit cover it, and within reach when best case covers the rest.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /targets | | `{currency, day, days, rows}`, `day` today's day of the month and `days` the month's length. A row per member, by won, then Unassigned when deals nobody owns were won this month or are in commit or best case: `{user_id, name, target_cents, won_cents, won_deals, commit_cents, best_case_cents, deals}`, `deals` up to 5 `{deal_id, name, company, value_cents, category, why}`, commit first, then the biggest |
+| PUT | /targets/:user_id | `{target_cents}` | `{target_cents}`. Owners and admins only. Null or 0 clears it. 400 over 10,000,000,000 in the currency, 404 for someone outside the organization |
+
 ### Today
 
 `routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, and open deals quiet for more than 14 days with whether a nudge waits for approval. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
