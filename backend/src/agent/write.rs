@@ -77,6 +77,44 @@ pub fn signature<'a>(signature: &'a str, sender_name: &'a str) -> &'a str {
     if signature.trim().is_empty() { sender_name.trim() } else { signature.trim() }
 }
 
+/// Saves an email the agent wrote for a lead as a draft in their thread: from the mailbox that last wrote to them, under
+/// "Re:" and that email's subject, or as a new email with `subject` when nothing was sent yet. `body` is already signed.
+pub(super) async fn draft_in_thread(
+    tx: &mut sqlx::PgConnection,
+    lead: &Lead,
+    kind: &str,
+    subject: &str,
+    body: &str,
+    language: &str,
+) -> sqlx::Result<Uuid> {
+    let last: Option<(Option<Uuid>, String)> = sqlx::query_as(
+        "select mailbox_id, subject from email_messages where lead_id = $1 and direction = 'outbound' and status = 'sent' order by sent_at desc limit 1",
+    )
+    .bind(lead.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (mailbox, subject) = match last {
+        Some((mailbox, s)) if !s.trim().is_empty() => (mailbox, if s.to_lowercase().starts_with("re:") { s } else { format!("Re: {s}") }),
+        Some((mailbox, _)) => (mailbox, subject.trim().to_string()),
+        None => (None, subject.trim().to_string()),
+    };
+    sqlx::query_scalar(
+        "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email, language)
+         values ($1, $2, $3, $4, 'outbound', $5, $6, $7, 'draft', $8, $9) returning id",
+    )
+    .bind(lead.project_id)
+    .bind(lead.id)
+    .bind(lead.segment_id)
+    .bind(mailbox)
+    .bind(kind)
+    .bind(&subject)
+    .bind(body)
+    .bind(&lead.email)
+    .bind(language)
+    .fetch_one(&mut *tx)
+    .await
+}
+
 pub(super) async fn materials(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<String> {
     let rows: Vec<(String, String, String, String)> =
         sqlx::query_as("select kind, title, content, url from materials where project_id = $1 order by created_at limit 12")

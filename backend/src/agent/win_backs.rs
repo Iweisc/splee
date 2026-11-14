@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::explore::load_project;
 use super::nudges::NUDGEABLE;
 use super::sdk::Call;
-use super::write::{WriterSettings, company_signals, lead_brief, materials};
+use super::write::{WriterSettings, company_signals, draft_in_thread, lead_brief, materials};
 use super::{Ctx, Outcome, briefs, kind, meetings};
 use crate::hooks::{self, ChatAlert};
 use crate::models::{Lead, Ts};
@@ -469,31 +469,7 @@ async fn write(ctx: &Ctx, id: Uuid, row: &Row, review: Option<&Review>, lead: &L
     anyhow::ensure!(!email.body.trim().is_empty(), "the agent wrote an empty email");
 
     let mut tx = db.begin().await?;
-    let last: Option<(Option<Uuid>, String)> = sqlx::query_as(
-        "select mailbox_id, subject from email_messages where lead_id = $1 and direction = 'outbound' and status = 'sent' order by sent_at desc limit 1",
-    )
-    .bind(lead.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (mailbox, subject) = match last {
-        Some((mailbox, s)) if !s.trim().is_empty() => (mailbox, if s.to_lowercase().starts_with("re:") { s } else { format!("Re: {s}") }),
-        Some((mailbox, _)) => (mailbox, email.subject.trim().to_string()),
-        None => (None, email.subject.trim().to_string()),
-    };
-    let email_id: Uuid = sqlx::query_scalar(
-        "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email, language)
-         values ($1, $2, $3, $4, 'outbound', 'win_back', $5, $6, 'draft', $7, $8) returning id",
-    )
-    .bind(lead.project_id)
-    .bind(lead.id)
-    .bind(lead.segment_id)
-    .bind(mailbox)
-    .bind(&subject)
-    .bind(settings.sign(email.body.trim()))
-    .bind(&lead.email)
-    .bind(lang.code)
-    .fetch_one(&mut *tx)
-    .await?;
+    let email_id = draft_in_thread(&mut tx, lead, "win_back", &email.subject, &settings.sign(email.body.trim()), lang.code).await?;
     let saved = sqlx::query("update deal_win_backs set email_id = $2, written_at = now() where id = $1 and run_id = $3 and written_at is null")
         .bind(id)
         .bind(email_id)

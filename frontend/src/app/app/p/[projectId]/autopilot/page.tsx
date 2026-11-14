@@ -130,6 +130,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.write_battlecards} onChange={(write_battlecards) => update({ write_battlecards })} label="Write battlecards" />}
           />
 
+          <Section
+            title="Grow customers"
+            description="A month after a deal is won, the agent watches the customer's company. When there's news, new job openings or someone there reads your pricing, it decides whether there's room to sell more and drafts the email to the person who bought, for your approval. The Pipeline page's Expansion tab lists them."
+            actions={<Switch checked={s.grow_accounts} onChange={(grow_accounts) => update({ grow_accounts })} label="Grow customers" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

@@ -15,6 +15,7 @@ mod chat;
 mod booking_pages;
 mod directory;
 mod endpoints;
+mod expansions;
 mod extension;
 mod forms;
 mod hiring;
@@ -117,6 +118,7 @@ pub fn router() -> Router<AppState> {
         .merge(visitors::router())
         .merge(win_backs::router())
         .merge(battlecards::router())
+        .merge(expansions::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())
