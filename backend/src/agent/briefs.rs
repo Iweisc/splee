@@ -77,11 +77,17 @@ pub async fn latest(db: &PgPool, lead_id: Uuid) -> sqlx::Result<Option<Saved>> {
 /// Writes the lead a brief now, for their booked call if they have one, replacing the one for that call. Not posted.
 pub async fn request(db: &PgPool, lead: &Lead, org_id: Uuid) -> sqlx::Result<Uuid> {
     let mut tx = db.begin().await?;
-    sqlx::query("delete from meeting_briefs where lead_id = $1 and meeting_at is not distinct from $2").bind(lead.id).bind(lead.meeting_at).execute(&mut *tx).await?;
-    let id: Uuid = sqlx::query_scalar("insert into meeting_briefs (project_id, lead_id, meeting_at, auto) values ($1, $2, $3, false) returning id")
+    let posted: bool = sqlx::query_scalar("delete from meeting_briefs where lead_id = $1 and meeting_at is not distinct from $2 returning posted")
+        .bind(lead.id)
+        .bind(lead.meeting_at)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or(false);
+    let id: Uuid = sqlx::query_scalar("insert into meeting_briefs (project_id, lead_id, meeting_at, auto, posted) values ($1, $2, $3, false, $4) returning id")
         .bind(lead.project_id)
         .bind(lead.id)
         .bind(lead.meeting_at)
+        .bind(posted)
         .fetch_one(&mut *tx)
         .await?;
     start(&mut tx, id, lead.project_id, org_id).await?;
@@ -96,6 +102,7 @@ async fn start(tx: &mut sqlx::PgConnection, brief_id: Uuid, project_id: Uuid, or
 }
 
 /// Queues a brief for every call in the next AHEAD_HOURS that has none, in projects that keep briefs on. Returns how many.
+/// A brief asked for by hand isn't posted anywhere, so unless it replaced one that was, it's written again and posted.
 pub async fn queue_due(db: &PgPool) -> sqlx::Result<usize> {
     let mut tx = db.begin().await?;
     let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
@@ -105,7 +112,8 @@ pub async fn queue_due(db: &PgPool) -> sqlx::Result<usize> {
            join projects p on p.id = l.project_id and p.org_id is not null
            join project_settings s on s.project_id = l.project_id and s.meeting_briefs
            where l.meeting_at > now() and l.meeting_at < now() + make_interval(hours => $1)
-           on conflict (lead_id, meeting_at) do nothing
+           on conflict (lead_id, meeting_at) do update set auto = true, brief = null, written_at = null
+             where not meeting_briefs.auto and not meeting_briefs.posted
            returning id, project_id)
          select due.id, due.project_id, p.org_id from due join projects p on p.id = due.project_id",
     )
@@ -188,9 +196,12 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let call = Call { timeout: Duration::from_secs(3 * 60), budget_usd: 0.3, ..Call::writing(BRIEFER, prompt, schema()) };
     let brief = tidy(ctx.ask::<Brief>(&call).await?);
 
-    let saved = sqlx::query("update meeting_briefs set brief = $2, written_at = now() where id = $1 and brief is null")
+    // Only the run the brief is waiting on saves it. The worker can take a brief asked for by hand over while its run writes.
+    let saved = sqlx::query("update meeting_briefs set brief = $2, written_at = now(), posted = posted or $3 where id = $1 and brief is null and run_id = $4")
         .bind(input.brief_id)
         .bind(json!(brief))
+        .bind(row.auto)
+        .bind(ctx.run.id)
         .execute(db)
         .await?;
     if saved.rows_affected() == 0 {
@@ -280,8 +291,12 @@ async fn gather(db: &PgPool, lead: &Lead, org_id: Uuid) -> sqlx::Result<String> 
             lines.push(format!("When booking, they wrote: {}", note.trim()));
         }
     }
-    let calls: Vec<(Ts, String)> = sqlx::query_as("select started_at, summary from meetings where lead_id = $1 and summary <> '' order by started_at desc limit 2")
-        .bind(lead.id)
+    let calls: Vec<(Ts, String)> = sqlx::query_as(
+        "select started_at, summary from meetings where lead_id = $1 and summary <> ''
+         union all select coalesce(called_at, closed_at, due_at), summary from calls where lead_id = $1 and summary <> ''
+         order by 1 desc limit 3",
+    )
+    .bind(lead.id)
         .fetch_all(db)
         .await?;
     for (at, summary) in calls {
@@ -385,6 +400,12 @@ mod tests {
             .execute(&db)
             .await
             .unwrap();
+        sqlx::query("insert into calls (project_id, lead_id, kind, status, summary, called_at) values ($1, $2, 'manual', 'done', 'They run 8 reps on HubSpot', now() - interval '2 days')")
+            .bind(project)
+            .bind(lead)
+            .execute(&db)
+            .await
+            .unwrap();
         assert_eq!(queue_due(&db).await.unwrap(), 1);
         assert_eq!(queue_due(&db).await.unwrap(), 0, "never twice for the same call");
         assert_eq!(latest(&db, lead).await.unwrap().unwrap().status, "writing");
@@ -393,7 +414,7 @@ mod tests {
         super::super::fake::answer_with(ctx.run.id, |_| answer());
         run(&ctx).await.unwrap();
         let prompt = &super::super::fake::prompts(ctx.run.id)[0];
-        assert!(prompt.contains("Does it sync to HubSpot?") && prompt.contains("Met at SaaStr") && prompt.contains("Call notes for sales teams"), "{prompt}");
+        assert!(prompt.contains("Does it sync to HubSpot?") && prompt.contains("They run 8 reps on HubSpot") && prompt.contains("Met at SaaStr") && prompt.contains("Call notes for sales teams"), "{prompt}");
 
         let saved = latest(&db, lead).await.unwrap().unwrap();
         assert_eq!(saved.status, "ready");
@@ -427,6 +448,26 @@ mod tests {
         assert!(outcome.message.contains("moved"), "{}", outcome.message);
         assert!(super::super::fake::prompts(ctx.run.id).is_empty(), "no model call for a call that moved");
         assert_eq!(queue_due(&db).await.unwrap(), 1, "the new time gets its own brief");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_brief_asked_for_by_hand_is_written_again_and_posted_unless_one_was_posted(db: PgPool) {
+        let (org, _, lead) = setup(&db, "3 hours").await;
+        let row = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead).fetch_one(&db).await.unwrap();
+        request(&db, &row, org).await.unwrap();
+        let by_hand = started(&db).await;
+        assert_eq!(queue_due(&db).await.unwrap(), 1, "nothing was posted for this call yet");
+        super::super::fake::answer_with(by_hand.run.id, |_| answer());
+        run(&by_hand).await.unwrap();
+        assert_eq!(latest(&db, lead).await.unwrap().unwrap().status, "writing", "the run taken over doesn't save, so the worker's run posts it");
+        assert_eq!(queue_due(&db).await.unwrap(), 0, "never twice for the same call");
+        let auto: bool = sqlx::query_scalar("select auto and brief is null from meeting_briefs").fetch_one(&db).await.unwrap();
+        assert!(auto);
+
+        sqlx::query("update meeting_briefs set brief = '{}', posted = true").execute(&db).await.unwrap();
+        request(&db, &row, org).await.unwrap();
+        assert_eq!(queue_due(&db).await.unwrap(), 0, "a rewrite of a posted brief isn't posted again");
     }
 
     #[test]
