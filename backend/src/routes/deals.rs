@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/deals/{id}/move", post(move_deal))
         .route("/deals/{id}/nudge", post(nudge))
         .route("/deals/{id}/health", post(rate))
+        .route("/deals/{id}/review", post(review))
 }
 
 #[derive(Deserialize)]
@@ -89,6 +90,20 @@ async fn rate(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
         return Err(AppError::BadRequest("The agent is already rating this deal".into()));
     }
     let run = crate::agent::health::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
+    crate::agent::start_now(&state, run).await?;
+    Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
+}
+
+/// Has the agent review why a closed deal was won or lost, again. See agent::reviews.
+async fn review(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Deal>> {
+    let deal = deals::get(&state.db, auth.org_id, id).await?;
+    if deal.status == "open" {
+        return Err(AppError::BadRequest("Only a won or lost deal gets a review".into()));
+    }
+    if deal.review.as_ref().is_some_and(|r| r["writing"] == true) {
+        return Err(AppError::BadRequest("The agent is already reviewing this deal".into()));
+    }
+    let run = crate::agent::reviews::request(&state.db, deal.id, deal.project_id, auth.org_id, &deal.status).await?;
     crate::agent::start_now(&state, run).await?;
     Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
 }

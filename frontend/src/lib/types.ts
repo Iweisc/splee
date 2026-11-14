@@ -2059,7 +2059,8 @@ export type RunKind =
   | "deal_nudge"
   | "close_plan"
   | "proposal"
-  | "deal_health";
+  | "deal_health"
+  | "deal_review";
 
 export interface TumblrBlog {
   name: string;
@@ -2278,6 +2279,19 @@ export interface Deal {
   health: DealHealth | null;
   /** A rating is being written now, the first one included. */
   health_writing: boolean;
+  /** Once it's won or lost, the agent's review of why. */
+  review: DealReview | null;
+}
+
+/** Why the agent thinks a closed deal was won or lost. `reason` is null until it's written, and `writing` says one is on its way. */
+export interface DealReview {
+  reason: string | null;
+  story: string;
+  turning_point: string;
+  competitor: string;
+  lesson: string;
+  created_at: Ts;
+  writing: boolean;
 }
 
 /** The agent's latest finished read on an open deal. */

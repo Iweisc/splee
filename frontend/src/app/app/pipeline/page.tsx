@@ -10,6 +10,7 @@ import { type Kpi, KpiCard } from "@/components/app/work/kpi-card";
 import { OwnerFilterSelect, useMembers, useOwnerFilter } from "@/components/app/work/owner-menu";
 import { type AssignRequest, CloseDialog, type MoveExtras, PipelineBoard, PipelineList } from "@/components/app/work/pipeline-board";
 import { StageEditor } from "@/components/app/work/stage-editor";
+import { WinLoss } from "@/components/app/work/win-loss";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
@@ -19,7 +20,7 @@ import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list";
+type View = "board" | "list" | "winloss";
 
 // Phones can't drag, so they start on the list. md is where the sidebar's phone menu ends too.
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
@@ -120,6 +121,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
               options={[
                 { value: "board", label: "Board" },
                 { value: "list", label: "List" },
+                { value: "winloss", label: "Win/loss" },
               ]}
               className="max-sm:flex-1 max-sm:[&>button]:flex-1"
             />
@@ -131,7 +133,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           </>
         }
       />
-      <PageBody className={cn("flex min-h-0 flex-1 flex-col gap-4", view === "list" && "overflow-y-auto")}>
+      <PageBody className={cn("flex min-h-0 flex-1 flex-col gap-4", view !== "board" && "overflow-y-auto")}>
         {error && !data ? (
           <LoadError error={error} retry={() => mutate()} what="the pipeline" />
         ) : !data ? (
@@ -147,7 +149,9 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           <>
             <Forecast pipeline={data} />
             {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
-            {view === "board" ? (
+            {view === "winloss" ? (
+              <WinLoss deals={data.deals} currency={data.currency} onOpen={(d) => setOpened(d.id)} />
+            ) : view === "board" ? (
               <PipelineBoard
                 stages={data.stages}
                 deals={data.deals}
