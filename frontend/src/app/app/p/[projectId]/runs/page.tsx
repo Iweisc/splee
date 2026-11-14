@@ -48,6 +48,7 @@ const TITLES: Record<RunKind, string> = {
   churn_risk: "Check on a customer",
   practice: "Practice a call",
   one_on_one: "Prep a 1:1",
+  renewal: "Prep a renewal",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

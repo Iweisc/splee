@@ -148,6 +148,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.watch_churn} onChange={(watch_churn) => update({ watch_churn })} label="Catch customers about to leave" />}
           />
 
+          <Section
+            title="Prep renewals"
+            description="A customer renews a year after you won them, or on the date you set in their deal. 90 days before, the agent reads the account and writes how likely they are to renew, the steps to a signed renewal and an email that opens the conversation, for your approval. The Customers page's Renewals tab lists them."
+            actions={<Switch checked={s.prep_renewals} onChange={(prep_renewals) => update({ prep_renewals })} label="Prep renewals" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

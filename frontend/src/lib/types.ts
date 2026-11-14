@@ -219,6 +219,7 @@ export interface ProjectSettings extends CrmStatus {
   /** Asks happy customers for introductions. See backend/src/agent/referrals.rs. */
   ask_for_referrals: boolean;
   watch_churn: boolean;
+  prep_renewals: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2095,7 +2096,8 @@ export type RunKind =
   | "referral_ask"
   | "churn_risk"
   | "practice"
-  | "one_on_one";
+  | "one_on_one"
+  | "renewal";
 
 export interface TumblrBlog {
   name: string;
@@ -3198,4 +3200,38 @@ export interface OneOnOneView {
     status: "ready" | "writing" | "failed";
     error: string | null;
   } | null;
+}
+
+/** A customer's next renewal and the agent's prep for it. See backend/src/agent/renewals.rs. */
+export interface Renewal {
+  deal_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  won_at: Ts | null;
+  /** YYYY-MM-DD. Null only for a won deal without a close date. */
+  renews_on: string | null;
+  /** The date is the anniversary of the win, not one the team set. */
+  assumed: boolean;
+  id: UUID | null;
+  risk: "high" | "medium" | "low" | null;
+  why: string;
+  steps: string[];
+  note: string;
+  skipped: string;
+  email_id: UUID | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_status: EmailStatus | null;
+  /** later: not prepped yet. */
+  status: "later" | "writing" | "failed" | "skipped" | "done";
+}
+
+export interface RenewalView {
+  enabled: boolean;
+  ahead_days: number;
+  items: Renewal[];
 }

@@ -81,6 +81,7 @@ struct SettingsBody {
     grow_accounts: Option<bool>,
     ask_for_referrals: Option<bool>,
     watch_churn: Option<bool>,
+    prep_renewals: Option<bool>,
     /// Empty turns it off.
     bcc_email: Option<String>,
     autopilot: Option<bool>,
@@ -248,7 +249,8 @@ async fn update_settings(
            write_battlecards = coalesce($39, write_battlecards),
            grow_accounts = coalesce($40, grow_accounts),
            ask_for_referrals = coalesce($41, ask_for_referrals),
-           watch_churn = coalesce($42, watch_churn)
+           watch_churn = coalesce($42, watch_churn),
+           prep_renewals = coalesce($43, prep_renewals)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -293,6 +295,7 @@ async fn update_settings(
     .bind(body.grow_accounts)
     .bind(body.ask_for_referrals)
     .bind(body.watch_churn)
+    .bind(body.prep_renewals)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

@@ -710,6 +710,17 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | POST | /deals/:id/churn-risk | | a new check, run now, reading the signs of the last 30 days whatever the switch. A draft nobody approved is deleted first, and one already being written is reused. 400 unless the deal is won |
 | PATCH | /churn-risks/:id | `{dismissed}` | the deal's latest check. `dismissed` drops it from the lists, as handled, or brings it back |
 
+### Renewals
+
+`agent/renewals.rs`, `routes/renewals.rs`, migration 0164, the Customers page's Renewals tab (per project), the Renews section in a won deal's window, and the Prep renewals switch on the Autopilot page (`project_settings.prep_renewals`, on by default). A won deal renews on its `renews_on`, or else a year after it was won, and a date that passed moves on a year at a time to today or later. Every hour, each won deal renewing within 90 days without a `renewals` row for that date, in projects with the switch on, gets one, up to 20 a pass, soonest first. The agent reads the account like a churn check does, with what they paid in the last 12 months, the latest churn check not dropped, room to grow and the people they referred, and writes `risk` (`high`, `medium` or `low` that they renew), `why`, up to 4 `steps` and a `retention` email that opens the renewal conversation, unless they can't be emailed or an email already waits. Each one prepped on its own is posted to the project's chats.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /projects/:id/renewals | | `{enabled, ahead_days, items}`: won deals renewing within 180 days, at most 500, soonest first: `{deal_id, lead_id, lead_name, company_name, owner_name, value_cents, currency, won_at, renews_on, assumed, id, risk, why, steps, note, skipped, email_id, email_subject, email_body, email_status, status}`. `assumed` is true when the date comes from the win. `id` and the prep are the `renewals` row for that date, and `status` is `later` without one, then `writing`, `done`, `skipped` or `failed` |
+| GET | /deals/:id/renewal | | the deal's next renewal like an item above, or null unless it's won |
+| POST | /deals/:id/renewal | | the same, prepped now however far off, whatever the switch. A prep for that date and a draft nobody approved are replaced, and one being written for that date is reused. 400 unless the deal is won |
+| PUT | /deals/:id/renewal | `{renews_on}` | the same, with the date set. Null goes back to a year after the win. 400 unless the deal is won |
+
 ### Practice calls
 
 `agent/practice.rs`, `routes/practice.rs`, migration 0161 and the Practice the next call section in an open deal's window, which opens the call in its own window. A session is one practice of one deal by one user, with one step running at a time (`run_id`). Its `status` is `preparing`, `thinking` or `scoring` while a step runs, then `live`, `ended` once the buyer hangs up, `scored`, or `failed` when the last step failed or was cancelled, with the run's `error`. `persona` is only `{name, title, company}` until it's scored.
