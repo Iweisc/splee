@@ -123,6 +123,8 @@ pub struct ProjectSettings {
     pub ask_for_referrals: bool,
     /// Watches customers for signs they might leave. See agent/churn.rs.
     pub watch_churn: bool,
+    /// Preps each customer's renewal 90 days ahead. See agent/renewals.rs.
+    pub prep_renewals: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

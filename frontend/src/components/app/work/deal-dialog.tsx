@@ -17,6 +17,7 @@ import { ClosePlanSection } from "./close-plan";
 import { DealHealthSection } from "./deal-health";
 import { DealReviewSection } from "./deal-review";
 import { ChurnSection } from "./churn-risk";
+import { RenewalSection } from "./renewals";
 import { ExpansionSection } from "./expansion";
 import { PracticeSection } from "./practice";
 import { ProposalSection } from "./proposal";
@@ -206,6 +207,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
                 <PracticeSection deal={deal} />
                 <DealReviewSection deal={deal} />
                 <WinBackSection deal={deal} />
+                <RenewalSection deal={deal} />
                 <ChurnSection deal={deal} />
                 <ExpansionSection deal={deal} />
                 <ReferralSection deal={deal} />

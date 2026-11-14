@@ -9,13 +9,14 @@ import { CustomerList } from "@/components/app/work/customers";
 import { DealDialog } from "@/components/app/work/deal-dialog";
 import { ExpansionPanel } from "@/components/app/work/expansion";
 import { ReferralPanel } from "@/components/app/work/referral";
+import { RenewalsPanel } from "@/components/app/work/renewals";
 import { Select } from "@/components/ui/form";
 import { Card, EmptyState, Tabs } from "@/components/ui/misc";
 import type { Deal, ProjectSummary } from "@/lib/types";
 import { fetcher } from "@/hooks/use-me";
 
-type View = "overview" | "risk" | "expansion" | "referrals";
-const VIEWS: View[] = ["overview", "risk", "expansion", "referrals"];
+type View = "overview" | "renewals" | "risk" | "expansion" | "referrals";
+const VIEWS: View[] = ["overview", "renewals", "risk", "expansion", "referrals"];
 
 export default function CustomersPage({ searchParams }: PageProps<"/app/customers">) {
   // Chat alerts and other pages link here with ?view= for a tab and ?deal= to open a customer.
@@ -38,7 +39,7 @@ export default function CustomersPage({ searchParams }: PageProps<"/app/customer
     <ScreenPage>
       <PageHeader
         title="Customers"
-        description="Everyone who bought, with what they paid and when you last talked. The agent watches them for signs they might leave, room to sell more, and a good moment to ask for introductions."
+        description="Everyone who bought, with what they paid and when you last talked. The agent preps each renewal and watches them for signs they might leave, room to sell more, and a good moment to ask for introductions."
         actions={
           <>
             {(projects?.length ?? 0) > 1 && (
@@ -55,6 +56,7 @@ export default function CustomersPage({ searchParams }: PageProps<"/app/customer
               onChange={setView}
               options={[
                 { value: "overview", label: "Overview" },
+                { value: "renewals", label: "Renewals" },
                 { value: "risk", label: "At risk" },
                 { value: "expansion", label: "Expansion" },
                 { value: "referrals", label: "Referrals" },
@@ -73,6 +75,8 @@ export default function CustomersPage({ searchParams }: PageProps<"/app/customer
           </Card>
         ) : !projectId ? null : view === "overview" ? (
           <CustomerList key={projectId} projectId={projectId} onOpen={setOpened} />
+        ) : view === "renewals" ? (
+          <RenewalsPanel key={projectId} projectId={projectId} onOpen={setOpened} />
         ) : view === "risk" ? (
           <ChurnPanel key={projectId} projectId={projectId} onOpen={setOpened} />
         ) : view === "expansion" ? (
