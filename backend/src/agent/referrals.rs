@@ -30,7 +30,7 @@ const TALKING_DAYS: i32 = 14;
 /// Companies like theirs the agent picks from.
 const CANDIDATES: usize = 12;
 /// Where the email's page link goes, replaced with the real link.
-const LINK: &str = "{link}";
+pub(super) const LINK: &str = "{link}";
 
 const WRITER: &str = "You help a B2B sales team ask happy customers for introductions, for Splee, an outbound sales tool, \
 like a considerate account manager. Use only what you're given. Never invent facts, results, numbers, names or quotes, \
@@ -225,7 +225,7 @@ fn picked(picks: &[Pick], candidates: &[crate::lookalikes::Match]) -> Vec<Compan
 }
 
 /// The body with the page's link where the writer put it, or at the end when it left it out.
-fn with_link(body: &str, url: &str) -> String {
+pub(super) fn with_link(body: &str, url: &str) -> String {
     let body = body.trim();
     if body.contains(LINK) { body.replacen(LINK, url, 1).replace(LINK, "") } else { format!("{body}\n\n{url}") }
 }

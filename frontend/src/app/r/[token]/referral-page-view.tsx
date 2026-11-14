@@ -141,7 +141,8 @@ export function ReferralPageView({ token }: { token: string }) {
   );
 }
 
-function Frame({ children }: { children: React.ReactNode }) {
+/** The plain page around what a customer or someone they forwarded it to sees. */
+export function Frame({ children }: { children: React.ReactNode }) {
   return (
     <main className="flex flex-1 flex-col items-center bg-muted px-4 py-10 sm:px-6 sm:py-16">
       <article className="w-full max-w-3xl">{children}</article>
