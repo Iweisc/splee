@@ -33,6 +33,7 @@ mod buyers;
 mod coaching;
 mod forecast;
 mod one_on_ones;
+mod playbook;
 mod renewals;
 mod insights;
 mod lead_pages;
@@ -133,6 +134,7 @@ pub fn router() -> Router<AppState> {
         .merge(targets::router())
         .merge(one_on_ones::router())
         .merge(renewals::router())
+        .merge(playbook::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())
