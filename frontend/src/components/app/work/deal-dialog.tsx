@@ -11,6 +11,7 @@ import { Badge, type BadgeTone, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Deal, DealAmounts, DealStage, Member, Pipeline, StageKind } from "@/lib/types";
 import { fetcher } from "@/hooks/use-me";
+import { ClosePlanSection } from "./close-plan";
 import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
 
@@ -156,7 +157,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
   };
 
   return (
-    <Modal open onClose={onClose} title={deal ? (deal.company_name || deal.lead_name) : "Create deal"}>
+    <Modal open onClose={onClose} title={deal ? (deal.company_name || deal.lead_name) : "Create deal"} className={deal ? "max-w-xl" : undefined}>
       {deal && deleting ? (
         <div className="flex flex-col gap-5">
           <p className="text-sm text-muted-foreground">
@@ -183,6 +184,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
             </div>
           )}
           {deal && <QuietDeal deal={deal} />}
+          {deal && <ClosePlanSection deal={deal} />}
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
             <Field label={deal?.status === "won" ? "Final value" : "Value"}>
               <NumberInput min={0} step="any" value={values.value} onValueChange={(value) => set({ value: Math.max(0, value) })} autoFocus />

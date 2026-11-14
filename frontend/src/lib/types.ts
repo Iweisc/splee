@@ -2055,7 +2055,8 @@ export type RunKind =
   | "campaign_insights"
   | "ask"
   | "buying_committee"
-  | "deal_nudge";
+  | "deal_nudge"
+  | "close_plan";
 
 export interface TumblrBlog {
   name: string;
@@ -2269,6 +2270,8 @@ export interface Deal {
   /** The latest email either way, call or stage change. */
   last_touch_at: Ts;
   nudge: DealNudge | null;
+  /** How far the close plan got, when it has steps. */
+  plan: { done: number; total: number } | null;
 }
 
 /** A nudge the agent drafted while the deal was quiet. A done one without an email was skipped, and `why` says why. */
@@ -2578,6 +2581,44 @@ export interface PublicLeadPage {
   sender_name: string;
   booking_url: string | null;
   reply_to: string | null;
+}
+
+/** A step of a deal's close plan. `side` is whose step it is, `done_by` who ticked it. */
+export interface ClosePlanStep {
+  id: UUID;
+  title: string;
+  detail: string;
+  side: "us" | "them";
+  due_date: string | null;
+  done_at: Ts | null;
+  done_by: "us" | "them" | null;
+}
+
+/** GET /deals/:id/plan. The buyer's page is `url`. Views don't count the team's own previews. */
+export interface ClosePlan {
+  id: UUID;
+  token: string;
+  url: string;
+  goal: string | null;
+  status: "writing" | "ready" | "failed";
+  views: number;
+  first_viewed_at: Ts | null;
+  last_viewed_at: Ts | null;
+  steps: ClosePlanStep[];
+}
+
+/** GET /plans/:token, what the buyer sees. */
+export interface PublicClosePlan {
+  goal: string;
+  first_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  sender_name: string;
+  booking_url: string | null;
+  reply_to: string | null;
+  steps: ClosePlanStep[];
 }
 
 /** The lead's page for the app. Views count people only, once per visit. */
