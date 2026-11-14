@@ -388,13 +388,10 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "add_to_watch_list" => async { value(v1::add_to_watch_list(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
         "list_research" => async {
             let grid = value(v1::list_research(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
-            // By question label instead of id, so a client reads one company's answers without matching ids.
-            let labels: HashMap<String, String> = grid["questions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|q| (q["id"].as_str().unwrap_or_default().to_string(), q["label"].as_str().unwrap_or_default().to_string()))
-                .collect();
+            // Each answer carries its question's label, so a client reads a company's answers without matching ids. Keyed by
+            // question id, since two questions can share a label.
+            let labels: HashMap<String, Value> =
+                grid["questions"].as_array().into_iter().flatten().map(|q| (q["id"].as_str().unwrap_or_default().to_string(), q["label"].clone())).collect();
             let items: Vec<Value> = grid["items"]
                 .as_array()
                 .into_iter()
@@ -404,7 +401,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
                         .as_object()
                         .into_iter()
                         .flatten()
-                        .map(|(qid, a)| (labels.get(qid).cloned().unwrap_or_else(|| qid.clone()), pick(a.clone(), RESEARCH_ANSWER_FIELDS)))
+                        .map(|(qid, a)| {
+                            let mut answer = pick(a.clone(), RESEARCH_ANSWER_FIELDS);
+                            answer["label"] = labels.get(qid).cloned().unwrap_or(Value::Null);
+                            (qid.clone(), answer)
+                        })
                         .collect();
                     json!({ "id": c["id"], "domain": c["domain"], "name": c["name"], "score": c["score"], "answers": answers })
                 })
@@ -940,7 +941,7 @@ fn tools() -> Vec<Value> {
         tool(
             "list_research",
             "List research answers",
-            "The project's research questions and each company's answers by question label, best score first. An answer's status is \
+            "The project's research questions and each company's answers by question id, each with its question's label, best score first. An answer's status is \
              answered, unknown (nothing the agent read said), queued (being researched) or failed. Pass question_id with answer to \
              filter: yes, no, answered, unknown, or none for not researched yet.",
             page_props(json!({
@@ -1307,7 +1308,11 @@ mod tests {
         let (is_error, text) = server.call(KEY, "list_research", json!({ "project_id": project, "question_id": question["id"], "answer": "yes" })).await;
         assert!(!is_error, "{text}");
         let listed: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(listed["items"][0]["answers"]["Do they sell to hospitals"], json!({ "status": "answered", "answer": "yes", "evidence": "Lists hospital clients.", "source_url": "" }));
+        let qid = question["id"].as_str().unwrap();
+        assert_eq!(
+            listed["items"][0]["answers"][qid],
+            json!({ "label": "Do they sell to hospitals", "status": "answered", "answer": "yes", "evidence": "Lists hospital clients.", "source_url": "" })
+        );
 
         let (is_error, _) = server.call(KEY, "research_companies", json!({ "project_id": other_project })).await;
         assert!(is_error, "another organization's project");

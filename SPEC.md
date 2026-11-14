@@ -681,7 +681,7 @@ Auth is `Authorization: Bearer …` with an API key (`splee_…`, checked like `
 | list_sheet_connections, import_from_sheet | `GET /v1/projects/:id/sheets` (id, kind, spreadsheet_id, spreadsheet_name, tab, segment_id, keep_importing, events, last_sync_at, rows_added, error), `POST /v1/projects/:id/sheets/:conn/import` → `{imported, skipped, errors, connection}` |
 | add_research_question | `POST /v1/projects/:id/research/questions` (`question`, `label`, `answer_type`, `use_in_emails`) |
 | research_companies | `POST /v1/projects/:id/research/run` (`question_ids`, `company_ids`, `campaign_id`, `redo`, `dry_run`) |
-| list_research | `GET /v1/projects/:id/research` (`campaign_id`, `q`, `question_id`, `answer`, pages; each company's answers keyed by question label with status, answer, evidence and source_url) |
+| list_research | `GET /v1/projects/:id/research` (`campaign_id`, `q`, `question_id`, `answer`, pages; each company's answers keyed by question id with label, status, answer, evidence and source_url) |
 | list_company_signals | `GET /v1/projects/:id/signals` (`kind`, `days`, `limit` up to 100, 25 by default; domain, company, leads, kind, date, headline, title, amounts, industry, url, checked_at) |
 | list_job_changes, add_to_watch_list | `GET /v1/projects/:id/job-changes` (connected, watching, last_checked_at, and each change's id, person, relationship, old and new company, new title, new_lead_id, campaign, seen_at), `POST /v1/projects/:id/watch-list` |
 
