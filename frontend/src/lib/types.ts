@@ -2050,7 +2050,8 @@ export type RunKind =
   | "summarize_call"
   | "meeting_notes"
   | "research_companies"
-  | "meeting_brief";
+  | "meeting_brief"
+  | "campaign_insights";
 
 export interface TumblrBlog {
   name: string;
@@ -2592,4 +2593,30 @@ export interface MeetingBrief {
   brief: MeetingBriefContent | null;
   written_at: Ts | null;
   status: "ready" | "writing" | "failed";
+}
+
+/** What the agent read in a campaign's replies. See agent/insights.rs. */
+export interface CampaignInsights {
+  summary: string;
+  working: string[];
+  /** `count` is how many replies give it, and `quote` is copied from one of them, or empty. */
+  objections: { theme: string; count: number; quote: string; answer: string }[];
+  who: string[];
+  /** A new `value` for the campaign's angle or pain points, with what it said when the replies were read. */
+  suggestions: { field: "angle" | "pain_points"; current: string; value: string; why: string }[];
+}
+
+export interface CampaignInsightsView {
+  latest: {
+    id: string;
+    insights: CampaignInsights | null;
+    replies: number;
+    /** Indexes of the suggestions already used. */
+    applied: number[];
+    created_at: Ts;
+    status: "ready" | "writing" | "failed";
+  } | null;
+  /** Replies there are to read now, and how many it takes. */
+  replies: number;
+  min_replies: number;
 }
