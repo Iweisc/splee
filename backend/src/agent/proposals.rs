@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn the_first_year_counts_monthly_items_twelve_times() {
-        let item = |q: i64, p: f64, period: &str| Item { name: "x".into(), detail: String::new(), quantity: q, unit_price: p, period: period.into() };
+        let item = |q: i64, p: f64, period: &str| Item { name: "x".into(), detail: String::new(), quantity: q, unit_price: p, period: period.into(), product_id: None, list_price: None };
         assert_eq!(first_year(&[item(8, 187.5, "month"), item(1, 500.0, "one_time"), item(2, 100.0, "year")]), 18_000.0 + 500.0 + 200.0);
         assert!(tidy_items(vec![item(0, 10.0, "month")]).is_err());
         assert!(tidy_items(vec![item(1, 10.0, "week")]).is_err());

@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, Sun, Trophy } from "lucide-react";
+import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, ShieldAlert, Sun, Trophy } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ended, endsLine, standing } from "@/components/app/work/contests";
+import { ApprovalRead, pct } from "@/components/app/work/deal-desk";
 import { EMAIL_KINDS } from "@/components/app/work/email-preview";
 import { LeadModal } from "@/components/app/work/lead-modal";
 import { scenarioLabel } from "@/components/app/work/practice";
@@ -14,7 +15,7 @@ import { ClassificationBadge } from "@/components/app/work/status";
 import { Select } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { qs } from "@/lib/api";
-import type { ContestsView, Today } from "@/lib/types";
+import type { ContestsView, DiscountApproval, Today } from "@/lib/types";
 import { cn, dayTime, dealMoney, isPast, plural, timeAgo } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
@@ -29,6 +30,8 @@ export default function TodayPage() {
   const { me } = useMe();
   const { data: contests } = useSWR<ContestsView>("/contests", fetcher, { refreshInterval: 60_000 });
   const running = contests?.contests.filter((c) => !ended(c)) ?? [];
+  // Empty for anyone who isn't an owner or admin.
+  const { data: approvals } = useSWR<DiscountApproval[]>("/discount-approvals", fetcher, { refreshInterval: 60_000 });
 
   const empty =
     data &&
@@ -38,7 +41,8 @@ export default function TodayPage() {
     !data.meetings.total &&
     !data.quiet.total &&
     !data.practice.total &&
-    !running.length;
+    !running.length &&
+    !approvals?.length;
   return (
     <>
       <PageHeader
@@ -122,6 +126,22 @@ export default function TodayPage() {
                         <Badge>{a.score ? `Best ${a.score.score}, passes at ${a.pass_score}` : "Started, not scored"}</Badge>
                       </div>
                     )}
+                  </Row>
+                ))}
+              </Part>
+            )}
+            {approvals && approvals.length > 0 && (
+              <Part icon={ShieldAlert} title="Discounts to approve" total={approvals.length}>
+                {approvals.map((a) => (
+                  <Row key={a.id} href={`/app/pipeline${qs({ deal: a.deal_id })}`}>
+                    <Who
+                      name={a.company || a.lead_name}
+                      company={`${pct(a.discount_pct)} off`}
+                      aside={`${a.asked_by?.split(" ")[0] ?? "Asked"}, ${timeAgo(a.created_at)}`}
+                    />
+                    <div className="mt-1">
+                      <ApprovalRead a={a} brief />
+                    </div>
                   </Row>
                 ))}
               </Part>

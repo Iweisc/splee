@@ -8,6 +8,7 @@ import { Check, Mail, Trash2, UserPlus } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CopyField } from "@/components/app/settings/copy-button";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { PriceListSection } from "@/components/app/work/deal-desk";
 import { LoadError } from "@/components/app/work/states";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,9 @@ export default function TeamPage() {
           <OrgName me={me} isAdmin={isAdmin} />
           <Members me={me} isAdmin={isAdmin} />
           {isAdmin && <Invites />}
+          <Section title="Price list" description="What proposals pick their prices from, and how far below it they can go without an approval.">
+            <PriceListSection admin={isAdmin} />
+          </Section>
           {me.role === "owner" && <DeleteOrganization me={me} />}
         </SettingsColumn>
       </PageBody>

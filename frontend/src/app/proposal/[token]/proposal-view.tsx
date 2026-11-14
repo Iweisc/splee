@@ -171,6 +171,11 @@ export function ProposalView({ token, preview }: { token: string; preview: boole
             {expired ? `This proposal was open until ${longDay(p.valid_until!)}.` : "This proposal is closed."} Reply to the email it came in
             {sender ? ` and ${sender} will send a new one` : " for a new one"}.
           </p>
+        ) : p.held ? (
+          <p className="text-sm text-pretty opacity-75">
+            We&apos;re finishing the pricing on this proposal. {sender ? `${sender} will let you know` : "We'll let you know"} as soon as it&apos;s
+            ready to accept.
+          </p>
         ) : (
           <form onSubmit={accept} className="flex flex-col gap-4">
             <div>
