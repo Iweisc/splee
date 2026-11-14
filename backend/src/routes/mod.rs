@@ -36,6 +36,7 @@ mod one_on_ones;
 mod commissions;
 mod playbook;
 mod ramps;
+mod team_brief;
 mod renewals;
 mod insights;
 mod lead_pages;
@@ -139,6 +140,7 @@ pub fn router() -> Router<AppState> {
         .merge(playbook::router())
         .merge(commissions::router())
         .merge(ramps::router())
+        .merge(team_brief::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

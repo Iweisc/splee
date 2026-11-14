@@ -25,13 +25,13 @@ const PATH_DEALS: i64 = 5;
 #[derive(Serialize, sqlx::FromRow)]
 pub(crate) struct Row {
     pub user_id: Option<Uuid>,
-    name: String,
+    pub name: String,
     pub target_cents: Option<i64>,
     pub won_cents: i64,
     pub won_deals: i64,
     pub commit_cents: i64,
     pub best_case_cents: i64,
-    deals: Value,
+    pub deals: Value,
 }
 
 #[derive(Serialize)]

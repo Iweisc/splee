@@ -3357,3 +3357,25 @@ export interface PlaybookView {
   available: PlaybookSources;
   min_sources: number;
 }
+
+/** The Monday team brief: who needs what this week, in the order to talk to them. See backend/src/agent/team_brief.rs. */
+export interface TeamBrief {
+  headline: string;
+  people: { user_id: UUID; name: string; note: string; action: string }[];
+  risks: string[];
+}
+
+/** GET /team-brief, owners and admins only. */
+export interface TeamBriefView {
+  latest: {
+    id: UUID;
+    brief: TeamBrief | null;
+    /** A Monday one, emailed to owners and admins. */
+    auto: boolean;
+    created_at: Ts;
+    status: "ready" | "writing" | "failed";
+    error: string | null;
+  } | null;
+  /** Whether one is written and emailed every Monday. */
+  weekly: boolean;
+}
