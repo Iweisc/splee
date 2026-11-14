@@ -10,14 +10,21 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { BuyerTrait, BuyersView, Segment } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
-import { MicroLabel, toastError } from "./states";
+import { LoadError, MicroLabel, toastError } from "./states";
 
 /** On the Win/loss tab: what the companies that buy have in common, and a campaign to find more. See backend/src/agent/buyers.rs. */
 export function BuyersCard({ projectId }: { projectId: string }) {
   const key = `/projects/${projectId}/buyers`;
   const router = useRouter();
-  const { data, mutate } = useSWR<BuyersView>(key, fetcher, { refreshInterval: (v) => (v?.latest?.status === "writing" ? 3000 : 0) });
+  const { data, error, mutate } = useSWR<BuyersView>(key, fetcher, { refreshInterval: (v) => (v?.latest?.status === "writing" ? 3000 : 0) });
   const [busy, setBusy] = useState<"read" | "campaign" | null>(null);
+  if (error) {
+    return (
+      <Card>
+        <LoadError error={error} retry={() => mutate()} />
+      </Card>
+    );
+  }
   if (!data) return null;
 
   const read = async () => {
@@ -59,9 +66,11 @@ export function BuyersCard({ projectId }: { projectId: string }) {
             <p className="mt-0.5 text-sm text-muted-foreground">
               {writing
                 ? "The agent is comparing your won deals with your lost ones…"
-                : enough
-                  ? "The agent compares your won deals with your lost ones, says what the buyers have in common and drafts a campaign to find more like them."
-                  : `Once ${data.min_won} deals are won, the agent can say what your buyers have in common. ${plural(data.won, "deal")} won so far.`}
+                : latest?.status === "failed"
+                  ? "The agent couldn't finish comparing your deals. Try again."
+                  : enough
+                    ? "The agent compares your won deals with your lost ones, says what the buyers have in common and drafts a campaign to find more like them."
+                    : `Once ${data.min_won} deals are won, the agent can say what your buyers have in common. ${plural(data.won, "deal")} won so far.`}
             </p>
           )}
         </div>
