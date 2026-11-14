@@ -561,7 +561,7 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 | method | path | body | returns |
 |---|---|---|---|
-| GET | /today?owner= | | `{replies: {total, items: [{lead_id, project_id, project_name, name, company, classification, snippet, at}]}, approvals: [{project_id, project_name, kind, count}], calls: {total, items: [{id, lead_id, project_id, name, company, due_at}]}, meetings: [{lead_id, project_id, name, company, meeting_at, brief}], quiet: {total, items: [{deal_id, lead_id, project_id, name, company, stage, value_cents, currency, last_touch_at, nudge_ready}]}}`. `owner` is `mine_or_unassigned` (the default), `mine`, `unassigned`, `everyone` or a user id |
+| GET | /today?owner= | | `{replies: {total, items: [{lead_id, project_id, project_name, name, company, classification, snippet, at}]}, approvals: [{project_id, project_name, kind, count}], calls: {total, items: [{id, lead_id, project_id, name, company, due_at}]}, meetings: {total, items: [{lead_id, project_id, name, company, meeting_at, brief}]}, quiet: {total, items: [{deal_id, lead_id, project_id, name, company, stage, value_cents, currency, last_touch_at, nudge_ready}]}}`. `owner` is `mine_or_unassigned` (the default), `mine`, `unassigned`, `everyone` or a user id |
 
 ### Job changes
 

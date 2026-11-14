@@ -99,7 +99,7 @@ struct Today {
     /// Drafts waiting for approval, by project and kind. Everyone's, since approving is the team's job.
     approvals: Vec<Waiting>,
     calls: Part<CallDue>,
-    meetings: Vec<Meeting>,
+    meetings: Part<Meeting>,
     quiet: Part<Quiet>,
 }
 
@@ -172,20 +172,25 @@ async fn calls(db: &PgPool, org_id: Uuid, owner: &OwnerFilter) -> sqlx::Result<P
 }
 
 /// Calls leads booked in the next day, and one that started in the last hour and may still be on.
-async fn meetings(db: &PgPool, org_id: Uuid, owner: &OwnerFilter) -> sqlx::Result<Vec<Meeting>> {
-    sqlx::query_as(&format!(
+async fn meetings(db: &PgPool, org_id: Uuid, owner: &OwnerFilter) -> sqlx::Result<Part<Meeting>> {
+    let from = format!(
+        "from leads l join projects p on p.id = l.project_id
+         where p.org_id = $1 and l.meeting_at > now() - interval '1 hour' and l.meeting_at < now() + interval '1 day' and {}",
+        ownership::sql("l", 2, 3)
+    );
+    let total = sqlx::query_scalar(&format!("select count(*) {from}")).bind(org_id).bind(owner.mode()).bind(owner.user()).fetch_one(db).await?;
+    let items = sqlx::query_as(&format!(
         "select l.id as lead_id, l.project_id, l.full_name as name, l.company_name as company, l.meeting_at,
                 exists (select 1 from meeting_briefs b where b.lead_id = l.id and b.meeting_at = l.meeting_at and b.brief is not null) as brief
-         from leads l join projects p on p.id = l.project_id
-         where p.org_id = $1 and l.meeting_at > now() - interval '1 hour' and l.meeting_at < now() + interval '1 day' and {}
-         order by l.meeting_at limit 20",
-        ownership::sql("l", 2, 3)
+         {from} order by l.meeting_at limit $4"
     ))
     .bind(org_id)
     .bind(owner.mode())
     .bind(owner.user())
+    .bind(SHOWN)
     .fetch_all(db)
-    .await
+    .await?;
+    Ok(Part { total, items })
 }
 
 /// Open deals with no email, call or stage change in QUIET_DAYS, the longest quiet first.
@@ -286,7 +291,8 @@ mod tests {
         assert_eq!((t.replies.items[0].name.as_str(), t.replies.items[0].snippet.as_str()), ("Ana", "How much is it?"));
         assert_eq!(t.approvals.iter().map(|w| (w.kind.as_str(), w.count, w.project_name.as_str())).collect::<Vec<_>>(), vec![("initial", 1, "Ours")]);
         assert_eq!((t.calls.total, t.calls.items[0].name.as_str()), (1, "Bo"));
-        assert_eq!(t.meetings.iter().map(|m| (m.name.as_str(), m.brief)).collect::<Vec<_>>(), vec![("Bo", false)]);
+        assert_eq!(t.meetings.total, 1);
+        assert_eq!(t.meetings.items.iter().map(|m| (m.name.as_str(), m.brief)).collect::<Vec<_>>(), vec![("Bo", false)]);
         assert_eq!((t.quiet.total, t.quiet.items[0].name.as_str(), t.quiet.items[0].nudge_ready), (1, "Cy", false));
 
         let auth = Auth { user_id: user, org_id: orgs[0], role: "owner".into(), token_hash: String::new() };

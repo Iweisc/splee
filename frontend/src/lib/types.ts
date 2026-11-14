@@ -2298,7 +2298,7 @@ export interface Today {
   /** Drafts waiting for approval, by project and kind. Everyone's, since approving is the team's job. */
   approvals: { project_id: UUID; project_name: string; kind: EmailRow["kind"]; count: number }[];
   calls: TodayPart<{ id: UUID; lead_id: UUID; project_id: UUID; name: string; company: string; due_at: Ts }>;
-  meetings: { lead_id: UUID; project_id: UUID; name: string; company: string; meeting_at: Ts; brief: boolean }[];
+  meetings: TodayPart<{ lead_id: UUID; project_id: UUID; name: string; company: string; meeting_at: Ts; brief: boolean }>;
   quiet: TodayPart<{
     deal_id: UUID;
     lead_id: UUID;

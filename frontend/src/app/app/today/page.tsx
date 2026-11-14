@@ -26,7 +26,7 @@ export default function TodayPage() {
   const [lead, setLead] = useState<string | null>(null);
   const { data, error, mutate } = useSWR<Today>(`/today${qs({ owner })}`, fetcher, { refreshInterval: 60_000, keepPreviousData: true });
 
-  const empty = data && !data.replies.total && !data.approvals.length && !data.calls.total && !data.meetings.length && !data.quiet.total;
+  const empty = data && !data.replies.total && !data.approvals.length && !data.calls.total && !data.meetings.total && !data.quiet.total;
   return (
     <>
       <PageHeader
@@ -77,9 +77,9 @@ export default function TodayPage() {
                 ))}
               </Part>
             )}
-            {data.meetings.length > 0 && (
-              <Part icon={CalendarClock} title="Meetings in the next day" total={data.meetings.length}>
-                {data.meetings.map((m) => (
+            {data.meetings.total > 0 && (
+              <Part icon={CalendarClock} title="Meetings in the next day" total={data.meetings.total} shown={data.meetings.items.length}>
+                {data.meetings.items.map((m) => (
                   <Row key={m.lead_id} onClick={() => setLead(m.lead_id)}>
                     <Who name={m.name} company={m.company} aside={dayTime(m.meeting_at)} />
                     <div className="mt-1.5">
