@@ -173,6 +173,10 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         format!("\nCompetitors we track: {}.", list.join(", "))
     };
     let reasons = if deal.outcome == "won" { WON_REASONS } else { LOST_REASONS };
+    let about = serde_json::to_string_pretty(&about)?;
+    // What the buyer and the team actually said or recorded, without our instructions or the competitors we track, so a
+    // competitor the agent names has to come from the deal.
+    let evidence = [deal.lost_reason.as_str(), deal.notes.as_str(), about.as_str(), context.as_str()].join("\n");
     let prompt = format!(
         "{us} {outcome} a deal with this lead on {closed}{value}, {days} days after it opened.{planned}{reason}{notes}{rating}{shared}{rivals_line}\n\n\
          What we sell: {name}. {description}\n\n\
@@ -189,7 +193,6 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         days = (closed_at - deal.created_at).num_days(),
         name = profile.name,
         description = profile.description,
-        about = serde_json::to_string_pretty(&about)?,
         reasons = reasons.join(", "),
         meanings = if deal.outcome == "won" {
             "value: they saw a clear return. fit: it matched what they needed. champion: someone inside pushed it through. timing: \
@@ -204,8 +207,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let call = Call { timeout: Duration::from_secs(2 * 60), budget_usd: 0.25, ..Call::writing(REVIEWER, prompt.clone(), schema()) };
     let a: Answer = ctx.ask(&call).await?;
     let reason = if reasons.contains(&a.reason.as_str()) { a.reason } else { "other".to_string() };
-    // The list of competitors we track isn't evidence that this buyer talked about one.
-    let competitor = competitor(&a.competitor, &rivals, &prompt.replace(&rivals_line, ""));
+    let competitor = competitor(&a.competitor, &rivals, &evidence);
     let clip = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();
 
     sqlx::query("update deal_reviews set reason = $2, story = $3, turning_point = $4, competitor = $5, lesson = $6 where id = $1 and run_id = $7")
@@ -232,13 +234,22 @@ fn competitor(named: &str, rivals: &[(String, String)], evidence: &str) -> Strin
     let evidence = evidence.to_lowercase();
     let root = |domain: &str| domain.split('.').next().unwrap_or_default().to_lowercase();
     if let Some((name, domain)) = rivals.iter().find(|(name, domain)| name.to_lowercase() == lower || domain.to_lowercase() == lower || root(domain) == lower) {
-        let named_in_evidence = [name.to_lowercase(), domain.to_lowercase(), root(domain)].iter().any(|w| !w.is_empty() && evidence.contains(w.as_str()));
-        if !named_in_evidence {
+        if ![name.to_lowercase(), domain.to_lowercase(), root(domain)].iter().any(|w| mentions(&evidence, w)) {
             return String::new();
         }
         return if name.is_empty() { domain.clone() } else { name.clone() };
     }
-    if evidence.contains(&lower) { named.chars().take(80).collect() } else { String::new() }
+    if mentions(&evidence, &lower) { named.chars().take(80).collect() } else { String::new() }
+}
+
+/// Whether `text` has `word` as a whole word, so a competitor called Close isn't found in "expected to close by".
+fn mentions(text: &str, word: &str) -> bool {
+    !word.is_empty()
+        && text.match_indices(word).any(|(i, _)| {
+            let before = text[..i].chars().next_back();
+            let after = text[i + word.len()..].chars().next();
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        })
 }
 
 #[cfg(test)]
@@ -254,6 +265,8 @@ mod tests {
         assert_eq!(competitor(" gong ", &rivals, "They renewed GONG instead."), "Gong");
         assert_eq!(competitor("Chorus", &rivals, "they compared us with chorus"), "chorus.ai");
         assert_eq!(competitor("Gong", &rivals, "they went quiet"), "", "a tracked rival the evidence never names");
+        let close = vec![("Close".to_string(), "close.com".to_string())];
+        assert_eq!(competitor("Close", &close, "They closed the round and went quiet."), "", "not a part of another word");
         assert_eq!(competitor("Outreach", &rivals, "they went with outreach in the end"), "Outreach");
         assert_eq!(competitor("Salesloft", &rivals, "they went quiet"), "", "the evidence never names it");
     }
