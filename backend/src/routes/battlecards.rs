@@ -7,7 +7,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::util_scope;
-use crate::agent::battlecards::{self, ITEMS, Item, TRACKED_AS};
+use crate::agent::battlecards::{self, ITEMS, Item};
 use crate::auth::Auth;
 use crate::deals;
 use crate::error::{AppError, AppResult};
@@ -48,30 +48,8 @@ async fn write_now(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     items(&state, competitor.project_id).await?.into_iter().find(|i| i.competitor_id == competitor.id).map(Json).ok_or(AppError::NotFound)
 }
 
-/// The competitors this deal is up against: the one its review names, and those its notes, lost reason or the buyer's
-/// emails and calls mention.
+/// The competitors this deal is up against. See battlecards::up_against.
 async fn for_deal(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Item>>> {
     let deal = deals::get(&state.db, auth.org_id, id).await?;
-    let reviewed: Vec<Uuid> = sqlx::query_scalar(&format!(
-        "select c.id from competitors c join deal_reviews rv on rv.deal_id = $1 and lower(rv.competitor) = lower({TRACKED_AS}) where c.project_id = $2"
-    ))
-    .bind(deal.id)
-    .bind(deal.project_id)
-    .fetch_all(&state.db)
-    .await?;
-    let said: Vec<String> = sqlx::query_scalar(
-        "(select body from email_messages where lead_id = $1 and direction = 'inbound' order by created_at desc limit 30)
-         union all (select transcript from meetings where lead_id = $1 order by started_at desc limit 10)
-         union all (select transcript from calls where lead_id = $1 and transcript <> '' order by created_at desc limit 10)",
-    )
-    .bind(deal.lead_id)
-    .fetch_all(&state.db)
-    .await?;
-    let text = [deal.notes.as_str(), deal.lost_reason.as_str()].into_iter().chain(said.iter().map(String::as_str)).collect::<Vec<_>>().join("\n");
-    let up_against = items(&state, deal.project_id)
-        .await?
-        .into_iter()
-        .filter(|i| reviewed.contains(&i.competitor_id) || battlecards::find(&text, &battlecards::words(&i.name, &i.domain)).is_some())
-        .collect();
-    Ok(Json(up_against))
+    Ok(Json(battlecards::up_against(&state.db, deal.id, deal.project_id).await?))
 }

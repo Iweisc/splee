@@ -18,6 +18,7 @@ import { DealHealthSection } from "./deal-health";
 import { DealReviewSection } from "./deal-review";
 import { ChurnSection } from "./churn-risk";
 import { ExpansionSection } from "./expansion";
+import { PracticeSection } from "./practice";
 import { ProposalSection } from "./proposal";
 import { QualificationSection } from "./qualification";
 import { QuietDeal } from "./quiet-deal";
@@ -202,6 +203,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
             {deal && (
               <div className="flex min-w-0 flex-col gap-4">
                 <DealHealthSection deal={deal} />
+                <PracticeSection deal={deal} />
                 <DealReviewSection deal={deal} />
                 <WinBackSection deal={deal} />
                 <ChurnSection deal={deal} />

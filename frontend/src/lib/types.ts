@@ -2093,7 +2093,8 @@ export type RunKind =
   | "battlecard"
   | "expansion"
   | "referral_ask"
-  | "churn_risk";
+  | "churn_risk"
+  | "practice";
 
 export interface TumblrBlog {
   name: string;
@@ -3125,4 +3126,34 @@ export interface Customer {
   asked: boolean;
   page_views: number;
   referred: number;
+}
+
+/** A practice call on an open deal, with the agent playing the buyer. See backend/src/agent/practice.rs. */
+export interface PracticeSession {
+  id: UUID;
+  deal_id: UUID;
+  scenario: "next_call" | "pricing" | "competitor";
+  /** Only name, title and company until it's scored. */
+  persona: {
+    name: string;
+    title: string;
+    company: string;
+    situation?: string;
+    cares_about?: string[];
+    objections?: string[];
+    agrees_if?: string;
+  } | null;
+  turns: { who: "buyer" | "rep"; text: string }[];
+  ended: boolean;
+  score: {
+    score: number;
+    summary: string;
+    went_well: string[];
+    try_next: string[];
+    moments: { you_said: string; try: string }[];
+  } | null;
+  user_name: string | null;
+  status: "preparing" | "thinking" | "scoring" | "live" | "ended" | "scored" | "failed";
+  error: string | null;
+  created_at: string;
 }
