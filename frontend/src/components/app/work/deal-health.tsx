@@ -69,10 +69,10 @@ export function DealHealthSection({ deal: initial }: { deal: Deal }) {
   const rate = async () => {
     setBusy(true);
     try {
-      setAskedOver(h?.created_at ?? null);
+      const before = h?.created_at ?? null;
       await mutate(api<Deal>(`${key}/health`, { method: "POST" }), { revalidate: false });
+      setAskedOver(before);
     } catch (e) {
-      setAskedOver(undefined);
       toastError(e);
     } finally {
       setBusy(false);
