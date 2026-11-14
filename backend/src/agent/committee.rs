@@ -69,8 +69,8 @@ pub async fn company_of(db: &PgPool, lead: &Lead) -> sqlx::Result<Option<Uuid>> 
 pub async fn latest(db: &PgPool, company_id: Uuid) -> sqlx::Result<Option<Saved>> {
     sqlx::query_as(
         "select b.id, b.committee, b.found, b.created_at,
-                case when r.status in ('queued', 'running') then 'working' when r.status = 'succeeded' then 'ready'
-                     when b.committee is not null then 'ready' else 'failed' end as status
+                case when r.status in ('queued', 'running') then 'working'
+                     when r.status = 'succeeded' or (r.id is null and b.committee is not null) then 'ready' else 'failed' end as status
          from buying_committees b left join agent_runs r on r.id = b.run_id
          where b.company_id = $1 order by b.created_at desc limit 1",
     )
@@ -316,6 +316,10 @@ mod tests {
         assert_eq!((saved.id, saved.status.as_str(), saved.found), (id, "ready", 0));
         let committee: Committee = serde_json::from_value(saved.committee.unwrap()).unwrap();
         assert_eq!(committee.summary, "The CRO decides.");
+        sqlx::query("update agent_runs set status = 'failed'").execute(&db).await.unwrap();
+        let failed = latest(&db, company).await.unwrap().unwrap();
+        assert_eq!(failed.status, "failed", "a search that failed after the map was saved isn't ready");
+        assert!(failed.committee.is_some(), "the map still shows");
         let roles: Vec<(Uuid, &str)> = committee.members.iter().map(|m| (m.lead_id, m.role.as_str())).collect();
         assert_eq!(roles, vec![(ana.id, "champion"), (bo.id, "unknown")], "known people once each, with a real role");
         assert_eq!(committee.missing.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(), vec!["CRO or VP Sales", "CFO", "IT"]);

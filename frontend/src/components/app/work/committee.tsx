@@ -121,9 +121,11 @@ export function BuyingCommitteeCard({
       {committee && committee.missing.length > 0 && latest && !working && (
         <div className="mt-3 rounded-lg bg-muted p-3">
           <p className="text-xs font-medium">
-            {latest.found > 0
-              ? `Looked for these roles and added ${plural(latest.found, "person", "people")} to ${campaign ?? "the campaign"}:`
-              : "Looked for these roles and found nobody new:"}
+            {latest.status === "failed"
+              ? "Didn't finish looking for these roles:"
+              : latest.found > 0
+                ? `Looked for these roles and added ${plural(latest.found, "person", "people")} to ${campaign ?? "the campaign"}:`
+                : "Looked for these roles and found nobody new:"}
           </p>
           <ul className="mt-1.5 flex flex-col gap-1">
             {committee.missing.map((m) => (

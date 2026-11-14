@@ -30,9 +30,13 @@ export function LeadModal({ leadId, onClose }: { leadId: string | null; onClose:
   // A colleague picked in the buying committee shows in the same window, until another lead is opened from outside.
   const [colleague, setColleague] = useState<{ from: string; id: string } | null>(null);
   const shown = colleague && colleague.from === leadId ? colleague.id : leadId;
+  const close = () => {
+    setColleague(null);
+    onClose();
+  };
   return (
-    <Modal open={!!leadId} onClose={onClose} className="max-w-2xl">
-      {leadId && shown && <LeadBody key={shown} leadId={shown} onClose={onClose} openLead={(id) => setColleague({ from: leadId, id })} />}
+    <Modal open={!!leadId} onClose={close} className="max-w-2xl">
+      {leadId && shown && <LeadBody key={shown} leadId={shown} onClose={close} openLead={(id) => setColleague({ from: leadId, id })} />}
     </Modal>
   );
 }
