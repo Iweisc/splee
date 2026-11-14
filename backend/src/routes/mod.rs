@@ -23,6 +23,7 @@ mod job_changes;
 mod ask;
 mod briefs;
 mod committee;
+mod referrals;
 mod today;
 mod buyers;
 mod coaching;
@@ -119,6 +120,7 @@ pub fn router() -> Router<AppState> {
         .merge(win_backs::router())
         .merge(battlecards::router())
         .merge(expansions::router())
+        .merge(referrals::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

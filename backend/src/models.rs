@@ -119,6 +119,8 @@ pub struct ProjectSettings {
     pub write_battlecards: bool,
     /// Drafts an email to a customer whose company shows room to buy more. See agent/expansions.rs.
     pub grow_accounts: bool,
+    /// Asks happy customers for introductions. See agent/referrals.rs.
+    pub ask_for_referrals: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,
