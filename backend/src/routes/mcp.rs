@@ -4,6 +4,7 @@
 //! signs in with an API key or an access token from Splee's OAuth (routes/oauth.rs), and each tool calls the matching public
 //! API v1 handler for that organization.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use axum::body::Bytes;
@@ -43,7 +44,7 @@ const CACHE_MS: u64 = 3_600_000;
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. find_lookalikes and add_lookalikes find companies like the user's \
-customers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -256,6 +257,8 @@ const SHEET_FIELDS: &[&str] =
     &["id", "kind", "spreadsheet_id", "spreadsheet_name", "tab", "segment_id", "keep_importing", "events", "last_sync_at", "rows_added", "error"];
 const SIGNAL_FIELDS: &[&str] =
     &["domain", "company_id", "company_name", "leads", "kind", "happened_on", "headline", "title", "amount", "offered", "industry", "url", "checked_at"];
+const RESEARCH_QUESTION_FIELDS: &[&str] = &["id", "label", "question", "answer_type", "use_in_emails"];
+const RESEARCH_ANSWER_FIELDS: &[&str] = &["status", "answer", "evidence", "source_url"];
 /// Signals one list_company_signals call returns at most, so a big project's list doesn't fill the client's context.
 const MAX_SIGNALS: usize = 100;
 const JOB_CHANGE_FIELDS: &[&str] = &[
@@ -383,6 +386,40 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "add_to_watch_list" => async { value(v1::add_to_watch_list(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
+        "list_research" => async {
+            let grid = value(v1::list_research(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
+            // Each answer carries its question's label, so a client reads a company's answers without matching ids. Keyed by
+            // question id, since two questions can share a label.
+            let labels: HashMap<String, Value> =
+                grid["questions"].as_array().into_iter().flatten().map(|q| (q["id"].as_str().unwrap_or_default().to_string(), q["label"].clone())).collect();
+            let items: Vec<Value> = grid["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| {
+                    let answers: serde_json::Map<String, Value> = c["answers"]
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .map(|(qid, a)| {
+                            let mut answer = pick(a.clone(), RESEARCH_ANSWER_FIELDS);
+                            answer["label"] = labels.get(qid).cloned().unwrap_or(Value::Null);
+                            (qid.clone(), answer)
+                        })
+                        .collect();
+                    json!({ "id": c["id"], "domain": c["domain"], "name": c["name"], "score": c["score"], "answers": answers })
+                })
+                .collect();
+            Ok(json!({
+                "questions": pick(grid["questions"].clone(), RESEARCH_QUESTION_FIELDS),
+                "items": items,
+                "total": grid["total"],
+                "researching": grid["researching"],
+            }))
+        }
+        .await,
+        "add_research_question" => async { Ok(pick(value(v1::add_research_question(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?)?, RESEARCH_QUESTION_FIELDS)) }.await,
+        "research_companies" => async { value(v1::start_research(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
         "list_company_signals" => async {
             let limit = a["limit"].as_u64().unwrap_or(25).clamp(1, MAX_SIGNALS as u64) as usize;
             let mut listed = value(v1::list_signals(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?)?;
@@ -868,6 +905,56 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "add_research_question",
+            "Add a research question",
+            "Adds a question the agent answers about every company in the project, like \"Do they sell to hospitals?\" or \"Which \
+             CRM do they use?\". It shows as a column on the Companies page. answer_type yes_no gets yes or no, text a short answer. \
+             With use_in_emails, the email writer can use the answers. Up to 10 a project. Then call research_companies.",
+            json!({
+                "project_id": project,
+                "question": { "type": "string", "maxLength": 300, "description": "The question, about one company" },
+                "label": { "type": "string", "maxLength": 40, "description": "Optional. A short column name. The question's first words by default" },
+                "answer_type": { "type": "string", "enum": ["yes_no", "text"], "description": "yes_no by default" },
+                "use_in_emails": { "type": "boolean", "description": "Let the email writer use the answers. False by default" },
+            }),
+            &["project_id", "question"],
+            adds.clone(),
+        ),
+        tool(
+            "research_companies",
+            "Research companies",
+            "Queues the agent to answer the project's research questions for its companies from their websites and the web, up to \
+             200 companies a call, best score first. Each company is one Claude call, costed like any run. By default every \
+             question, every company that isn't excluded, and only answers not found yet. companies says how many were queued and \
+             more how many are left for another call. Answers take a few minutes, then show in list_research.",
+            json!({
+                "project_id": project,
+                "question_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Optional. Only these questions" },
+                "company_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Optional. Only these companies" },
+                "campaign_id": id_prop("Optional. Only this campaign's companies"),
+                "redo": { "type": "boolean", "description": "Ask again where an answer was already found" },
+                "dry_run": { "type": "boolean", "description": "Only count what would be queued" },
+            }),
+            &["project_id"],
+            adds.clone(),
+        ),
+        tool(
+            "list_research",
+            "List research answers",
+            "The project's research questions and each company's answers by question id, each with its question's label, best score first. An answer's status is \
+             answered, unknown (nothing the agent read said), queued (being researched) or failed. Pass question_id with answer to \
+             filter: yes, no, answered, unknown, or none for not researched yet.",
+            page_props(json!({
+                "project_id": project,
+                "campaign_id": id_prop("Optional. Only this campaign's companies"),
+                "q": { "type": "string", "description": "Optional. Search names and domains" },
+                "question_id": id_prop("Optional. With answer, filter by this question"),
+                "answer": { "type": "string", "enum": ["yes", "no", "answered", "unknown", "none"], "description": "Optional. The answer to filter by" },
+            })),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
             "list_company_signals",
             "List company funding and news",
             "Funding and news at the project's companies, newest first: Form D filings from SEC EDGAR (kind funding_filing, with \
@@ -1057,7 +1144,7 @@ mod tests {
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
-                     "add_lookalikes", "list_company_signals"] {
+                     "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1200,6 +1287,35 @@ mod tests {
         }
         let theirs: i64 = sqlx::query_scalar("select count(*) from companies where project_id = $1").bind(other_project).fetch_one(&db).await.unwrap();
         assert_eq!(theirs, 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn research_questions_queue_and_list_answers_by_label(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        let server = Server::start(db.clone()).await;
+        sqlx::query("insert into companies (project_id, domain, name) values ($1, 'acme.example', 'Acme')").bind(project).execute(&db).await.unwrap();
+
+        let (is_error, text) = server.call(KEY, "add_research_question", json!({ "project_id": project, "question": "Do they sell to hospitals?" })).await;
+        assert!(!is_error, "{text}");
+        let question: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((question["label"].clone(), question["answer_type"].clone()), (json!("Do they sell to hospitals"), json!("yes_no")));
+        let (is_error, text) = server.call(KEY, "research_companies", json!({ "project_id": project })).await;
+        assert!(!is_error, "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["companies"], 1);
+
+        sqlx::query("update research_answers set status = 'answered', answer = 'yes', evidence = 'Lists hospital clients.'").execute(&db).await.unwrap();
+        let (is_error, text) = server.call(KEY, "list_research", json!({ "project_id": project, "question_id": question["id"], "answer": "yes" })).await;
+        assert!(!is_error, "{text}");
+        let listed: Value = serde_json::from_str(&text).unwrap();
+        let qid = question["id"].as_str().unwrap();
+        assert_eq!(
+            listed["items"][0]["answers"][qid],
+            json!({ "label": "Do they sell to hospitals", "status": "answered", "answer": "yes", "evidence": "Lists hospital clients.", "source_url": "" })
+        );
+
+        let (is_error, _) = server.call(KEY, "research_companies", json!({ "project_id": other_project })).await;
+        assert!(is_error, "another organization's project");
     }
 
     #[sqlx::test]

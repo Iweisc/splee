@@ -369,6 +369,33 @@ pub struct SavedReply {
     pub created_at: Ts,
 }
 
+/// A question the agent answers about every company, shown as a column on the Companies page. See agent/research.rs.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct ResearchQuestion {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub label: String,
+    pub question: String,
+    /// "yes_no" or "text".
+    pub answer_type: String,
+    pub use_in_emails: bool,
+    pub position: i32,
+    pub created_at: Ts,
+}
+
+/// One company's answer to a research question. `status` is queued, answered, unknown or failed, and a queued answer
+/// whose run stopped reads as failed.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct ResearchAnswer {
+    pub question_id: Uuid,
+    pub domain: String,
+    pub status: String,
+    pub answer: String,
+    pub evidence: String,
+    pub source_url: String,
+    pub updated_at: Ts,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Segment {
     pub id: Uuid,

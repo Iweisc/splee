@@ -2041,7 +2041,11 @@ export type RunKind =
   | "linkedin_sequence"
   | "explorer"
   | "segment_from_prompt"
-  | "social";
+  | "social"
+  | "write_texts"
+  | "summarize_call"
+  | "meeting_notes"
+  | "research_companies";
 
 export interface TumblrBlog {
   name: string;
@@ -2439,4 +2443,63 @@ export interface Pipeline {
     lost: number;
     win_rate: number | null;
   };
+}
+
+/** A question the agent answers about every company, a column on the Companies page's Research view. */
+export interface ResearchQuestion {
+  id: string;
+  project_id: string;
+  /** The column name. */
+  label: string;
+  question: string;
+  answer_type: "yes_no" | "text";
+  /** The email writer may use the answers. */
+  use_in_emails: boolean;
+  position: number;
+  created_at: string;
+}
+
+/** A queued answer whose run stopped comes back as failed. */
+export type ResearchStatus = "queued" | "answered" | "unknown" | "failed";
+
+export interface ResearchAnswer {
+  question_id: string;
+  domain: string;
+  status: ResearchStatus;
+  /** "yes" or "no" for a yes or no question, else a short answer. Empty unless answered. */
+  answer: string;
+  evidence: string;
+  source_url: string;
+  updated_at: string;
+}
+
+export interface ResearchRow {
+  id: string;
+  domain: string;
+  name: string;
+  score: number;
+  score_fit: number;
+  score_intent: number;
+  status: Company["status"];
+  segment_name: string | null;
+  /** By question id. */
+  answers: Record<string, ResearchAnswer>;
+}
+
+export interface ResearchGrid {
+  questions: ResearchQuestion[];
+  items: ResearchRow[];
+  total: number;
+  /** Answers being researched across the project. */
+  researching: number;
+}
+
+export interface ResearchStarted {
+  companies: number;
+  answers: number;
+  /** Companies past the 200 a request can queue. */
+  more: number;
+  runs: number;
+  /** What a company cost on average in the project's research runs so far. */
+  cost_per_company_micros: number | null;
 }

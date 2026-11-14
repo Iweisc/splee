@@ -8,6 +8,7 @@ import { HiringSignals } from "@/components/app/work/hiring";
 import { LocalBusinesses } from "@/components/app/work/local-businesses";
 import { LookalikesView } from "@/components/app/work/lookalikes";
 import { NewsSignals } from "@/components/app/work/news";
+import { ResearchView } from "@/components/app/work/research";
 import { TechSignals } from "@/components/app/work/tech";
 import { VisitorsView } from "@/components/app/work/visitors";
 import { Tabs } from "@/components/ui/misc";
@@ -25,18 +26,25 @@ const DESCRIPTIONS: Record<Tab, string> = {
   visitors: "Companies that visited your website, the pages they read and how they found you. Add the ones you aren't talking to yet to a campaign.",
 };
 
+const RESEARCH = "Ask the agent a question about every company, like \"Do they sell to hospitals?\". It answers from each company's website, with the page that shows it.";
+
 const LOOKALIKES = "Companies in the database like the ones you won deals with, ranked by what they share with them, with the reasons.";
 
 export default function CompaniesPage({ params, searchParams }: PageProps<"/app/p/[projectId]/companies">) {
   const { projectId } = use(params);
   // ?tab=visitors is where hot-visitor alerts link to, and ?tab=news funding alerts.
   const { tab: linked } = use(searchParams);
+  // Research is a second view of your companies, for the same reason as "Like your customers" below.
+  const [research, setResearch] = useState(linked === "research");
   // "Like your customers" is a second view of the company database, since a seventh tab doesn't fit a phone.
   const [tab, setTab] = useState<Tab>(linked === "lookalikes" ? "database" : (TABS.find((t) => t === linked) ?? "yours"));
   const [lookalikes, setLookalikes] = useState(linked === "lookalikes");
   return (
     <>
-      <PageHeader title="Companies" description={tab === "database" && lookalikes ? LOOKALIKES : DESCRIPTIONS[tab]} />
+      <PageHeader
+        title="Companies"
+        description={tab === "database" && lookalikes ? LOOKALIKES : tab === "yours" && research ? RESEARCH : DESCRIPTIONS[tab]}
+      />
       <PageBody>
         {/* Not a flex column with a gap: the country loader above the search keeps its own margin. */}
         <div className="mb-4">
@@ -57,7 +65,21 @@ export default function CompaniesPage({ params, searchParams }: PageProps<"/app/
             ]}
           />
         </div>
-        {tab === "yours" && <CompaniesTable projectId={projectId} />}
+        {tab === "yours" && (
+          <>
+            <div className="mb-4">
+              <Tabs
+                value={research ? "research" : "scores"}
+                onChange={(v) => setResearch(v === "research")}
+                options={[
+                  { value: "scores", label: "Scores" },
+                  { value: "research", label: "Research" },
+                ]}
+              />
+            </div>
+            {research ? <ResearchView projectId={projectId} /> : <CompaniesTable projectId={projectId} />}
+          </>
+        )}
         {tab === "database" && (
           <>
             <div className="mb-4">

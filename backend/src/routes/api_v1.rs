@@ -14,6 +14,7 @@ use super::inbox::{self, InboxThread};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::lookalikes::{self as lookalike_routes, AddBody as AddLookalikesBody};
 use super::meetings::{self, MeetingRow};
+use super::research;
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::sheets::{self, ImportedNow};
@@ -74,6 +75,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/sheets/{conn}/import", post(import_sheet))
         .route("/v1/projects/{id}/job-changes", get(list_job_changes))
         .route("/v1/projects/{id}/signals", get(list_signals))
+        .route("/v1/projects/{id}/research", get(list_research))
+        .route("/v1/projects/{id}/research/questions", post(add_research_question))
+        .route("/v1/projects/{id}/research/run", post(start_research))
         .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
 }
 
@@ -920,6 +924,39 @@ pub(super) async fn list_signals(
 ) -> AppResult<Json<Vec<crate::signals::Listed>>> {
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(super::signals::listed(&state.db, id, &q).await?))
+}
+
+/// The project's research questions and each company's answers, best score first, like the Companies page's Research view.
+pub(super) async fn list_research(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<research::GridQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<research::Grid>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(research::grid_page(&state.db, id, &q, &page).await?))
+}
+
+pub(super) async fn add_research_question(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<research::QuestionBody>,
+) -> AppResult<Json<crate::models::ResearchQuestion>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(research::create(&state.db, id, body).await?))
+}
+
+/// Queues the agent to answer the project's research questions for its companies.
+pub(super) async fn start_research(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<research::StartBody>,
+) -> AppResult<Json<research::Started>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(research::start_research(&state.db, id, auth.org_id, body).await?))
 }
 
 /// Adds past customers or champions to the project's watch list, from a list or a CSV, like the Job changes tab.

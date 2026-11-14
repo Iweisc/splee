@@ -104,6 +104,8 @@ struct CompanySignals {
     history: HashMap<Uuid, Value>,
     /// The company's leading funding or news signal from the last 90 days. See signals/.
     news: HashMap<String, crate::signals::Brief>,
+    /// The team's research questions set to be used in emails, with the company's answers. See research.rs.
+    research: HashMap<String, Vec<Value>>,
 }
 
 async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySignals> {
@@ -119,7 +121,8 @@ async fn company_signals(ctx: &Ctx, leads: &[&Lead]) -> anyhow::Result<CompanySi
     let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
     let (tech, history) = (tech::fact_lines(ctx.db(), project_id, &domains).await?, crate::jobchanges::histories(ctx.db(), &ids).await?);
     let news = crate::signals::leading(ctx.db(), project_id, &domains).await?;
-    Ok(CompanySignals { posts, tech, history, news })
+    let research = super::research::briefs(ctx.db(), project_id, &domains).await?;
+    Ok(CompanySignals { posts, tech, history, news, research })
 }
 
 fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
@@ -145,6 +148,9 @@ fn lead_brief(lead: &Lead, signals: &CompanySignals) -> Value {
     if let Some(news) = signals.news.get(&domain) {
         let source = if news.kind == "funding_filing" { "an SEC Form D filing" } else { "their own blog" };
         brief["news"] = json!({"what": news.headline, "title": news.title, "date": news.happened_on.to_string(), "source": source});
+    }
+    if let Some(answers) = signals.research.get(&domain) {
+        brief["research"] = json!(answers);
     }
     let reasons = crate::score::opener_reasons(&lead.score_reasons);
     if !reasons.is_empty() {
@@ -409,6 +415,8 @@ fn initial_prompt(
          launch, an acquisition, a new office or a new leader. When no job post fits, it can make the first observation. Say it \
          plainly and only as \"what\" and \"title\" put it: keep the amount as given, call a filing raising money, never name a round \
          or an investor it doesn't name, and never say how we know. Never paste the link.\n\
+         - A lead's \"research\" holds questions our team asked about their company with the answers we found. They're facts you \
+         can build the first observation or the problem on. Never quote the question or say we researched them.\n\
          - A lead's \"why_now\" holds the two strongest reasons the lead ranks high, as the user sees them on the lead. The first \
          sentence may build on one that's about their company, like a hire or their size. Never mention a visit to our website, a page \
          they read, their reply or a deal.\n\
