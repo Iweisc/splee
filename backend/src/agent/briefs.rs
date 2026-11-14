@@ -174,18 +174,20 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let about = lead_brief(&lead, &signals);
     let context = gather(db, &lead, org_id).await?;
     let materials = materials(ctx, lead.project_id).await?;
+    let gaps = super::qualify::gaps(db, lead.id).await?;
+    let gaps = if gaps.is_empty() { String::new() } else { format!("\n\n{gaps}") };
     let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
     let when = row.meeting_at.map_or("soon".to_string(), |at| hooks::meeting_time(at, &timezone));
     let prompt = format!(
         "{us} has a call with a lead {when}. Write them a brief to read before it.\n\n\
          What we sell: {name}. {description}\nOur materials:\n{materials}\n\n\
-         The lead and their company:\n{about}\n\nWhat else Splee knows:\n{context}\n\n\
+         The lead and their company:\n{about}\n\nWhat else Splee knows:\n{context}{gaps}\n\n\
          1. summary: who they are and why they're on the call, in 2 or 3 sentences.\n\
          2. about: up to 5 short facts about them and their company that matter for the call.\n\
          3. so_far: what was said between us so far in 2 to 4 sentences, with their own words where they matter. Empty if nothing.\n\
          4. signals: up to 4 things they or their company did lately, like pages they read, funding or hiring, each with when.\n\
          5. talking_points: 3 things to bring up, each tying what we sell to their situation, with proof from our materials where it fits.\n\
-         6. questions: 3 to 5 open questions to ask them.\n\
+         6. questions: 3 to 5 open questions to ask them, starting with the ones that fill what we still don't know about the deal.\n\
          7. watch_outs: up to 3 objections or risks to be ready for, from what they said or their situation. Empty if none.",
         name = profile.name,
         description = profile.description,

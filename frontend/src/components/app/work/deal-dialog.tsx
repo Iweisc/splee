@@ -16,6 +16,7 @@ import { ClosePlanSection } from "./close-plan";
 import { DealHealthSection } from "./deal-health";
 import { DealReviewSection } from "./deal-review";
 import { ProposalSection } from "./proposal";
+import { QualificationSection } from "./qualification";
 import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
 
@@ -184,6 +185,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
           )}
           {deal && <DealHealthSection deal={deal} />}
           {deal && <DealReviewSection deal={deal} />}
+          {deal && <QualificationSection deal={deal} />}
           {deal && <QuietDeal deal={deal} />}
           {deal && <ClosePlanSection deal={deal} />}
           {deal && <ProposalSection deal={deal} />}

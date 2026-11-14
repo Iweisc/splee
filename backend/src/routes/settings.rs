@@ -72,6 +72,7 @@ struct SettingsBody {
     meeting_briefs: Option<bool>,
     nudge_quiet_deals: Option<bool>,
     deal_health: Option<bool>,
+    qualify_deals: Option<bool>,
     /// Empty turns it off.
     bcc_email: Option<String>,
     autopilot: Option<bool>,
@@ -230,7 +231,8 @@ async fn update_settings(
            assign_members = coalesce($30, assign_members),
            meeting_briefs = coalesce($31, meeting_briefs),
            nudge_quiet_deals = coalesce($32, nudge_quiet_deals),
-           deal_health = coalesce($33, deal_health)
+           deal_health = coalesce($33, deal_health),
+           qualify_deals = coalesce($34, qualify_deals)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -266,6 +268,7 @@ async fn update_settings(
     .bind(body.meeting_briefs)
     .bind(body.nudge_quiet_deals)
     .bind(body.deal_health)
+    .bind(body.qualify_deals)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/deals/{id}/nudge", post(nudge))
         .route("/deals/{id}/health", post(rate))
         .route("/deals/{id}/review", post(review))
+        .route("/deals/{id}/qualify", post(qualify))
 }
 
 #[derive(Deserialize)]
@@ -104,6 +105,20 @@ async fn review(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
         return Err(AppError::BadRequest("The agent is already reviewing this deal".into()));
     }
     let run = crate::agent::reviews::request(&state.db, deal.id, deal.project_id, auth.org_id, &deal.status).await?;
+    crate::agent::start_now(&state, run).await?;
+    Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
+}
+
+/// Has the agent fill in the deal's MEDDICC scorecard now. See agent::qualify.
+async fn qualify(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Deal>> {
+    let deal = deals::get(&state.db, auth.org_id, id).await?;
+    if deal.status != "open" {
+        return Err(AppError::BadRequest("Only an open deal gets qualified".into()));
+    }
+    if deal.qualification.as_ref().is_some_and(|q| q["writing"] == true) {
+        return Err(AppError::BadRequest("The agent is already qualifying this deal".into()));
+    }
+    let run = crate::agent::qualify::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
     crate::agent::start_now(&state, run).await?;
     Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
 }

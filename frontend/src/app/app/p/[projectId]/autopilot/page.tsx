@@ -94,6 +94,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.deal_health} onChange={(deal_health) => update({ deal_health })} label="Rate deal health" />}
           />
 
+          <Section
+            title="Qualify deals"
+            description="The agent checks each open deal against MEDDICC: the metrics, economic buyer, decision criteria and process, paper process, pain, champion and competition. Each counts only when the buyer said or showed it, and every gap gets a question to ask. Meeting briefs ask those questions first. A deal is checked again after something happens in it."
+            actions={<Switch checked={s.qualify_deals} onChange={(qualify_deals) => update({ qualify_deals })} label="Qualify deals" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"
