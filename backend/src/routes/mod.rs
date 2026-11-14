@@ -30,6 +30,7 @@ mod tech;
 mod visitors;
 pub mod linkedin;
 pub(crate) mod calendar;
+mod close_plans;
 mod deals;
 mod deliverability;
 mod outreach;
@@ -162,6 +163,7 @@ pub fn router() -> Router<AppState> {
         .merge(calls::router())
         .merge(meetings::router())
         .merge(deals::router())
+        .merge(close_plans::router())
         .merge(sheets::router())
         .merge(outreach::router())
         .merge(payments::router())

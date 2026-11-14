@@ -10,6 +10,7 @@ mod bluesky;
 mod booking;
 mod calls;
 mod chat;
+mod close_plans;
 mod config;
 mod crm;
 mod crypto;
