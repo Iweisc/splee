@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::auth::Auth;
 use crate::deals::{self, Board, Deal, DealChanges, Move, NewDeal, PipelineBody};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::ownership::OwnerFilter;
 use crate::state::AppState;
 
@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
         .route("/deals", post(create))
         .route("/deals/{id}", get(get_deal).patch(update).delete(remove))
         .route("/deals/{id}/move", post(move_deal))
+        .route("/deals/{id}/nudge", post(nudge))
 }
 
 #[derive(Deserialize)]
@@ -62,4 +63,17 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
 
 async fn move_deal(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<Move>) -> AppResult<Json<Deal>> {
     Ok(Json(deals::move_to(&state, auth.org_id, id, body).await?))
+}
+
+/// Has the agent draft a nudge on the deal now. See agent::nudges.
+async fn nudge(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Deal>> {
+    let deal = deals::get(&state.db, auth.org_id, id).await?;
+    if deal.status != "open" {
+        return Err(AppError::BadRequest("Only an open deal can be nudged".into()));
+    }
+    if deal.nudge.as_ref().is_some_and(|n| n["status"] == "writing") {
+        return Err(AppError::BadRequest("The agent is already writing a nudge for this deal".into()));
+    }
+    crate::agent::nudges::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;
+    Ok(Json(deals::get(&state.db, auth.org_id, id).await?))
 }

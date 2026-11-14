@@ -9,6 +9,7 @@ import { type Deal, type DealStage, PAYMENT_NAMES } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
 import { dealMoney, moneyList, sumByCurrency } from "./deal-dialog";
 import { OwnerMenu } from "./owner-menu";
+import { QuietBadge } from "./quiet-deal";
 
 /** What a move carries besides the stage: the final value of a won deal, the reason for a lost one. */
 export type MoveExtras = { value?: number; lost_reason?: string };
@@ -66,6 +67,7 @@ function DealCardBody({ deal, onOpen, onAssign, action }: { deal: Deal; onOpen: 
           {deal.meeting_summary && <p className="mt-0.5 line-clamp-2 text-pretty text-foreground/80">{deal.meeting_summary}</p>}
         </div>
       )}
+      <QuietBadge deal={deal} />
       <div className="mt-2.5 flex h-5 items-center gap-2 text-xs">
         <span className="font-medium tabular-nums">
           {deal.value > 0 ? dealMoney(deal.value, deal.currency) : <span className="text-muted-foreground">No value yet</span>}

@@ -205,6 +205,7 @@ export interface ProjectSettings extends CrmStatus {
   chat_weekly_report: boolean;
   /** Writes a brief before each booked call and posts it. */
   meeting_briefs: boolean;
+  nudge_quiet_deals: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1442,7 +1443,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge";
   step: number;
   subject: string;
   body: string;
@@ -2053,7 +2054,8 @@ export type RunKind =
   | "meeting_brief"
   | "campaign_insights"
   | "ask"
-  | "buying_committee";
+  | "buying_committee"
+  | "deal_nudge";
 
 export interface TumblrBlog {
   name: string;
@@ -2264,6 +2266,21 @@ export interface Deal {
   meeting_title: string | null;
   meeting_at: Ts | null;
   meeting_summary: string | null;
+  /** The latest email either way, call or stage change. */
+  last_touch_at: Ts;
+  nudge: DealNudge | null;
+}
+
+/** A nudge the agent drafted while the deal was quiet. A done one without an email was skipped, and `why` says why. */
+export interface DealNudge {
+  id: UUID;
+  why: string;
+  created_at: Ts;
+  email_id: UUID | null;
+  email_status: EmailStatus | null;
+  subject: string | null;
+  body: string | null;
+  status: "writing" | "done" | "failed";
 }
 
 /** In the order the integrations page offers them. Keep in sync with Provider in backend/src/meetings/mod.rs. */

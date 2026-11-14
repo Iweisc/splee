@@ -20,6 +20,7 @@ mod mastodon;
 pub(crate) mod meetings;
 mod meta;
 mod nostr;
+pub mod nudges;
 mod prospect;
 mod reddit;
 mod replies;
@@ -71,6 +72,7 @@ pub mod kind {
     pub const CAMPAIGN_INSIGHTS: &str = "campaign_insights";
     pub const ASK: &str = "ask";
     pub const BUYING_COMMITTEE: &str = "buying_committee";
+    pub const DEAL_NUDGE: &str = "deal_nudge";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -347,6 +349,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::CAMPAIGN_INSIGHTS => insights::run(ctx).await,
         kind::ASK => ask::run(ctx).await,
         kind::BUYING_COMMITTEE => committee::run(ctx).await,
+        kind::DEAL_NUDGE => nudges::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

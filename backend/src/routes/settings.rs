@@ -70,6 +70,7 @@ struct SettingsBody {
     webhook_events: Option<Vec<String>>,
     chat_weekly_report: Option<bool>,
     meeting_briefs: Option<bool>,
+    nudge_quiet_deals: Option<bool>,
     /// Empty turns it off.
     bcc_email: Option<String>,
     autopilot: Option<bool>,
@@ -226,7 +227,8 @@ async fn update_settings(
            daily_text_limit = coalesce($28, daily_text_limit),
            assign_rule = coalesce($29, assign_rule),
            assign_members = coalesce($30, assign_members),
-           meeting_briefs = coalesce($31, meeting_briefs)
+           meeting_briefs = coalesce($31, meeting_briefs),
+           nudge_quiet_deals = coalesce($32, nudge_quiet_deals)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -260,6 +262,7 @@ async fn update_settings(
     .bind(body.assign_rule)
     .bind(assign_members)
     .bind(body.meeting_briefs)
+    .bind(body.nudge_quiet_deals)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

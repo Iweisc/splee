@@ -84,19 +84,40 @@ pub struct Deal {
     pub meeting_title: Option<String>,
     pub meeting_at: Option<Ts>,
     pub meeting_summary: Option<String>,
+    pub last_touch_at: Ts,
+    /// The latest nudge the agent wrote while the deal was quiet: {id, why, created_at, email_id, email_status, subject, body,
+    /// status}, where status is writing, done or failed. See agent/nudges.rs.
+    pub nudge: Option<Value>,
 }
 
-const DEAL_SELECT: &str = "select d.id, d.project_id, p.name as project_name, d.lead_id, l.full_name as lead_name, l.email::text as lead_email,
+/// When the deal last moved: a stage change, an email either way or a call that happened. The board's Quiet badge and
+/// nudges (agent/nudges.rs) count from it. A macro so DEAL_SELECT can include it.
+macro_rules! last_touch {
+    () => {
+        "greatest(d.stage_changed_at,
+           (select max(coalesce(e.sent_at, e.created_at)) from email_messages e where e.lead_id = d.lead_id and e.status in ('sent', 'received')),
+           (select max(m.started_at) from meetings m where m.lead_id = d.lead_id and m.started_at <= now()))"
+    };
+}
+pub const LAST_TOUCH: &str = last_touch!();
+
+const DEAL_SELECT: &str = concat!("select d.id, d.project_id, p.name as project_name, d.lead_id, l.full_name as lead_name, l.email::text as lead_email,
        l.title as lead_title, l.company_name, l.company_domain::text as company_domain, d.stage_id, s.name as stage, d.status, d.value_cents,
        d.currency, d.close_date, l.owner_id, coalesce(nullif(u.name, ''), u.email::text) as owner_name, d.notes, d.lost_reason, d.source,
        case when d.status = 'won' then (select p.provider from payments p where p.lead_id = d.lead_id and p.kind = 'payment' order by p.paid_at limit 1)
        end as paid_through,
        d.stage_changed_at, d.closed_at, d.created_at, mt.id as meeting_id, mt.title as meeting_title, mt.started_at as meeting_at,
-       mt.summary as meeting_summary
+       mt.summary as meeting_summary, ", last_touch!(), " as last_touch_at,
+       (select json_build_object('id', n.id, 'why', n.why, 'created_at', n.created_at, 'email_id', n.email_id, 'email_status', e.status,
+                                 'subject', e.subject, 'body', e.body,
+                                 'status', case when n.written_at is not null then 'done' when r.status in ('queued', 'running') then 'writing'
+                                                else 'failed' end)
+          from deal_nudges n left join email_messages e on e.id = n.email_id left join agent_runs r on r.id = n.run_id
+          where n.deal_id = d.id order by n.created_at desc limit 1) as nudge
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id join projects p on p.id = d.project_id
      left join users u on u.id = l.owner_id
      left join lateral (select m.id, m.title, m.started_at, m.summary from meetings m where m.lead_id = d.lead_id
-                        order by m.started_at desc limit 1) mt on true";
+                        order by m.started_at desc limit 1) mt on true");
 
 fn major_units<S: Serializer>(cents: &i64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64(*cents as f64 / 100.0)

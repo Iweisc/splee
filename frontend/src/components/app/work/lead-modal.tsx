@@ -569,7 +569,7 @@ function ThreadItem({ message: m, events }: { message: EmailMessage; events: Ema
     <li className={cn("rounded-xl border border-border p-3", inbound ? "bg-card" : "bg-muted/60")}>
       <div className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">
-          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : m.kind === "meeting_follow_up" ? "Meeting follow-up" : m.kind.replace("_", " ")} ·{" "}
+          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : m.kind === "meeting_follow_up" ? "Meeting follow-up" : m.kind === "deal_nudge" ? "Deal nudge" : m.kind.replace("_", " ")} ·{" "}
           {m.subject}
         </span>
         <span className="flex shrink-0 items-center gap-2">
