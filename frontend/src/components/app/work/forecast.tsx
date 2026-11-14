@@ -4,14 +4,14 @@ import { useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw, Target, TrendingUp } from "lucide-react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
-import { Card, EmptyState } from "@/components/ui/misc";
+import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
-import { api } from "@/lib/api";
-import type { Deal, ForecastCategory, ForecastView } from "@/lib/types";
+import { api, qs } from "@/lib/api";
+import type { Deal, ForecastCategory, ForecastView, Pipeline } from "@/lib/types";
 import { cn, plural, timeAgo } from "@/lib/utils";
 import { moneyList, sumByCurrency } from "./deal-dialog";
 import { type Kpi, KpiCard } from "./kpi-card";
-import { MicroLabel, toastError } from "./states";
+import { LoadError, MicroLabel, toastError } from "./states";
 
 const COLUMNS: { category: ForecastCategory; label: string; dot: string }[] = [
   { category: "commit", label: "Commit", dot: "bg-brand-500" },
@@ -22,20 +22,13 @@ const COLUMNS: { category: ForecastCategory; label: string; dot: string }[] = [
 const shortDate = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 /** The pipeline's Forecast view: the agent's sort of the project's open deals for the month, and what to work on. See backend/src/agent/forecast.rs. */
-export function ForecastPanel({
-  projectId,
-  deals,
-  currency,
-  onOpen,
-}: {
-  projectId: string;
-  deals: Deal[];
-  currency: string;
-  onOpen: (d: Deal) => void;
-}) {
+export function ForecastPanel({ projectId, currency, onOpen }: { projectId: string; currency: string; onOpen: (d: Deal) => void }) {
   const key = `/projects/${projectId}/forecast`;
-  const { data, mutate } = useSWR<ForecastView>(key, fetcher, { refreshInterval: (v) => (v?.latest?.status === "writing" ? 3000 : 0) });
+  const { data, error, mutate } = useSWR<ForecastView>(key, fetcher, { refreshInterval: (v) => (v?.latest?.status === "writing" ? 3000 : 0) });
+  // The forecast covers the whole project, so its deals ignore the board's owner filter.
+  const { data: pipeline, error: pipelineError, mutate: mutatePipeline } = useSWR<Pipeline>(`/pipeline${qs({ project_id: projectId })}`, fetcher);
   const [busy, setBusy] = useState(false);
+  const deals = pipeline?.deals ?? [];
   const open = deals.filter((d) => d.status === "open" && d.project_id === projectId);
 
   const write = async () => {
@@ -48,7 +41,20 @@ export function ForecastPanel({
       setBusy(false);
     }
   };
-  if (!data) return null;
+  if (error || pipelineError) {
+    return (
+      <Card>
+        <LoadError
+          error={error ?? pipelineError}
+          retry={() => {
+            mutate();
+            mutatePipeline();
+          }}
+        />
+      </Card>
+    );
+  }
+  if (!data || !pipeline) return <Skeleton className="h-64 rounded-2xl" />;
   const latest = data.latest;
   const writing = latest?.status === "writing";
   const writeButton = (

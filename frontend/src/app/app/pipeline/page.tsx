@@ -158,7 +158,6 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 <ForecastPanel
                   key={forecastProject}
                   projectId={forecastProject}
-                  deals={data.deals}
                   currency={data.currency}
                   onOpen={(d) => setOpened(d.id)}
                 />
