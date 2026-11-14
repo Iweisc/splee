@@ -8,7 +8,7 @@ use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
-use crate::deals::{self, Move};
+use crate::deals::{self, Deal, Move};
 use crate::error::{AppError, AppResult};
 use crate::hooks::{self, ChatAlert};
 use crate::models::{Lead, Ts};
@@ -248,24 +248,24 @@ pub async fn accept(state: &AppState, token: &str, a: Acceptance) -> AppResult<(
     let Some(Accepted { deal_id, org_id, project_id, items, title }) = row else {
         return Err(AppError::BadRequest("This proposal can't be accepted anymore. Reply to the email it came in and we'll sort it out".into()));
     };
-    let won: Option<Uuid> = sqlx::query_scalar("select id from deal_stages where org_id = $1 and kind = 'won' order by position limit 1")
-        .bind(org_id)
-        .fetch_optional(db)
-        .await?;
     let total = first_year(&items);
-    let deal = match won {
-        Some(stage) => {
-            let value = (!items.is_empty()).then_some(total);
-            match deals::move_to(state, org_id, deal_id, Move { stage_id: Some(stage), value, ..Default::default() }).await {
-                Ok(deal) => Some(deal),
-                Err(e) => {
-                    // Keep this simple until deals::move_to can join a transaction: undo the acceptance so the buyer can try again.
-                    sqlx::query("update proposals set accepted_at = null, accepted_name = '', accepted_title = '' where token = $1").bind(token).execute(db).await?;
-                    return Err(e);
-                }
-            }
+    let moved: AppResult<Option<Deal>> = async {
+        let won: Option<Uuid> = sqlx::query_scalar("select id from deal_stages where org_id = $1 and kind = 'won' order by position limit 1")
+            .bind(org_id)
+            .fetch_optional(db)
+            .await?;
+        let Some(stage) = won else { return Ok(None) };
+        let value = (!items.is_empty()).then_some(total);
+        Ok(Some(deals::move_to(state, org_id, deal_id, Move { stage_id: Some(stage), value, ..Default::default() }).await?))
+    }
+    .await;
+    let deal = match moved {
+        Ok(deal) => deal,
+        Err(e) => {
+            // Keep this simple until deals::move_to can join a transaction: undo the acceptance so the buyer can try again.
+            sqlx::query("update proposals set accepted_at = null, accepted_name = '', accepted_title = '' where token = $1").bind(token).execute(db).await?;
+            return Err(e);
         }
-        None => None,
     };
     let lead_id: Uuid = sqlx::query_scalar("select lead_id from deals where id = $1").bind(deal_id).fetch_one(db).await?;
     let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead_id).fetch_one(db).await?;
