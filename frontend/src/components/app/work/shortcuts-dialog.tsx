@@ -11,6 +11,7 @@ const shortcuts = (mod: string): { keys: string[]; what: string }[] => [
   { keys: ["e"], what: "Mark the open reply done" },
   { keys: ["r"], what: "Write a reply" },
   { keys: [mod, "Enter"], what: "Send the reply" },
+  { keys: ["a"], what: "Ask Splee about the project" },
   { keys: ["?"], what: "Show this list" },
 ];
 

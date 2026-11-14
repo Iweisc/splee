@@ -1,6 +1,7 @@
 //! Agent runs: every Claude-powered task is a row in agent_runs, picked up by the worker.
 //! Routes call `enqueue` (and `leads_without_initial` to refuse empty write runs). The worker, SDK wrapper and task implementations live in this module.
 
+pub mod ask;
 mod bluesky;
 pub mod briefs;
 mod calls;
@@ -67,6 +68,7 @@ pub mod kind {
     pub const RESEARCH_COMPANIES: &str = "research_companies";
     pub const MEETING_BRIEF: &str = "meeting_brief";
     pub const CAMPAIGN_INSIGHTS: &str = "campaign_insights";
+    pub const ASK: &str = "ask";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -212,6 +214,19 @@ pub(crate) async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Starts a queued run now, beside the worker's slots, for someone waiting on it like Ask Splee. If the process stops first,
+/// the run goes back to the queue like any other.
+pub async fn start_now(state: &AppState, run_id: Uuid) -> sqlx::Result<()> {
+    let claimed = sqlx::query_as::<_, AgentRun>("update agent_runs set status = 'running', started_at = now() where id = $1 and status = 'queued' returning *")
+        .bind(run_id)
+        .fetch_optional(&state.db)
+        .await?;
+    if let Some(run) = claimed {
+        tokio::spawn(execute(state.clone(), run));
+    }
+    Ok(())
+}
+
 async fn claim(db: &PgPool) -> sqlx::Result<Option<AgentRun>> {
     sqlx::query_as::<_, AgentRun>(
         "update agent_runs set status = 'running', started_at = now()
@@ -328,6 +343,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::RESEARCH_COMPANIES => research::run(ctx).await,
         kind::MEETING_BRIEF => briefs::run(ctx).await,
         kind::CAMPAIGN_INSIGHTS => insights::run(ctx).await,
+        kind::ASK => ask::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

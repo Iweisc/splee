@@ -14,6 +14,7 @@ import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { keepLoadedOnError } from "@/hooks/keep-loaded";
 import { fetcher, useMe } from "@/hooks/use-me";
+import { AskSplee } from "./ask-splee";
 import { ShortcutsDialog } from "./work/shortcuts-dialog";
 import { LoadError } from "./work/states";
 import { orgNav, projectNav } from "./nav";
@@ -128,6 +129,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <ProjectSwitcher projects={projects} current={project} />
+        {projectId && (
+          <div className="px-2 pt-2">
+            <AskSplee projectId={projectId} />
+          </div>
+        )}
 
         {/* The nav doesn't fit a laptop's height, so its edges fade: a cut-off item shows there's more to scroll to. Scrolled
             to either end, they only cover padding: the first group's mt-4 at the top and pb-8 at the bottom. The scroll
