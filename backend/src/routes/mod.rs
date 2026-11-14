@@ -30,6 +30,7 @@ mod deliverability;
 mod outreach;
 pub(crate) mod finders;
 mod payments;
+mod plays;
 mod saved_replies;
 mod research;
 mod scores;
@@ -154,6 +155,7 @@ pub fn router() -> Router<AppState> {
         .merge(sheets::router())
         .merge(outreach::router())
         .merge(payments::router())
+        .merge(plays::router())
         .merge(ads::router())
         .merge(finders::router())
         .merge(chat::router())

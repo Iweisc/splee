@@ -48,6 +48,7 @@ mod ownership;
 mod payments;
 mod phone;
 mod places;
+mod plays;
 mod porkbun;
 mod reddit;
 mod reports;
@@ -141,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
     tech::spawn_worker(state.db.clone());
     score::spawn_worker(state.db.clone());
     signals::spawn_worker(state.db.clone(), &cfg);
+    plays::spawn(state.clone());
     waterfall::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());

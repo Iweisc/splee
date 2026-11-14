@@ -494,6 +494,18 @@ The writer's lead briefs carry `research`: `[{question, answer}]` for the compan
 
 Counted views are the score's `page` intent signal (20 points, half-life 3 days, 14 days): "Opened their page today" or "Opened their page 3 times, last yesterday".
 
+### Plays
+
+`plays.rs`, `routes/plays.rs`, migration 0141 and the Plays page (`/app/p/:id/plays`). A play is "when this happens, do that": `trigger` one of `funding` (a `company_signals` funding row), `news` (any signal), `hiring` (a new open `job_openings` row), `visit` (a `visitor_hits` row with a domain), all at a company, or `job_change` (a `job_changes` row's new lead) or `score` (a lead's `score` at least `min_score`), to a lead. `action` is `add_to_campaign` (company triggers only: the company, made from the visit when the project hasn't got it, moves into `segment_id` unless it has leads or is excluded, and a find_people run starts for it), `write_email` (lead triggers only: a write_emails run for the lead when it has an address and no first email) or `notify` (the project's chats, "Play: {name}"). `min_score` also holds back companies and leads scoring less. Up to 20 plays a project.
+
+Every 5 minutes the worker reads each enabled play's events after its `checked_at` up to now, oldest first, the first per company domain or lead, leaving out ones it fired for (`play_firings`, unique per play and `subject` `domain:{domain}` or `lead:{id}`), and acts on them up to `daily_cap` firings in the last 24 hours. It then moves `checked_at` to now, or, when the cap stopped it, to the last event it handled, so the rest wait for room. Each firing keeps `what` happened ("Raised $12M (SEC filing, Nov 7)", "Hiring: Account Executive", "Visited /pricing", "Moved to New Co from Acme", "Scored 72"), its `outcome` (`done`, `skipped` with a `note` like "It already has leads", or `failed` with the error) and the `run_id` it started. A new play starts from now, or `backfill_days` (up to 30) back. Turning one back on starts it from then.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /projects/:id/plays | | `{plays: [{id, name, trigger, action, segment_id, segment_name, min_score, daily_cap, enabled, checked_at, created_at, fired_today, fired_month}], firings}`, the 50 latest firings |
+| POST | /projects/:id/plays | `{name, trigger, action, segment_id?, min_score?, daily_cap?, enabled?, backfill_days?}` | the play. 400 for an action the trigger can't take, a campaign of another project, or `add_to_campaign` without one. |
+| PATCH / DELETE | /plays/:id | `{name?, segment_id?, min_score?, daily_cap?, enabled?}` | the play / `{ok}`. The trigger and action don't change. |
+
 ### Job changes
 
 `jobchanges.rs`, `routes/job_changes.rs`, migration 0134. Each project watches the people who know it (`watched_people`): leads with a won deal (`relationship` `won`), a booked meeting (`booked`, status `meeting_booked` or a `meeting_at`) or a hot reply (`hot`, status `hot` or a received email classified `hot`), added by the worker and backfilled by the migration, each at its strongest relationship, plus people added by hand or CSV. An entry keeps the company, domain, LinkedIn company id and title last seen. It's unique per project by `lead_id`, by `email` and by `linkedin_key` (the public id in `/in/:id`, lowercased).

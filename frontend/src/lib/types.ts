@@ -2531,3 +2531,42 @@ export interface LeadPage {
   first_viewed_at: string | null;
   last_viewed_at: string | null;
 }
+
+export type PlayTrigger = "funding" | "news" | "hiring" | "visit" | "job_change" | "score";
+export type PlayAction = "add_to_campaign" | "write_email" | "notify";
+
+/** A "when this happens, do that" rule the project runs every 5 minutes. */
+export interface Play {
+  id: string;
+  project_id: string;
+  name: string;
+  trigger: PlayTrigger;
+  action: PlayAction;
+  segment_id: string | null;
+  segment_name: string | null;
+  min_score: number;
+  daily_cap: number;
+  enabled: boolean;
+  checked_at: string;
+  created_at: string;
+  fired_today: number;
+  fired_month: number;
+}
+
+export interface PlayFiring {
+  id: string;
+  play_id: string;
+  play_name: string;
+  domain: string | null;
+  lead_id: string | null;
+  what: string;
+  outcome: "done" | "skipped" | "failed";
+  note: string;
+  run_id: string | null;
+  created_at: string;
+}
+
+export interface PlaysOverview {
+  plays: Play[];
+  firings: PlayFiring[];
+}
