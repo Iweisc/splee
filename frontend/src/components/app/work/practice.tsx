@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/form";
 import { Badge, type BadgeTone, Modal } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { Deal, PracticeSession } from "@/lib/types";
+import type { Deal, PracticeAssignment, PracticeSession } from "@/lib/types";
 import { cn, timeAgo } from "@/lib/utils";
 import { MicroLabel, toastError } from "./states";
 
@@ -17,24 +17,26 @@ const SCENARIOS: { value: PracticeSession["scenario"]; label: string }[] = [
   { value: "pricing", label: "Price pushback" },
   { value: "competitor", label: "A competitor" },
 ];
-const scenarioLabel = (s: PracticeSession["scenario"]) => SCENARIOS.find((x) => x.value === s)?.label ?? s;
+export const scenarioLabel = (s: PracticeSession["scenario"]) => SCENARIOS.find((x) => x.value === s)?.label ?? s;
 const busy = (s: PracticeSession) => s.status === "preparing" || s.status === "thinking" || s.status === "scoring";
-const tone = (score: number): BadgeTone => (score >= 75 ? "green" : score >= 50 ? "amber" : "red");
+export const tone = (score: number): BadgeTone => (score >= 75 ? "green" : score >= 50 ? "amber" : "red");
 const firstName = (s: PracticeSession) => s.persona?.name.split(" ")[0] ?? "The buyer";
 
-/** In an open deal's window: start a practice call with the agent playing the buyer, and the deal's past ones. */
+/** In an open deal's window: what you were assigned to practice on it, starting a practice call with the agent playing the
+ * buyer, and the deal's past ones. */
 export function PracticeSection({ deal }: { deal: Deal }) {
   const key = deal.status === "open" ? `/deals/${deal.id}/practice` : null;
   const { data: sessions, mutate } = useSWR<PracticeSession[]>(key, fetcher);
+  const { data: assigned, mutate: mutateAssigned } = useSWR<PracticeAssignment[]>(key && `${key}/assigned`, fetcher);
   const [opened, setOpened] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
   if (deal.status !== "open" || !sessions) return null;
 
-  const begin = async (scenario: PracticeSession["scenario"]) => {
-    setStarting(scenario);
+  const begin = async (scenario: PracticeSession["scenario"], assignment?: PracticeAssignment) => {
+    setStarting(assignment?.id ?? scenario);
     try {
-      const s = await api<PracticeSession>(`/deals/${deal.id}/practice`, { body: { scenario } });
-      await mutate();
+      const s = await api<PracticeSession>(`/deals/${deal.id}/practice`, { body: { scenario, assignment_id: assignment?.id } });
+      await Promise.all([mutate(), assignment && mutateAssigned()]);
       setOpened(s.id);
     } catch (e) {
       toastError(e);
@@ -54,6 +56,34 @@ export function PracticeSection({ deal }: { deal: Deal }) {
           competitors in it. Then it scores you.
         </p>
       </div>
+      {assigned?.map((a) => (
+        <div key={a.id} className="flex flex-col gap-2 rounded-lg bg-brand-50 p-3 text-sm text-pretty sm:flex-row sm:items-center">
+          <div className="min-w-0">
+            <p className="font-medium text-brand-800">
+              {a.assigned_by ? `${a.assigned_by.split(" ")[0]} asked you to practice` : "Assigned to you"}: {scenarioLabel(a.scenario).toLowerCase()}
+            </p>
+            <p className="text-brand-800/80">
+              {a.skill}. {a.drill}
+            </p>
+          </div>
+          {a.session_id ? (
+            <Button type="button" size="sm" variant="outline" className="shrink-0 sm:ml-auto" onClick={() => setOpened(a.session_id)}>
+              Carry on
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              className="shrink-0 sm:ml-auto"
+              onClick={() => begin(a.scenario, a)}
+              loading={starting === a.id}
+              disabled={!!starting}
+            >
+              Start it
+            </Button>
+          )}
+        </div>
+      ))}
       <div className="flex flex-wrap gap-2">
         {SCENARIOS.map((s) => (
           <Button
@@ -92,6 +122,7 @@ export function PracticeSection({ deal }: { deal: Deal }) {
           onClose={() => {
             setOpened(null);
             mutate();
+            mutateAssigned();
           }}
         />
       )}
@@ -264,6 +295,12 @@ function Scorecard({ s }: { s: PracticeSession }) {
         </p>
         <p className="text-sm text-pretty">{score.summary}</p>
       </div>
+      {score.skill && (
+        <div className="rounded-xl bg-brand-50 p-3 text-sm text-pretty text-brand-800">
+          <MicroLabel>On the skill you were assigned</MicroLabel>
+          <p className="mt-1">{score.skill}</p>
+        </div>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         <List title="Keep doing" items={score.went_well} />
         <List title="Try next time" items={score.try_next} />

@@ -2466,6 +2466,8 @@ export interface Today {
     last_touch_at: Ts;
     nudge_ready: boolean;
   }>;
+  /** Practice calls a 1:1 prep assigned to you, on deals still open, until one's scored. */
+  practice: TodayPart<PracticeAssignment>;
 }
 
 export interface TodayPart<T> {
@@ -3155,6 +3157,8 @@ export interface PracticeSession {
     went_well: string[];
     try_next: string[];
     moments: { you_said: string; try: string }[];
+    /** How they did on the skill, when they practiced an assignment. */
+    skill?: string;
   } | null;
   user_name: string | null;
   status: "preparing" | "thinking" | "scoring" | "live" | "ended" | "scored" | "failed";
@@ -3188,8 +3192,33 @@ export interface OneOnOnePrep {
   month: { currency: string; day: number; days: number; target_cents: number | null; won_cents: number; commit_cents: number; best_case_cents: number };
   recognize: string[];
   deals: { deal_id: UUID; company: string; why: string; ask: string }[];
-  skill: { name: string; evidence: string; drill: string };
+  skill: {
+    name: string;
+    evidence: string;
+    drill: string;
+    /** The practice call the drill is, when it's one on their open deals. */
+    practice?: { deal_id: UUID; company: string; scenario: PracticeSession["scenario"] };
+  };
   commitment: string;
+}
+
+/** A practice call a 1:1 prep assigned, with the latest scored session, else the latest started. See ASSIGNED in backend/src/agent/practice.rs. */
+export interface PracticeAssignment {
+  id: UUID;
+  deal_id: UUID;
+  project_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company: string;
+  scenario: PracticeSession["scenario"];
+  skill: string;
+  drill: string;
+  assigned_by: string | null;
+  created_at: Ts;
+  /** Whether the deal is still open, so it can be practiced. */
+  open: boolean;
+  session_id: UUID | null;
+  score: NonNullable<PracticeSession["score"]> | null;
 }
 
 export interface OneOnOneView {
@@ -3201,6 +3230,8 @@ export interface OneOnOneView {
     status: "ready" | "writing" | "failed";
     error: string | null;
   } | null;
+  /** The latest prep's practice call, once it's assigned. */
+  assignment: PracticeAssignment | null;
 }
 
 /** A customer's next renewal and the agent's prep for it. See backend/src/agent/renewals.rs. */

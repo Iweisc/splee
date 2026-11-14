@@ -1,6 +1,7 @@
 //! The Today page: what's waiting on you across the organization's projects. Replies to answer, emails to approve, calls
-//! due, meetings in the next day and deals gone quiet, each with its count and the first few. `owner` narrows everything
-//! but approvals to whose leads they are, mine and unassigned by default like the Inbox count.
+//! due, meetings in the next day, deals gone quiet and practice calls assigned to you, each with its count and the first
+//! few. `owner` narrows everything but approvals and practice to whose leads they are, mine and unassigned by default like
+//! the Inbox count.
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -12,6 +13,7 @@ use uuid::Uuid;
 use super::inbox;
 use super::util_pagination::PageQuery;
 use crate::agent::nudges::QUIET_DAYS;
+use crate::agent::practice::{ASSIGNED, ASSIGNED_DAYS, Assigned};
 use crate::auth::Auth;
 use crate::deals::LAST_TOUCH;
 use crate::error::AppResult;
@@ -101,6 +103,8 @@ struct Today {
     calls: Part<CallDue>,
     meetings: Part<Meeting>,
     quiet: Part<Quiet>,
+    /// Practice calls a 1:1 prep assigned to you, on deals still open, until one's scored.
+    practice: Part<Assigned>,
 }
 
 async fn today(State(state): State<AppState>, auth: Auth, Query(q): Query<TodayQuery>) -> AppResult<Json<Today>> {
@@ -137,6 +141,7 @@ async fn today(State(state): State<AppState>, auth: Auth, Query(q): Query<TodayQ
         calls: calls(db, auth.org_id, &owner).await?,
         meetings: meetings(db, auth.org_id, &owner).await?,
         quiet: quiet(db, auth.org_id, &owner).await?,
+        practice: practice(db, auth.org_id, auth.user_id).await?,
     }))
 }
 
@@ -226,11 +231,64 @@ async fn quiet(db: &PgPool, org_id: Uuid, owner: &OwnerFilter) -> sqlx::Result<P
     Ok(Part { total, items })
 }
 
+async fn practice(db: &PgPool, org_id: Uuid, user_id: Uuid) -> sqlx::Result<Part<Assigned>> {
+    let due = format!(
+        "{ASSIGNED} where d.org_id = $1 and a.user_id = $2 and d.status = 'open' and s.score is null
+         and a.created_at > now() - make_interval(days => $3)"
+    );
+    let total = sqlx::query_scalar(&format!("select count(*) from ({due}) x")).bind(org_id).bind(user_id).bind(ASSIGNED_DAYS).fetch_one(db).await?;
+    let items = sqlx::query_as(&format!("{due} order by a.created_at desc limit $4"))
+        .bind(org_id)
+        .bind(user_id)
+        .bind(ASSIGNED_DAYS)
+        .bind(SHOWN)
+        .fetch_all(db)
+        .await?;
+    Ok(Part { total, items })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn practice_assigned_to_you_stays_on_today_until_its_scored(db: PgPool) {
+        use crate::agent::practice::fixture;
+        let t = fixture::team(&db).await;
+        let prep = fixture::prep(&db, &t, true).await;
+        let assignment: Uuid = sqlx::query_scalar(
+            "insert into practice_assignments (one_on_one_id, deal_id, user_id, assigned_by, scenario, skill, drill)
+             values ($1, $2, $3, $4, 'pricing', 'Holding price', 'A pricing practice on Lumenfold.') returning id",
+        )
+        .bind(prep)
+        .bind(t.deal)
+        .bind(t.sam)
+        .bind(t.dana)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(practice(&db, t.org, t.dana).await.unwrap().total, 0, "it's Sam's, not the manager's");
+        let part = practice(&db, t.org, t.sam).await.unwrap();
+        assert_eq!((part.total, part.items[0].company.as_str(), part.items[0].assigned_by.as_deref()), (1, "Lumenfold", Some("Dana Reyes")));
+
+        let session = |score: Option<serde_json::Value>| {
+            sqlx::query("insert into practice_sessions (project_id, deal_id, user_id, scenario, assignment_id, score) values ($1, $2, $3, 'pricing', $4, $5)")
+                .bind(t.project)
+                .bind(t.deal)
+                .bind(t.sam)
+                .bind(assignment)
+                .bind(score)
+                .execute(&db)
+        };
+        session(None).await.unwrap();
+        let part = practice(&db, t.org, t.sam).await.unwrap();
+        assert!(part.total == 1 && part.items[0].session_id.is_some(), "started but not scored stays");
+        session(Some(serde_json::json!({ "score": 64 }))).await.unwrap();
+        assert_eq!(practice(&db, t.org, t.sam).await.unwrap().total, 0);
+    }
+
     #[sqlx::test]
     #[ignore = "needs Postgres"]
     async fn today_lists_what_waits_on_you_and_leaves_out_other_peoples_and_organizations(db: PgPool) {
