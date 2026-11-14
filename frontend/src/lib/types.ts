@@ -2097,7 +2097,8 @@ export type RunKind =
   | "churn_risk"
   | "practice"
   | "one_on_one"
-  | "renewal";
+  | "renewal"
+  | "playbook";
 
 export interface TumblrBlog {
   name: string;
@@ -3234,4 +3235,41 @@ export interface RenewalView {
   enabled: boolean;
   ahead_days: number;
   items: Renewal[];
+}
+
+/** A project's sales playbook. See backend/src/agent/playbook.rs. */
+export interface Playbook {
+  summary: string;
+  fit: string[];
+  avoid: string[];
+  pitch: string;
+  discovery: { question: string; why: string }[];
+  objections: { they_say: string; we_say: string }[];
+  competitors: { name: string; win_by: string }[];
+  emails: { lesson: string; example: string }[];
+  winning: string[];
+  pitfalls: string[];
+}
+
+export interface PlaybookSources {
+  won: number;
+  lost: number;
+  battlecards: number;
+  campaigns: number;
+  calls: number;
+  emails: number;
+  profile: boolean;
+}
+
+export interface PlaybookView {
+  latest: {
+    id: UUID;
+    playbook: Playbook | null;
+    sources: PlaybookSources;
+    created_at: Ts;
+    status: "ready" | "writing" | "failed";
+    error: string | null;
+  } | null;
+  available: PlaybookSources;
+  min_sources: number;
 }

@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bell,
+  BookMarked,
   BookOpen,
   Bot,
   Building2,
@@ -61,6 +62,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Texts", href: (p) => `/app/p/${p}/texts`, icon: Smartphone },
       { label: "Calls", href: (p) => `/app/p/${p}/calls`, icon: Phone },
       { label: "Coaching", href: (p) => `/app/p/${p}/coaching`, icon: GraduationCap },
+      { label: "Playbook", href: (p) => `/app/p/${p}/playbook`, icon: BookMarked },
       { label: "Social", href: (p) => `/app/p/${p}/social`, icon: Megaphone },
       { label: "Import", href: (p) => `/app/p/${p}/import`, icon: Upload }, // D1
       { label: "Agent runs", href: (p) => `/app/p/${p}/runs`, icon: Bot },

@@ -49,6 +49,7 @@ const TITLES: Record<RunKind, string> = {
   practice: "Practice a call",
   one_on_one: "Prep a 1:1",
   renewal: "Prep a renewal",
+  playbook: "Write the playbook",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

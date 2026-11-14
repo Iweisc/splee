@@ -641,6 +641,15 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | GET | /projects/:id/buyers | | `{latest, won, min_won}`: latest is `{id, profile, won, created_at, status}` with status `ready`, `writing` or `failed`, or null |
 | POST | /projects/:id/buyers | | the same, with a profile being written now. 400 with fewer than 3 won deals or while one is being written |
 
+### Sales playbooks
+
+`agent/playbook.rs`, `routes/playbook.rs`, migration 0165 and the Playbook page under Outreach (`/app/p/:id/playbook`). Written only when someone asks, once the project has at least 3 things to learn from. The agent reads the latest buyer profile, win and loss reviews from the last 12 months (at most 40), battlecards (at most 6), each campaign's latest insights (at most 6), the 12 best coached calls from the last 6 months, and the last outbound email before each of the 8 newest `hot` replies. `sources` counts what it read. A competitor the playbook names must be one a battlecard or a review names, and is written as the team wrote it. Copy as markdown puts it on the clipboard for a wiki or a doc.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /projects/:id/playbook | | `{latest, available, min_sources}`. `latest` is `{id, playbook, sources, created_at, status, error}` with status `ready`, `writing` or `failed`, or null. `playbook` is `{summary, fit, avoid, pitch, discovery: [{question, why}], objections: [{they_say, we_say}], competitors: [{name, win_by}], emails: [{lesson, example}], winning, pitfalls}`. `available` and `sources` are `{won, lost, battlecards, campaigns, calls, emails, profile}` |
+| POST | /projects/:id/playbook | | the same, with a playbook being written now. 400 with fewer than `min_sources` things to learn from or while one is being written |
+
 ### Call coaching
 
 `agent/coaching.rs`, `routes/coaching.rs`, migration 0154, the Coaching page under Outreach and the Coach calls switch on the Autopilot page (`project_settings.coach_calls`, on by default). Every 10 minutes each meeting summarized and each call with a summary and transcript from the last 30 days, without coaching, gets a `call_coaching` row for the lead's owner (the call's owner first) and a coach_call run, 30 a pass. The page shows the average score, talk share, questions per call and share of calls with a next step agreed, a table by rep when more than one rep was coached (a row filters the page to that rep) and each call with its coaching.
