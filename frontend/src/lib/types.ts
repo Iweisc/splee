@@ -208,6 +208,7 @@ export interface ProjectSettings extends CrmStatus {
   nudge_quiet_deals: boolean;
   deal_health: boolean;
   qualify_deals: boolean;
+  pipeline_forecast: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2062,7 +2063,8 @@ export type RunKind =
   | "proposal"
   | "deal_health"
   | "deal_review"
-  | "qualify_deal";
+  | "qualify_deal"
+  | "pipeline_forecast";
 
 export interface TumblrBlog {
   name: string;
@@ -2287,6 +2289,24 @@ export interface Deal {
   qualification: { items: QualificationItem[]; confirmed: number; created_at: Ts } | null;
   /** A scorecard is being written now, the first one included. */
   qualification_writing: boolean;
+}
+
+export type ForecastCategory = "commit" | "best_case" | "later";
+
+/** The agent's forecast of a project's open deals for the month. Totals are summed from the deals, never written by the agent. */
+export interface PipelineForecast {
+  headline: string;
+  /** YYYY-MM-DD, the last day of the month it forecasts. */
+  month_end: string;
+  deals: { deal_id: UUID; category: ForecastCategory; why: string }[];
+  /** What to do this week, per deal. */
+  focus: { deal_id: UUID; text: string }[];
+  /** Why each is slipping. */
+  slipping: { deal_id: UUID; text: string }[];
+}
+
+export interface ForecastView {
+  latest: { id: UUID; forecast: PipelineForecast | null; created_at: Ts; status: "ready" | "writing" | "failed" } | null;
 }
 
 /** One MEDDICC element. `evidence` is empty when unknown, and `ask` is empty when confirmed. */

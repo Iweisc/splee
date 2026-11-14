@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { HandCoins, Settings2 } from "lucide-react";
+import { HandCoins, Settings2, TrendingUp } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader, ScreenPage } from "@/components/app/page-header";
 import { amountsOf, DealDialog, moneyList } from "@/components/app/work/deal-dialog";
@@ -11,26 +11,27 @@ import { OwnerFilterSelect, useMembers, useOwnerFilter } from "@/components/app/
 import { type AssignRequest, CloseDialog, type MoveExtras, PipelineBoard, PipelineList } from "@/components/app/work/pipeline-board";
 import { StageEditor } from "@/components/app/work/stage-editor";
 import { WinLoss } from "@/components/app/work/win-loss";
+import { ForecastPanel } from "@/components/app/work/forecast";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
-import { Card, Skeleton, Tabs } from "@/components/ui/misc";
+import { Card, EmptyState, Skeleton, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list" | "winloss";
+type View = "board" | "list" | "winloss" | "forecast";
 
 // Phones can't drag, so they start on the list. md is where the sidebar's phone menu ends too.
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
 
 export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline">) {
-  // Webhooks and the lead window link here with ?deal= to open that deal.
-  const { deal: linked } = use(searchParams);
+  // Webhooks and the lead window link here with ?deal= to open that deal, and the Monday forecast in chat with ?view=forecast.
+  const { deal: linked, view: linkedView } = use(searchParams);
   const { me } = useMe();
   const [project, setProject] = useState("");
-  const [view, setView] = useState<View>(startView);
+  const [view, setView] = useState<View>(linkedView === "forecast" ? "forecast" : startView);
   const [opened, setOpened] = useState<string | null>(typeof linked === "string" ? linked : null);
   const [closing, setClosing] = useState<{ deal: Deal; stage: DealStage } | null>(null);
   const [editing, setEditing] = useState(false);
@@ -95,6 +96,8 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
   };
 
   const admin = me?.role === "owner" || me?.role === "admin";
+  // A forecast belongs to one project. With a single project there is nothing to pick.
+  const forecastProject = project || (projects?.length === 1 ? projects[0].id : "");
   const projectPicker = (projects?.length ?? 0) > 1 && (
     <Select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className="h-8 w-auto max-sm:basis-full">
       <option value="">All projects</option>
@@ -122,6 +125,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "board", label: "Board" },
                 { value: "list", label: "List" },
                 { value: "winloss", label: "Win/loss" },
+                { value: "forecast", label: "Forecast" },
               ]}
               className="max-sm:flex-1 max-sm:[&>button]:flex-1"
             />
@@ -149,7 +153,23 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           <>
             <Forecast pipeline={data} />
             {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
-            {view === "winloss" ? (
+            {view === "forecast" ? (
+              forecastProject ? (
+                <ForecastPanel
+                  key={forecastProject}
+                  projectId={forecastProject}
+                  deals={data.deals}
+                  currency={data.currency}
+                  onOpen={(d) => setOpened(d.id)}
+                />
+              ) : (
+                <Card>
+                  <EmptyState icon={<TrendingUp className="size-5" />} title="Pick a project">
+                    Each project gets its own forecast. Choose one above to see it.
+                  </EmptyState>
+                </Card>
+              )
+            ) : view === "winloss" ? (
               <WinLoss deals={data.deals} currency={data.currency} onOpen={(d) => setOpened(d.id)} />
             ) : view === "board" ? (
               <PipelineBoard
@@ -230,8 +250,8 @@ function EmptyHint({ stages }: { stages: DealStage[] }) {
     <Card className="flex shrink-0 items-start gap-3 px-4 py-3 text-sm">
       <HandCoins className="mt-0.5 size-4 shrink-0 text-brand-600" />
       <p className="text-pretty text-muted-foreground">
-        No deals yet. The next hot reply opens one here{booked ? `, and a booked meeting moves it to ${booked.name}` : ""}. To start one yourself, open a lead
-        or an inbox thread and choose Create deal.
+        No deals yet. The next hot reply opens one here{booked ? `, and a booked meeting moves it to ${booked.name}` : ""}. To start one yourself,
+        open a lead or an inbox thread and choose Create deal.
       </p>
     </Card>
   );
