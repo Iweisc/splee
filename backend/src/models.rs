@@ -109,6 +109,8 @@ pub struct ProjectSettings {
     pub qualify_deals: bool,
     /// Writes a forecast of the pipeline every Monday and posts it. See agent/forecast.rs.
     pub pipeline_forecast: bool,
+    /// Coaches each summarized meeting and call. See agent/coaching.rs.
+    pub coach_calls: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

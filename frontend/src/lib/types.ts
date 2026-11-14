@@ -209,6 +209,7 @@ export interface ProjectSettings extends CrmStatus {
   deal_health: boolean;
   qualify_deals: boolean;
   pipeline_forecast: boolean;
+  coach_calls: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -2065,7 +2066,8 @@ export type RunKind =
   | "deal_review"
   | "qualify_deal"
   | "pipeline_forecast"
-  | "buyer_profile";
+  | "buyer_profile"
+  | "coach_call";
 
 export interface TumblrBlog {
   name: string;
@@ -2861,4 +2863,37 @@ export interface BuyingCommittee {
 export interface BuyingCommitteeView {
   people: { id: UUID; full_name: string; title: string; status: LeadStatus; created_at: Ts }[];
   latest: { id: UUID; committee: BuyingCommittee | null; found: number; created_at: Ts; status: "ready" | "working" | "failed" } | null;
+}
+
+/** See backend/src/agent/coaching.rs. A quote is empty when the transcript didn't have the words. */
+export interface CallCoaching {
+  score: number;
+  next_step_agreed: boolean;
+  next_step: string;
+  strengths: string[];
+  improve: { moment: string; quote: string; instead: string }[];
+  covered: string[];
+}
+
+export interface CoachedCall {
+  id: UUID;
+  kind: "meeting" | "call";
+  title: string;
+  happened_at: Ts;
+  duration_secs: number | null;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  owner_id: UUID | null;
+  owner_name: string | null;
+  /** Our share of the words, 0 to 100, or null when the transcript had no speakers. */
+  talk_share: number | null;
+  questions: number;
+  coaching: CallCoaching | null;
+  status: "ready" | "writing" | "failed";
+}
+
+export interface CoachingView {
+  enabled: boolean;
+  items: CoachedCall[];
 }

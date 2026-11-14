@@ -106,6 +106,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.pipeline_forecast} onChange={(pipeline_forecast) => update({ pipeline_forecast })} label="Forecast the pipeline" />}
           />
 
+          <Section
+            title="Coach calls"
+            description="After a sales meeting or a phone call is summarized, the agent scores it from 1 to 10 and says what went well and what to change, with the words said and what to say instead. It counts how much your side talked and how many questions it asked. The Coaching page shows it by rep."
+            actions={<Switch checked={s.coach_calls} onChange={(coach_calls) => update({ coach_calls })} label="Coach calls" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

@@ -11,7 +11,7 @@ import { cn, timeAgo } from "@/lib/utils";
 import { toastError } from "./states";
 
 // The order and keys of ELEMENTS in agent/qualify.rs.
-const LABELS: Record<string, string> = {
+export const QUALIFY_LABELS: Record<string, string> = {
   metrics: "Metrics",
   economic_buyer: "Economic buyer",
   decision_criteria: "Decision criteria",
@@ -77,7 +77,7 @@ export function QualificationSection({ deal: initial }: { deal: Deal }) {
                   <span
                     key={i.key}
                     className={cn("h-1.5 flex-1 rounded-full", LOOK[i.status].bar)}
-                    title={`${LABELS[i.key] ?? i.key}: ${LOOK[i.status].label}`}
+                    title={`${QUALIFY_LABELS[i.key] ?? i.key}: ${LOOK[i.status].label}`}
                   />
                 ))}
               </div>
@@ -113,7 +113,7 @@ export function QualificationSection({ deal: initial }: { deal: Deal }) {
                 <li key={i.key} className="grid grid-cols-[8.5rem_1fr] gap-3 py-2 text-sm">
                   <span className="flex items-center gap-2 font-medium">
                     <span className={cn("size-1.5 shrink-0 rounded-full", i.status === "unknown" ? "bg-border" : LOOK[i.status].bar)} />
-                    {LABELS[i.key] ?? i.key}
+                    {QUALIFY_LABELS[i.key] ?? i.key}
                   </span>
                   <span className="min-w-0 text-pretty">
                     {i.evidence && <span className="text-foreground/80">{i.evidence}</span>}
