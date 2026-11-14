@@ -58,24 +58,36 @@ pub struct Event {
     pub at: Ts,
 }
 
+const PLAY_COLUMNS: &str = "id, project_id, name, trigger, action, segment_id, min_score, daily_cap, checked_at";
+
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
-    let plays = sqlx::query_as::<_, Play>(
-        "select p.id, p.project_id, p.name, p.trigger, p.action, p.segment_id, p.min_score, p.daily_cap, p.checked_at
-         from plays p join projects pr on pr.id = p.project_id where p.enabled and pr.org_id is not null order by p.checked_at",
+    let plays: Vec<Uuid> = sqlx::query_scalar(
+        "select p.id from plays p join projects pr on pr.id = p.project_id where p.enabled and pr.org_id is not null order by p.checked_at",
     )
     .fetch_all(&state.db)
     .await?;
-    for play in plays {
-        if let Err(e) = run(state, &play, Utc::now()).await {
-            tracing::error!(play_id = %play.id, error = ?e, "play failed");
+    for play_id in plays {
+        if let Err(e) = run(state, play_id, Utc::now()).await {
+            tracing::error!(%play_id, error = ?e, "play failed");
         }
     }
     Ok(())
 }
 
 /// Acts on the play's events up to `until` and moves its `checked_at` past the ones it handled. Returns how many it acted on.
-pub async fn run(state: &AppState, play: &Play, until: Ts) -> anyhow::Result<usize> {
+/// One backend runs a play at a time, so two never act on the same event, and it reads the play again under the lock, so
+/// one switched off or reset meanwhile is seen as it is now.
+pub async fn run(state: &AppState, play_id: Uuid, until: Ts) -> anyhow::Result<usize> {
     let db = &state.db;
+    let mut lock = db.begin().await?;
+    let owned: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended('play:' || $1::text, 0))").bind(play_id).fetch_one(&mut *lock).await?;
+    if !owned {
+        return Ok(0);
+    }
+    let Some(play) = sqlx::query_as::<_, Play>(&format!("select {PLAY_COLUMNS} from plays where id = $1 and enabled")).bind(play_id).fetch_optional(&mut *lock).await? else {
+        return Ok(0);
+    };
+    let play = &play;
     let fired_today: i64 = sqlx::query_scalar("select count(*) from play_firings where play_id = $1 and created_at > $2 - interval '1 day'")
         .bind(play.id)
         .bind(until)
@@ -84,7 +96,7 @@ pub async fn run(state: &AppState, play: &Play, until: Ts) -> anyhow::Result<usi
     let mut room = (i64::from(play.daily_cap) - fired_today).max(0) as usize;
     let mut checked = until;
     // The last event handled. Past the cap, the watermark stops there, and events at that same moment come again next
-    // time, where the firing's uniqueness skips the ones done.
+    // time, since events() reads from the watermark on and leaves out the subjects already fired.
     let mut handled = play.checked_at;
     let mut acted = 0;
     for event in events(db, play, until).await? {
@@ -118,12 +130,14 @@ pub async fn run(state: &AppState, play: &Play, until: Ts) -> anyhow::Result<usi
             acted += 1;
         }
     }
-    sqlx::query("update plays set checked_at = $2 where id = $1").bind(play.id).bind(checked).execute(db).await?;
+    // Re-enabling a play while it ran moved its watermark to now, and that wins over this run's.
+    sqlx::query("update plays set checked_at = $2 where id = $1 and checked_at = $3").bind(play.id).bind(checked).bind(play.checked_at).execute(&mut *lock).await?;
+    lock.commit().await?;
     Ok(acted)
 }
 
-/// The play's events after its `checked_at` up to `until`, oldest first, one per company or lead, leaving out the ones it
-/// already fired for.
+/// The play's events from its `checked_at` up to `until`, oldest first, one per company or lead, leaving out the ones it
+/// already fired for. The watermark itself is included: a cap can stop between events at the same moment.
 pub async fn events(db: &PgPool, play: &Play, until: Ts) -> sqlx::Result<Vec<Event>> {
     // Each source as (domain, lead, name, what, at). Company sources only count companies in the project.
     let source = match play.trigger.as_str() {
@@ -172,7 +186,7 @@ pub async fn events(db: &PgPool, play: &Play, until: Ts) -> sqlx::Result<Vec<Eve
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "select domain, lead_id, name, kind, title, amount, offered, happened_on, what, at
          from (select distinct on (coalesce(lower(domain), lead_id::text)) * from ({source}) s(domain, lead_id, name, kind, title, amount, offered, happened_on, what, at, score)
-               where at > $2 and at <= $3 and score >= $5 and $4::text <> ''
+               where at >= $2 and at <= $3 and score >= $5 and $4::text <> ''
                order by coalesce(lower(domain), lead_id::text), at) e
          where not exists (select 1 from play_firings f where f.play_id = $6 and f.subject = coalesce('domain:' || lower(e.domain), 'lead:' || e.lead_id::text))
          order by at"
@@ -351,7 +365,7 @@ mod tests {
         signal(&db, &s, "three.example", "funding_post", "f", now - Days::minutes(10)).await;
         sqlx::query("insert into leads (project_id, company_domain, full_name) values ($1, 'two.example', 'Ana')").bind(s.project).execute(&db).await.unwrap();
 
-        assert_eq!(run(&state, &p, now).await.unwrap(), 2);
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 2);
         let fired: Vec<(String, String, String, Option<Uuid>)> =
             sqlx::query_as("select domain::text, outcome, what, run_id from play_firings order by created_at, domain").fetch_all(&db).await.unwrap();
         assert_eq!(fired.len(), 2, "before the play, a launch and past the cap are left out: {fired:?}");
@@ -369,11 +383,11 @@ mod tests {
         assert_eq!(input["segment_id"], json!(s.segment));
 
         // three.example waits for room, and comes up once the day's firings age out.
-        let p = sqlx::query_as::<_, Play>("select id, project_id, name, trigger, action, segment_id, min_score, daily_cap, checked_at from plays").fetch_one(&db).await.unwrap();
-        assert!(p.checked_at < now);
-        assert_eq!(run(&state, &p, now).await.unwrap(), 0);
+        let checked: Ts = sqlx::query_scalar("select checked_at from plays").fetch_one(&db).await.unwrap();
+        assert!(checked < now);
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 0);
         sqlx::query("update play_firings set created_at = now() - interval '2 days'").execute(&db).await.unwrap();
-        assert_eq!(run(&state, &p, now).await.unwrap(), 1);
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 1);
         let three: String = sqlx::query_scalar("select outcome from play_firings where domain = 'three.example'").fetch_one(&db).await.unwrap();
         assert_eq!(three, "done");
     }
@@ -408,12 +422,56 @@ mod tests {
                 .unwrap();
         }
         let p = play(&db, &s, "job_change", "write_email", 20, now - Days::hours(1)).await;
-        assert_eq!(run(&state, &p, now).await.unwrap(), 2);
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 2);
         let fired: Vec<(String, String, String)> =
             sqlx::query_as("select l.full_name, f.outcome, f.what from play_firings f join leads l on l.id = f.lead_id order by l.full_name").fetch_all(&db).await.unwrap();
         assert_eq!(fired[0], ("Ana".into(), "done".into(), "Moved to New Co from Acme".into()));
         assert_eq!((fired[1].1.as_str()), "skipped", "Bo has no address yet");
         let runs: i64 = sqlx::query_scalar("select count(*) from agent_runs where kind = 'write_emails'").fetch_one(&db).await.unwrap();
         assert_eq!(runs, 1);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_cap_that_stops_between_events_at_the_same_moment_loses_none(db: PgPool) {
+        let s = seed(&db).await;
+        let state = crate::autopilot::tests::state(db.clone());
+        let now = Utc::now();
+        let at = now - Days::minutes(10);
+        for (domain, key) in [("a.example", "a"), ("b.example", "b"), ("c.example", "c")] {
+            signal(&db, &s, domain, "funding_post", key, at).await;
+        }
+        let p = play(&db, &s, "funding", "notify", 1, now - Days::hours(1)).await;
+        for _ in 0..3 {
+            assert_eq!(run(&state, p.id, now).await.unwrap(), 1);
+            sqlx::query("update play_firings set created_at = now() - interval '2 days'").execute(&db).await.unwrap();
+        }
+        let fired: i64 = sqlx::query_scalar("select count(distinct subject) from play_firings").fetch_one(&db).await.unwrap();
+        assert_eq!(fired, 3);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn two_backends_never_act_on_the_same_event_and_a_switched_off_play_does_nothing(db: PgPool) {
+        let s = seed(&db).await;
+        let state = crate::autopilot::tests::state(db.clone());
+        let now = Utc::now();
+        signal(&db, &s, "one.example", "funding_post", "a", now - Days::minutes(10)).await;
+        let p = play(&db, &s, "funding", "add_to_campaign", 20, now - Days::hours(1)).await;
+
+        // Another backend holds the play.
+        let mut other = db.begin().await.unwrap();
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('play:' || $1::text, 0))").bind(p.id).execute(&mut *other).await.unwrap();
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 0);
+        other.rollback().await.unwrap();
+
+        let (a, b) = tokio::join!(run(&state, p.id, now), run(&state, p.id, now));
+        assert_eq!(a.unwrap() + b.unwrap(), 1);
+        let runs: i64 = sqlx::query_scalar("select count(*) from agent_runs where kind = 'find_people'").fetch_one(&db).await.unwrap();
+        assert_eq!(runs, 1, "one find_people run, not one per backend");
+
+        signal(&db, &s, "two.example", "funding_post", "b", now - Days::minutes(5)).await;
+        sqlx::query("update plays set enabled = false").execute(&db).await.unwrap();
+        assert_eq!(run(&state, p.id, now).await.unwrap(), 0);
     }
 }
