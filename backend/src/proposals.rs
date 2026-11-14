@@ -1,6 +1,8 @@
 //! Proposals: the agent writes a deal's proposal from the conversation (agent/proposals.rs), the team sets the prices in the
 //! deal's window, and the buyer reads it at PUBLIC_URL/proposal/{token} and accepts it with their name. Accepting wins the
-//! deal at the proposal's first-year total and tells the project's chats, and the proposal stops changing.
+//! deal at the proposal's first-year total and tells the project's chats, and the proposal stops changing. Items picked from
+//! the price list keep its price, and a proposal past the organization's discount limit is held from the buyer until an
+//! owner or admin approves it (crate::deal_desk).
 
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -32,6 +34,12 @@ pub struct Item {
     pub unit_price: f64,
     /// one_time, month or year.
     pub period: String,
+    /// The price list's product it was picked from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<Uuid>,
+    /// The product's price when the item was saved. Splee sets it, never the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price: Option<f64>,
 }
 
 /// What the items come to in the first year: one-time items once, monthly ones 12 times, yearly ones once.
@@ -58,10 +66,39 @@ pub fn tidy_items(items: Vec<Item>) -> AppResult<Vec<Item>> {
                 return Err(AppError::BadRequest("Each item needs a quantity of at least 1 and a price of zero or more".into()));
             }
             let unit_price = (i.unit_price * 100.0).round() / 100.0;
-            Ok(Item { name, detail: i.detail.trim().chars().take(300).collect(), quantity: i.quantity, unit_price, period: i.period })
+            let detail = i.detail.trim().chars().take(300).collect();
+            Ok(Item { name, detail, quantity: i.quantity, unit_price, period: i.period, product_id: i.product_id, list_price: None })
         })
         .collect()
 }
+
+/// Gives each item picked from the price list its product's price as `list_price`, and forgets the product of one that
+/// isn't on the list or when the deal isn't in the list's currency. `products` is (id, price).
+pub fn stamp(items: Vec<Item>, products: &[(Uuid, f64)], list_currency: bool) -> Vec<Item> {
+    items
+        .into_iter()
+        .map(|i| {
+            let listed = i.product_id.filter(|_| list_currency).and_then(|id| products.iter().find(|(p, _)| *p == id).copied());
+            Item { product_id: listed.map(|(id, _)| id), list_price: listed.map(|(_, price)| price), ..i }
+        })
+        .collect()
+}
+
+/// The deepest discount off the price list among the items, in percent rounded up to two decimals so it never reads as
+/// inside the limit when it isn't. Items not from the list don't count.
+pub fn discount(items: &[Item]) -> f64 {
+    let deepest = items
+        .iter()
+        .filter_map(|i| i.list_price.filter(|l| *l > 0.0).map(|l| (l - i.unit_price) / l * 100.0))
+        .fold(0.0_f64, f64::max);
+    // Rounded to 4 decimals first, so float noise like 10.000000000002 doesn't round up to 10.01.
+    ((deepest * 10_000.0).round() / 100.0).ceil() / 100.0
+}
+
+/// True when proposal `p` is past organization `o`'s discount limit and no approval covers its discount, so the buyer
+/// can't see or accept it.
+pub const HELD: &str = "(o.discount_limit_pct is not null and p.discount_pct > o.discount_limit_pct
+    and not exists (select 1 from discount_approvals a where a.proposal_id = p.id and a.status = 'approved' and a.discount_pct >= p.discount_pct))";
 
 /// The deal's proposal for the app.
 #[derive(Debug, Serialize, FromRow)]
@@ -82,8 +119,15 @@ pub struct Proposal {
     pub accepted_at: Option<Ts>,
     pub accepted_name: String,
     pub accepted_title: String,
+    pub discount_pct: f64,
+    pub discount_limit_pct: Option<i32>,
+    /// Past the limit with no approval that covers it, so the buyer sees that it's being finished.
+    pub held: bool,
     #[sqlx(skip)]
     pub url: String,
+    /// The latest approval asked for, whatever came of it.
+    #[sqlx(skip)]
+    pub approval: Option<crate::deal_desk::Approval>,
 }
 
 pub fn url(public_url: &str, token: &str) -> String {
@@ -91,16 +135,19 @@ pub fn url(public_url: &str, token: &str) -> String {
 }
 
 pub async fn for_deal(db: &PgPool, public_url: &str, deal_id: Uuid) -> sqlx::Result<Option<Proposal>> {
-    let p = sqlx::query_as::<_, Proposal>(
+    let p = sqlx::query_as::<_, Proposal>(&format!(
         "select p.id, p.token, p.title, p.intro, p.sections, p.items, d.currency, p.valid_until, p.views, p.first_viewed_at, p.last_viewed_at,
-                p.accepted_at, p.accepted_name, p.accepted_title,
+                p.accepted_at, p.accepted_name, p.accepted_title, p.discount_pct::float8 as discount_pct, o.discount_limit_pct, {HELD} as held,
                 case when r.status in ('queued', 'running') then 'writing' when p.title is not null then 'ready' else 'failed' end as status
-         from proposals p join deals d on d.id = p.deal_id left join agent_runs r on r.id = p.run_id where p.deal_id = $1",
-    )
+         from proposals p join deals d on d.id = p.deal_id join organizations o on o.id = d.org_id left join agent_runs r on r.id = p.run_id
+         where p.deal_id = $1"
+    ))
     .bind(deal_id)
     .fetch_optional(db)
     .await?;
-    Ok(p.map(|p| Proposal { url: url(public_url, &p.token), ..p }))
+    let Some(p) = p else { return Ok(None) };
+    let approval = crate::deal_desk::latest(db, p.id).await?;
+    Ok(Some(Proposal { url: url(public_url, &p.token), approval, ..p }))
 }
 
 /// The deal's proposal, made empty the first time. Errors once it's accepted, since then it can't change.
@@ -133,7 +180,17 @@ pub struct Changes {
 
 /// The team's edits, making the proposal first if the deal has none.
 pub async fn update(db: &PgPool, project_id: Uuid, deal_id: Uuid, c: Changes) -> AppResult<()> {
-    let items = c.items.map(tidy_items).transpose()?;
+    let mut items = c.items.map(tidy_items).transpose()?;
+    if let Some(list) = items.take() {
+        let (org_id, list_currency): (Uuid, bool) =
+            sqlx::query_as("select d.org_id, lower(d.currency) = lower(o.currency) from deals d join organizations o on o.id = d.org_id where d.id = $1")
+                .bind(deal_id)
+                .fetch_one(db)
+                .await?;
+        let products: Vec<(Uuid, f64)> = sqlx::query_as("select id, price::float8 from products where org_id = $1").bind(org_id).fetch_all(db).await?;
+        items = Some(stamp(list, &products, list_currency));
+    }
+    let discount_pct = items.as_deref().map(discount);
     let title = c.title.map(|t| t.trim().chars().take(160).collect::<String>());
     if title.as_deref() == Some("") {
         return Err(AppError::BadRequest("The proposal needs a title".into()));
@@ -142,7 +199,7 @@ pub async fn update(db: &PgPool, project_id: Uuid, deal_id: Uuid, c: Changes) ->
     let id = ensure_open(&mut tx, project_id, deal_id).await?;
     sqlx::query(
         "update proposals set title = coalesce($2, title), intro = coalesce($3, intro), items = coalesce($4, items),
-                valid_until = case when $5 then $6 else valid_until end, updated_at = now()
+                valid_until = case when $5 then $6 else valid_until end, discount_pct = coalesce($7, discount_pct), updated_at = now()
          where id = $1",
     )
     .bind(id)
@@ -151,6 +208,7 @@ pub async fn update(db: &PgPool, project_id: Uuid, deal_id: Uuid, c: Changes) ->
     .bind(items.map(Json))
     .bind(c.valid_until.is_some())
     .bind(c.valid_until.flatten())
+    .bind(discount_pct)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -176,25 +234,28 @@ pub struct Public {
     pub from_name: String,
     pub from_domain: Option<String>,
     pub sender_name: String,
+    /// Past the discount limit and not approved yet. The sections and items are left out until it is.
+    pub held: bool,
 }
 
 pub async fn public(db: &PgPool, token: &str) -> sqlx::Result<Option<Public>> {
-    sqlx::query_as(
-        "select p.title, p.intro, p.sections, p.items, d.currency, p.valid_until, p.accepted_at, p.accepted_name,
+    let page: Option<Public> = sqlx::query_as(&format!(
+        "select {HELD} as held, p.title, p.intro, p.sections, p.items, d.currency, p.valid_until, p.accepted_at, p.accepted_name,
                 p.accepted_at is null and d.status <> 'open' as closed,
                 l.first_name, l.company_name as company, l.company_domain::text as company_domain,
                 coalesce(nullif(pr.company->>'name', ''), pr.name) as from_name, pr.domain::text as from_domain,
                 coalesce(nullif(m.from_name, ''), s.sender_name, '') as sender_name
-         from proposals p join deals d on d.id = p.deal_id join leads l on l.id = d.lead_id join projects pr on pr.id = p.project_id
-         left join project_settings s on s.project_id = p.project_id
+         from proposals p join deals d on d.id = p.deal_id join organizations o on o.id = d.org_id join leads l on l.id = d.lead_id
+         join projects pr on pr.id = p.project_id left join project_settings s on s.project_id = p.project_id
          left join lateral (select e.mailbox_id from email_messages e where e.lead_id = l.id and e.direction = 'outbound' and e.status = 'sent'
                             and e.mailbox_id is not null order by e.sent_at desc limit 1) e on true
          left join mailboxes m on m.id = e.mailbox_id
-         where p.token = $1 and p.title is not null",
-    )
+         where p.token = $1 and p.title is not null"
+    ))
     .bind(token)
     .fetch_optional(db)
-    .await
+    .await?;
+    Ok(page.map(|p| if p.held { Public { sections: Json(vec![]), items: Json(vec![]), ..p } } else { p }))
 }
 
 /// Counts a look at the buyer's page and returns whether it was the first.
@@ -233,12 +294,13 @@ pub async fn accept(state: &AppState, token: &str, a: Acceptance) -> AppResult<(
         return Err(AppError::BadRequest("Type your name to accept".into()));
     }
     let db = &state.db;
-    let row: Option<Accepted> = sqlx::query_as(
+    let row: Option<Accepted> = sqlx::query_as(&format!(
         "update proposals p set accepted_at = now(), accepted_name = $2, accepted_title = $3
-         from deals d where d.id = p.deal_id and p.token = $1 and p.title is not null and p.accepted_at is null and d.status = 'open'
-           and (p.valid_until is null or p.valid_until >= $4)
-         returning p.deal_id, d.org_id, p.project_id, p.items, p.title",
-    )
+         from deals d join organizations o on o.id = d.org_id
+         where d.id = p.deal_id and p.token = $1 and p.title is not null and p.accepted_at is null and d.status = 'open'
+           and (p.valid_until is null or p.valid_until >= $4) and not {HELD}
+         returning p.deal_id, d.org_id, p.project_id, p.items, p.title"
+    ))
     .bind(token)
     .bind(&name)
     .bind(a.title.trim().chars().take(120).collect::<String>())

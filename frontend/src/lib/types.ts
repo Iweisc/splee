@@ -2768,6 +2768,10 @@ export interface ProposalItem {
   quantity: number;
   unit_price: number;
   period: "one_time" | "month" | "year";
+  /** The price list's product it was picked from. */
+  product_id?: UUID;
+  /** The product's price when saved. The backend sets it. */
+  list_price?: number;
 }
 
 /** GET /deals/:id/proposal. The buyer's page is `url`. Once accepted it doesn't change. */
@@ -2788,6 +2792,12 @@ export interface Proposal {
   accepted_at: Ts | null;
   accepted_name: string;
   accepted_title: string;
+  /** The deepest discount off the price list, in percent. */
+  discount_pct: number;
+  discount_limit_pct: number | null;
+  /** Past the limit with no approval covering it, so the buyer can't see the prices or accept. */
+  held: boolean;
+  approval: DiscountApproval | null;
 }
 
 /** GET /proposals/:token, what the buyer sees. `closed` means the deal ended another way. */
@@ -2807,6 +2817,8 @@ export interface PublicProposal {
   from_name: string;
   from_domain: string | null;
   sender_name: string;
+  /** Waiting on a discount approval: sections and items are empty until it's approved. */
+  held: boolean;
 }
 
 /** GET /plans/:token, what the buyer sees. */
@@ -3399,4 +3411,40 @@ export interface Contest {
 export interface ContestsView {
   currency: string;
   contests: Contest[];
+}
+
+/** A product on the organization's price list, priced in its currency. */
+export interface Product {
+  id: UUID;
+  name: string;
+  detail: string;
+  price: number;
+  period: ProposalItem["period"];
+}
+
+/** GET /products. Proposals past `discount_limit_pct` off the list need an owner or admin's approval. */
+export interface PriceList {
+  currency: string;
+  discount_limit_pct: number | null;
+  products: Product[];
+}
+
+/** An ask to approve a proposal's discount, with the agent's read. See backend/src/deal_desk.rs. */
+export interface DiscountApproval {
+  id: UUID;
+  deal_id: UUID;
+  project_id: UUID;
+  lead_name: string;
+  company: string;
+  discount_pct: number;
+  discount_limit_pct: number | null;
+  reason: string;
+  asked_by: string | null;
+  created_at: Ts;
+  read: { verdict: "approve" | "counter" | "decline"; counter_pct: number | null; summary: string; reasons: string[]; ask_for: string } | null;
+  read_status: "writing" | "ready" | "failed";
+  status: "asked" | "approved" | "declined";
+  decided_by: string | null;
+  decided_at: Ts | null;
+  note: string;
 }

@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 import { PERIODS, firstYear, monthly } from "@/lib/proposals";
 import type { Deal, Proposal, ProposalItem } from "@/lib/types";
 import { dealMoney, timeAgo } from "@/lib/utils";
+import { DeskPanel, OffList, ProductPicker, discount, pct, useListPrices } from "./deal-desk";
 import { toastError } from "./states";
 
 const BLANK: ProposalItem = { name: "", detail: "", quantity: 1, unit_price: 0, period: "month" };
@@ -20,8 +21,9 @@ const BLANK: ProposalItem = { name: "", detail: "", quantity: 1, unit_price: 0, 
 export function ProposalSection({ deal }: { deal: Deal }) {
   const key = `/deals/${deal.id}/proposal`;
   const { data: proposal, mutate } = useSWR<Proposal | null>(key, fetcher, {
-    refreshInterval: (p) => (p?.status === "writing" ? 2500 : 0),
+    refreshInterval: (p) => (p?.status === "writing" || p?.approval?.read_status === "writing" ? 2500 : 0),
   });
+  const listPrice = useListPrices();
   const [busy, setBusy] = useState<"write" | "save" | null>(null);
   // Edits to the prices and date, kept apart until saved. Null when nothing changed.
   const [draft, setDraft] = useState<{ items: ProposalItem[]; valid_until: string } | null>(null);
@@ -71,6 +73,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
   }
 
   const items = draft?.items ?? proposal.items;
+  const off = discount(items, listPrice);
   const total = firstYear(items);
   const perMonth = monthly(items);
   const money = (n: number) => dealMoney(n, proposal.currency);
@@ -176,6 +179,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
               className="h-8 w-24 text-sm"
               aria-label={`Price in ${proposal.currency}`}
             />
+            <OffList list={listPrice(item)} price={item.unit_price} />
             <Select
               value={item.period}
               onChange={(e) => setItem(i, { period: e.target.value as ProposalItem["period"] })}
@@ -206,6 +210,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
         <Button type="button" size="sm" variant="ghost" onClick={() => edit({ items: [...items, BLANK] })} disabled={items.length >= 10}>
           <Plus className="size-3.5" /> Add a price
         </Button>
+        <ProductPicker currency={proposal.currency} onPick={(item) => edit({ items: [...items, item] })} disabled={items.length >= 10} />
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           Valid until
           <Input
@@ -220,6 +225,11 @@ export function ProposalSection({ deal }: { deal: Deal }) {
           <span className="font-medium">{money(total)}</span> <span className="text-muted-foreground">first year</span>
         </p>
       </div>
+      {draft && proposal.discount_limit_pct !== null && off > proposal.discount_limit_pct && (
+        <p className="mt-3 text-xs text-pretty text-amber-700">
+          {pct(off)} off the price list is past the {proposal.discount_limit_pct}% limit. Once you save, ask for approval before you send it.
+        </p>
+      )}
       {draft && (
         <div className="mt-3 flex justify-end gap-2">
           <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
@@ -230,6 +240,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
           </Button>
         </div>
       )}
+      {!draft && <DeskPanel proposal={proposal} dealId={deal.id} them={them} onChange={(p) => mutate(p, { revalidate: false })} />}
     </section>
   );
 }
