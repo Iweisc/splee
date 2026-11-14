@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pencil } from "lucide-react";
+import { MessagesSquare, Pencil } from "lucide-react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/ui/form";
@@ -10,6 +10,7 @@ import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { TargetRow, Targets } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
+import { OneOnOneDialog } from "./one-on-one";
 import { LoadError, MicroLabel, toastError } from "./states";
 
 /** Where a teammate stands: hit it, on track when they're ahead of the month's pace or commit covers the rest, within
@@ -91,12 +92,15 @@ function Row({
   v,
   admin,
   onOpen,
+  onPrep,
   onSaved,
 }: {
   r: TargetRow;
   v: Targets;
   admin: boolean;
   onOpen: (dealId: string) => void;
+  /** Set when the viewer may prep a 1:1 with them: an owner or admin, or the teammate themselves. */
+  onPrep?: () => void;
   onSaved: () => unknown;
 }) {
   const money = (cents: number) => dealMoney(cents / 100, v.currency.toUpperCase());
@@ -112,9 +116,14 @@ function Row({
           {money(r.won_cents)} won{r.target_cents ? ` of ${money(r.target_cents)}` : ""}
           {gap > 0 && ` · ${money(gap)} to go`}
         </p>
-        {admin && r.user_id && (
-          <div className="ml-auto">
-            <TargetEditor key={r.target_cents} r={r} currency={v.currency} onSaved={onSaved} />
+        {(onPrep || (admin && r.user_id)) && (
+          <div className="ml-auto flex flex-wrap items-center gap-1">
+            {onPrep && (
+              <Button type="button" size="sm" variant="ghost" onClick={onPrep}>
+                <MessagesSquare className="size-3.5" /> 1:1 prep
+              </Button>
+            )}
+            {admin && r.user_id && <TargetEditor key={r.target_cents} r={r} currency={v.currency} onSaved={onSaved} />}
           </div>
         )}
       </div>
@@ -152,6 +161,7 @@ function Row({
 export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
   const { me } = useMe();
   const { data: v, error, mutate } = useSWR<Targets>("/targets", fetcher);
+  const [prepFor, setPrepFor] = useState<TargetRow | null>(null);
   if (error) {
     return (
       <Card>
@@ -197,7 +207,15 @@ export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
       <Card className="px-4 py-0">
         <ul className="flex flex-col divide-y divide-border">
           {v.rows.map((r) => (
-            <Row key={r.user_id ?? "none"} r={r} v={v} admin={admin} onOpen={onOpen} onSaved={() => mutate()} />
+            <Row
+              key={r.user_id ?? "none"}
+              r={r}
+              v={v}
+              admin={admin}
+              onOpen={onOpen}
+              onPrep={r.user_id && (admin || r.user_id === me?.user.id) ? () => setPrepFor(r) : undefined}
+              onSaved={() => mutate()}
+            />
           ))}
         </ul>
       </Card>
@@ -207,6 +225,7 @@ export function TargetsPanel({ onOpen }: { onOpen: (dealId: string) => void }) {
         {forecasted ? "" : ", and there's none for this month yet. Write one on the Forecast tab"}. The thin line is where the month says they should
         be by today, and the dark one the target.
       </p>
+      {prepFor?.user_id && <OneOnOneDialog userId={prepFor.user_id} name={prepFor.name} onClose={() => setPrepFor(null)} onOpen={onOpen} />}
     </div>
   );
 }

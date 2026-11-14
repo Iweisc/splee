@@ -23,34 +23,39 @@ const PATH_DEALS: i64 = 5;
 /// A teammate's month, or the deals nobody owns when `user_id` is null. `commit_cents` and `best_case_cents` are open
 /// deals the latest forecast of their project, for this month, put there. `deals` is up to five of those.
 #[derive(Serialize, sqlx::FromRow)]
-struct Row {
-    user_id: Option<Uuid>,
+pub(crate) struct Row {
+    pub user_id: Option<Uuid>,
     name: String,
-    target_cents: Option<i64>,
-    won_cents: i64,
-    won_deals: i64,
-    commit_cents: i64,
-    best_case_cents: i64,
+    pub target_cents: Option<i64>,
+    pub won_cents: i64,
+    pub won_deals: i64,
+    pub commit_cents: i64,
+    pub best_case_cents: i64,
     deals: Value,
 }
 
 #[derive(Serialize)]
-struct View {
-    currency: String,
+pub(crate) struct View {
+    pub currency: String,
     /// Days into the month and the days it has, for the pace marker.
-    day: i32,
-    days: i32,
-    rows: Vec<Row>,
+    pub day: i32,
+    pub days: i32,
+    pub rows: Vec<Row>,
 }
 
 async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<View>> {
+    Ok(Json(month(&state.db, auth.org_id).await?))
+}
+
+/// The organization's month, also what a 1:1 prep starts from.
+pub(crate) async fn month(db: &sqlx::PgPool, org_id: Uuid) -> sqlx::Result<View> {
     let (currency, day, days): (String, i32, i32) = sqlx::query_as(
         "select currency, extract(day from now() at time zone 'utc')::int,
                 extract(day from date_trunc('month', now() at time zone 'utc') + interval '1 month' - interval '1 day')::int
          from organizations where id = $1",
     )
-    .bind(auth.org_id)
-    .fetch_one(&state.db)
+    .bind(org_id)
+    .fetch_one(db)
     .await?;
     let rows = sqlx::query_as::<_, Row>(
         "with placed as (
@@ -84,12 +89,12 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<View>
                                        or (d.status = 'open' and d.category in ('commit', 'best_case'))) > 0
          order by p.user_id is null, won_cents desc, p.name",
     )
-    .bind(auth.org_id)
+    .bind(org_id)
     .bind(&currency)
     .bind(PATH_DEALS)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
-    Ok(Json(View { currency, day, days, rows }))
+    Ok(View { currency, day, days, rows })
 }
 
 #[derive(Deserialize)]

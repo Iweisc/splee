@@ -740,6 +740,15 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | GET | /targets | | `{currency, day, days, rows}`, `day` today's day of the month and `days` the month's length. A row per member, by won, then Unassigned when deals nobody owns were won this month or are in commit or best case: `{user_id, name, target_cents, won_cents, won_deals, commit_cents, best_case_cents, deals}`, `deals` up to 5 `{deal_id, name, company, value_cents, category, why}`, commit first, then the biggest |
 | PUT | /targets/:user_id | `{target_cents}` | `{target_cents}`. Owners and admins only. Null or 0 clears it. 400 over 10,000,000,000 in the currency, 404 for someone outside the organization |
 
+### 1:1 prep
+
+`agent/one_on_one.rs`, `routes/one_on_ones.rs`, migration 0163 and the 1:1 prep button on each teammate's row of the Targets tab, which opens the prep in its own window. Owners and admins prep anyone in the organization, everyone else only themselves. Written only when someone asks. The agent reads the teammate's Targets row, the open deals whose lead they own (as the forecast reads them), the deals they won or lost in the last 30 days with their reviews, their coached calls and their scored practice calls from the last 30 days. `month` is their Targets row when it was written, never the model's. Deals it names must be their open deals, at most 4. Copy puts the prep on the clipboard as plain text for the meeting's notes.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /one-on-ones/:user_id | | `{latest}`: `{id, prep, requested_by, created_at, status, error}` with status `ready`, `writing` or `failed` and the run's `error` when it failed, or null. `prep` is `{headline, month: {currency, day, days, target_cents, won_cents, commit_cents, best_case_cents}, recognize, deals: [{deal_id, company, why, ask}], skill: {name, evidence, drill}, commitment}`. 403 for someone else's unless an owner or admin, 404 outside the organization |
+| POST | /one-on-ones/:user_id | | the same, with a prep being written now. 400 while one is being written. The run fails when the teammate has no open deals, nothing won or lost, and no coached or practice calls in the last 30 days |
+
 ### Today
 
 `routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, and open deals quiet for more than 14 days with whether a nudge waits for approval. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.

@@ -27,11 +27,12 @@ mod referrals;
 mod churn;
 mod customers;
 mod practice;
-mod targets;
+pub(crate) mod targets;
 mod today;
 mod buyers;
 mod coaching;
 mod forecast;
+mod one_on_ones;
 mod insights;
 mod lead_pages;
 mod local_businesses;
@@ -129,6 +130,7 @@ pub fn router() -> Router<AppState> {
         .merge(customers::router())
         .merge(practice::router())
         .merge(targets::router())
+        .merge(one_on_ones::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

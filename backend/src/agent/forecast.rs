@@ -124,9 +124,9 @@ struct Input {
 
 /// An open deal with what Splee knows about it.
 #[derive(sqlx::FromRow)]
-struct OpenDeal {
-    id: Uuid,
-    company: String,
+pub(super) struct OpenDeal {
+    pub(super) id: Uuid,
+    pub(super) company: String,
     lead: String,
     title: String,
     stage: String,
@@ -145,11 +145,12 @@ struct OpenDeal {
     proposal: Option<String>,
 }
 
-/// `{LAST_TOUCH}` is filled in where it's used, like the board's Quiet badge counts from it.
-const OPEN_DEALS: &str = "select d.id, l.company_name as company, l.full_name as lead, l.title, s.name as stage, s.probability, d.value_cents, d.currency,
+/// `{LAST_TOUCH}` is filled in where it's used, like the board's Quiet badge counts from it, and `{WHERE}` picks the deals:
+/// a project's for a forecast, a teammate's for their 1:1 prep. `$2` is the limit.
+pub(super) const OPEN_DEALS: &str = "select d.id, l.company_name as company, l.full_name as lead, l.title, s.name as stage, s.probability, d.value_cents, d.currency,
             d.close_date, extract(day from now() - {LAST_TOUCH})::int as quiet_days,
             coalesce(nullif(u.name, ''), u.email::text) as owner, h.health, h.likelihood, h.why as health_why,
-            (select count(*) from jsonb_array_elements(q.items) i where i->>'status' = 'confirmed') as confirmed,
+            case when q.items is not null then (select count(*) from jsonb_array_elements(q.items) i where i->>'status' = 'confirmed') end as confirmed,
             (select string_agg(i->>'key', ', ') from jsonb_array_elements(q.items) i where i->>'status' = 'unknown') as unknown,
             (select count(*) filter (where st.done_at is not null) || ' of ' || count(*) || ' steps done'
                from close_plans cp join close_plan_steps st on st.plan_id = cp.id where cp.deal_id = d.id having count(*) > 0) as plan,
@@ -158,7 +159,7 @@ const OPEN_DEALS: &str = "select d.id, l.company_name as company, l.full_name as
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id left join users u on u.id = l.owner_id
      left join lateral (select health, likelihood, why from deal_health where deal_id = d.id and health is not null order by created_at desc limit 1) h on true
      left join lateral (select items from deal_qualification where deal_id = d.id and items is not null order by created_at desc limit 1) q on true
-     where d.project_id = $1 and d.status = 'open'
+     where {WHERE} and d.status = 'open'
      order by d.close_date nulls last, d.value_cents desc limit $2";
 
 #[derive(Deserialize)]
@@ -202,7 +203,7 @@ fn month_end(today: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, 1).and_then(|d| d.pred_opt()).unwrap_or(today)
 }
 
-fn describe(i: usize, d: &OpenDeal) -> String {
+pub(super) fn describe(i: usize, d: &OpenDeal) -> String {
     let mut line = format!("[d{}] {} ({}, {}). {} stage, {}% by stage", i + 1, d.company, d.lead, d.title, d.stage, d.probability);
     if d.value_cents > 0 {
         line += &format!(", {} {}", amount(d.value_cents), d.currency.to_uppercase());
@@ -243,7 +244,11 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     if written {
         return Ok(Outcome::new("Already written"));
     }
-    let deals: Vec<OpenDeal> = sqlx::query_as(&OPEN_DEALS.replace("{LAST_TOUCH}", LAST_TOUCH)).bind(project_id).bind(MAX_DEALS).fetch_all(db).await?;
+    let deals: Vec<OpenDeal> = sqlx::query_as(&OPEN_DEALS.replace("{LAST_TOUCH}", LAST_TOUCH).replace("{WHERE}", "d.project_id = $1"))
+        .bind(project_id)
+        .bind(MAX_DEALS)
+        .fetch_all(db)
+        .await?;
     anyhow::ensure!(!deals.is_empty(), "the project has no open deals");
     let closed: Vec<(String, String, i64, String, Option<String>)> = sqlx::query_as(
         "select l.company_name, d.status, d.value_cents, d.currency, r.reason from deals d join leads l on l.id = d.lead_id
