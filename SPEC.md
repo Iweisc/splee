@@ -770,6 +770,16 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | GET | /targets | | `{currency, day, days, rows}`, `day` today's day of the month and `days` the month's length. A row per member, by won, then Unassigned when deals nobody owns were won this month or are in commit or best case: `{user_id, name, target_cents, won_cents, won_deals, commit_cents, best_case_cents, deals}`, `deals` up to 5 `{deal_id, name, company, value_cents, category, why}`, commit first, then the biggest |
 | PUT | /targets/:user_id | `{target_cents}` | `{target_cents}`. Owners and admins only. Null or 0 clears it. 400 over 10,000,000,000 in the currency, 404 for someone outside the organization |
 
+### Commissions
+
+`routes/commissions.rs`, migration 0168 and the Commissions card on the Targets tab, with each teammate's statement in its own window. The plan is `organizations.commission_bps` (null is none) and `accelerator_pct` (100 to 500), and a teammate can have their own `memberships.commission_bps`. A month counts the deals each teammate won in it, by lead owner and in the organization's currency like Targets, in the order they closed. The part of a deal up to their monthly target earns the rate, and the part past it the rate times the accelerator, rounded down to the cent per deal. Without a target it all earns the rate. Past months use today's targets and rates. Owners and admins see everyone and set the plan, everyone else only their own row. The statement downloads as CSV.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | /commissions?month= | | `{month, currency, commission_bps, accelerator_pct, rows}`, `month` like `2026-10` and this month by default, returned as its first day. Each row is `{user_id, name, target_cents, rate_bps, own_rate, won_cents, earned_cents, deals: [{deal_id, name, company, closed_at, value_cents, earned_cents, accelerated}]}`, by earned. 400 for a month that isn't like `2026-10` |
+| PUT | /commissions/plan | `{commission_bps, accelerator_pct}` | the same. Owners and admins only. 400 for a rate outside 0 to 10000 or an accelerator outside 100 to 500 |
+| PUT | /commissions/:user_id | `{commission_bps}` | `{commission_bps}`, the teammate's own rate, or null for the team's. Owners and admins only. 404 for someone outside the organization |
+
 ### 1:1 prep
 
 `agent/one_on_one.rs`, `routes/one_on_ones.rs`, migration 0163 and the 1:1 prep button on each teammate's row of the Targets tab, which opens the prep in its own window. Owners and admins prep anyone in the organization, everyone else only themselves. Written only when someone asks. The agent reads the teammate's Targets row, the open deals whose lead they own (as the forecast reads them), the deals they won or lost in the last 30 days with their reviews, their coached calls and their scored practice calls from the last 30 days. `month` is their Targets row when it was written, never the model's. Deals it names must be their open deals, at most 4. When the drill is a practice call on one of those open deals, `skill.practice` is `{deal_id, company, scenario}`, and it can be assigned (see Practice assignments). The agent also reads the teammate's latest assignment, with its latest score and how they did on the skill, or that it isn't done. Copy puts the prep on the clipboard as plain text for the meeting's notes.
