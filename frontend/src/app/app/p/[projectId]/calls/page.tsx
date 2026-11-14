@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CallCard, OutcomeForm, clock, likelyOutcome } from "@/components/app/work/calls";
 import { LeadModal } from "@/components/app/work/lead-modal";
+import { TalkTrack, TalkTrackRow } from "@/components/app/work/talk-track";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
@@ -26,7 +27,10 @@ type Active = { row: CallRow; phase: "connecting" | "ringing" | "connected" | "e
 export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/calls">) {
   const { projectId } = use(params);
   const [owner, setOwner] = useState<Owner>("mine_or_unassigned");
-  const { data, error, mutate } = useSWR<CallRow[]>(`/projects/${projectId}/calls${qs({ owner })}`, fetcher, { keepPreviousData: true });
+  const { data, error, mutate } = useSWR<CallRow[]>(`/projects/${projectId}/calls${qs({ owner })}`, fetcher, {
+    keepPreviousData: true,
+    refreshInterval: (rows) => (rows?.some((r) => r.prep?.status === "writing") ? 4000 : 0),
+  });
   const { data: twilio } = useSWR<TwilioStatus>("/organization/twilio", fetcher);
   const [active, setActive] = useState<Active | null>(null);
   const [leadId, setLeadId] = useState<string | null>(null);
@@ -166,6 +170,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
                         onDial={() => dial(r)}
                         onLog={() => setActive({ row: r, phase: "log" })}
                         onSkip={() => skip(r)}
+                        onChanged={() => mutate()}
                       />
                     ),
                   )}
@@ -178,6 +183,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
       {active && (
         <CallPanel
           active={active}
+          prep={data?.find((r) => r.id === active.row.id)?.prep ?? active.row.prep}
           onHangUp={hangUp}
           onMute={() => {
             const muted = !active.muted;
@@ -216,6 +222,7 @@ function TaskRow({
   onDial,
   onLog,
   onSkip,
+  onChanged,
 }: {
   row: CallRow;
   calling: boolean;
@@ -224,6 +231,7 @@ function TaskRow({
   onDial: () => void;
   onLog: () => void;
   onSkip: () => void;
+  onChanged: () => Promise<unknown>;
 }) {
   return (
     <div className="flex flex-col gap-3 px-4 py-3.5 sm:px-5">
@@ -253,6 +261,7 @@ function TaskRow({
       </div>
       {r.instructions && <p className="rounded-lg bg-muted px-3 py-2 text-sm text-pretty">{r.instructions}</p>}
       {r.outside_hours && <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-pretty text-amber-800">{r.outside_hours}</p>}
+      <TalkTrackRow row={r} onChanged={onChanged} />
     </div>
   );
 }
@@ -272,12 +281,15 @@ function DoneRow({ row: r, onOpen }: { row: CallRow; onOpen: () => void }) {
 /** Fixed to the bottom corner, or across the bottom on a phone, so the list stays usable while a call is on. */
 function CallPanel({
   active: a,
+  prep,
   onHangUp,
   onMute,
   onLog,
   onClose,
 }: {
   active: Active;
+  /** From the polled list, so a track that lands while it rings shows up. */
+  prep: CallRow["prep"];
   onHangUp: () => void;
   onMute: () => void;
   onLog: (outcome: CallOutcome, notes: string) => Promise<void>;
@@ -317,6 +329,11 @@ function CallPanel({
           {status}
         </p>
         {a.row.instructions && on && <p className="rounded-lg bg-muted px-3 py-2 text-sm text-pretty">{a.row.instructions}</p>}
+        {prep?.prep && on && (
+          <div className="max-h-[45vh] overflow-y-auto border-t border-border pt-3">
+            <TalkTrack prep={prep.prep} ringing={a.phase !== "connected"} />
+          </div>
+        )}
         {on ? (
           <div className="grid grid-cols-2 gap-2">
             <Button variant="outline" onClick={onMute} disabled={a.phase !== "connected"}>

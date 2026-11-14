@@ -210,6 +210,7 @@ export interface ProjectSettings extends CrmStatus {
   qualify_deals: boolean;
   pipeline_forecast: boolean;
   coach_calls: boolean;
+  prep_calls: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1555,6 +1556,17 @@ export interface CallRow extends Call {
   local_time: string;
   /** Why now is outside their calling hours, 8:00 to 20:00 their time. */
   outside_hours: string | null;
+  /** The talk track, or null before one was asked for. See backend/src/agent/call_prep.rs. */
+  prep: { prep: CallPrep | null; created_at: Ts; status: "ready" | "writing" | "failed" } | null;
+}
+
+export interface CallPrep {
+  opener: string;
+  questions: string[];
+  objections: { objection: string; answer: string }[];
+  voicemail: string;
+  /** From the caller's recent coaching, or empty. */
+  reminder: string;
 }
 
 /** POST /calls/{id}/dial. */
@@ -2067,7 +2079,8 @@ export type RunKind =
   | "qualify_deal"
   | "pipeline_forecast"
   | "buyer_profile"
-  | "coach_call";
+  | "coach_call"
+  | "call_prep";
 
 export interface TumblrBlog {
   name: string;
