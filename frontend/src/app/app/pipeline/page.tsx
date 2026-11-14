@@ -13,6 +13,7 @@ import { StageEditor } from "@/components/app/work/stage-editor";
 import { WinLoss } from "@/components/app/work/win-loss";
 import { ForecastPanel } from "@/components/app/work/forecast";
 import { WinBackPanel } from "@/components/app/work/win-back";
+import { TargetsPanel } from "@/components/app/work/targets";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
@@ -22,7 +23,7 @@ import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list" | "winloss" | "winback" | "forecast";
+type View = "board" | "list" | "winloss" | "winback" | "forecast" | "targets";
 // Each project has its own of these, so they need one picked.
 const PER_PROJECT: Partial<Record<View, string>> = { forecast: "forecast", winback: "win-backs" };
 
@@ -119,7 +120,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
         description="Hot replies open a deal by themselves, and booked meetings move it along. Drag a deal to another stage as it moves."
         actions={
           <>
-            <OwnerFilterSelect value={owner} onChange={setOwner} className="h-8 max-sm:basis-full" />
+            {view !== "targets" && <OwnerFilterSelect value={owner} onChange={setOwner} className="h-8 max-sm:basis-full" />}
             {projectPicker}
             <Tabs
               value={view}
@@ -130,8 +131,10 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "winloss", label: "Win/loss" },
                 { value: "winback", label: "Win-back" },
                 { value: "forecast", label: "Forecast" },
+                { value: "targets", label: "Targets" },
               ]}
-              className="max-sm:flex-1 max-sm:[&>button]:flex-1"
+              // Six tabs don't fit beside Edit stages on a phone, so they get their own row and scroll.
+              className="max-sm:basis-full max-sm:[&>button]:flex-1"
             />
             {admin && data && (
               <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
@@ -157,7 +160,9 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
           <>
             <Forecast pipeline={data} />
             {data.deals.length === 0 && owner === "everyone" && <EmptyHint stages={data.stages} />}
-            {PER_PROJECT[view] ? (
+            {view === "targets" ? (
+              <TargetsPanel onOpen={setOpened} />
+            ) : PER_PROJECT[view] ? (
               !forecastProject ? (
                 <Card>
                   <EmptyState icon={<TrendingUp className="size-5" />} title="Pick a project">

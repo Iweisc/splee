@@ -3157,3 +3157,23 @@ export interface PracticeSession {
   error: string | null;
   created_at: string;
 }
+
+/** A teammate's month against their target, or the deals nobody owns. See backend/src/routes/targets.rs. */
+export interface TargetRow {
+  user_id: UUID | null;
+  name: string;
+  target_cents: number | null;
+  won_cents: number;
+  won_deals: number;
+  /** Open deals the latest forecast puts in commit or best case this month. */
+  commit_cents: number;
+  best_case_cents: number;
+  deals: { deal_id: UUID; name: string; company: string; value_cents: number; category: "commit" | "best_case"; why: string }[];
+}
+
+export interface Targets {
+  currency: string;
+  day: number;
+  days: number;
+  rows: TargetRow[];
+}
