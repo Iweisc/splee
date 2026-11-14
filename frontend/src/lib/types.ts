@@ -2276,16 +2276,17 @@ export interface Deal {
   /** How far the close plan got, when it has steps. */
   plan: { done: number; total: number } | null;
   health: DealHealth | null;
+  /** A rating is being written now, the first one included. */
+  health_writing: boolean;
 }
 
-/** The agent's latest read on an open deal. `writing` says a new one is on its way. */
+/** The agent's latest finished read on an open deal. */
 export interface DealHealth {
   health: "on_track" | "at_risk" | "stalled";
   likelihood: number;
   why: string;
   next_step: string;
   created_at: Ts;
-  writing: boolean;
 }
 
 /** A nudge the agent drafted while the deal was quiet. A done one without an email was skipped, and `why` says why. */

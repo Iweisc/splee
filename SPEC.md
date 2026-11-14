@@ -588,7 +588,7 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 ### Deal health
 
-`agent/health.rs`, migration 0149, the rating on pipeline cards, the Health section in an open deal's window and the Rate deal health switch on the Autopilot page (`project_settings.deal_health`, on by default). Every hour, up to 50 open deals in projects with the switch on get a `deal_health` row and run: deals never rated, deals whose last touch (`deals::LAST_TOUCH`) is newer than their latest rating, and deals rated more than 3 days ago, never while one is being written. Deals carry `health` (`{health, likelihood, why, next_step, created_at, writing}`, the latest written rating, `writing` saying a new one is running). The board's Weighted figure uses the agent's likelihood for rated open deals and the stage's probability for the rest, once any open deal is rated.
+`agent/health.rs`, migration 0149, the rating on pipeline cards, the Health section in an open deal's window and the Rate deal health switch on the Autopilot page (`project_settings.deal_health`, on by default). Every hour, up to 50 open deals in projects with the switch on get a `deal_health` row and run: deals never rated, deals whose last touch (`deals::LAST_TOUCH`) is newer than their latest rating, and deals rated more than 3 days ago, never while one is being written. Deals carry `health` (`{health, likelihood, why, next_step, created_at}`, the latest written rating, or null) and `health_writing`, whether a rating is running, the first one included. The board's Weighted figure uses the agent's likelihood for rated open deals and the stage's probability for the rest, once any open deal is rated.
 
 | method | path | body | returns |
 |---|---|---|---|

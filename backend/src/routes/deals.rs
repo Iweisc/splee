@@ -85,7 +85,7 @@ async fn rate(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     if deal.status != "open" {
         return Err(AppError::BadRequest("Only an open deal gets a health rating".into()));
     }
-    if deal.health.as_ref().is_some_and(|h| h["writing"] == true) {
+    if deal.health_writing {
         return Err(AppError::BadRequest("The agent is already rating this deal".into()));
     }
     let run = crate::agent::health::request(&state.db, deal.id, deal.project_id, auth.org_id).await?;

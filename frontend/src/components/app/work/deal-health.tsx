@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { Button } from "@/components/ui/button";
@@ -49,21 +49,30 @@ export function DealHealthSection({ deal: initial }: { deal: Deal }) {
   const { mutate: mutateAll } = useSWRConfig();
   const { data: deal = initial, mutate } = useSWR<Deal>(key, fetcher, {
     fallbackData: initial,
-    refreshInterval: (d) => (d?.health?.writing ? 2500 : 0),
+    refreshInterval: (d) => (d?.health_writing ? 2500 : 0),
   });
   const [busy, setBusy] = useState(false);
-  const [asked, setAsked] = useState(false);
-  if (deal.status !== "open") return null;
+  // When the team asked, the rating that was showing then. Still showing once nothing is being written means the run failed.
+  const [askedOver, setAskedOver] = useState<string | null | undefined>(undefined);
   const h = deal.health;
-  const writing = h?.writing || (asked && !h);
+  const writing = deal.health_writing;
+  const failed = askedOver !== undefined && !writing && (h?.created_at ?? null) === askedOver;
+  // A new rating changes the pipeline card and the Weighted figure, so the board refreshes when one lands.
+  const shown = useRef(h?.created_at);
+  useEffect(() => {
+    if (shown.current === h?.created_at) return;
+    shown.current = h?.created_at;
+    mutateAll((k) => typeof k === "string" && k.startsWith("/pipeline"));
+  }, [h?.created_at, mutateAll]);
+  if (deal.status !== "open") return null;
 
   const rate = async () => {
     setBusy(true);
     try {
+      setAskedOver(h?.created_at ?? null);
       await mutate(api<Deal>(`${key}/health`, { method: "POST" }), { revalidate: false });
-      setAsked(true);
-      mutateAll((k) => typeof k === "string" && k.startsWith("/pipeline"));
     } catch (e) {
+      setAskedOver(undefined);
       toastError(e);
     } finally {
       setBusy(false);
@@ -97,6 +106,7 @@ export function DealHealthSection({ deal: initial }: { deal: Deal }) {
               : "The agent hasn't rated this deal yet. It reads it and says how likely it is to close, why, and what to do next."}
           </p>
         )}
+        {failed && <p className="mt-1 text-sm text-danger">The agent couldn&apos;t rate it. Try again.</p>}
       </div>
       {writing ? (
         <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
