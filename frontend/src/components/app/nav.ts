@@ -34,6 +34,7 @@ import {
   Upload,
   UserCheck,
   Users,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -67,6 +68,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
     title: "Agent settings",
     items: [
       { label: "Autopilot", href: (p) => `/app/p/${p}/autopilot`, icon: Rocket },
+      { label: "Plays", href: (p) => `/app/p/${p}/plays`, icon: Zap },
       { label: "Targeting", href: (p) => `/app/p/${p}/targeting`, icon: Target }, // D2
       { label: "Competitors", href: (p) => `/app/p/${p}/competitors`, icon: Swords },
       { label: "Daily limit", href: (p) => `/app/p/${p}/daily-limit`, icon: Gauge }, // D2
