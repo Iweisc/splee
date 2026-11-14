@@ -2064,7 +2064,8 @@ export type RunKind =
   | "deal_health"
   | "deal_review"
   | "qualify_deal"
-  | "pipeline_forecast";
+  | "pipeline_forecast"
+  | "buyer_profile";
 
 export interface TumblrBlog {
   name: string;
@@ -2307,6 +2308,27 @@ export interface PipelineForecast {
 
 export interface ForecastView {
   latest: { id: UUID; forecast: PipelineForecast | null; created_at: Ts; status: "ready" | "writing" | "failed" } | null;
+}
+
+/** A trait the agent found in the cited won or lost deals. `count` is how many of those deals it cites. */
+export interface BuyerTrait {
+  trait: string;
+  count: number;
+  why: string;
+  deal_ids: UUID[];
+}
+
+export interface BuyersView {
+  latest: {
+    id: UUID;
+    profile: { summary: string; traits: BuyerTrait[]; avoid: BuyerTrait[]; campaign: string } | null;
+    /** Won deals it read. */
+    won: number;
+    created_at: Ts;
+    status: "ready" | "writing" | "failed";
+  } | null;
+  won: number;
+  min_won: number;
 }
 
 /** One MEDDICC element. `evidence` is empty when unknown, and `ask` is empty when confirmed. */

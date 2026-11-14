@@ -96,7 +96,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
   };
 
   const admin = me?.role === "owner" || me?.role === "admin";
-  // A forecast belongs to one project. With a single project there is nothing to pick.
+  // A forecast and a buyer profile belong to one project. With a single project there is nothing to pick.
   const forecastProject = project || (projects?.length === 1 ? projects[0].id : "");
   const projectPicker = (projects?.length ?? 0) > 1 && (
     <Select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className="h-8 w-auto max-sm:basis-full">
@@ -169,7 +169,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 </Card>
               )
             ) : view === "winloss" ? (
-              <WinLoss deals={data.deals} currency={data.currency} onOpen={(d) => setOpened(d.id)} />
+              <WinLoss deals={data.deals} currency={data.currency} projectId={forecastProject} onOpen={(d) => setOpened(d.id)} />
             ) : view === "board" ? (
               <PipelineBoard
                 stages={data.stages}
