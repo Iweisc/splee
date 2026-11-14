@@ -423,6 +423,9 @@ pub struct Segment {
     pub track_clicks: bool,
     /// Whether its emails carry a pixel to count opens, which adds an HTML part.
     pub track_opens: bool,
+    /// A personal page for each lead, written with the first email. See lead_pages.rs.
+    #[sqlx(default)]
+    pub lead_pages: bool,
     /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
     #[sqlx(default)]
     pub language: String,

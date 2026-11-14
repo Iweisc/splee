@@ -183,14 +183,21 @@ struct Draft {
     #[serde(default)]
     subject: String,
     body: String,
+    /// The lead's personal page, asked for in campaigns with lead pages.
+    #[serde(default)]
+    page: Option<crate::lead_pages::PageDraft>,
 }
 
-fn drafts_schema(with_subject: bool) -> Value {
+fn drafts_schema(with_subject: bool, with_page: bool) -> Value {
     let mut properties = json!({"lead_id": {"type": "string"}, "body": {"type": "string"}});
     let mut required = vec!["lead_id", "body"];
     if with_subject {
         properties["subject"] = json!({"type": "string"});
         required.push("subject");
+    }
+    if with_page {
+        properties["page"] = crate::lead_pages::schema();
+        required.push("page");
     }
     json!({
         "type": "object",
@@ -200,7 +207,7 @@ fn drafts_schema(with_subject: bool) -> Value {
 }
 
 /// Asks for drafts and keeps the ones that belong to `leads` and contain no placeholders. One retry when some are missing.
-async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: bool) -> anyhow::Result<HashMap<Uuid, Draft>> {
+async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: bool, with_page: bool) -> anyhow::Result<HashMap<Uuid, Draft>> {
     let mut result = HashMap::new();
     for attempt in 0..2 {
         let missing: Vec<&Lead> = leads.iter().filter(|l| !result.contains_key(&l.id)).collect();
@@ -211,7 +218,7 @@ async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: boo
         let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l, &signals)).collect::<Vec<_>>())?;
         let retry = if attempt > 0 { "\nWrite every email in full, with real names, and no placeholders." } else { "" };
         let drafts: Drafts =
-            ctx.ask(&Call::writing(WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject))).await?;
+            ctx.ask(&Call::writing(WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject, with_page))).await?;
         for d in drafts.emails {
             let known = missing.iter().any(|l| l.id == d.lead_id);
             if known && !d.body.trim().is_empty() && !has_placeholder(&d.body) && !has_placeholder(&d.subject) {
@@ -313,10 +320,19 @@ async fn write_campaign(
     let mut saved = 0;
     for batch in company_batches(leads) {
         ctx.log(format!("{label}: writing to {}…", batch.iter().map(|l| l.first_name.as_str()).collect::<Vec<_>>().join(", "))).await?;
-        let drafts = ask_drafts(ctx, prompt.clone(), &batch, true).await?;
+        let pages = segment.is_some_and(|s| s.lead_pages);
+        let prompt = if pages { format!("{prompt}{}", crate::lead_pages::RULE) } else { prompt.clone() };
+        let drafts = ask_drafts(ctx, prompt, &batch, true, pages).await?;
         for lead in &batch {
             let Some(d) = drafts.get(&lead.id) else { continue };
-            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&d.body), lang).await?;
+            let body = match d.page.as_ref().filter(|p| pages && !p.headline.trim().is_empty()) {
+                Some(page) => {
+                    let token = crate::lead_pages::save(ctx.db(), lead, page).await?;
+                    crate::lead_pages::with_link(&d.body, &page.link_line, &crate::lead_pages::url(&ctx.state.cfg.public_url, &token))
+                }
+                None => d.body.clone(),
+            };
+            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&body), lang).await?;
             saved += 1;
         }
     }
@@ -722,7 +738,7 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
             Some(body) => body,
             None => {
                 ctx.log(format!("writing follow-up {step} to {}…", lead.first_name)).await?;
-                let mut drafts = ask_drafts(ctx, prompt, std::slice::from_ref(lead), false).await?;
+                let mut drafts = ask_drafts(ctx, prompt, std::slice::from_ref(lead), false, false).await?;
                 let Some(d) = drafts.remove(&lead.id) else { continue };
                 d.body
             }
@@ -1148,6 +1164,50 @@ mod tests {
         let (status, variant): (String, Option<Uuid>) =
             sqlx::query_as("select status, variant_id from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
         assert_eq!((status.as_str(), variant), ("approved", None));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_with_lead_pages_writes_each_lead_a_page_and_links_it(db: PgPool) {
+        let c = seed(&db, 0).await;
+        sqlx::query("update segments set lead_pages = true where id = $1").bind(c.segment).execute(&db).await.unwrap();
+        let leads = add_leads(&db, &c, 1).await;
+        let ctx = ctx(&db, c.project).await;
+        let page = |call: &Call| {
+            let mut answer = written(call);
+            if call.schema["properties"]["emails"]["items"]["properties"].get("page").is_some() {
+                answer["emails"][0]["body"] = json!("Hi Ana,\n\nQuick question?");
+                answer["emails"][0]["page"] = json!({
+                    "headline": "  Fewer no-shows at Acme  ", "intro": "Ana, here's how.", "proof": "",
+                    "points": [{ "title": "Reminders", "body": "By text." }, { "title": "", "body": "dropped" }],
+                    "link_line": "I put together a page for Acme:"
+                });
+            }
+            answer
+        };
+        fake::answer_with(ctx.run.id, page);
+        assert_eq!(super::write_initial(&ctx, c.project, &leads, "").await.unwrap(), 1);
+        assert!(fake::prompts(ctx.run.id)[0].contains("Personal page: this campaign also gives each lead"));
+        let (token, headline, points): (String, String, Value) =
+            sqlx::query_as("select token, headline, points from lead_pages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
+        assert_eq!((headline.as_str(), points), ("Fewer no-shows at Acme", json!([{ "title": "Reminders", "body": "By text." }])));
+        let body: String = sqlx::query_scalar("select body from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
+        assert!(body.starts_with(&format!("Hi Ana,\n\nQuick question?\n\nI put together a page for Acme:\nhttp://localhost:3349/for/{token}")), "{body}");
+
+        // A rewrite rewrites the page and keeps its link.
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, page);
+        super::write_initial(&ctx, c.project, &leads, "").await.unwrap();
+        let again: String = sqlx::query_scalar("select token from lead_pages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
+        assert_eq!(again, token);
+
+        // Without the setting, no page is asked for.
+        sqlx::query("update segments set lead_pages = false where id = $1").bind(c.segment).execute(&db).await.unwrap();
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, written);
+        super::write_initial(&ctx, c.project, &leads, "").await.unwrap();
+        assert!(!fake::prompts(ctx.run.id)[0].contains("Personal page"));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

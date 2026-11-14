@@ -746,6 +746,8 @@ export interface Segment {
   track_clicks: boolean;
   /** Whether its emails carry a pixel to count opens. Off for new campaigns, since it can hurt inbox placement. */
   track_opens: boolean;
+  /** A personal page for each lead, written with the first email and linked from it. */
+  lead_pages: boolean;
   /** What it writes in: English by default, one fixed language, or "lead" for each lead's own. */
   language: CampaignLanguage;
 }
@@ -2502,4 +2504,30 @@ export interface ResearchStarted {
   runs: number;
   /** What a company cost on average in the project's research runs so far. */
   cost_per_company_micros: number | null;
+}
+
+/** A lead page as the lead sees it at /for/{token}. */
+export interface PublicLeadPage {
+  headline: string;
+  intro: string;
+  points: { title: string; body: string }[];
+  proof: string;
+  first_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  sender_name: string;
+  booking_url: string | null;
+  reply_to: string | null;
+}
+
+/** The lead's page for the app. Views count people only, once per visit. */
+export interface LeadPage {
+  token: string;
+  headline: string;
+  url: string;
+  views: number;
+  first_viewed_at: string | null;
+  last_viewed_at: string | null;
 }
