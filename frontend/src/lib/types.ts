@@ -218,6 +218,7 @@ export interface ProjectSettings extends CrmStatus {
   grow_accounts: boolean;
   /** Asks happy customers for introductions. See backend/src/agent/referrals.rs. */
   ask_for_referrals: boolean;
+  watch_churn: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1455,7 +1456,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention";
   step: number;
   subject: string;
   body: string;
@@ -2091,7 +2092,8 @@ export type RunKind =
   | "win_back"
   | "battlecard"
   | "expansion"
-  | "referral_ask";
+  | "referral_ask"
+  | "churn_risk";
 
 export interface TumblrBlog {
   name: string;
@@ -3062,4 +3064,39 @@ export interface PublicReferralPage {
   value_props: string[];
   sender_name: string;
   booking_url: string | null;
+}
+
+/** A check on whether a customer might leave. See backend/src/agent/churn.rs. */
+export interface ChurnRisk {
+  id: UUID;
+  deal_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  won_at: string | null;
+  /** The warning signs that started it, or empty when someone asked. */
+  signal: string;
+  risk: "high" | "medium" | "low" | null;
+  why: string;
+  /** What the team should do. */
+  play: string;
+  /** Why there's no email for a risk, when there isn't one. */
+  note: string;
+  skipped: string;
+  email_id: UUID | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_status: EmailMessage["status"] | null;
+  status: "writing" | "done" | "skipped" | "failed";
+  created_at: string;
+}
+
+export interface ChurnRiskView {
+  enabled: boolean;
+  /** Won deals in the project. */
+  customers: number;
+  items: ChurnRisk[];
 }

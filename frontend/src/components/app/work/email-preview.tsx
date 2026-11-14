@@ -26,6 +26,7 @@ export const EMAIL_KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string>
   win_back: "Win-back",
   expansion: "Expansion",
   referral_ask: "Referral ask",
+  retention: "Retention",
 };
 
 function keptEdits(key: string, email: EmailRow): { subject: string; body: string } | null {

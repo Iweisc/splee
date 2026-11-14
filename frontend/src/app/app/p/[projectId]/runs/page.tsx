@@ -45,6 +45,7 @@ const TITLES: Record<RunKind, string> = {
   battlecard: "Write a battlecard",
   expansion: "Grow a customer",
   referral_ask: "Ask a customer for introductions",
+  churn_risk: "Check on a customer",
 };
 
 // Narrower cards drop columns instead of scrolling sideways, which hid the cost on anything short of a wide screen.

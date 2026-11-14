@@ -121,6 +121,8 @@ pub struct ProjectSettings {
     pub grow_accounts: bool,
     /// Asks happy customers for introductions. See agent/referrals.rs.
     pub ask_for_referrals: bool,
+    /// Watches customers for signs they might leave. See agent/churn.rs.
+    pub watch_churn: bool,
     /// Gets a copy of every email the project sends, like a CRM's BCC logging address. Empty for none.
     pub bcc_email: String,
     pub bcc_error: Option<String>,

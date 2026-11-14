@@ -14,6 +14,7 @@ import { WinLoss } from "@/components/app/work/win-loss";
 import { ForecastPanel } from "@/components/app/work/forecast";
 import { ExpansionPanel } from "@/components/app/work/expansion";
 import { ReferralPanel } from "@/components/app/work/referral";
+import { ChurnPanel } from "@/components/app/work/churn-risk";
 import { WinBackPanel } from "@/components/app/work/win-back";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
@@ -24,9 +25,15 @@ import type { Deal, DealStage, Pipeline, ProjectSummary } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 
-type View = "board" | "list" | "winloss" | "winback" | "expansion" | "referrals" | "forecast";
+type View = "board" | "list" | "winloss" | "winback" | "expansion" | "referrals" | "risk" | "forecast";
 // Each project has its own of these, so they need one picked.
-const PER_PROJECT: Partial<Record<View, string>> = { forecast: "forecast", winback: "win-backs", expansion: "expansions", referrals: "referrals" };
+const PER_PROJECT: Partial<Record<View, string>> = {
+  forecast: "forecast",
+  winback: "win-backs",
+  expansion: "expansions",
+  referrals: "referrals",
+  risk: "customers at risk",
+};
 
 // Phones can't drag, so they start on the list. md is where the sidebar's phone menu ends too.
 const startView = (): View => (typeof window !== "undefined" && matchMedia("(max-width: 47.99rem)").matches ? "list" : "board");
@@ -133,6 +140,7 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "winback", label: "Win-back" },
                 { value: "expansion", label: "Expansion" },
                 { value: "referrals", label: "Referrals" },
+                { value: "risk", label: "At risk" },
                 { value: "forecast", label: "Forecast" },
               ]}
               className="max-sm:flex-1 max-sm:[&>button]:flex-1"
@@ -179,8 +187,10 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 <WinBackPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
               ) : view === "expansion" ? (
                 <ExpansionPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
-              ) : (
+              ) : view === "referrals" ? (
                 <ReferralPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
+              ) : (
+                <ChurnPanel key={forecastProject} projectId={forecastProject} onOpen={setOpened} />
               )
             ) : view === "winloss" ? (
               <WinLoss deals={data.deals} currency={data.currency} projectId={forecastProject} onOpen={(d) => setOpened(d.id)} />

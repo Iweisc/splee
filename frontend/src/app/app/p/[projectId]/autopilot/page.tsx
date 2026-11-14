@@ -142,6 +142,12 @@ export default function AutopilotPage() {
             actions={<Switch checked={s.ask_for_referrals} onChange={(ask_for_referrals) => update({ ask_for_referrals })} label="Ask for referrals" />}
           />
 
+          <Section
+            title="Catch customers about to leave"
+            description="The agent watches every customer for warning signs: the person who bought leaving the company, a refund, payments that stop coming, or a reply that reads as unhappy. It says how likely they are to leave and what to do, and drafts an email in the thread when one would help. High risks go to your chats. The Pipeline page's At risk tab lists them."
+            actions={<Switch checked={s.watch_churn} onChange={(watch_churn) => update({ watch_churn })} label="Catch customers about to leave" />}
+          />
+
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
             <OptionCards
               name="autopilot_auto_send"

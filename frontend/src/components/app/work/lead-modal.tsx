@@ -25,6 +25,7 @@ import { MeetingBriefCard } from "./meeting-brief";
 import { ScoreBar, ScoreReasons } from "./score";
 import { searchCost } from "./email-search";
 import { EmailStatusBadge, LEAD_STATUS } from "./status";
+import { EMAIL_KINDS } from "./email-preview";
 
 export function LeadModal({ leadId, onClose }: { leadId: string | null; onClose: () => void }) {
   // A colleague picked in the buying committee shows in the same window, until another lead is opened from outside.
@@ -569,7 +570,7 @@ function ThreadItem({ message: m, events }: { message: EmailMessage; events: Ema
     <li className={cn("rounded-xl border border-border p-3", inbound ? "bg-card" : "bg-muted/60")}>
       <div className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">
-          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : m.kind === "meeting_follow_up" ? "Meeting follow-up" : m.kind === "deal_nudge" ? "Deal nudge" : m.kind === "win_back" ? "Win-back" : m.kind === "expansion" ? "Expansion" : m.kind === "referral_ask" ? "Referral ask" : m.kind.replace("_", " ")} ·{" "}
+          {inbound ? "Reply" : m.kind === "follow_up" ? `Follow-up ${m.step}` : EMAIL_KINDS[m.kind]} ·{" "}
           {m.subject}
         </span>
         <span className="flex shrink-0 items-center gap-2">

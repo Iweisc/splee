@@ -7,6 +7,7 @@ mod bluesky;
 pub mod briefs;
 pub mod buyers;
 pub mod call_prep;
+pub mod churn;
 pub mod coaching;
 mod calls;
 mod channels;
@@ -99,6 +100,7 @@ pub mod kind {
     pub const BATTLECARD: &str = "battlecard";
     pub const EXPANSION: &str = "expansion";
     pub const REFERRAL_ASK: &str = "referral_ask";
+    pub const CHURN_RISK: &str = "churn_risk";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -389,6 +391,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::BATTLECARD => battlecards::run(ctx).await,
         kind::EXPANSION => expansions::run(ctx).await,
         kind::REFERRAL_ASK => referrals::run(ctx).await,
+        kind::CHURN_RISK => churn::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }
