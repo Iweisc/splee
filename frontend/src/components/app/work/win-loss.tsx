@@ -5,6 +5,7 @@ import { ChevronRight, Lightbulb, Loader2, Scale, Swords } from "lucide-react";
 import { Card, EmptyState } from "@/components/ui/misc";
 import type { Deal, DealReview } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
+import { BuyersCard } from "./buyers";
 import { moneyList, sumByCurrency } from "./deal-dialog";
 import { reasonLabel } from "./deal-review";
 import { MicroLabel } from "./states";
@@ -21,22 +22,27 @@ function group<T>(items: T[], key: (t: T) => string): [string, T[]][] {
 const isReviewed = (d: Deal): d is Reviewed => d.status !== "open" && !!d.review?.reason && !d.review.writing;
 
 /** The pipeline's Win/loss view: the agent's reviews of the deals on the board that closed in the last 90 days, grouped. */
-export function WinLoss({ deals, currency, onOpen }: { deals: Deal[]; currency: string; onOpen: (d: Deal) => void }) {
+/** `projectId` is the project picked, or the only one, for the buyer profile, which belongs to one project. */
+export function WinLoss({ deals, currency, projectId, onOpen }: { deals: Deal[]; currency: string; projectId: string; onOpen: (d: Deal) => void }) {
   const closed = deals.filter((d) => d.status !== "open");
   const reviewed = closed.filter(isReviewed);
   const writing = closed.filter((d) => d.review?.writing).length;
   if (!closed.length) {
     return (
-      <Card>
-        <EmptyState icon={<Scale className="size-5" />} title="Nothing won or lost in 90 days">
-          When a deal is won or lost, the agent reviews why, and this view shows what wins deals, what loses them and who you lose to.
-        </EmptyState>
-      </Card>
+      <div className="flex flex-col gap-4">
+        {projectId && <BuyersCard projectId={projectId} />}
+        <Card>
+          <EmptyState icon={<Scale className="size-5" />} title="Nothing won or lost in 90 days">
+            When a deal is won or lost, the agent reviews why, and this view shows what wins deals, what loses them and who you lose to.
+          </EmptyState>
+        </Card>
+      </div>
     );
   }
   const lessons = [...reviewed].filter((d) => d.review.lesson).sort((a, b) => (b.closed_at ?? "").localeCompare(a.closed_at ?? ""));
   return (
     <div className="flex flex-col gap-4">
+      {projectId && <BuyersCard projectId={projectId} />}
       <p className="flex items-center gap-2 text-sm text-muted-foreground">
         {writing > 0 && <Loader2 className="size-3.5 animate-spin" />}
         The agent reviewed {reviewed.length} of {plural(closed.length, "deal")} closed in 90 days
