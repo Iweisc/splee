@@ -12,6 +12,12 @@ export function money(micros: number, opts: { cents?: boolean } = {}): string {
   return usd.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+/** A deal or price in its currency's main unit: "$12,000", or "$187.50" when it has cents. */
+export function dealMoney(value: number, currency: string): string {
+  const digits = Number.isInteger(value) ? 0 : 2;
+  return value.toLocaleString("en-US", { style: "currency", currency, minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
 /** 120000 -> "120.0K", 4500000 -> "4.5M" (matches the campaign sizes in the Explee demo) */
 export function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

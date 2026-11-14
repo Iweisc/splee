@@ -10,8 +10,10 @@ import { Field, Input, NumberInput, Select, Textarea } from "@/components/ui/for
 import { Badge, type BadgeTone, Modal } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import type { Deal, DealAmounts, DealStage, Member, Pipeline, StageKind } from "@/lib/types";
+import { dealMoney } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { ClosePlanSection } from "./close-plan";
+import { ProposalSection } from "./proposal";
 import { QuietDeal } from "./quiet-deal";
 import { toastError } from "./states";
 
@@ -22,11 +24,6 @@ export const CURRENCIES = [
 ];
 
 /** 12000 in USD as "$12,000", and 99.5 as "$99.50". */
-export function dealMoney(value: number, currency: string): string {
-  const digits = Number.isInteger(value) ? 0 : 2;
-  return value.toLocaleString("en-US", { style: "currency", currency, minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
 /** Sums in more than one currency can't be added up, so they read "$12,000 + €3,000". `fallback` names the currency of a zero. */
 export function moneyList(amounts: { currency: string; value: number }[], fallback: string): string {
   const shown = amounts.filter((a) => a.value !== 0);
@@ -185,6 +182,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
           )}
           {deal && <QuietDeal deal={deal} />}
           {deal && <ClosePlanSection deal={deal} />}
+          {deal && <ProposalSection deal={deal} />}
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]">
             <Field label={deal?.status === "won" ? "Final value" : "Value"}>
               <NumberInput min={0} step="any" value={values.value} onValueChange={(value) => set({ value: Math.max(0, value) })} autoFocus />

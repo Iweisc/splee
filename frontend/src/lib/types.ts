@@ -2056,7 +2056,8 @@ export type RunKind =
   | "ask"
   | "buying_committee"
   | "deal_nudge"
-  | "close_plan";
+  | "close_plan"
+  | "proposal";
 
 export interface TumblrBlog {
   name: string;
@@ -2605,6 +2606,54 @@ export interface ClosePlan {
   first_viewed_at: Ts | null;
   last_viewed_at: Ts | null;
   steps: ClosePlanStep[];
+}
+
+/** A priced line of a proposal. `unit_price` is in the deal's currency's main unit. */
+export interface ProposalItem {
+  name: string;
+  detail: string;
+  quantity: number;
+  unit_price: number;
+  period: "one_time" | "month" | "year";
+}
+
+/** GET /deals/:id/proposal. The buyer's page is `url`. Once accepted it doesn't change. */
+export interface Proposal {
+  id: UUID;
+  token: string;
+  url: string;
+  title: string | null;
+  intro: string;
+  sections: { title: string; body: string }[];
+  items: ProposalItem[];
+  currency: string;
+  valid_until: string | null;
+  status: "writing" | "ready" | "failed";
+  views: number;
+  first_viewed_at: Ts | null;
+  last_viewed_at: Ts | null;
+  accepted_at: Ts | null;
+  accepted_name: string;
+  accepted_title: string;
+}
+
+/** GET /proposals/:token, what the buyer sees. `closed` means the deal ended another way. */
+export interface PublicProposal {
+  title: string;
+  intro: string;
+  sections: { title: string; body: string }[];
+  items: ProposalItem[];
+  currency: string;
+  valid_until: string | null;
+  accepted_at: Ts | null;
+  accepted_name: string;
+  closed: boolean;
+  first_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  sender_name: string;
 }
 
 /** GET /plans/:token, what the buyer sees. */

@@ -752,7 +752,7 @@ pub async fn crm_line(db: &PgPool, lead_id: Uuid) -> Option<String> {
 }
 
 /// 1200000 cents as "12,000", and 1200050 as "12,000.50".
-fn amount(cents: i64) -> String {
+pub fn amount(cents: i64) -> String {
     let whole = (cents / 100).to_string();
     let mut grouped = String::new();
     for (i, digit) in whole.chars().enumerate() {
