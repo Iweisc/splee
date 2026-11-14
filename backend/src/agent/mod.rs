@@ -15,6 +15,7 @@ pub mod committee;
 mod directory;
 mod places;
 mod discourse;
+pub mod expansions;
 mod explore;
 mod hashnode;
 pub mod forecast;
@@ -95,6 +96,7 @@ pub mod kind {
     pub const CALL_PREP: &str = "call_prep";
     pub const WIN_BACK: &str = "win_back";
     pub const BATTLECARD: &str = "battlecard";
+    pub const EXPANSION: &str = "expansion";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -383,6 +385,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::CALL_PREP => call_prep::run(ctx).await,
         kind::WIN_BACK => win_backs::run(ctx).await,
         kind::BATTLECARD => battlecards::run(ctx).await,
+        kind::EXPANSION => expansions::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

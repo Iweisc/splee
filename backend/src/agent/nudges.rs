@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::write::{WriterSettings, company_signals, lead_brief, materials};
+use super::write::{WriterSettings, company_signals, draft_in_thread, lead_brief, materials};
 use super::{Ctx, Outcome, briefs, kind, meetings};
 use crate::deals::LAST_TOUCH;
 use crate::hooks::{self, ChatAlert};
@@ -218,31 +218,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     anyhow::ensure!(!nudge.body.trim().is_empty(), "the agent wrote an empty email");
 
     let mut tx = db.begin().await?;
-    let last: Option<(Option<Uuid>, String)> = sqlx::query_as(
-        "select mailbox_id, subject from email_messages where lead_id = $1 and direction = 'outbound' and status = 'sent' order by sent_at desc limit 1",
-    )
-    .bind(lead.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (mailbox, subject) = match last {
-        Some((mailbox, s)) if !s.trim().is_empty() => (mailbox, if s.to_lowercase().starts_with("re:") { s } else { format!("Re: {s}") }),
-        Some((mailbox, _)) => (mailbox, nudge.subject.trim().to_string()),
-        None => (None, nudge.subject.trim().to_string()),
-    };
-    let email_id: Uuid = sqlx::query_scalar(
-        "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email, language)
-         values ($1, $2, $3, $4, 'outbound', 'deal_nudge', $5, $6, 'draft', $7, $8) returning id",
-    )
-    .bind(lead.project_id)
-    .bind(lead.id)
-    .bind(lead.segment_id)
-    .bind(mailbox)
-    .bind(&subject)
-    .bind(settings.sign(nudge.body.trim()))
-    .bind(&lead.email)
-    .bind(lang.code)
-    .fetch_one(&mut *tx)
-    .await?;
+    let email_id = draft_in_thread(&mut tx, &lead, "deal_nudge", &nudge.subject, &settings.sign(nudge.body.trim()), lang.code).await?;
     // A run started twice for the nudge drafts once.
     let saved = sqlx::query("update deal_nudges set email_id = $2, why = $3, written_at = now() where id = $1 and written_at is null")
         .bind(input.nudge_id)

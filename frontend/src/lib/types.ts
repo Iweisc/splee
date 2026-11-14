@@ -214,6 +214,8 @@ export interface ProjectSettings extends CrmStatus {
   win_back_lost_deals: boolean;
   /** Writes a battlecard for each competitor a deal was won or lost against. See backend/src/agent/battlecards.rs. */
   write_battlecards: boolean;
+  /** Drafts an email to a customer whose company shows room to buy more. See backend/src/agent/expansions.rs. */
+  grow_accounts: boolean;
   /** Gets a copy of every email the project sends, like a CRM's BCC address. Empty for none. */
   bcc_email: string;
   bcc_error: string | null;
@@ -1451,7 +1453,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion";
   step: number;
   subject: string;
   body: string;
@@ -2085,7 +2087,8 @@ export type RunKind =
   | "coach_call"
   | "call_prep"
   | "win_back"
-  | "battlecard";
+  | "battlecard"
+  | "expansion";
 
 export interface TumblrBlog {
   name: string;
@@ -2980,4 +2983,32 @@ export interface BattlecardItem {
 export interface BattlecardView {
   enabled: boolean;
   items: BattlecardItem[];
+}
+
+/** A time the agent looked for room to grow a won deal's account. See backend/src/agent/expansions.rs. */
+export interface Expansion {
+  id: UUID;
+  deal_id: UUID;
+  lead_id: UUID;
+  lead_name: string;
+  company_name: string;
+  owner_name: string | null;
+  value_cents: number;
+  currency: string;
+  won_at: string | null;
+  /** What changed at their company, or empty when someone asked. */
+  signal: string;
+  why: string;
+  skipped: string;
+  email_id: UUID | null;
+  email_subject: string | null;
+  email_body: string | null;
+  email_status: EmailMessage["status"] | null;
+  status: "writing" | "drafted" | "sent" | "skipped" | "failed";
+  created_at: string;
+}
+
+export interface ExpansionView {
+  enabled: boolean;
+  items: Expansion[];
 }

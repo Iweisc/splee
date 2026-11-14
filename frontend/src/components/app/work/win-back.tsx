@@ -76,24 +76,51 @@ function MoveDay({ w, actions, label }: { w: WinBack; actions: Actions; label: s
   );
 }
 
-/** The draft, to send from here. */
-function Draft({ w, actions, projectId }: { w: WinBack; actions: Actions; projectId: string }) {
+/** An email the agent drafted in the thread, to approve from here. */
+export function ThreadDraft({
+  subject,
+  body,
+  projectId,
+  onAnother,
+  onSend,
+  busy,
+}: {
+  subject: string | null;
+  body: string | null;
+  projectId: string;
+  onAnother: () => void;
+  onSend: () => void;
+  busy: string | null;
+}) {
   return (
     <div className="rounded-lg border border-border bg-card p-3">
-      <p className="text-sm font-medium">{w.email_subject}</p>
-      <p className="mt-1 text-sm whitespace-pre-wrap text-foreground/80">{w.email_body}</p>
+      <p className="text-sm font-medium">{subject}</p>
+      <p className="mt-1 text-sm whitespace-pre-wrap text-foreground/80">{body}</p>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <Link href={`/app/p/${projectId}/emails`} className="mr-auto text-xs text-muted-foreground hover:text-foreground hover:underline">
           Edit it on the Emails page
         </Link>
-        <Button type="button" size="sm" variant="ghost" onClick={actions.write} loading={actions.busy === "write"}>
+        <Button type="button" size="sm" variant="ghost" onClick={onAnother} loading={busy === "write"}>
           <PenLine className="size-3.5" /> Write another
         </Button>
-        <Button type="button" size="sm" onClick={() => actions.send(w)} loading={actions.busy === "send"}>
+        <Button type="button" size="sm" onClick={onSend} loading={busy === "send"}>
           <Send className="size-3.5" /> Approve and send
         </Button>
       </div>
     </div>
+  );
+}
+
+function Draft({ w, actions, projectId }: { w: WinBack; actions: Actions; projectId: string }) {
+  return (
+    <ThreadDraft
+      subject={w.email_subject}
+      body={w.email_body}
+      projectId={projectId}
+      onAnother={actions.write}
+      onSend={() => actions.send(w)}
+      busy={actions.busy}
+    />
   );
 }
 
@@ -342,7 +369,7 @@ export function WinBackPanel({ projectId, onOpen }: { projectId: string; onOpen:
   );
 }
 
-function Kpi({ label, value, hint }: { label: string; value: number; hint: string }) {
+export function Kpi({ label, value, hint }: { label: string; value: number; hint: string }) {
   return (
     <Card className="p-4">
       <MicroLabel>{label}</MicroLabel>

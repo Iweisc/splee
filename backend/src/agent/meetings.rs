@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::explore::load_project;
 use super::sdk::Call;
-use super::write::WriterSettings;
+use super::write::{WriterSettings, draft_in_thread};
 use super::{Ctx, Outcome};
 use crate::models::{Lead, MEETING_COLUMNS, Meeting};
 
@@ -133,33 +133,8 @@ where
     let draft = match follow_up_blocker(&mut tx, org_id, &lead).await? {
         Some(_) => None,
         None => {
-            let last: Option<(Option<Uuid>, String)> = sqlx::query_as(
-                "select mailbox_id, subject from email_messages where lead_id = $1 and direction = 'outbound' and status = 'sent'
-                 order by sent_at desc limit 1",
-            )
-            .bind(lead.id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let (mailbox, subject) = match last {
-                Some((mailbox, s)) if !s.trim().is_empty() => (mailbox, if s.to_lowercase().starts_with("re:") { s } else { format!("Re: {s}") }),
-                Some((mailbox, _)) => (mailbox, notes.follow_up_subject.trim().to_string()),
-                None => (None, notes.follow_up_subject.trim().to_string()),
-            };
-            let id: Uuid = sqlx::query_scalar(
-                "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, to_email, language)
-                 values ($1, $2, $3, $4, 'outbound', 'meeting_follow_up', $5, $6, 'draft', $7, $8) returning id",
-            )
-            .bind(lead.project_id)
-            .bind(lead.id)
-            .bind(lead.segment_id)
-            .bind(mailbox)
-            .bind(subject)
-            .bind(settings.sign(notes.follow_up_body.trim()))
-            .bind(&lead.email)
-            .bind(lang.code)
-            .fetch_one(&mut *tx)
-            .await?;
-            Some(id)
+            let body = settings.sign(notes.follow_up_body.trim());
+            Some(draft_in_thread(&mut tx, &lead, "meeting_follow_up", &notes.follow_up_subject, &body, lang.code).await?)
         }
     };
     // A run started twice for the meeting writes its notes once.
