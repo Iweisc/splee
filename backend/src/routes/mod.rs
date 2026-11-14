@@ -26,6 +26,7 @@ mod committee;
 mod referrals;
 mod churn;
 mod customers;
+mod practice;
 mod today;
 mod buyers;
 mod coaching;
@@ -125,6 +126,7 @@ pub fn router() -> Router<AppState> {
         .merge(referrals::router())
         .merge(churn::router())
         .merge(customers::router())
+        .merge(practice::router())
         .merge(emails::router())
         .merge(inbox::router())
         .merge(saved_replies::router())

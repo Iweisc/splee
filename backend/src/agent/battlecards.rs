@@ -58,6 +58,32 @@ pub struct Item {
     pub status: Option<String>,
 }
 
+/// The competitors a deal is up against, with their cards: the one its review names, and those its notes, lost reason or
+/// the buyer's emails and calls mention.
+pub async fn up_against(db: &PgPool, deal_id: Uuid, project_id: Uuid) -> sqlx::Result<Vec<Item>> {
+    let reviewed: Vec<Uuid> = sqlx::query_scalar(&format!(
+        "select c.id from competitors c join deal_reviews rv on rv.deal_id = $1 and lower(rv.competitor) = lower({TRACKED_AS}) where c.project_id = $2"
+    ))
+    .bind(deal_id)
+    .bind(project_id)
+    .fetch_all(db)
+    .await?;
+    let said: Vec<String> = sqlx::query_scalar(
+        "(select concat_ws(E'\\n', notes, lost_reason) from deals where id = $1)
+         union all (select e.body from email_messages e join deals d on d.lead_id = e.lead_id
+                    where d.id = $1 and e.direction = 'inbound' order by e.created_at desc limit 30)
+         union all (select m.transcript from meetings m join deals d on d.lead_id = m.lead_id where d.id = $1 order by m.started_at desc limit 10)
+         union all (select c.transcript from calls c join deals d on d.lead_id = c.lead_id
+                    where d.id = $1 and c.transcript <> '' order by c.created_at desc limit 10)",
+    )
+    .bind(deal_id)
+    .fetch_all(db)
+    .await?;
+    let text = said.join("\n");
+    let items = sqlx::query_as::<_, Item>(ITEMS).bind(project_id).fetch_all(db).await?;
+    Ok(items.into_iter().filter(|i| reviewed.contains(&i.competitor_id) || find(&text, &words(&i.name, &i.domain)).is_some()).collect())
+}
+
 /// The words a competitor goes by, lowercased: its name and its domain's first label.
 pub fn words(name: &str, domain: &str) -> Vec<String> {
     let mut words = vec![];
