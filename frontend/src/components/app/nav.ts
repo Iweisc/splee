@@ -9,6 +9,7 @@ import {
   ChartLine,
   CalendarClock,
   CircleUser,
+  ClipboardCheck,
   ClipboardList,
   DatabaseBackup,
   EyeOff,
@@ -68,6 +69,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Coaching", href: (p) => `/app/p/${p}/coaching`, icon: GraduationCap },
       { label: "Playbook", href: (p) => `/app/p/${p}/playbook`, icon: BookMarked },
       { label: "Feedback", href: (p) => `/app/p/${p}/feedback`, icon: Lightbulb },
+      { label: "Questionnaires", href: (p) => `/app/p/${p}/questionnaires`, icon: ClipboardCheck },
       { label: "Social", href: (p) => `/app/p/${p}/social`, icon: Megaphone },
       { label: "Import", href: (p) => `/app/p/${p}/import`, icon: Upload }, // D1
       { label: "Agent runs", href: (p) => `/app/p/${p}/runs`, icon: Bot },

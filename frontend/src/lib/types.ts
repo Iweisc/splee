@@ -4009,3 +4009,40 @@ export interface DiscountApproval {
   decided_at: Ts | null;
   note: string;
 }
+
+/** A buyer's questionnaire, with how far along it is. `unknown` counts answers the agent couldn't source and nobody approved. */
+export interface QuestionnaireSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  answering: boolean;
+  questions: number;
+  answered: number;
+  approved: number;
+  unknown: number;
+}
+
+export interface QuestionnaireList {
+  questionnaires: QuestionnaireSummary[];
+  /** Approved answers the next questionnaire starts from. */
+  library: number;
+}
+
+export interface QuestionnaireItem {
+  id: string;
+  /** Its row in the file, counting from 0 below the header. */
+  position: number;
+  /** Which question it is, from 1, skipping the rows that aren't questions. */
+  number: number;
+  question: string;
+  section: string;
+  answer: string;
+  /** library when an approved answer to the same question filled it. Null before it's answered. */
+  confidence: "library" | "sourced" | "partial" | "unknown" | null;
+  sources: string[];
+  approved_at: string | null;
+}
+
+export interface QuestionnaireDetail extends QuestionnaireSummary {
+  items: QuestionnaireItem[];
+}

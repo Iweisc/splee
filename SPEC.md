@@ -806,6 +806,21 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | DELETE | /feedback/:id | | the same |
 | DELETE | /feedback-mentions/:id | | the same, without the quote |
 
+### Questionnaires
+
+`questionnaires.rs`, `agent/questionnaires.rs`, `routes/questionnaires.rs`, `routes/util_table.rs` (which lead imports read files with too), migration 0195 and the Questionnaires pages. A questionnaire is a CSV or the first sheet of an Excel or OpenDocument file, or pasted questions, one a line, up to 500 questions in up to 5,000 rows. It keeps the file's headers and every row in order (`rows`), and each row with a question in it is an item whose `position` is that row. The question column is a header that is just Question, Questions, Requirement or Query, else the one with the most text among headers with one of those words in them, so Question ID loses to Control question, else the one with the most text. A header with section, category, domain, area or topic groups them, and one with answer, response, reply or comment is the file's own answer column. The agent (`questionnaire`) fills each question the answer library has seen, matched on its words lowercase (`library`), then answers the rest 25 at a time from Materials (up to 40,000 characters), the library and answers published in deal rooms, as `sourced`, `partial` or `unknown`, citing Materials by title. An answer that cites nothing it was given is `partial`. Approving an answer files it in the project's `answer_library`, replacing the last answer to the same question. The download is the file's headers and every row, headings and instructions included, with the answers in its answer column, else in a new Answer column, every cell and header made safe for spreadsheets.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /projects/:id/questionnaires | | `{questionnaires: [{id, name, created_at, answering, questions, answered, approved, unknown}], library}`, the newest first. `unknown` leaves out approved ones |
+| POST | /projects/:id/questionnaires | multipart `{name?, file}` or `{name?, text}` | the summary, with the agent answering it now. The name defaults to the file's. 400 without questions, past 500 or past 5,000 rows |
+| GET | /questionnaires/:id | | the summary with `items: [{id, position, number, question, section, answer, confidence, sources, approved_at}]`, `number` counting only the questions |
+| DELETE | /questionnaires/:id | | null. Approved answers stay in the library |
+| POST | /questionnaires/:id/answer | | the questionnaire, with the agent trying again on the unknown ones nobody approved. 400 while it's answering |
+| POST | /questionnaires/:id/approve | | the questionnaire, with every library or sourced answer approved and filed |
+| GET | /questionnaires/:id/download | | a CSV, named after it |
+| POST | /questionnaire-items/:id | `{answer, approve}` | the questionnaire, with the answer saved and, when `approve`, approved and filed. 400 for approving an empty answer or past 4,000 characters |
+
 ### Account expansion
 
 `agent/expansions.rs`, `routes/expansions.rs`, migration 0158, the Customers page's Expansion tab (per project), the Grow this account section in a won deal's window and the Grow customers switch on the Autopilot page (`project_settings.grow_accounts`, on by default). Every hour, deals won between 30 and 730 days ago whose lead has a `company_domain`, with no look in the last 30 days, get a `deal_expansions` row and an expansion run when their company showed a sign of growth since the latest of the win, the last look and 30 days ago, 20 a pass. `signal` joins up to three sentences: the newest `company_signals` row first seen since ("In the news: Lumenfold raises a $20M Series B (14 Nov 2026)."), the open `job_openings` first seen since ("Hiring for 2 roles posted since, like Account Executive."), and the newest `visitor_hits` from their domain on one of the project's `visitor_sites.intent_paths` ("Someone there read /pricing on our website on 14 Nov."). The draft is an email of kind `expansion`, which sends like a nudge: in the thread, outside the send window, the pause switch and the daily limit.
