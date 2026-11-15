@@ -41,18 +41,18 @@ struct Welcome {
     proof: Vec<Choice>,
 }
 
-/// The deal's lead, project and what Splee knows, which both runs start from.
-struct Deal {
-    lead: Lead,
-    us: String,
-    name: String,
-    description: String,
-    context: String,
-    language: String,
-    stage: String,
+/// The deal's lead, project and what Splee knows, which the room's runs and the business case start from.
+pub(super) struct Deal {
+    pub(super) lead: Lead,
+    pub(super) us: String,
+    pub(super) name: String,
+    pub(super) description: String,
+    pub(super) context: String,
+    pub(super) language: String,
+    pub(super) stage: String,
 }
 
-async fn load(ctx: &Ctx, deal_id: Uuid) -> anyhow::Result<Deal> {
+pub(super) async fn load(ctx: &Ctx, deal_id: Uuid) -> anyhow::Result<Deal> {
     let db = ctx.db();
     let (lead_id, status, stage): (Uuid, String, String) =
         sqlx::query_as("select d.lead_id, d.status, s.name from deals d join deal_stages s on s.id = d.stage_id where d.id = $1").bind(deal_id).fetch_one(db).await?;
@@ -68,7 +68,7 @@ async fn load(ctx: &Ctx, deal_id: Uuid) -> anyhow::Result<Deal> {
 }
 
 impl Deal {
-    fn who(&self) -> String {
+    pub(super) fn who(&self) -> String {
         [self.lead.full_name.trim(), self.lead.company_name.trim()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" at ")
     }
 }

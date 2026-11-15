@@ -3,6 +3,7 @@
 
 pub mod ask;
 pub mod battlecards;
+pub mod business_cases;
 mod bluesky;
 pub mod briefs;
 pub mod buyers;
@@ -123,6 +124,7 @@ pub mod kind {
     pub const ROOM_ANSWER: &str = "room_answer";
     pub const FEEDBACK_SCAN: &str = "feedback_scan";
     pub const FEATURE_SHIPPED: &str = "feature_shipped";
+    pub const BUSINESS_CASE: &str = "business_case";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -432,6 +434,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::ROOM_ANSWER => deal_rooms::answer(ctx).await,
         kind::FEEDBACK_SCAN => feedback::scan(ctx).await,
         kind::FEATURE_SHIPPED => feedback::announce(ctx).await,
+        kind::BUSINESS_CASE => business_cases::write(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

@@ -776,7 +776,12 @@ pub async fn crm_line(db: &PgPool, lead_id: Uuid) -> Option<String> {
 
 /// 1200000 cents as "12,000", and 1200050 as "12,000.50".
 pub fn amount(cents: i64) -> String {
-    let whole = (cents / 100).to_string();
+    let grouped = grouped(&(cents / 100).to_string());
+    if cents % 100 == 0 { grouped } else { format!("{grouped}.{:02}", cents % 100) }
+}
+
+/// A whole number's digits with a comma every three, like "84,240".
+pub fn grouped(whole: &str) -> String {
     let mut grouped = String::new();
     for (i, digit) in whole.chars().enumerate() {
         if i > 0 && (whole.len() - i).is_multiple_of(3) {
@@ -784,7 +789,7 @@ pub fn amount(cents: i64) -> String {
         }
         grouped.push(digit);
     }
-    if cents % 100 == 0 { grouped } else { format!("{grouped}.{:02}", cents % 100) }
+    grouped
 }
 
 #[derive(Debug, Deserialize)]

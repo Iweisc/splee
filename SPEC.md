@@ -687,6 +687,18 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | POST | /room-pages/:token/view | | public. 204 |
 | POST | /room-pages/:token/questions | `{name, question}` | public. 204. 400 without a name or question, or past 120 and 2,000 characters. 429 past 5 a minute |
 
+### Business cases
+
+`business_cases.rs`, `agent/business_cases.rs`, `routes/business_cases.rs`, migration 0194, the Business case section in an open deal's window, and the champion's page at PUBLIC_URL/case/{token}. A deal has at most one case (`business_cases`), with a 20-character token that stays the same when it's written again. The agent (`business_case`) writes `business_case`, `{title, summary, problem, lines, outcomes, waiting}`, from the conversation and Materials, or says why not in `skipped`, which keeps any case already written. Each line (up to 5) is `quantity` `unit`s worth `unit_value` each, every `per` (week, month or year), for `count` `count_unit`s, with `basis` `said` or `estimate` and its `source`. A line is worth its numbers multiplied together, times 48 for a week and 12 for a month, and the text never states totals. The first year's cost is the proposal's first year once the buyer can read it (written, not held, with prices), else the deal's value. The page shows nothing until it's written, or once the deal is lost. The buyer can put in their own numbers (`numbers`, one `{quantity, unit_value, count}` per line, each 0 to a billion) with their name, which posts what the case comes to now to the project's chats. Writing it again starts from the agent's numbers. The page reports a load from the browser, except with `?preview=1`, which the app's Open link adds and which can't save numbers. The first load posts to the project's chats. Loads are limited to 30 a minute per address and saves to 10.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /deals/:id/case | | `{id, deal_id, token, url, status, business_case, skipped, numbers, edited_by, edited_at, views, first_viewed_at, last_viewed_at, investment: {amount, currency, from}}` or null. `status` is `writing`, `ready`, `skipped` or `failed`, and `from` is `proposal` or `deal` |
+| POST | /deals/:id/case | | the same, with the agent writing it now. 400 for a closed deal |
+| GET | /case-pages/:token | | public. `{business_case, revision, numbers, edited_by, edited_at, first_name, company, company_domain, from_name, from_domain, sender_name, investment}`. 404 before it's written or once the deal is lost |
+| POST | /case-pages/:token/view | | public. 204 |
+| POST | /case-pages/:token/numbers | `{name, numbers, revision}` | public. 204. 400 without a name, without one set of numbers per line or with one out of range. 409 when `revision`, the page's, isn't the case as written now. 429 past 10 a minute |
+
 ### Deal health
 
 `agent/health.rs`, migration 0149, the rating on pipeline cards, the Health section in an open deal's window and the Rate deal health switch on the Autopilot page (`project_settings.deal_health`, on by default). Every hour, up to 50 open deals in projects with the switch on get a `deal_health` row and run: deals never rated, deals whose last touch (`deals::LAST_TOUCH`) is newer than their latest rating, and deals rated more than 3 days ago, never while one is being written. Deals carry `health` (`{health, likelihood, why, next_step, created_at}`, the latest written rating, or null) and `health_writing`, whether a rating is running, the first one included. The board's Weighted figure uses the agent's likelihood for rated open deals and the stage's probability for the rest, once any open deal is rated.

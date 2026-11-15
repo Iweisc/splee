@@ -15,6 +15,7 @@ import { fetcher } from "@/hooks/use-me";
 import { DealBattlecards } from "./battlecard";
 import { ClosePlanSection } from "./close-plan";
 import { DealHealthSection } from "./deal-health";
+import { BusinessCaseSection } from "./business-case";
 import { DealRoomSection } from "./deal-room";
 import { DealReviewSection } from "./deal-review";
 import { ChurnSection } from "./churn-risk";
@@ -220,6 +221,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
                 <ClosePlanSection deal={deal} />
                 <ProposalSection deal={deal} />
                 <DealRoomSection deal={deal} />
+                <BusinessCaseSection deal={deal} />
               </div>
             )}
             <div className={cn("flex flex-col gap-4", deal && "lg:sticky lg:top-0")}>
