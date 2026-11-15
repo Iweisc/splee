@@ -26,6 +26,7 @@ mod directory;
 mod directory_queue;
 mod error;
 mod events;
+mod exports;
 mod fingerprints;
 mod grist;
 mod hashnode;
@@ -169,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
     meetings::spawn_worker(state.clone());
     ads::spawn_worker(state.clone());
     sheets::spawn_worker(state.clone());
+    exports::spawn_worker(state.clone());
 
     let app = Router::new()
         .nest("/api", routes::router())

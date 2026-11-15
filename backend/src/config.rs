@@ -89,6 +89,9 @@ pub struct Config {
     /// Where companies' blogs and feeds are read for news. Empty for their real sites. Only tests and sandboxes set it, to a fake
     /// that serves each site under /site/{domain}.
     pub news_sites_url: String,
+    /// Where every data export request goes instead of the endpoint in the organization's settings, keeping the Host it was
+    /// signed for. Empty for the real endpoints. Only tests and sandboxes set it, to a fake S3 or a local MinIO.
+    pub s3_api_url: String,
 }
 
 /// The Slack app an organization adds to its workspace. See slack.rs.
@@ -193,6 +196,7 @@ impl Config {
             sec_user_agent: env::var("SEC_USER_AGENT").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
             sec_api_url: env::var("SEC_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             news_sites_url: env::var("NEWS_SITES_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            s3_api_url: env::var("S3_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
         };
         cfg.check_app_secret()?;
         Ok(cfg)
@@ -268,6 +272,7 @@ mod tests {
             sec_user_agent: None,
             sec_api_url: String::new(),
             news_sites_url: String::new(),
+            s3_api_url: String::new(),
         }
     }
 

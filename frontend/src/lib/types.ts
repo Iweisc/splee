@@ -2639,6 +2639,44 @@ export interface SheetsStatus {
   connections: SheetConnection[];
 }
 
+/** The organization's bucket for the daily data export. The secret access key never comes back. */
+export interface ExportSettings {
+  /** Empty for AWS S3. */
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  path_style: boolean;
+  access_key_id: string;
+  tables: string[];
+  include_bodies: boolean;
+  updated_at: Ts;
+}
+
+export interface ExportRun {
+  id: UUID;
+  /** The UTC day the files are under, YYYY-MM-DD. */
+  dt: string;
+  trigger: "daily" | "manual";
+  status: "running" | "done" | "failed";
+  files: { table: string; key: string; rows: number; bytes: number }[];
+  rows: number;
+  bytes: number;
+  error: string | null;
+  started_at: Ts;
+  finished_at: Ts | null;
+}
+
+/** GET /organization/exports, for admins. */
+export interface ExportStatus {
+  settings: ExportSettings | null;
+  /** The last 7, newest first. */
+  runs: ExportRun[];
+  tables: { name: string; label: string }[];
+  quiet_hour_utc: number;
+  schema_version: number;
+}
+
 export interface DealAmounts {
   currency: string;
   open: number;
