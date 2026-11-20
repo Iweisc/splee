@@ -451,11 +451,13 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
     if !sqlx::query_scalar::<_, bool>("select pg_try_advisory_xact_lock(hashtextextended('twilio-send', 0))").fetch_one(&mut *lock).await? {
         return Ok(());
     }
-    let due = sqlx::query_as::<_, Outgoing>(
+    let listed = crate::routes::suppression_lists::listed("p.org_id", "p.id", "l.email::text", "l.company_domain::text");
+    let due = sqlx::query_as::<_, Outgoing>(&format!(
         "select t.*, p.org_id, s.paused, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.daily_text_limit,
                 l.country_code as lead_country,
                 case when exists (select 1 from suppressions x where x.org_id = p.org_id
                                   and ((x.kind = 'phone' and x.value = t.to_number) or x.value = l.email or x.value = split_part(l.email::text, '@', 2)))
+                          or {listed}
                        then 'On the do-not-contact list'
                      when l.status in ('unsubscribed', 'do_not_contact') then 'Lead ' || replace(l.status, '_', ' ')
                      when t.kind = 'sequence' and (l.status not in ('new', 'queued', 'contacted') or exists (
@@ -468,8 +470,8 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
          join leads l on l.id = t.lead_id
          join twilio_accounts a on a.org_id = p.org_id
          where t.status = 'approved' and coalesce(t.due_at, now()) <= now() and (a.failed_at is null or a.failed_at < now() - interval '1 hour')
-         order by t.kind = 'reply' desc, t.due_at nulls first, t.created_at limit 500",
-    )
+         order by t.kind = 'reply' desc, t.due_at nulls first, t.created_at limit 500"
+    ))
     .fetch_all(db)
     .await?;
 
@@ -523,15 +525,16 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
         }
         // The checks in the select above again, now, since a STOP or a reply may have come in while earlier texts went out.
         // A text that fails them stays approved, and the next pass cancels it with the reason.
-        let claimed = sqlx::query(
+        let claimed = sqlx::query(&format!(
             "update text_messages t set status = 'sending' from leads l, projects p
              where t.id = $1 and t.status = 'approved' and l.id = t.lead_id and p.id = t.project_id
                and l.status not in ('unsubscribed', 'do_not_contact')
                and not exists (select 1 from suppressions x where x.org_id = p.org_id
                                and ((x.kind = 'phone' and x.value = t.to_number) or x.value = l.email or x.value = split_part(l.email::text, '@', 2)))
+               and not {listed}
                and (t.kind <> 'sequence' or (l.status in ('new', 'queued', 'contacted')
-                    and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')))",
-        )
+                    and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')))"
+        ))
         .bind(t.id)
         .execute(db)
         .await?;

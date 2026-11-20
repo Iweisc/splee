@@ -353,8 +353,13 @@ pub async fn add(state: &AppState, org_id: Uuid, project_id: Uuid, segment_id: U
     }
     let db = &state.db;
     let listed = businesses(db, org_id, Some(project_id), &ids).await?;
-    let suppressed: HashSet<String> =
-        sqlx::query_scalar::<_, String>("select lower(value::text) from suppressions where org_id = $1").bind(org_id).fetch_all(db).await?.into_iter().collect();
+    let suppressed: HashSet<String> = sqlx::query_scalar::<_, String>(crate::routes::suppression_lists::SUPPRESSED_VALUES)
+        .bind(org_id)
+        .bind(project_id)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .collect();
     let mut skipped: Vec<Skipped> = ids
         .iter()
         .filter(|id| !listed.iter().any(|b| &b.place_id == *id))

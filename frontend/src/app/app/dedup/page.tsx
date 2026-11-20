@@ -8,6 +8,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { SearchField } from "@/components/app/work/search-field";
 import { LoadError, Pager, PER_PAGE, useLastPageGuard } from "@/components/app/work/states";
+import { SuppressionLists } from "@/components/app/work/suppression-lists";
 import { useAction } from "@/components/app/settings/use-action";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
@@ -132,6 +133,8 @@ export default function DoNotContactPage() {
 
             {data && <Pager page={page} total={data.total} onChange={setPage} />}
           </Card>
+
+          <SuppressionLists />
         </SettingsColumn>
       </PageBody>
     </>

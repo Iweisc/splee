@@ -585,8 +585,13 @@ impl Counts {
 /// unsubscribed addresses go on the suppression list, even for a duplicate.
 pub async fn insert_leads(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, tool: Tool, leads: Vec<Lead>) -> anyhow::Result<Counts> {
     let mut tx = db.begin().await?;
-    let suppressed: HashSet<String> =
-        sqlx::query_scalar("select value::text from suppressions where org_id = $1").bind(org_id).fetch_all(&mut *tx).await?.into_iter().collect();
+    let suppressed: HashSet<String> = sqlx::query_scalar(crate::routes::suppression_lists::SUPPRESSED_VALUES)
+        .bind(org_id)
+        .bind(project_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
     let mut seen: HashSet<String> = sqlx::query_scalar("select email::text from leads where project_id = $1 and email is not null")
         .bind(project_id)
         .fetch_all(&mut *tx)

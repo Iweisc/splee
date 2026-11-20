@@ -21,6 +21,7 @@ use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::sheets::{self, ImportedNow};
 use super::stats::{self, Totals};
+use super::suppression_lists::{self as lists, Kind, ScopeBody};
 use super::suppressions;
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
@@ -34,7 +35,7 @@ use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::lookalikes::{self, Lookalikes};
-use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, Segment, Suppression, Ts};
+use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, Segment, Suppression, SuppressionList, Ts};
 use crate::ownership;
 use crate::state::AppState;
 
@@ -59,6 +60,11 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/projects/{id}/analytics", get(project_analytics))
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
+        .route("/v1/suppression-lists", get(list_suppression_lists))
+        .route("/v1/suppression-lists/people", post(add_people_to_list))
+        .route("/v1/suppression-lists/companies", post(add_companies_to_list))
+        .route("/v1/suppression-lists/{id}", patch(rescope_suppression_list).delete(delete_suppression_list))
+        .route("/v1/suppression-lists/{id}/entries", get(suppression_list_entries))
         .route("/v1/companies", get(search_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/projects/{id}/lookalikes", get(list_lookalikes).post(add_lookalikes))
@@ -91,6 +97,7 @@ pub fn router() -> Router<AppState> {
 const MAX_LEADS_PER_REQUEST: usize = 1000;
 const MAX_MESSAGES: i64 = 500;
 const MAX_SUPPRESSIONS_PER_REQUEST: usize = 1000;
+const MAX_LIST_ENTRIES_PER_REQUEST: usize = 10_000;
 
 pub(super) async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<()> {
     sqlx::query("select 1 from projects where id = $1 and org_id = $2")
@@ -581,6 +588,81 @@ async fn add_suppressions(State(state): State<AppState>, auth: ApiKeyAuth, Json(
     }
     let added = suppressions::insert(&state.db, auth.org_id, body.values.iter().map(|v| v.trim()).filter(|v| !v.is_empty())).await?;
     Ok(Json(json!({ "added": added })))
+}
+
+async fn list_suppression_lists(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<SuppressionList>>> {
+    Ok(Json(lists::all(&state.db, auth.org_id).await?))
+}
+
+#[derive(Deserialize)]
+struct ListPerson {
+    email: String,
+}
+
+#[derive(Deserialize)]
+struct PeopleListBody {
+    list: String,
+    people: Vec<ListPerson>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    project_ids: Option<Option<Vec<Uuid>>>,
+}
+
+#[derive(Deserialize)]
+struct CompaniesListBody {
+    list: String,
+    domains: Vec<String>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    project_ids: Option<Option<Vec<Uuid>>>,
+}
+
+fn check_list_size(n: usize) -> AppResult<()> {
+    if n > MAX_LIST_ENTRIES_PER_REQUEST {
+        return Err(AppError::BadRequest(format!("Send at most {MAX_LIST_ENTRIES_PER_REQUEST} entries per request")));
+    }
+    Ok(())
+}
+
+/// Adds people to the named list, making it when the org has none by that name. Sends to them stop in the projects it covers.
+async fn add_people_to_list(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<PeopleListBody>) -> AppResult<Json<lists::Added>> {
+    check_list_size(body.people.len())?;
+    let emails = body.people.iter().map(|p| p.email.as_str());
+    Ok(Json(lists::add_by_name(&state.db, auth.org_id, &body.list, Kind::People, body.project_ids, emails).await?))
+}
+
+async fn add_companies_to_list(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<CompaniesListBody>) -> AppResult<Json<lists::Added>> {
+    check_list_size(body.domains.len())?;
+    let domains = body.domains.iter().map(String::as_str);
+    Ok(Json(lists::add_by_name(&state.db, auth.org_id, &body.list, Kind::Companies, body.project_ids, domains).await?))
+}
+
+async fn rescope_suppression_list(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ScopeBody>,
+) -> AppResult<Json<SuppressionList>> {
+    Ok(Json(lists::set_scope(&state.db, auth.org_id, id, body.into_scope()?).await?))
+}
+
+async fn delete_suppression_list(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    lists::delete(&state.db, auth.org_id, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct OffsetQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+async fn suppression_list_entries(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<OffsetQuery>,
+) -> AppResult<Json<Paginated<String>>> {
+    let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 1000), q.offset.unwrap_or(0).max(0));
+    Ok(Json(lists::entries_page(&state.db, auth.org_id, id, limit, offset).await?))
 }
 
 pub(super) async fn search_companies(

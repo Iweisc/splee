@@ -172,13 +172,7 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
         return Ok(Some(Skip::Cancel("Lead already replied")));
     }
     let domain = address.rsplit('@').next().unwrap_or_default();
-    let suppressed: bool = sqlx::query_scalar("select exists (select 1 from suppressions where org_id = $1 and value in ($2, $3))")
-        .bind(org_id)
-        .bind(address.to_lowercase())
-        .bind(domain.to_lowercase())
-        .fetch_one(&state.db)
-        .await?;
-    if suppressed {
+    if suppressed(&state.db, org_id, lead, address).await? {
         return Ok(Some(Skip::Cancel("Recipient is on the do-not-contact list")));
     }
     // A sure bounce hurts the mailbox's reputation, so don't send what DNS says can't arrive.
@@ -186,6 +180,20 @@ async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, l
         return Ok(Some(Skip::Fail("The recipient's domain can't receive email")));
     }
     Ok(None)
+}
+
+/// Whether `address` is on the org's do-not-contact list, by itself or its domain, or on one of its lists that covers the
+/// lead's project, by itself, its domain or the lead's company domain.
+pub(crate) async fn suppressed(db: &sqlx::PgPool, org_id: Uuid, lead: &Lead, address: &str) -> sqlx::Result<bool> {
+    let listed = crate::routes::suppression_lists::listed("$1", "$4", "$2", "$5");
+    sqlx::query_scalar(&format!("select exists (select 1 from suppressions where org_id = $1 and value in ($2, $3)) or {listed}"))
+        .bind(org_id)
+        .bind(address.to_lowercase())
+        .bind(address.rsplit('@').next().unwrap_or_default().to_lowercase())
+        .bind(lead.project_id)
+        .bind(lead.company_domain.as_deref())
+        .fetch_one(db)
+        .await
 }
 
 /// Checks a first email's address with the project's verifier. A follow-up's address was already sent to, and a reply's
@@ -405,7 +413,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page, &email.language);
     let tracked = crate::tracking::prepare(state, &email, &mb, &body).await?;
     // A reply waits in the queue a while, so an address put on the do-not-contact list meanwhile still comes off.
-    let suppressed = super::suppressed_among(&state.db, org_id, &email.cc_emails).await?;
+    let suppressed = super::suppressed_among(&state.db, org_id, email.project_id, &email.cc_emails).await?;
     let cc: Vec<String> = email.cc_emails.iter().filter(|c| !suppressed.contains(c) && !c.eq_ignore_ascii_case(&to)).cloned().collect();
     let stored = attachments::for_sending(&state.db, email.id).await?;
     let files: Vec<smtp::OutgoingFile> = stored.iter().map(|(filename, content_type, data)| smtp::OutgoingFile { filename, content_type, data }).collect();

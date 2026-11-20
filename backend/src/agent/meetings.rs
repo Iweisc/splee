@@ -169,11 +169,14 @@ pub(super) async fn follow_up_blocker(conn: &mut sqlx::PgConnection, org_id: Uui
     if matches!(lead.status.as_str(), "unsubscribed" | "bounced" | "do_not_contact") {
         return Ok(Some("opted out"));
     }
-    let suppressed: bool = sqlx::query_scalar(
-        "select exists (select 1 from suppressions where org_id = $1 and (value = lower($2) or value = split_part(lower($2), '@', 2)))",
-    )
+    let listed = crate::routes::suppression_lists::listed("$1", "$3", "$2", "$4");
+    let suppressed: bool = sqlx::query_scalar(&format!(
+        "select exists (select 1 from suppressions where org_id = $1 and (value = lower($2) or value = split_part(lower($2), '@', 2))) or {listed}"
+    ))
     .bind(org_id)
     .bind(email)
+    .bind(lead.project_id)
+    .bind(lead.company_domain.as_deref())
     .fetch_one(conn)
     .await?;
     Ok(suppressed.then_some("on the do-not-contact list"))

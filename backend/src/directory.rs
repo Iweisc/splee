@@ -268,8 +268,9 @@ pub async fn add(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, 
     let domains: Vec<&str> = picks.iter().map(|p| p.domain.as_str()).collect();
     let scores: Vec<i16> = picks.iter().map(|p| p.fit_score).collect();
     let reasons: Vec<&str> = picks.iter().map(|p| p.fit_reason.as_str()).collect();
+    let listed = crate::routes::suppression_lists::listed("$4", "$1", "d.email", "d.domain");
     // The category is the closest thing to a description the database has. "Find people" shows it to the agent.
-    let done = sqlx::query(
+    let sql = format!(
         "insert into companies (project_id, segment_id, domain, name, description, city, country_code, fit_score, fit_reason, source_url)
          select $1, $2, d.domain, d.name, coalesce(upper(left(d.category, 1)) || replace(substr(d.category, 2), '_', ' '), ''),
                 coalesce(d.city, ''), d.country_code, p.score, p.reason, d.website
@@ -277,16 +278,18 @@ pub async fn add(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, 
          join directory_companies d on d.domain = p.domain
          where not exists (select 1 from suppressions s where s.org_id = $4
                            and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))
-         on conflict (project_id, domain) do nothing",
-    )
-    .bind(project_id)
-    .bind(segment_id)
-    .bind(&domains)
-    .bind(org_id)
-    .bind(&scores)
-    .bind(&reasons)
-    .execute(db)
-    .await?;
+           and not {listed}
+         on conflict (project_id, domain) do nothing"
+    );
+    let done = sqlx::query(&sql)
+        .bind(project_id)
+        .bind(segment_id)
+        .bind(&domains)
+        .bind(org_id)
+        .bind(&scores)
+        .bind(&reasons)
+        .execute(db)
+        .await?;
     Ok(done.rows_affected())
 }
 

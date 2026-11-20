@@ -481,10 +481,16 @@ pub async fn rank(db: &PgPool, project_id: Uuid, org_id: Option<Uuid>, profile: 
         .collect())
 }
 
-/// Seeds, the project's companies, domain and competitors, and the organization's do-not-contact list.
-const EXCLUDED: &str = "d.domain <> all($3)
+/// Seeds, the project's companies, domain and competitors, and the organization's do-not-contact list and lists.
+fn excluded() -> String {
+    format!(
+        "d.domain <> all($3)
              and not exists (select 1 from companies c where c.project_id = $1 and c.domain = d.domain::citext)
-             and not exists (select 1 from suppressions s where s.org_id = $2 and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))";
+             and not exists (select 1 from suppressions s where s.org_id = $2 and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))
+             and not {}",
+        crate::routes::suppression_lists::listed("$2", "$1", "d.email", "d.domain")
+    )
+}
 
 /// None when no part is on.
 pub(crate) async fn ranking(db: &PgPool, project_id: Uuid, org_id: Option<Uuid>, profile: &Profile, limit: i64) -> sqlx::Result<Option<Ranking>> {
@@ -519,9 +525,10 @@ pub(crate) async fn ranking(db: &PgPool, project_id: Uuid, org_id: Option<Uuid>,
     // tie order. That loses nothing: a company that only shares the place scores what the place's companies above it score,
     // or less, and `limit` of them already rank above it.
     let mut places: Vec<String> = Vec::new();
+    let excluded = excluded();
     let best_in = |place: &str| {
         format!(
-            "cross join lateral (select d.domain from directory_companies d where {place} and {EXCLUDED}
+            "cross join lateral (select d.domain from directory_companies d where {place} and {excluded}
                                  order by d.confidence desc, d.domain limit $12) x"
         )
     };
@@ -568,7 +575,7 @@ pub(crate) async fn ranking(db: &PgPool, project_id: Uuid, org_id: Option<Uuid>,
            left join tech_scans t on t.domain = d.domain::citext and t.scanned_at is not null
            left join unnest($7::text[], $8::text[]) h(domain, role) on h.domain = d.domain
            where ({picks})
-             and {EXCLUDED}
+             and {excluded}
            order by points desc, d.confidence desc, d.domain
            limit $12
          )

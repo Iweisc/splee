@@ -190,17 +190,20 @@ pub async fn pause_if_bouncing(db: &sqlx::PgPool, mailbox_id: Uuid) -> sqlx::Res
     Ok(())
 }
 
-/// The addresses among `emails` that are on the org's do-not-contact list, by address or by domain.
-pub async fn suppressed_among(db: &sqlx::PgPool, org_id: Uuid, emails: &[String]) -> sqlx::Result<Vec<String>> {
+/// The addresses among `emails` that are on the org's do-not-contact list, or on one of its lists covering the project, by
+/// address or by domain.
+pub async fn suppressed_among(db: &sqlx::PgPool, org_id: Uuid, project_id: Uuid, emails: &[String]) -> sqlx::Result<Vec<String>> {
     if emails.is_empty() {
         return Ok(vec![]);
     }
-    sqlx::query_scalar(
+    let listed = crate::routes::suppression_lists::listed("$1", "$3", "e", "null::text");
+    sqlx::query_scalar(&format!(
         "select e from unnest($2::text[]) e
-         where exists (select 1 from suppressions s where s.org_id = $1 and s.value in (lower(e), lower(split_part(e, '@', 2))))",
-    )
+         where exists (select 1 from suppressions s where s.org_id = $1 and s.value in (lower(e), lower(split_part(e, '@', 2)))) or {listed}"
+    ))
     .bind(org_id)
     .bind(emails)
+    .bind(project_id)
     .fetch_all(db)
     .await
 }

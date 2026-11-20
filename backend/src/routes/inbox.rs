@@ -246,13 +246,13 @@ pub(crate) async fn reply_all_cc(db: &sqlx::PgPool, org_id: Uuid, lead: &Lead, i
         .take(MAX_CC)
         .cloned()
         .collect();
-    let suppressed = crate::mail::suppressed_among(db, org_id, &copied).await?;
+    let suppressed = crate::mail::suppressed_among(db, org_id, lead.project_id, &copied).await?;
     Ok(copied.into_iter().filter(|c| !suppressed.contains(c)).collect())
 }
 
 /// The CC list someone typed: real addresses, at most MAX_CC, none on the do-not-contact list. `to` is dropped, since the
 /// lead already gets it.
-async fn check_cc(db: &sqlx::PgPool, org_id: Uuid, list: &[String], to: Option<&str>) -> AppResult<Vec<String>> {
+async fn check_cc(db: &sqlx::PgPool, org_id: Uuid, project_id: Uuid, list: &[String], to: Option<&str>) -> AppResult<Vec<String>> {
     if list.len() > MAX_CC {
         return Err(AppError::BadRequest(format!("Copy in at most {MAX_CC} people")));
     }
@@ -263,7 +263,7 @@ async fn check_cc(db: &sqlx::PgPool, org_id: Uuid, list: &[String], to: Option<&
             cc.push(email);
         }
     }
-    if let Some(first) = crate::mail::suppressed_among(db, org_id, &cc).await?.first() {
+    if let Some(first) = crate::mail::suppressed_among(db, org_id, project_id, &cc).await?.first() {
         return Err(AppError::BadRequest(format!("{first} is on your do-not-contact list, so Splee won't copy them in")));
     }
     Ok(cc)
@@ -329,7 +329,7 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     };
     let to_email = inbound.from_email.clone().or(lead.email.clone());
     let cc = match &extras.cc_emails {
-        Some(list) => check_cc(db, org_id, list, to_email.as_deref()).await?,
+        Some(list) => check_cc(db, org_id, lead.project_id, list, to_email.as_deref()).await?,
         None if extras.reply_all.unwrap_or(true) => reply_all_cc(db, org_id, &lead, &inbound).await?,
         None => vec![],
     };
@@ -424,7 +424,7 @@ pub(crate) async fn approve_reply(db: &sqlx::PgPool, org_id: Uuid, id: Uuid, edi
     }
     let new_body = edit.body.filter(|b| !b.trim().is_empty());
     let cc = match &edit.cc_emails {
-        Some(list) => Some(check_cc(db, org_id, list, message.to_email.as_deref()).await?),
+        Some(list) => Some(check_cc(db, org_id, message.project_id, list, message.to_email.as_deref()).await?),
         None => None,
     };
     let sending_mailbox = mailbox(db, message.mailbox_id).await?;

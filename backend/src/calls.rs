@@ -35,9 +35,15 @@ pub const LAST_STEP: &str = "lateral (select x.step, x.at from (
        select c.step, c.closed_at from calls c where c.lead_id = l.id and c.kind = 'sequence' and c.status in ('done', 'skipped')
      ) x order by x.step desc limit 1) last";
 
-/// Whether the lead `l` of project `p` is on the organization's do-not-contact list, by number, email or domain.
-const SUPPRESSED: &str = "exists (select 1 from suppressions x where x.org_id = p.org_id
-       and ((x.kind = 'phone' and x.value = l.phone) or x.value = l.email or x.value = split_part(l.email::text, '@', 2)))";
+/// SQL that's true when the lead `l` of project `p` is on the organization's do-not-contact list, by number, email or
+/// domain, or on one of its lists covering the project.
+fn suppressed() -> String {
+    let listed = crate::routes::suppression_lists::listed("p.org_id", "p.id", "l.email::text", "l.company_domain::text");
+    format!(
+        "(exists (select 1 from suppressions x where x.org_id = p.org_id
+           and ((x.kind = 'phone' and x.value = l.phone) or x.value = l.email or x.value = split_part(l.email::text, '@', 2))) or {listed})"
+    )
+}
 
 /// Takes a lead's open calls off. $1 is the lead, $2 the reason shown on them.
 pub const STOP_CALLS: &str = "update calls set status = 'cancelled', cancel_reason = $2, closed_at = now() where lead_id = $1 and status = 'open'";
@@ -167,8 +173,9 @@ pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, 
         return Ok(Err("This call was already logged, skipped or cancelled.".into()));
     }
     let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(call.lead_id).fetch_one(db).await?;
+    let blocked = suppressed();
     let (suppressed, project_tz): (bool, String) = sqlx::query_as(&format!(
-        "select {SUPPRESSED} or l.status in ('unsubscribed', 'do_not_contact'), coalesce(ps.timezone, 'UTC')
+        "select {blocked} or l.status in ('unsubscribed', 'do_not_contact'), coalesce(ps.timezone, 'UTC')
          from leads l join projects p on p.id = l.project_id left join project_settings ps on ps.project_id = l.project_id where l.id = $1"
     ))
     .bind(lead.id)
@@ -248,10 +255,11 @@ pub async fn schedule(db: &PgPool) -> sqlx::Result<u64> {
 /// Cancels the open calls of leads who replied, booked or went on the do-not-contact list, in `project` or everywhere. The
 /// paths that change a lead do it at once too. This catches the rest, like an address added to the list by hand.
 pub async fn cancel_stale(db: &PgPool, project: Option<Uuid>) -> sqlx::Result<u64> {
+    let blocked = suppressed();
     let done = sqlx::query(&format!(
         "update calls c set status = 'cancelled', closed_at = now(), cancel_reason = r.why
          from (select o.id, case
-                 when {SUPPRESSED} or l.status in ('unsubscribed', 'do_not_contact') then 'On the do-not-contact list'
+                 when {blocked} or l.status in ('unsubscribed', 'do_not_contact') then 'On the do-not-contact list'
                  when l.status = 'meeting_booked' then 'They booked a meeting'
                  when l.status = 'not_interested' then 'Marked not interested'
                  when l.status in ('replied', 'hot') or exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')

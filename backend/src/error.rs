@@ -19,6 +19,9 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// Well-formed but not acceptable, like a project id from another organization. The public API's 422.
+    #[error("{0}")]
+    Unprocessable(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -44,6 +47,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 StatusCode::INTERNAL_SERVER_ERROR
