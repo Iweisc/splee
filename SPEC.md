@@ -157,12 +157,14 @@ All paths below are under `/api`.
 | method | path | body | response |
 |---|---|---|---|
 | POST | /auth/signup | `{email, password, name, claim?: {project_id, token}, invite_token?}` | `Me`, sets cookie. Creates org (unless invite), owner membership, default notification prefs. `claim` moves the demo project into the org, creates `project_settings`. 403 without `invite_token` when `OPEN_SIGNUP=false` and an account already exists. |
-| POST | /auth/login | `{email, password}` | `Me`, sets cookie. 429 after 10 failed attempts for an email (known or not) within 15 minutes. A successful sign-in resets the count. |
+| POST | /auth/login | `{email, password}` | `Me`, sets cookie. 429 after 10 failed attempts for an email (known or not) within 15 minutes. A successful sign-in resets the count. With two-factor on, a right password gives `{two_factor_token}` instead (5 minutes, used once) and still counts as an attempt until the code is right. |
+| POST | /auth/login/code | `{two_factor_token, code}` | `Me`, sets cookie. `code` is from the app (TOTP, RFC 6238, SHA1, 6 digits, 30 s, ±1 step, each step once per user) or a backup code (once). Each try counts toward the login limit. |
 | POST | /auth/logout | | `{ok:true}` |
 | GET | /auth/me | | `Me` or 401. `Me` is `{user, org, role, orgs, public_url, operator, mailbox_sign_in, tumblr_sign_in, meta_sign_in, crm_sign_in}`. `meta_sign_in` says the server has `META_APP_ID` and `META_APP_SECRET`, so the integrations page offers Facebook and Instagram. `public_url` is `PUBLIC_URL`, which the mailboxes page checks against the address the app is open at. `operator` says the user's email is in `OPERATOR_EMAILS`. `mailbox_sign_in` lists `google` and `microsoft` when the server has `GOOGLE_CLIENT_ID`/`_SECRET` and `MICROSOFT_CLIENT_ID`/`_SECRET`, so the Mailboxes page shows Connect Google and Connect Microsoft. `tumblr_sign_in` is true when the server has `TUMBLR_CLIENT_ID`/`_SECRET`, so the integrations page shows Tumblr. `crm_sign_in` lists `salesforce`, `zoho` and `dynamics` when the server has `SALESFORCE_CLIENT_ID`/`_SECRET`, `ZOHO_CLIENT_ID`/`_SECRET` and the Microsoft app, so the integrations page offers them. |
 | PATCH | /auth/me | `{away?, view?, owner_filter?}` | `Me`, which also carries the member's `away` and `owner_filters` (`{inbox?, leads?, pipeline?}`, each `everyone`, `mine` or `unassigned`). Both are per organization. `view` and `owner_filter` go together and remember the owner filter a page was left on. |
 | POST | /auth/password | `{current_password, new_password}` | `{ok}`. 400 when the current password is wrong or the new one is under 8 characters. Deletes the user's other sessions. |
 | POST | /auth/switch-org | `{org_id}` | `Me` |
+| GET, POST | /auth/two-factor, /setup, /enable, /disable, /backup-codes | `{code}` for enable, `{proof}` (password or code) for disable and backup-codes | `{enabled, backup_codes_left}`, `{secret, uri, qr}` (issuer Splee, key encrypted with APP_SECRET), and 10 backup codes shown once (keyed hashes stored). Migration 0174. |
 | GET | /invites/:token | | `{org_name, email, role}` (public). 404 once the invite is used, revoked or 7 days old. |
 | POST | /invites/:token/accept | | `Me` (signed-in user joins org). 400 for a used, revoked or 7-day-old invite, as does signup with that `invite_token`. |
 
@@ -171,7 +173,7 @@ All paths below are under `/api`.
 | method | path | body | response |
 |---|---|---|---|
 | GET/PATCH | /organization | `{name}` | `Organization` |
-| GET | /organization/users | | `Member[]`: `{user_id, email, name, role, away, created_at}` |
+| GET | /organization/users | | `Member[]`: `{user_id, email, name, role, away, two_factor?, created_at}`. `two_factor` only for admins. |
 | PATCH | /organization/users/:user_id | `{role}` | `Member` (admin) |
 | DELETE | /organization/users/:user_id | | `{ok}` (admin, can't remove last owner). Their leads and mailboxes in the org go back to no owner. |
 | GET/POST | /organization/invites | `{email, role}` | `Invite[]` / `{invite, link}` (link = PUBLIC_URL/invite/token; also emailed if the org has an active mailbox). `Invite.expires_at` = created_at + 7 days. Expired invites stay listed until revoked. |

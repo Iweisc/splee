@@ -8,13 +8,16 @@ import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
 import { useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
-import type { Me } from "@/lib/types";
+import type { SignIn } from "@/lib/types";
 
 export function SigninForm({ next }: { next: string | null }) {
   const router = useRouter();
   const { mutate } = useMe();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Set once the password is right for an account with two-factor on. The form then asks for the code.
+  const [token, setToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -23,14 +26,50 @@ export function SigninForm({ next }: { next: string | null }) {
     setLoading(true);
     setError(null);
     try {
-      const me = await api<Me>("/auth/login", { body: { email, password } });
-      await mutate(me, { revalidate: false });
+      const res = token
+        ? await api<SignIn>("/auth/login/code", { body: { two_factor_token: token, code } })
+        : await api<SignIn>("/auth/login", { body: { email, password } });
+      if ("two_factor_token" in res) {
+        setToken(res.two_factor_token);
+        setLoading(false);
+        return;
+      }
+      await mutate(res, { revalidate: false });
       router.replace(next ?? "/app");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't sign in.");
       setLoading(false);
     }
   };
+
+  const startOver = () => {
+    setToken(null);
+    setCode("");
+    setPassword("");
+    setError(null);
+  };
+
+  if (token) {
+    return (
+      <Card className="w-full max-w-[400px] p-8">
+        <h1 className="text-2xl font-medium tracking-tight">Enter your code</h1>
+        <p className="mt-1 text-sm text-muted-foreground">From your authenticator app.</p>
+        <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
+          <Field label="Code" hint="Lost your phone? Use one of your backup codes." error={error}>
+            <Input autoComplete="one-time-code" autoFocus required spellCheck={false} value={code} onChange={(e) => setCode(e.target.value)} />
+          </Field>
+          <Button type="submit" loading={loading} className="mt-2">
+            Sign in
+          </Button>
+        </form>
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          <button type="button" onClick={startOver} className="font-medium text-foreground hover:underline">
+            Start over
+          </button>
+        </p>
+      </Card>
+    );
+  }
 
   return (
     <Card className="w-full max-w-[400px] p-8">

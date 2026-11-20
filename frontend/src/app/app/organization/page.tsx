@@ -157,6 +157,12 @@ function Members({ me, isAdmin }: { me: Me; isAdmin: boolean }) {
                     <span className="truncate">{m.name || m.email}</span>
                     {self && <span className="shrink-0 font-normal text-muted-foreground">(you)</span>}
                     {m.away && <Badge className="shrink-0">Away</Badge>}
+                    {/* The backend sends two_factor to admins only. */}
+                    {m.two_factor && (
+                      <Badge tone="green" className="shrink-0" title="Signs in with a code from an authenticator app">
+                        2FA
+                      </Badge>
+                    )}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     <Address email={m.email} /> · joined {timeAgo(m.created_at)}

@@ -60,17 +60,24 @@ struct Member {
     role: String,
     /// Round robin skips them while they're away. They set it on their account page.
     away: bool,
+    /// Whether they sign in with a code from an authenticator app. Only admins see it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    two_factor: Option<bool>,
     created_at: Ts,
 }
 
-const MEMBER_SELECT: &str = "select m.user_id, u.email::text as email, u.name, m.role, m.away, m.created_at
+const MEMBER_SELECT: &str = "select m.user_id, u.email::text as email, u.name, m.role, m.away, m.created_at,
+     exists (select 1 from two_factor t where t.user_id = m.user_id and t.enabled_at is not null) as two_factor
      from memberships m join users u on u.id = m.user_id where m.org_id = $1";
 
 async fn list_members(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<Member>>> {
-    let members = sqlx::query_as::<_, Member>(&format!("{MEMBER_SELECT} order by m.created_at"))
+    let mut members = sqlx::query_as::<_, Member>(&format!("{MEMBER_SELECT} order by m.created_at"))
         .bind(auth.org_id)
         .fetch_all(&state.db)
         .await?;
+    if auth.require_admin().is_err() {
+        members.iter_mut().for_each(|m| m.two_factor = None);
+    }
     Ok(Json(members))
 }
 
