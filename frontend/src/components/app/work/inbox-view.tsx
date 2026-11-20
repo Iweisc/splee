@@ -2,15 +2,29 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bell, CalendarCheck, Check, Flame, Inbox, MessageSquareText, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
+import { ArrowLeft, Bell, CalendarCheck, Check, FileText, Flame, Inbox, MessageSquareText, Paperclip, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
-import type { Call, EmailMessage, InboxThread, Lead, LeadDetail, LeadStatus, Meeting, Paginated, ProjectSummary, SavedReply, TextMessage } from "@/lib/types";
-import { cn, dateTime, isPast, timeAgo } from "@/lib/utils";
+import type {
+  Call,
+  EmailAttachment,
+  EmailMessage,
+  InboxThread,
+  Lead,
+  LeadDetail,
+  LeadStatus,
+  Meeting,
+  Paginated,
+  ProjectSummary,
+  SavedReply,
+  TextMessage,
+  ThreadMessage,
+} from "@/lib/types";
+import { cn, dateTime, fileSize, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
@@ -184,7 +198,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
 /** `onDone` runs when e marks the thread done, to move on to the next one. */
 function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) {
   const { mutate: mutateAll } = useSWRConfig();
-  const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: EmailMessage[]; draft_run: string | null }>(
+  const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: ThreadMessage[]; draft_run: string | null; reply_cc: string[] }>(
     `/inbox/threads/${leadId}`,
     fetcher,
   );
@@ -196,6 +210,10 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
     else sessionStorage.removeItem(draftKey);
   }, [draftKey, reply]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
+  // Reply all: the lead's CC list from their last message until you change it.
+  const [ccEdit, setCc] = useState<string[] | null>(null);
+  const cc = ccEdit ?? data?.reply_cc ?? [];
+  const uploads = useUploads();
   const [sending, setSending] = useState(false);
   const [draftRun, setDraftRun] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -220,7 +238,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const calls = (data?.lead.calls ?? []).filter((c) => c.status === "done");
   // And the sales meetings, with the agent's notes on them.
   const meetings = data?.lead.meetings ?? [];
-  const conversation: (EmailMessage | TextMessage | Call | Meeting)[] = [
+  const conversation: (ThreadMessage | TextMessage | Call | Meeting)[] = [
     ...messages.filter((m) => m !== pendingDraft && m.status !== "cancelled"),
     ...texts,
     ...calls,
@@ -305,10 +323,15 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const send = async () => {
     setSending(true);
     try {
-      await api(`/inbox/threads/${leadId}/${byText ? "text" : "reply"}`, { body: { body: reply.trim() } });
+      const body = byText
+        ? { body: reply.trim() }
+        : { body: reply.trim(), cc_emails: cc, attachment_ids: uploads.files.flatMap((f) => (f.id ? [f.id] : [])) };
+      await api(`/inbox/threads/${leadId}/${byText ? "text" : "reply"}`, { body });
       // Cleared here too: if you opened another thread while it sent, this pane is gone and its effect won't run.
       sessionStorage.removeItem(draftKey);
       setReply("");
+      setCc(null);
+      uploads.clear();
       await refresh();
       toast.success("Reply queued");
     } catch (e) {
@@ -438,17 +461,23 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         )}
       </ol>
 
+      {!byText && (
+        <div className="flex flex-col gap-2 border-t border-border px-3 pt-2.5">
+          <CcField value={cc} onChange={setCc} />
+          {uploads.files.length > 0 && <UploadList uploads={uploads} />}
+        </div>
+      )}
       {/* The buttons drop their labels when the row is narrow, not just on phones: on a tablet or small laptop the thread
           sits beside the list, and the labels squeezed the reply box to a third of the row. On a small phone even the icons
           left it 100px wide, so there the box takes the whole row and the buttons go under it. */}
-      <div className="@container flex flex-wrap items-end justify-end gap-2 border-t border-border p-3">
+      <div className={cn("@container flex flex-wrap items-end justify-end gap-2 p-3", byText ? "border-t border-border" : "pt-2")}>
         {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
           ref={replyBox}
           value={reply}
           onChange={(e) => setReply(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim()) send();
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim() && !uploads.uploading) send();
           }}
           placeholder={`${byText === "whatsapp" ? "Reply on WhatsApp to" : byText ? "Text" : "Reply to"} ${lead.first_name || lead.full_name || "lead"}…`}
           className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @xs:flex-1"
@@ -460,12 +489,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             replyBox.current?.focus();
           }}
         />
+        {!byText && <AttachButton onPick={uploads.add} disabled={uploads.files.length >= MAX_FILES} />}
         {canDraft && !reply.trim() && (
           <Button variant="outline" onClick={draftReply} loading={requesting} aria-label="Draft reply" title="Have the agent write a reply for you to check and send">
             <Sparkles className="size-4" /> <span className="@max-lg:hidden">Draft reply</span>
           </Button>
         )}
-        <Button onClick={send} loading={sending} disabled={!reply.trim()} aria-label="Send reply">
+        <Button onClick={send} loading={sending} disabled={!reply.trim() || uploads.uploading} aria-label="Send reply">
           <Send className="size-4" /> <span className="@max-lg:hidden">Send</span>
         </Button>
       </div>
@@ -607,7 +637,7 @@ function TextBubble({ text: t }: { text: TextMessage }) {
   );
 }
 
-function Bubble({ message: m }: { message: EmailMessage }) {
+function Bubble({ message: m }: { message: ThreadMessage }) {
   const inbound = m.direction === "inbound";
   return (
     // 36rem caps a line at about 85 characters. At 80% alone, a wide screen ran lines to 150 and more.
@@ -617,6 +647,8 @@ function Bubble({ message: m }: { message: EmailMessage }) {
       <div className={cn("max-w-full rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap", inbound ? "bg-card shadow-card" : "bg-black/[0.06]")}>
         <Message text={m.body} />
       </div>
+      <Attachments files={m.attachments} className={inbound ? "justify-start" : "justify-end"} />
+      {m.cc_emails.length > 0 && <CcLine emails={m.cc_emails} className={cn("px-1", !inbound && "text-right")} />}
       <span className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
         {inbound && m.classification && <ClassificationBadge value={m.classification} />}
         {m.channel !== "email" && `${CHANNEL[m.channel]} · `}
@@ -628,15 +660,16 @@ function Bubble({ message: m }: { message: EmailMessage }) {
   );
 }
 
-function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Promise<unknown> }) {
+function PendingReply({ draft, onDone }: { draft: ThreadMessage; onDone: () => Promise<unknown> }) {
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(draft.body);
+  const [cc, setCc] = useState(draft.cc_emails);
   const [busy, setBusy] = useState<"approve" | "discard" | null>(null);
 
   const approve = async () => {
     setBusy("approve");
     try {
-      await api(`/inbox/messages/${draft.id}/approve`, { body: editing ? { body } : {} });
+      await api(`/inbox/messages/${draft.id}/approve`, { body: editing ? { body, cc_emails: cc } : {} });
       await onDone();
       toast.success("Reply approved and queued");
     } catch (e) {
@@ -661,13 +694,20 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
     <li className="flex w-[min(80%,36rem)] flex-col gap-2 self-end rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-3">
       <MicroLabel className="text-amber-700">Auto-reply draft · waiting for approval</MicroLabel>
       {editing ? (
-        // No max height: like the draft text it replaces, it scrolls with the conversation instead of inside itself.
-        <Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-32 field-sizing-content" autoFocus />
+        <>
+          {/* No max height: like the draft text it replaces, it scrolls with the conversation instead of inside itself. */}
+          <Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-32 field-sizing-content" autoFocus />
+          <CcField value={cc} onChange={setCc} />
+        </>
       ) : (
-        <p className="text-sm leading-relaxed whitespace-pre-wrap">
-          <Message text={draft.body} />
-        </p>
+        <>
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">
+            <Message text={draft.body} />
+          </p>
+          {draft.cc_emails.length > 0 && <CcLine emails={draft.cc_emails} />}
+        </>
       )}
+      <Attachments files={draft.attachments} />
       {/* Like the email draft editor: on phones the buttons stretch to fill their row and Approve gets a row of its own. */}
       <div className="flex flex-wrap justify-end gap-2 max-sm:[&>*]:grow">
         <Button size="sm" variant="ghost" onClick={discard} loading={busy === "discard"} disabled={!!busy}>
@@ -683,5 +723,215 @@ function PendingReply({ draft, onDone }: { draft: EmailMessage; onDone: () => Pr
         </Button>
       </div>
     </li>
+  );
+}
+
+/** What a reply can carry. Keep in sync with ALLOWED in backend/src/mail/attachments.rs. */
+const ATTACHABLE = [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".docx", ".pptx", ".xlsx", ".txt", ".csv"];
+const MAX_FILES = 10;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_CC = 20;
+const EMAIL = /^[^\s@,;<>"]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+
+function CcLine({ emails, className }: { emails: string[]; className?: string }) {
+  return <p className={cn("text-[11px] break-words text-muted-foreground", className)}>Cc {emails.join(", ")}</p>;
+}
+
+/** A message's files. One Splee didn't keep shows its name and size, without a link. */
+function Attachments({ files, className }: { files: EmailAttachment[]; className?: string }) {
+  if (!files.length) return null;
+  return (
+    <ul className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
+      {files.map((f) => {
+        const inner = (
+          <>
+            <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0">
+              <span className="block truncate">{f.filename}</span>
+              <span className="block text-[11px] text-muted-foreground">{f.stored ? fileSize(f.size_bytes) : `${fileSize(f.size_bytes)} · Not kept, over 25 MB`}</span>
+            </span>
+          </>
+        );
+        const chip = "flex max-w-64 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs";
+        return (
+          <li key={f.id} className="max-w-full">
+            {f.stored ? (
+              <a href={`/api/attachments/${f.id}`} download={f.filename} title={`Download ${f.filename}`} className={cn(chip, "border-border bg-card hover:bg-accent")}>
+                {inner}
+              </a>
+            ) : (
+              <span className={cn(chip, "border-dashed border-border-strong bg-transparent")}>{inner}</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Adds what was typed to `list`: one address or several split by commas or spaces. `bad` is the first that isn't an address. */
+function withCc(list: string[], typed: string): { list: string[]; bad: string | null } {
+  let next = list;
+  for (const part of typed.split(/[\s,;]+/).filter(Boolean)) {
+    const email = part.toLowerCase();
+    if (!EMAIL.test(email)) return { list: next, bad: part };
+    if (!next.includes(email) && next.length < MAX_CC) next = [...next, email];
+  }
+  return { list: next, bad: null };
+}
+
+/** Who a reply copies in, each removable, with a box to add more. */
+function CcField({ value, onChange }: { value: string[]; onChange: (cc: string[]) => void }) {
+  const [typed, setTyped] = useState("");
+  const [bad, setBad] = useState<string | null>(null);
+  const commit = () => {
+    if (!typed.trim()) return;
+    const added = withCc(value, typed);
+    onChange(added.list);
+    setBad(added.bad);
+    setTyped(added.bad ?? "");
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="font-medium text-muted-foreground">Cc</span>
+        {value.map((email) => (
+          <span key={email} className="inline-flex max-w-full items-center gap-0.5 rounded-full bg-black/[0.06] py-0.5 pr-0.5 pl-2.5">
+            <span className="truncate">{email}</span>
+            <button
+              type="button"
+              onClick={() => onChange(value.filter((e) => e !== email))}
+              aria-label={`Don't copy in ${email}`}
+              className="rounded-full p-1 text-muted-foreground hover:bg-black/[0.06] hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+        {value.length < MAX_CC && (
+          <input
+            value={typed}
+            onChange={(e) => {
+              setTyped(e.target.value);
+              setBad(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "," || e.key === " ") {
+                e.preventDefault();
+                commit();
+              } else if (e.key === "Backspace" && !typed && value.length) {
+                onChange(value.slice(0, -1));
+              }
+            }}
+            onBlur={commit}
+            type="email"
+            aria-label="Copy someone in"
+            aria-invalid={!!bad}
+            placeholder={value.length ? "Add another" : "Copy someone in"}
+            className="h-7 min-w-36 flex-1 rounded-md bg-transparent px-1 text-sm placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-brand-600"
+          />
+        )}
+      </div>
+      {bad && <p className="mt-1 text-xs text-red-700">{bad} isn&apos;t an email address</p>}
+    </div>
+  );
+}
+
+type Upload = { key: number; name: string; size: number; id: string | null };
+
+/** Files for the reply, each uploaded as soon as it's picked so Send only passes their ids. */
+function useUploads() {
+  const [files, setFiles] = useState<Upload[]>([]);
+  const next = useRef(0);
+  const add = (picked: File[]) => {
+    let room = MAX_FILES - files.length;
+    for (const file of picked) {
+      const dot = file.name.lastIndexOf(".");
+      if (room <= 0) {
+        toast.error(`Attach at most ${MAX_FILES} files to a reply`);
+        break;
+      }
+      if (dot < 0 || !ATTACHABLE.includes(file.name.slice(dot).toLowerCase())) {
+        toast.error(`Splee can't send ${file.name}. Attach a PDF, image, Word, PowerPoint, Excel, TXT or CSV file`);
+        continue;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        toast.error(`${file.name} is over 25 MB. Share a link to it instead`);
+        continue;
+      }
+      room -= 1;
+      const key = next.current++;
+      setFiles((f) => [...f, { key, name: file.name, size: file.size, id: null }]);
+      const form = new FormData();
+      form.append("file", file);
+      api<EmailAttachment>("/attachments", { body: form })
+        .then((a) => setFiles((f) => f.map((u) => (u.key === key ? { ...u, id: a.id } : u))))
+        .catch((e) => {
+          setFiles((f) => f.filter((u) => u.key !== key));
+          toastError(e);
+        });
+    }
+  };
+  return {
+    files,
+    add,
+    remove: (key: number) => setFiles((f) => f.filter((u) => u.key !== key)),
+    clear: () => setFiles([]),
+    uploading: files.some((f) => !f.id),
+  };
+}
+
+function UploadList({ uploads }: { uploads: ReturnType<typeof useUploads> }) {
+  return (
+    <ul className="flex flex-wrap gap-1.5">
+      {uploads.files.map((f) => (
+        <li key={f.key} className="flex max-w-64 items-center gap-2 rounded-lg border border-border bg-card py-1.5 pr-1 pl-2.5 text-xs">
+          {f.id ? <FileText className="size-3.5 shrink-0 text-muted-foreground" /> : <Spinner className="size-3.5 shrink-0" />}
+          <span className="min-w-0">
+            <span className="block truncate">{f.name}</span>
+            <span className="block text-[11px] text-muted-foreground">{f.id ? fileSize(f.size) : "Uploading…"}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => uploads.remove(f.key)}
+            aria-label={`Remove ${f.name}`}
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A paperclip that opens the file picker, like the saved replies button opens its menu. */
+function AttachButton({ onPick, disabled }: { onPick: (files: File[]) => void; disabled: boolean }) {
+  return (
+    <label
+      title={disabled ? `A reply takes at most ${MAX_FILES} files` : "Attach files"}
+      className={buttonClass(
+        "outline",
+        "md",
+        cn(
+          "relative shrink-0 px-3 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-brand-600",
+          disabled ? "pointer-events-none opacity-50" : "cursor-pointer",
+        ),
+      )}
+    >
+      <Paperclip className="size-4" />
+      <input
+        type="file"
+        multiple
+        accept={ATTACHABLE.join(",")}
+        aria-label="Attach files"
+        disabled={disabled}
+        onChange={(e) => {
+          onPick(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+        className="sr-only"
+      />
+    </label>
   );
 }

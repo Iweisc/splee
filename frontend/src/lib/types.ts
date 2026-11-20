@@ -1515,6 +1515,28 @@ export interface EmailMessage {
   channel: "email" | TextChannel;
   /** The language Splee wrote it in, "" for English or an email it didn't write. */
   language: string;
+  /** Who else a lead's reply went to, or who ours is copied to. Lowercase. */
+  cc_emails: string[];
+}
+
+/** A file on an email, without its bytes. Download it from /attachments/:id when `stored`. */
+export interface EmailAttachment {
+  id: UUID;
+  /** null for an upload no reply has taken yet. */
+  message_id: UUID | null;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  /** Shown in the email's body, like a signature's logo, rather than attached under it. */
+  inline: boolean;
+  /** false for a lead's file over 25 MB, which Splee lists but didn't keep. */
+  stored: boolean;
+  created_at: Ts;
+}
+
+/** An email in an inbox thread, with its files. */
+export interface ThreadMessage extends EmailMessage {
+  attachments: EmailAttachment[];
 }
 
 export type TextChannel = "sms" | "whatsapp";

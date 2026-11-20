@@ -489,7 +489,7 @@ async fn send_draft(state: &AppState, actor: &Actor, draft_id: Uuid, body: Optio
     } else if !claim(db, draft.id, actor, "send_reply").await? {
         Some(format!("{} already sent this reply.", claimer(db, draft.id).await?))
     } else {
-        match inbox::approve_reply(db, actor.org_id, draft.id, body).await {
+        match inbox::approve_reply(db, actor.org_id, draft.id, inbox::ApproveBody { body, ..Default::default() }).await {
             Ok(_) => None,
             Err(e) => {
                 unclaim(db, draft.id).await?;
@@ -513,7 +513,7 @@ async fn send_written(state: &AppState, actor: &Actor, lead_id: Uuid, text: &str
     } else if !claim(db, reply_id, actor, "send_reply").await? {
         Some(format!("{} is already answering this lead, so your reply wasn't sent.", claimer(db, reply_id).await?))
     } else {
-        match inbox::send_reply(db, actor.org_id, lead_id, text).await {
+        match inbox::send_reply(db, actor.org_id, lead_id, text, &Default::default()).await {
             Ok(_) => None,
             Err(e) => {
                 unclaim(db, reply_id).await?;

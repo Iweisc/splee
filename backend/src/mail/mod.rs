@@ -1,5 +1,6 @@
 //! Email delivery: SMTP sending, IMAP reply polling, follow-ups, DNS checks.
 
+pub mod attachments;
 pub mod dns;
 pub(crate) mod imap;
 pub(crate) mod inbound;
@@ -144,6 +145,8 @@ async fn send_system(
             unsubscribe_url,
             warmup: None,
             html,
+            cc: &[],
+            files: &[],
         },
     )?;
     smtp::send(&smtp::transport(state, &mb).await?, message).await?;
@@ -185,6 +188,21 @@ pub async fn pause_if_bouncing(db: &sqlx::PgPool, mailbox_id: Uuid) -> sqlx::Res
         tracing::warn!(mailbox = %stats.email, bounced = stats.bounced, emailed = stats.emailed, "paused a mailbox for bounces");
     }
     Ok(())
+}
+
+/// The addresses among `emails` that are on the org's do-not-contact list, by address or by domain.
+pub async fn suppressed_among(db: &sqlx::PgPool, org_id: Uuid, emails: &[String]) -> sqlx::Result<Vec<String>> {
+    if emails.is_empty() {
+        return Ok(vec![]);
+    }
+    sqlx::query_scalar(
+        "select e from unnest($2::text[]) e
+         where exists (select 1 from suppressions s where s.org_id = $1 and s.value in (lower(e), lower(split_part(e, '@', 2))))",
+    )
+    .bind(org_id)
+    .bind(emails)
+    .fetch_all(db)
+    .await
 }
 
 /// Takes a lead's unsent LinkedIn steps off the to-do list, for a reply or a suppression. $1 is the lead.

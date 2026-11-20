@@ -320,10 +320,15 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     if answered {
         return Ok(Outcome::new("Not drafted: the lead was answered by hand meanwhile"));
     }
+    // Replies all, like a person's reply from the inbox. Approving can change who's copied in.
+    let cc = match t.project.org_id {
+        Some(org) => crate::routes::inbox::reply_all_cc(ctx.db(), org, &t.lead, &t.inbound).await?,
+        None => vec![],
+    };
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for,
-                                     in_reply_to, to_email, language)
-         values ($1, $2, $3, $4, 'outbound', 'auto_reply', $5, $6, $7, $8, $9, $10, $11)",
+                                     in_reply_to, to_email, language, cc_emails)
+         values ($1, $2, $3, $4, 'outbound', 'auto_reply', $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(t.project.id)
     .bind(t.lead.id)
@@ -336,6 +341,7 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .bind(&t.inbound.message_id)
     .bind(t.inbound.from_email.as_ref().or(t.lead.email.as_ref()))
     .bind(lang.code)
+    .bind(&cc)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

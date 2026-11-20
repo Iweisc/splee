@@ -12,7 +12,7 @@ import { Badge, Card, EmptyState } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { ExportRun, ExportSettings, ExportStatus } from "@/lib/types";
-import { dateTime, num, plural, timeAgo } from "@/lib/utils";
+import { dateTime, fileSize, num, plural, timeAgo } from "@/lib/utils";
 
 const KEY = "/organization/exports";
 
@@ -29,13 +29,6 @@ const EMPTY: Form = {
   tables: [],
   include_bodies: false,
 };
-
-/** "1.2 MB", "840 KB". */
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
 
 export default function DataExportPage() {
   const { me } = useMe();
@@ -226,7 +219,7 @@ function LastRun({ run: r }: { run: ExportRun }) {
     );
   return (
     <p className="text-sm text-pretty">
-      Last export {timeAgo(r.finished_at ?? r.started_at)}: {plural(r.files.length, "file")}, {plural(r.rows, "row")}, {size(r.bytes)}.
+      Last export {timeAgo(r.finished_at ?? r.started_at)}: {plural(r.files.length, "file")}, {plural(r.rows, "row")}, {fileSize(r.bytes)}.
     </p>
   );
 }
@@ -242,7 +235,7 @@ function RunRow({ run: r }: { run: ExportRun }) {
         <span className="text-muted-foreground">{r.trigger === "daily" ? "Daily" : "Export now"}</span>
         {/* Its own line on phones, at the right on wider screens. */}
         <span className="w-full text-xs text-muted-foreground tabular-nums sm:ml-auto sm:w-auto">
-          {r.status === "done" ? `${num(r.rows)} rows · ${size(r.bytes)} · ` : ""}
+          {r.status === "done" ? `${num(r.rows)} rows · ${fileSize(r.bytes)} · ` : ""}
           {dateTime(r.started_at)}
         </span>
       </div>

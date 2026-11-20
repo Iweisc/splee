@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use super::attachments as attachments_routes;
 use super::leads::{self, LeadDetail, LeadRow};
 use super::util_input::{self, LEAD_STATUSES};
 use super::util_pagination::{PageQuery, Paginated};
@@ -16,7 +17,8 @@ use super::util_scope;
 use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
-use crate::models::{EmailMessage, Lead, Ts};
+use crate::mail::attachments;
+use crate::models::{EmailAttachment, EmailMessage, Lead, Mailbox, Ts};
 use crate::ownership::{self, OwnerFilter};
 use crate::state::AppState;
 
@@ -31,6 +33,9 @@ pub fn router() -> Router<AppState> {
         .route("/inbox/threads/{lead_id}/remind", post(remind))
         .route("/inbox/messages/{id}/approve", post(approve))
 }
+
+/// The most people a reply copies in.
+pub(crate) const MAX_CC: usize = 20;
 
 #[derive(Deserialize)]
 pub(super) struct ListQuery {
@@ -189,17 +194,84 @@ pub(super) async fn page_of(db: &sqlx::PgPool, org_id: Uuid, me: Option<Uuid>, q
 
 #[derive(Serialize)]
 struct Thread {
-    messages: Vec<EmailMessage>,
+    messages: Vec<ThreadMessage>,
     lead: LeadDetail,
     /// The agent run writing a reply draft right now, so a thread opened mid-run can follow it.
     draft_run: Option<Uuid>,
+    /// Who a reply copies in unless you change it. See reply_all_cc.
+    reply_cc: Vec<String>,
+}
+
+/// An email with its files, without their bytes.
+#[derive(Serialize)]
+pub(crate) struct ThreadMessage {
+    #[serde(flatten)]
+    pub message: EmailMessage,
+    pub attachments: Vec<EmailAttachment>,
+}
+
+pub(crate) async fn with_attachments(db: &sqlx::PgPool, messages: Vec<EmailMessage>) -> sqlx::Result<Vec<ThreadMessage>> {
+    let mut files = attachments::for_messages(db, &messages.iter().map(|m| m.id).collect::<Vec<_>>()).await?;
+    Ok(messages.into_iter().map(|m| ThreadMessage { attachments: files.remove(&m.id).unwrap_or_default(), message: m }).collect())
 }
 
 async fn thread(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Thread>> {
     let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
     let draft_run = active_draft_run(&state.db, lead.id).await?;
+    let reply_cc = match last_inbound(&state.db, lead.id).await? {
+        Some(inbound) => reply_all_cc(&state.db, auth.org_id, &lead, &inbound).await?,
+        None => vec![],
+    };
     let lead = leads::detail(&state.db, lead).await?;
-    Ok(Json(Thread { messages: lead.emails.clone(), lead, draft_run }))
+    let messages = with_attachments(&state.db, lead.emails.clone()).await?;
+    Ok(Json(Thread { messages, lead, draft_run, reply_cc }))
+}
+
+async fn last_inbound(db: &sqlx::PgPool, lead_id: Uuid) -> sqlx::Result<Option<EmailMessage>> {
+    sqlx::query_as::<_, EmailMessage>("select * from email_messages where lead_id = $1 and direction = 'inbound' order by created_at desc limit 1")
+        .bind(lead_id)
+        .fetch_optional(db)
+        .await
+}
+
+/// Reply all: everyone the lead copied on `inbound`, except the lead, the org's own mailboxes and anyone on the
+/// do-not-contact list.
+pub(crate) async fn reply_all_cc(db: &sqlx::PgPool, org_id: Uuid, lead: &Lead, inbound: &EmailMessage) -> sqlx::Result<Vec<String>> {
+    let ours: Vec<String> = sqlx::query_scalar("select lower(email::text) from mailboxes where org_id = $1").bind(org_id).fetch_all(db).await?;
+    let lead_addresses = [lead.email.as_deref(), inbound.from_email.as_deref()].map(|e| e.map(str::to_lowercase));
+    let copied: Vec<String> = inbound
+        .cc_emails
+        .iter()
+        .filter(|c| !ours.contains(c) && !lead_addresses.iter().flatten().any(|l| l == *c))
+        .take(MAX_CC)
+        .cloned()
+        .collect();
+    let suppressed = crate::mail::suppressed_among(db, org_id, &copied).await?;
+    Ok(copied.into_iter().filter(|c| !suppressed.contains(c)).collect())
+}
+
+/// The CC list someone typed: real addresses, at most MAX_CC, none on the do-not-contact list. `to` is dropped, since the
+/// lead already gets it.
+async fn check_cc(db: &sqlx::PgPool, org_id: Uuid, list: &[String], to: Option<&str>) -> AppResult<Vec<String>> {
+    if list.len() > MAX_CC {
+        return Err(AppError::BadRequest(format!("Copy in at most {MAX_CC} people")));
+    }
+    let mut cc: Vec<String> = vec![];
+    for raw in list {
+        let email = util_input::email(raw).ok_or_else(|| AppError::BadRequest(format!("{} isn't an email address", raw.trim())))?;
+        if !to.is_some_and(|t| t.eq_ignore_ascii_case(&email)) && !cc.contains(&email) {
+            cc.push(email);
+        }
+    }
+    if let Some(first) = crate::mail::suppressed_among(db, org_id, &cc).await?.first() {
+        return Err(AppError::BadRequest(format!("{first} is on your do-not-contact list, so Splee won't copy them in")));
+    }
+    Ok(cc)
+}
+
+async fn mailbox(db: &sqlx::PgPool, id: Option<Uuid>) -> sqlx::Result<Option<Mailbox>> {
+    let Some(id) = id else { return Ok(None) };
+    sqlx::query_as::<_, Mailbox>("select * from mailboxes where id = $1").bind(id).fetch_optional(db).await
 }
 
 /// A queued or running reply draft for any of the lead's messages, whether someone asked for it or a reply triggered it.
@@ -218,6 +290,18 @@ async fn active_draft_run<'e, E: sqlx::PgExecutor<'e>>(db: E, lead_id: Uuid) -> 
 #[derive(Deserialize)]
 struct ReplyBody {
     body: String,
+    #[serde(flatten)]
+    extras: ReplyExtras,
+}
+
+/// Who a reply copies in and the files it takes. cc_emails, when sent, is the whole list. Without it, reply_all (the
+/// default) copies everyone the lead copied in last. attachment_ids are uploads from POST /attachments.
+#[derive(Deserialize, Default)]
+pub(crate) struct ReplyExtras {
+    pub cc_emails: Option<Vec<String>>,
+    pub reply_all: Option<bool>,
+    #[serde(default)]
+    pub attachment_ids: Vec<Uuid>,
 }
 
 async fn reply(
@@ -226,23 +310,17 @@ async fn reply(
     Path(lead_id): Path<Uuid>,
     Json(body): Json<ReplyBody>,
 ) -> AppResult<Json<EmailMessage>> {
-    Ok(Json(send_reply(&state.db, auth.org_id, lead_id, &body.body).await?))
+    Ok(Json(send_reply(&state.db, auth.org_id, lead_id, &body.body, &body.extras).await?))
 }
 
-/// Queues a reply written by a person to the lead's last message. The inbox's Send and Slack's Edit both end up here.
-pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, text: &str) -> AppResult<EmailMessage> {
+/// Queues a reply written by a person to the lead's last message. The inbox's Send, the API's and Slack's Edit all end up here.
+pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, text: &str, extras: &ReplyExtras) -> AppResult<EmailMessage> {
     let lead: Lead = util_scope::load(db, "leads", lead_id, org_id).await?;
     let text = text.trim();
     if text.is_empty() {
         return Err(AppError::BadRequest("Write a reply first".into()));
     }
-    let inbound = sqlx::query_as::<_, EmailMessage>(
-        "select * from email_messages where lead_id = $1 and direction = 'inbound' order by created_at desc limit 1",
-    )
-    .bind(lead.id)
-    .fetch_optional(db)
-    .await?
-    .ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
+    let inbound = last_inbound(db, lead.id).await?.ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
 
     let subject = if inbound.subject.to_lowercase().starts_with("re:") {
         inbound.subject.clone()
@@ -250,13 +328,19 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
         format!("Re: {}", inbound.subject)
     };
     let to_email = inbound.from_email.clone().or(lead.email.clone());
+    let cc = match &extras.cc_emails {
+        Some(list) => check_cc(db, org_id, list, to_email.as_deref()).await?,
+        None if extras.reply_all.unwrap_or(true) => reply_all_cc(db, org_id, &lead, &inbound).await?,
+        None => vec![],
+    };
+    let sending_mailbox = mailbox(db, inbound.mailbox_id).await?;
     let mut tx = db.begin().await?;
     // Takes turns with a reply draft being saved, so the draft either lands first and is cancelled below or sees this reply.
     sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;
     let message = sqlx::query_as::<_, EmailMessage>(
         "insert into email_messages
-           (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for, in_reply_to, to_email)
-         values ($1, $2, $3, $4, 'outbound', 'manual_reply', $5, $6, 'scheduled', now(), $7, $8)
+           (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for, in_reply_to, to_email, cc_emails)
+         values ($1, $2, $3, $4, 'outbound', 'manual_reply', $5, $6, 'scheduled', now(), $7, $8, $9)
          returning *",
     )
     .bind(lead.project_id)
@@ -267,8 +351,11 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     .bind(text)
     .bind(inbound.message_id)
     .bind(to_email)
+    .bind(&cc)
     .fetch_one(&mut *tx)
     .await?;
+    // In the same transaction, so the sender never sees the reply without its files.
+    attachments_routes::take(&mut tx, org_id, message.id, &extras.attachment_ids, sending_mailbox.as_ref()).await?;
     // You answered yourself, so an agent draft still waiting would be a second answer if someone approved it later.
     sqlx::query("update email_messages set status = 'cancelled' where lead_id = $1 and kind = 'auto_reply' and status = 'draft'")
         .bind(lead.id)
@@ -280,9 +367,13 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     Ok(message)
 }
 
+/// An edit to a pending auto-reply: its text, who it copies in in place of the lead's CC list, and files to add.
 #[derive(Deserialize, Default)]
-struct ApproveBody {
-    body: Option<String>,
+pub(crate) struct ApproveBody {
+    pub body: Option<String>,
+    pub cc_emails: Option<Vec<String>>,
+    #[serde(default)]
+    pub attachment_ids: Vec<Uuid>,
 }
 
 /// Has the agent draft an answer to the lead's last reply, as auto-replies do. The draft waits for approval in the thread.
@@ -321,27 +412,37 @@ async fn approve(
     Path(id): Path<Uuid>,
     body: Option<Json<ApproveBody>>,
 ) -> AppResult<Json<EmailMessage>> {
-    Ok(Json(approve_reply(&state.db, auth.org_id, id, body.unwrap_or_default().0.body).await?))
+    Ok(Json(approve_reply(&state.db, auth.org_id, id, body.unwrap_or_default().0).await?))
 }
 
-/// Sends a pending auto-reply, with `body` in place of the draft's when it was edited. The inbox's Approve and Slack's Send
-/// reply both end up here.
-pub(crate) async fn approve_reply(db: &sqlx::PgPool, org_id: Uuid, id: Uuid, body: Option<String>) -> AppResult<EmailMessage> {
+/// Sends a pending auto-reply, with the edit's text, CC list and files when it has them. The inbox's Approve and Slack's
+/// Send reply both end up here.
+pub(crate) async fn approve_reply(db: &sqlx::PgPool, org_id: Uuid, id: Uuid, edit: ApproveBody) -> AppResult<EmailMessage> {
     let message: EmailMessage = util_scope::load(db, "email_messages", id, org_id).await?;
     if message.kind != "auto_reply" || message.status != "draft" {
         return Err(AppError::BadRequest("Only pending auto-replies can be approved".into()));
     }
-    let new_body = body.filter(|b| !b.trim().is_empty());
+    let new_body = edit.body.filter(|b| !b.trim().is_empty());
+    let cc = match &edit.cc_emails {
+        Some(list) => Some(check_cc(db, org_id, list, message.to_email.as_deref()).await?),
+        None => None,
+    };
+    let sending_mailbox = mailbox(db, message.mailbox_id).await?;
+    let mut tx = db.begin().await?;
     // Only a draft moves, so a second approval can't put a reply the sender already took back in the queue.
-    sqlx::query_as::<_, EmailMessage>(
-        "update email_messages set status = 'scheduled', scheduled_for = now(), body = coalesce($2, body)
+    let approved = sqlx::query_as::<_, EmailMessage>(
+        "update email_messages set status = 'scheduled', scheduled_for = now(), body = coalesce($2, body), cc_emails = coalesce($3, cc_emails)
          where id = $1 and status = 'draft' returning *",
     )
     .bind(message.id)
     .bind(new_body)
-    .fetch_optional(db)
+    .bind(cc)
+    .fetch_optional(&mut *tx)
     .await?
-    .ok_or_else(|| AppError::Conflict("This reply was already sent".into()))
+    .ok_or_else(|| AppError::Conflict("This reply was already sent".into()))?;
+    attachments_routes::take(&mut tx, org_id, approved.id, &edit.attachment_ids, sending_mailbox.as_ref()).await?;
+    tx.commit().await?;
+    Ok(approved)
 }
 
 #[derive(Deserialize)]
@@ -418,7 +519,131 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::threads;
+    use super::{ApproveBody, ReplyExtras, approve_reply, reply_all_cc, send_reply, threads};
+    use crate::error::AppError;
+    use crate::models::{EmailMessage, Lead};
+
+    fn refused(result: Result<EmailMessage, AppError>) -> String {
+        match result {
+            Err(AppError::BadRequest(why)) => why,
+            other => panic!("expected a 400, got {:?}", other.map(|m| m.id)),
+        }
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_copies_in_the_leads_cc_list_and_takes_its_files(db: PgPool) {
+        let new_org = || sqlx::query_scalar::<_, Uuid>("insert into organizations (name) values ('Test') returning id").fetch_one(&db);
+        let (org, other) = (new_org().await.unwrap(), new_org().await.unwrap());
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'jo@alpha.test', 'smtp.gmail.com', 'jo', 'x')
+             returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let lead = sqlx::query_as::<_, Lead>("insert into leads (project_id, email, status) values ($1, 'sam@beta.test', 'replied') returning *")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let inbound = sqlx::query_as::<_, EmailMessage>(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, subject, message_id, from_email, cc_emails)
+             values ($1, $2, $3, 'inbound', 'inbound', 'received', 'Hello', 'r1@beta.test', 'sam@beta.test',
+                     '{kim@beta.test,ops@beta.test,jo@alpha.test,sam@beta.test}')
+             returning *",
+        )
+        .bind(project)
+        .bind(lead.id)
+        .bind(mailbox)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        for (value, kind) in [("ops@beta.test", "email"), ("blocked.test", "domain")] {
+            sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, $2, $3, 'manual')")
+                .bind(org)
+                .bind(value)
+                .bind(kind)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let upload = |org: Uuid, size: i64| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into email_attachments (org_id, filename, content_type, size_bytes) values ($1, 'brief.pdf', 'application/pdf', $2) returning id",
+            )
+            .bind(org)
+            .bind(size)
+            .fetch_one(&db)
+        };
+        let reply = |extras: ReplyExtras| {
+            let db = db.clone();
+            async move { send_reply(&db, org, lead.id, "Here it is.", &extras).await }
+        };
+        let cc = |list: &[&str]| Some(list.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+
+        // Reply all leaves out the lead, our own mailbox and the do-not-contact list.
+        assert_eq!(reply_all_cc(&db, org, &lead, &inbound).await.unwrap(), ["kim@beta.test"]);
+        let sent = reply(ReplyExtras::default()).await.unwrap();
+        assert_eq!(sent.cc_emails, ["kim@beta.test"]);
+        assert!(reply(ReplyExtras { reply_all: Some(false), ..Default::default() }).await.unwrap().cc_emails.is_empty());
+
+        // A list someone typed is checked, and the lead's own address comes off it.
+        let typed = reply(ReplyExtras { cc_emails: cc(&["Kim@Beta.test", "sam@beta.test", "lee@gamma.test"]), ..Default::default() }).await.unwrap();
+        assert_eq!(typed.cc_emails, ["kim@beta.test", "lee@gamma.test"]);
+        assert!(refused(reply(ReplyExtras { cc_emails: cc(&["ops@beta.test"]), ..Default::default() }).await).contains("do-not-contact"));
+        assert!(refused(reply(ReplyExtras { cc_emails: cc(&["ana@blocked.test"]), ..Default::default() }).await).contains("do-not-contact"));
+        assert!(refused(reply(ReplyExtras { cc_emails: cc(&["not an address"]), ..Default::default() }).await).contains("isn't an email address"));
+        let crowd: Vec<String> = (0..21).map(|n| format!("p{n}@gamma.test")).collect();
+        assert!(refused(reply(ReplyExtras { cc_emails: Some(crowd), ..Default::default() }).await).contains("at most 20"));
+
+        // Files: the org's own unused uploads, at most 10, within what Gmail sends in one email.
+        let files = vec![upload(org, 9).await.unwrap(), upload(org, 6).await.unwrap()];
+        let with_files = reply(ReplyExtras { attachment_ids: files.clone(), ..Default::default() }).await.unwrap();
+        let taken: Vec<Uuid> =
+            sqlx::query_scalar("select id from email_attachments where message_id = $1 order by id").bind(with_files.id).fetch_all(&db).await.unwrap();
+        let mut want = files.clone();
+        want.sort();
+        assert_eq!(taken, want);
+        assert!(refused(reply(ReplyExtras { attachment_ids: vec![files[0]], ..Default::default() }).await).contains("gone or already sent"));
+        let theirs = upload(other, 9).await.unwrap();
+        assert!(refused(reply(ReplyExtras { attachment_ids: vec![theirs], ..Default::default() }).await).contains("gone or already sent"));
+        let mut eleven = vec![];
+        for _ in 0..11 {
+            eleven.push(upload(org, 1).await.unwrap());
+        }
+        assert!(refused(reply(ReplyExtras { attachment_ids: eleven, ..Default::default() }).await).contains("at most 10 files"));
+        let big = vec![upload(org, 10 * 1024 * 1024).await.unwrap(), upload(org, 10 * 1024 * 1024).await.unwrap()];
+        assert!(refused(reply(ReplyExtras { attachment_ids: big.clone(), ..Default::default() }).await).contains("Gmail sends at most"));
+        // A refused reply wasn't queued and left its uploads free.
+        let unused: i64 = sqlx::query_scalar("select count(*) from email_attachments where id = any($1) and message_id is null")
+            .bind(&big)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(unused, 2);
+
+        // An auto-reply waiting for approval keeps its CC list and takes files when it's approved.
+        let draft: Uuid = sqlx::query_scalar(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, subject, body, to_email, cc_emails)
+             values ($1, $2, $3, 'outbound', 'auto_reply', 'draft', 'Re: Hello', 'Thanks', 'sam@beta.test', '{kim@beta.test}') returning id",
+        )
+        .bind(project)
+        .bind(lead.id)
+        .bind(mailbox)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let file = upload(org, 9).await.unwrap();
+        let approved = approve_reply(&db, org, draft, ApproveBody { attachment_ids: vec![file], ..Default::default() }).await.unwrap();
+        assert_eq!((approved.status.as_str(), approved.cc_emails), ("scheduled", vec!["kim@beta.test".to_string()]));
+        let on: Option<Uuid> = sqlx::query_scalar("select message_id from email_attachments where id = $1").bind(file).fetch_one(&db).await.unwrap();
+        assert_eq!(on, Some(draft));
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]

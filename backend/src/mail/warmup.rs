@@ -408,6 +408,8 @@ async fn deliver(
             unsubscribe_url: None,
             warmup: Some(token),
             html: None,
+            cc: &[],
+            files: &[],
         },
     );
     let message = match built {
