@@ -534,6 +534,7 @@ mod tests {
             sec_user_agent: None,
             sec_api_url: String::new(),
             news_sites_url: String::new(),
+            s3_api_url: String::new(),
         }
     }
 

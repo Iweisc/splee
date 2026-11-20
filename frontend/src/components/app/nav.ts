@@ -9,6 +9,7 @@ import {
   ChartLine,
   CalendarClock,
   CircleUser,
+  DatabaseBackup,
   FileText,
   GraduationCap,
   Globe,
@@ -99,6 +100,7 @@ export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
   { label: "Team", href: "/app/organization", icon: Users }, // D2
   { label: "Notifications", href: "/app/notifications", icon: Bell }, // D2
   { label: "API keys", href: "/app/api-keys", icon: KeyRound }, // D2
+  { label: "Data export", href: "/app/data-export", icon: DatabaseBackup },
   { label: "Account", href: "/app/account", icon: CircleUser },
 ];
 

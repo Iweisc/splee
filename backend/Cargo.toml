@@ -25,6 +25,7 @@ chrono-tz = "0.10"
 claude-agent-sdk-rs = "0.6.4"
 csv = "1.4.0"
 dotenvy = "0.15.7"
+flate2 = "1.1.10"
 futures = "0.3.34"
 hex = "0.4.3"
 hmac = "0.13"
@@ -34,6 +35,8 @@ lettre = { version = "0.11.23", default-features = false, features = ["tokio1", 
 mail-parser = "0.11.9"
 reqwest = { version = "0.13.5", default-features = false, features = ["form", "gzip", "json", "multipart", "rustls"] }
 rrule = "0.14.0"
+# Signs the data export's requests to S3-compatible storage (exports/s3.rs). Sans-IO, so reqwest sends them.
+rusty-s3 = "0.11.0"
 rustls-native-certs = "0.8.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -62,6 +65,8 @@ bytes = "1.12.1"
 [dev-dependencies]
 # Builds the small GeoParquet file the company import tests read.
 arrow-schema = "60.1.0"
+# The fixed signing time of AWS's documented SigV4 example, which rusty-s3 takes as a jiff Timestamp.
+jiff = "0.2"
 
 [patch.crates-io]
 claude-agent-sdk-rs = { path = "vendor/claude-agent-sdk-rs" }

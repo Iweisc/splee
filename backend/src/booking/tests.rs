@@ -216,6 +216,7 @@ fn state(db: PgPool) -> AppState {
         sec_user_agent: None,
         sec_api_url: String::new(),
         news_sites_url: String::new(),
+        s3_api_url: String::new(),
     };
     AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
 }

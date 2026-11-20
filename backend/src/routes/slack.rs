@@ -779,6 +779,7 @@ mod tests {
             sec_user_agent: None,
             sec_api_url: String::new(),
             news_sites_url: String::new(),
+            s3_api_url: String::new(),
             slack: Some(SlackApp { client_id: "123.456".into(), client_secret: "shh".into(), signing_secret: "signing".into(), api_url: fake_url.into() }),
         }
     }

@@ -79,6 +79,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/research/questions", post(add_research_question))
         .route("/v1/projects/{id}/research/run", post(start_research))
         .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
+        .route("/v1/exports", get(list_exports))
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -968,4 +969,9 @@ pub(super) async fn add_to_watch_list(
 ) -> AppResult<Json<jobchanges::Added>> {
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(jobchanges::add(&state.db, id, body).await?))
+}
+
+/// The organization's last 30 data exports, newest first, with the files each wrote. See exports/.
+pub(super) async fn list_exports(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<crate::exports::Run>>> {
+    Ok(Json(crate::exports::recent(&state.db, auth.org_id, 30).await?))
 }

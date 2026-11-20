@@ -16,6 +16,7 @@ mod booking_pages;
 mod directory;
 mod endpoints;
 mod expansions;
+mod exports;
 mod extension;
 mod forms;
 mod hiring;
@@ -209,6 +210,7 @@ pub fn router() -> Router<AppState> {
         .merge(close_plans::router())
         .merge(proposals::router())
         .merge(sheets::router())
+        .merge(exports::router())
         .merge(outreach::router())
         .merge(payments::router())
         .merge(plays::router())
