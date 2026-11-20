@@ -56,6 +56,7 @@ mod places;
 mod plays;
 mod porkbun;
 mod proposals;
+mod rate_limit;
 mod reddit;
 mod reports;
 mod rest_hooks;
@@ -135,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         cfg: Arc::new(cfg.clone()),
         events,
+        rate_limits: Default::default(),
     };
 
     if let Err(e) = domains::recover(&state.db).await {
@@ -175,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     exports::spawn_worker(state.clone());
 
     let app = Router::new()
-        .nest("/api", routes::router())
+        .nest("/api", routes::router(&state))
         .layer(axum::middleware::from_fn(audit::keep_client_ip))
         .layer(TraceLayer::new_for_http())
         .with_state(state);

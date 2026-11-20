@@ -508,7 +508,8 @@ mod tests {
         let (a, b) = seed(&db).await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", super::super::api_v1::router()).with_state(crate::autopilot::tests::state(db.clone()));
+        let state = crate::autopilot::tests::state(db.clone());
+        let app = Router::new().nest("/api", super::super::api_v1::router(&state)).with_state(state);
         tokio::spawn(async move { axum::serve(listener, app).await });
         let client = reqwest::Client::new();
         let call = |method: reqwest::Method, key: &str, path: &str, body: Option<Value>| {

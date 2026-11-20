@@ -783,10 +783,15 @@ mod tests {
                 news_sites_url: String::new(),
                 s3_api_url: String::new(),
             };
-            let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
+            let state = AppState {
+                db: db.clone(),
+                cfg: Arc::new(cfg),
+                events: tokio::sync::broadcast::channel(16).0,
+                rate_limits: Default::default(),
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", crate::routes::router()).with_state(state);
+            let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { base, client: reqwest::Client::new(), db, other_project: projects[1] }
         }

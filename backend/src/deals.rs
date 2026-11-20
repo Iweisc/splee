@@ -983,7 +983,7 @@ mod tests {
             news_sites_url: String::new(),
             s3_api_url: String::new(),
         };
-        AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
+        AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() }
     }
 
     async fn org(db: &PgPool, name: &str) -> (Uuid, Uuid) {

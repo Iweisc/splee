@@ -345,7 +345,7 @@ mod tests {
             let state = crate::autopilot::tests::state(db.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = axum::Router::new().nest("/api", crate::routes::router()).with_state(state);
+            let app = axum::Router::new().nest("/api", crate::routes::router(&state)).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { base, client: reqwest::Client::new(), db, project: projects[0], other_project: projects[1] }
         }

@@ -270,7 +270,7 @@ pub(crate) mod tests {
         let fake = crate::mail::oauth::tests::FakeProvider::start().await;
         let mut cfg = crate::mail::oauth::tests::config(&fake);
         cfg.postmaster_api_url = base;
-        let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
+        let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() };
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
         sqlx::query("insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'ana@try-acme.com', 'smtp.test', 'ana', 'x')")
             .bind(org)

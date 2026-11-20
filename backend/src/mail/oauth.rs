@@ -420,7 +420,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn state(db: PgPool, fake: &FakeProvider) -> AppState {
-        AppState { db, cfg: Arc::new(config(fake)), events: tokio::sync::broadcast::channel(1).0 }
+        AppState { db, cfg: Arc::new(config(fake)), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() }
     }
 
     /// A Google mailbox with this refresh token and no access token yet.

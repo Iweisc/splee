@@ -74,7 +74,12 @@ impl Seeded {
     /// Two organizations, Acme and Beta, each with an owner signed in as session "acme" or "beta" and a project.
     async fn start(db: PgPool) -> Self {
         let (fake_url, fake) = fake::start().await;
-        let state = AppState { db: db.clone(), cfg: Arc::new(config(&fake_url)), events: tokio::sync::broadcast::channel(1).0 };
+        let state = AppState {
+            db: db.clone(),
+            cfg: Arc::new(config(&fake_url)),
+            events: tokio::sync::broadcast::channel(1).0,
+            rate_limits: Default::default(),
+        };
         let mut ids = vec![];
         for name in ["acme", "beta"] {
             let org: Uuid = sqlx::query_scalar("insert into organizations (name, referral_code) values ($1, $1) returning id").bind(name).fetch_one(&db).await.unwrap();
@@ -103,7 +108,7 @@ impl Seeded {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await });
         Self { state, base, http: reqwest::Client::new(), fake, fake_url, acme, beta, project }
     }

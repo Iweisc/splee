@@ -13,7 +13,7 @@ use crate::crypto::sha256_hex;
 
 fn state(db: &PgPool) -> AppState {
     let cfg = crate::mail::oauth::tests::config(&crate::mail::oauth::tests::FakeProvider { url: String::new(), hits: Arc::default(), forms: Arc::default() });
-    AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 }
+    AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() }
 }
 
 async fn org(db: &PgPool, name: &str) -> Uuid {
@@ -217,7 +217,7 @@ async fn an_at_risk_mailbox_is_held_until_resumed_and_only_a_new_problem_holds_i
 async fn serve(state: AppState) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/api", listener.local_addr().unwrap());
-    let app = Router::new().nest("/api", crate::routes::router()).with_state(state);
+    let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state);
     tokio::spawn(async move { axum::serve(listener, app).await });
     base
 }

@@ -190,7 +190,7 @@ mod tests {
         async fn start(state: AppState) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", super::router().merge(super::super::api_v1::router())).with_state(state);
+            let app = Router::new().nest("/api", super::router().merge(super::super::api_v1::router(&state))).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { base, client: reqwest::Client::new() }
         }

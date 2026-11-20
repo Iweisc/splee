@@ -1,5 +1,6 @@
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::response::Response;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -26,9 +27,10 @@ use super::suppressions;
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::{PageQuery, Paginated};
 use super::util_input::{self, LEAD_STATUSES};
+use super::util_idempotency;
 use super::util_scope;
 use crate::ab_test::{self, AbTest};
-use crate::auth::ApiKeyAuth;
+use crate::auth::{self, ApiKeyAuth, KeyAuth};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
@@ -39,7 +41,7 @@ use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, Segm
 use crate::ownership;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
@@ -92,6 +94,30 @@ pub fn router() -> Router<AppState> {
         .route("/v1/projects/{id}/research/run", post(start_research))
         .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
         .route("/v1/exports", get(list_exports))
+        .route_layer(middleware::from_fn_with_state(state.clone(), guard))
+}
+
+/// Every /v1 request counts against its organization's rate limit, and a write with an Idempotency-Key runs at most once.
+/// A request without a live key goes through untouched, for its handler to answer 401.
+async fn guard(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    let found = match auth::bearer(req.headers()) {
+        Some(key) => KeyAuth::find(&state.db, key).await,
+        None => Ok(None),
+    };
+    let key = match found {
+        Ok(Some(key)) => key,
+        Ok(None) => return next.run(req).await,
+        Err(e) => return AppError::from(e).into_response(),
+    };
+    let permit = match state.rate_limits.acquire(key.org_id) {
+        Ok(permit) => permit,
+        Err(refused) => return refused.into_response(),
+    };
+    let org_id = key.org_id;
+    req.extensions_mut().insert(key);
+    let mut res = util_idempotency::run(&state.db, org_id, req, next).await;
+    permit.quota.stamp(res.headers_mut());
+    res
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
@@ -1156,4 +1182,206 @@ pub(super) async fn add_to_watch_list(
 /// The organization's last 30 data exports, newest first, with the files each wrote. See exports/.
 pub(super) async fn list_exports(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<crate::exports::Run>>> {
     Ok(Json(crate::exports::recent(&state.db, auth.org_id, 30).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::Router;
+    use reqwest::Method;
+    use reqwest::header::HeaderMap;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use crate::crypto::sha256_hex;
+    use crate::rate_limit::{LIMITS, Limits, RateLimiter};
+    use crate::state::AppState;
+
+    const KEYS: [&str; 2] = ["splee_idempotency_a", "splee_idempotency_b"];
+
+    #[derive(Clone)]
+    struct Api {
+        base: String,
+        client: reqwest::Client,
+    }
+
+    impl Api {
+        async fn start(db: &PgPool, limits: Limits) -> Self {
+            let state = AppState { rate_limits: RateLimiter::new(limits), ..crate::autopilot::tests::state(db.clone()) };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/api", listener.local_addr().unwrap());
+            let app = Router::new().nest("/api", super::router(&state)).with_state(state);
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            Self { base, client: reqwest::Client::new() }
+        }
+
+        async fn send(&self, method: Method, key: &str, path: &str, idempotency_key: Option<&str>, body: Option<Value>) -> (u16, HeaderMap, Value) {
+            let mut req = self.client.request(method, format!("{}{path}", self.base)).bearer_auth(key);
+            if let Some(k) = idempotency_key {
+                req = req.header("idempotency-key", k);
+            }
+            if let Some(body) = body {
+                req = req.json(&body);
+            }
+            let res = req.send().await.unwrap();
+            let (status, headers) = (res.status().as_u16(), res.headers().clone());
+            (status, headers, res.json().await.unwrap_or(Value::Null))
+        }
+
+        async fn post(&self, key: &str, path: &str, idempotency_key: Option<&str>, body: Value) -> (u16, HeaderMap, Value) {
+            self.send(Method::POST, key, path, idempotency_key, Some(body)).await
+        }
+    }
+
+    /// Two organizations, each with a project and an API key from KEYS.
+    async fn seed(db: &PgPool) -> [Uuid; 2] {
+        let mut projects = vec![];
+        for (name, key) in [("Acme", KEYS[0]), ("Other", KEYS[1])] {
+            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(db).await.unwrap();
+            let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id")
+                .bind(org)
+                .bind(name)
+                .fetch_one(db)
+                .await
+                .unwrap();
+            sqlx::query("insert into api_keys (org_id, name, prefix, key_hash) values ($1, 'test', 'splee_idempo', $2)")
+                .bind(org)
+                .bind(sha256_hex(key))
+                .execute(db)
+                .await
+                .unwrap();
+            projects.push(project);
+        }
+        [projects[0], projects[1]]
+    }
+
+    async fn count(db: &PgPool, sql: &str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(db).await.unwrap()
+    }
+
+    fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+        headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_retry_with_the_same_key_replays_the_first_response_and_runs_nothing(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let campaigns = format!("/v1/projects/{a}/campaigns");
+        let leeds = json!({ "prompt": "dental clinics in Leeds" });
+
+        let (status, headers, first) = api.post(KEYS[0], &campaigns, Some("order-1"), leeds.clone()).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None), "{first}");
+        let (status, headers, again) = api.post(KEYS[0], &campaigns, Some("order-1"), leeds.clone()).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed"), &again), (200, Some("true"), &first));
+        assert_eq!(header(&headers, "content-type"), Some("application/json"));
+        let made = count(&db, "select (select count(*) from segments) + (select count(*) from agent_runs)").await;
+        assert_eq!(made, 2, "one campaign and its run");
+
+        // The same key on another request is a client bug, never a replay.
+        let (status, _, body) = api.post(KEYS[0], &campaigns, Some("order-1"), json!({ "prompt": "gyms in York" })).await;
+        assert_eq!(status, 422, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("different request"));
+        assert_eq!(api.post(KEYS[0], &format!("/v1/projects/{a}/leads"), Some("order-1"), leeds.clone()).await.0, 422);
+        let campaign = first["campaign_id"].as_str().unwrap();
+        assert_eq!(api.send(Method::PATCH, KEYS[0], &format!("/v1/campaigns/{campaign}"), Some("order-1"), Some(leeds.clone())).await.0, 422);
+
+        // Keys are per organization.
+        let (status, headers, theirs) = api.post(KEYS[1], &format!("/v1/projects/{b}/campaigns"), Some("order-1"), leeds.clone()).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None));
+        assert_ne!(theirs["campaign_id"], first["campaign_id"]);
+
+        // A 4xx is kept too, so a retry gets the same answer.
+        let (status, _, refused) = api.post(KEYS[0], &campaigns, Some("order-2"), json!({ "prompt": " " })).await;
+        assert_eq!(status, 400);
+        let (status, headers, replayed) = api.post(KEYS[0], &campaigns, Some("order-2"), json!({ "prompt": " " })).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed"), replayed), (400, Some("true"), refused));
+        assert_eq!(api.post(KEYS[0], &campaigns, Some(&"k".repeat(256)), leeds.clone()).await.0, 400);
+
+        // Without the header nothing changes: each request runs and nothing is kept.
+        let before = count(&db, "select count(*) from idempotency_keys").await;
+        for _ in 0..2 {
+            let (status, headers, _) = api.post(KEYS[0], &campaigns, None, leeds.clone()).await;
+            assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None));
+        }
+        assert_eq!(count(&db, "select count(*) from segments").await, 4);
+        assert_eq!(count(&db, "select count(*) from idempotency_keys").await, before);
+        // A read ignores the header.
+        let (status, headers, _) = api.send(Method::GET, KEYS[0], &campaigns, Some("order-1"), None).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None));
+
+        sqlx::query("update idempotency_keys set expires_at = now() - interval '1 second'").execute(&db).await.unwrap();
+        crate::agent::expire_visitor_data(&db).await.unwrap();
+        assert_eq!(count(&db, "select count(*) from idempotency_keys").await, 0);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_duplicate_while_the_first_runs_is_409_and_a_5xx_releases_the_key(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let campaigns = format!("/v1/projects/{a}/campaigns");
+        let leeds = json!({ "prompt": "dental clinics in Leeds" });
+
+        // Holds the first request at its insert into segments, after it claimed the key.
+        let mut lock = db.begin().await.unwrap();
+        sqlx::query("lock table segments in exclusive mode").execute(&mut *lock).await.unwrap();
+        let first = tokio::spawn({
+            let (api, campaigns, leeds) = (api.clone(), campaigns.clone(), leeds.clone());
+            async move { api.post(KEYS[0], &campaigns, Some("order-1"), leeds).await }
+        });
+        for _ in 0..100 {
+            if count(&db, "select count(*) from idempotency_keys where status is null").await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let (status, _, body) = api.post(KEYS[0], &campaigns, Some("order-1"), leeds.clone()).await;
+        assert_eq!(status, 409, "{body}");
+        lock.rollback().await.unwrap();
+        let (status, _, made) = first.await.unwrap();
+        assert_eq!(status, 200, "{made}");
+        let (status, headers, again) = api.post(KEYS[0], &campaigns, Some("order-1"), leeds.clone()).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed"), again), (200, Some("true"), made));
+
+        // A 5xx isn't kept, so the retry runs.
+        let refuse = "create function refuse() returns trigger language plpgsql as $$ begin raise exception 'refused'; end $$";
+        sqlx::query(refuse).execute(&db).await.unwrap();
+        sqlx::query("create trigger refuse before insert on segments for each statement execute function refuse()").execute(&db).await.unwrap();
+        assert_eq!(api.post(KEYS[0], &campaigns, Some("order-2"), leeds.clone()).await.0, 500);
+        assert_eq!(count(&db, "select count(*) from idempotency_keys where key = 'order-2'").await, 0);
+        sqlx::query("drop trigger refuse on segments").execute(&db).await.unwrap();
+        let (status, headers, _) = api.post(KEYS[0], &campaigns, Some("order-2"), leeds).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None));
+        assert_eq!(count(&db, "select count(*) from segments").await, 2);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn each_organization_gets_its_hour_of_requests_then_a_429(db: PgPool) {
+        seed(&db).await;
+        let api = Api::start(&db, Limits { per_hour: 2, in_flight: 150 }).await;
+
+        for remaining in ["1", "0"] {
+            let (status, headers, _) = api.send(Method::GET, KEYS[0], "/v1/projects", None, None).await;
+            assert_eq!((status, header(&headers, "ratelimit-limit"), header(&headers, "ratelimit-remaining")), (200, Some("2"), Some(remaining)));
+            let reset: u64 = header(&headers, "ratelimit-reset").unwrap().parse().unwrap();
+            assert!((3500..=3600).contains(&reset), "{reset}");
+        }
+        let (status, headers, body) = api.send(Method::GET, KEYS[0], "/v1/projects", None, None).await;
+        assert_eq!((status, header(&headers, "ratelimit-remaining")), (429, Some("0")));
+        assert!(header(&headers, "retry-after").unwrap().parse::<u64>().unwrap() > 3500);
+        assert!(body["error"].as_str().unwrap().contains("2 API requests this hour"), "{body}");
+
+        let (status, headers, _) = api.send(Method::GET, KEYS[1], "/v1/projects", None, None).await;
+        assert_eq!((status, header(&headers, "ratelimit-remaining")), (200, Some("1")), "another organization has its own hour");
+        let (status, headers, _) = api.send(Method::GET, "splee_wrong", "/v1/projects", None, None).await;
+        assert_eq!((status, header(&headers, "ratelimit-limit")), (401, None));
+    }
 }

@@ -113,6 +113,7 @@ mod util_grist;
 mod util_teable;
 mod util_nocodb;
 mod util_csv;
+mod util_idempotency;
 pub mod util_input;
 pub(crate) mod util_lead_import;
 mod util_notion;
@@ -120,7 +121,8 @@ mod util_pagination;
 mod util_scope;
 mod util_sheet;
 
-pub fn router() -> Router<AppState> {
+/// Takes the state for the public API's layer, which needs the database and the rate limits.
+pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .merge(auth::router())
         .merge(org::router())
@@ -177,7 +179,7 @@ pub fn router() -> Router<AppState> {
         .merge(notifications::router())
         .merge(api_keys::router())
         .merge(audit::router())
-        .merge(api_v1::router())
+        .merge(api_v1::router(state))
         .merge(extension::router())
         .merge(mcp::router())
         .merge(rest_hooks::router())
@@ -239,8 +241,8 @@ async fn health(State(state): State<AppState>) -> Result<Json<Value>, StatusCode
 #[cfg(test)]
 mod tests {
     // axum panics on overlapping routes while building the router, which used to crash the API on boot.
-    #[test]
-    fn router_builds() {
-        let _ = super::router();
+    #[tokio::test]
+    async fn router_builds() {
+        let _ = super::router(&crate::autopilot::tests::state(sqlx::PgPool::connect_lazy("postgres://localhost/unused").unwrap()));
     }
 }

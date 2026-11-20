@@ -781,6 +781,31 @@ export default function DocsPage() {
             </div>
           </Section>
 
+          <Section
+            title="Retries"
+            description="Send an Idempotency-Key with a POST, PATCH or DELETE and retrying it after a timeout is safe: Splee runs it once and answers every repeat with the first response for 24 hours."
+          >
+            <div className="space-y-3 text-sm">
+              <CodeBlock label="Header" code={"Idempotency-Key: 4f9c2a7e-new-campaign"} />
+              <p className="text-muted-foreground">
+                Use a new key, up to 255 characters, for each new request. A replayed response carries{" "}
+                <code className="font-mono">Idempotent-Replayed: true</code>. The same key with a different method, path or body is 422, and a repeat
+                while the first request still runs is 409. Server errors aren&apos;t kept, so a retry after a 5xx runs again.
+              </p>
+            </div>
+          </Section>
+
+          <Section
+            title="Rate limits"
+            description="Each organization gets 10,000 requests an hour and 150 at once, across the API and the MCP server."
+          >
+            <p className="text-sm text-muted-foreground">
+              Every response carries <code className="font-mono">RateLimit-Limit</code>, <code className="font-mono">RateLimit-Remaining</code> and{" "}
+              <code className="font-mono">RateLimit-Reset</code>, the seconds until the hour starts again. Past either limit the answer is 429 with{" "}
+              <code className="font-mono">Retry-After</code> in seconds.
+            </p>
+          </Section>
+
           {endpoints(projectId).map((e) => (
             <EndpointSection key={e.method + e.path} e={e} base={base} />
           ))}

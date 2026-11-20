@@ -68,7 +68,7 @@ impl Server {
         let provider = FakeProvider::start().await;
         let fake = Fake::start().await;
         let cfg = Config { sheets_api_url: fake.base.clone(), ..config(&provider) };
-        let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
+        let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
         let mut ids = vec![];
         for (email, org_name) in [("ana@acme.test", "acme"), ("cy@other.test", "other")] {
             let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, 'x', 'x') returning id").bind(email).fetch_one(&db).await.unwrap();
@@ -90,7 +90,7 @@ impl Server {
             sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Spring') returning id").bind(ids[0].1).fetch_one(&db).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await });
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
         Self { base, client, db, fake, provider, state, org: ids[0].0, acme: ids[0].1, campaign, other: ids[1].1 }
