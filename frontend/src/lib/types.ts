@@ -53,7 +53,25 @@ export interface Member {
   name: string;
   role: Role;
   away: boolean;
+  /** Only sent to admins. */
+  two_factor?: boolean;
   created_at: Ts;
+}
+
+/** What /auth/login and /auth/login/code answer. With two-factor on, a right password gets a token to send with the code. */
+export type SignIn = Me | { two_factor_token: string };
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  backup_codes_left: number;
+}
+
+export interface TwoFactorSetup {
+  /** Base32, for typing into the app instead of scanning. */
+  secret: string;
+  uri: string;
+  /** The QR code as an SVG data URL. */
+  qr: string;
 }
 
 export interface Invite {
