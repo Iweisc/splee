@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 pub mod auth;
 pub(crate) mod ads;
+mod attachments;
 mod battlecards;
 mod blogs;
 pub(crate) mod bookings;
@@ -153,6 +154,7 @@ pub fn router() -> Router<AppState> {
         .merge(team_brief::router())
         .merge(emails::router())
         .merge(inbox::router())
+        .merge(attachments::router())
         .merge(saved_replies::router())
         .merge(endpoints::router())
         .merge(linkedin::router())

@@ -54,6 +54,14 @@ pub struct Outgoing<'a> {
     /// An HTML version of `body`, for Splee's own emails like the client reports, and outreach whose campaign tracks opens,
     /// since the pixel needs one. Other outreach stays plain text.
     pub html: Option<&'a str>,
+    pub cc: &'a [String],
+    pub files: &'a [OutgoingFile<'a>],
+}
+
+pub struct OutgoingFile<'a> {
+    pub filename: &'a str,
+    pub content_type: &'a str,
+    pub data: &'a [u8],
 }
 
 fn bracket(id: &str) -> String {
@@ -88,6 +96,20 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
     }
     if let Some(token) = email.warmup {
         builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str(super::warmup::HEADER), token.to_string()));
+    }
+    for cc in email.cc {
+        builder = builder.cc(Address::new(None, cc.parse().with_context(|| format!("invalid CC address {cc}"))?));
+    }
+    if !email.files.is_empty() {
+        let mut mixed = match email.html {
+            Some(html) => MultiPart::mixed().multipart(MultiPart::alternative_plain_html(email.body.to_string(), html.to_string())),
+            None => MultiPart::mixed().singlepart(SinglePart::plain(email.body.to_string())),
+        };
+        for file in email.files {
+            let content_type = ContentType::parse(file.content_type).unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid type"));
+            mixed = mixed.singlepart(Attachment::new(file.filename.to_string()).body(file.data.to_vec(), content_type));
+        }
+        return Ok(builder.multipart(mixed)?);
     }
     Ok(match email.html {
         Some(html) => builder.multipart(MultiPart::alternative_plain_html(email.body.to_string(), html.to_string()))?,
@@ -156,7 +178,70 @@ mod tests {
     use lettre::{AsyncTransport, Message};
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    use super::{Transport, over_quota, recipient_rejected, unreachable};
+    use super::{Outgoing, OutgoingFile, Transport, build, over_quota, recipient_rejected, unreachable};
+    use crate::models::Mailbox;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_with_files_and_cc_is_one_threaded_multipart_email_to_everyone(db: sqlx::PgPool) {
+        use mail_parser::{MessageParser, MimeHeaders};
+
+        let org: uuid::Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let mb = sqlx::query_as::<_, Mailbox>(
+            "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_username, smtp_password_enc)
+             values ($1, 'jo@alpha.test', 'Jo', 'smtp.test', '', '') returning *",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let cc = ["kim@beta.test".to_string(), "ops@beta.test".to_string()];
+        let files = [
+            OutgoingFile { filename: "brief.pdf", content_type: "application/pdf", data: b"%PDF-1.4\n" },
+            OutgoingFile { filename: "Q3 plan.xlsx", content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", data: b"PK\x03\x04 sheet" },
+        ];
+        let references = ["first@alpha.test".to_string(), "r1@beta.test".to_string()];
+        let message = build(
+            &mb,
+            &Outgoing {
+                to_name: "Sam",
+                to_email: "sam@beta.test",
+                subject: "Re: Hello",
+                body: "Here it is.",
+                message_id: "r2@alpha.test",
+                in_reply_to: Some("r1@beta.test"),
+                references: &references,
+                unsubscribe_url: None,
+                warmup: None,
+                html: None,
+                cc: &cc,
+                files: &files,
+            },
+        )
+        .unwrap();
+        let to: Vec<String> = message.envelope().to().iter().map(ToString::to_string).collect();
+        assert_eq!(to, ["sam@beta.test", "kim@beta.test", "ops@beta.test"]);
+
+        let raw = message.formatted();
+        let parsed = MessageParser::default().parse(&raw).unwrap();
+        assert!(parsed.is_content_type("multipart", "mixed"));
+        let copied: Vec<&str> = parsed.cc().unwrap().iter().filter_map(|a| a.address()).collect();
+        assert_eq!(copied, ["kim@beta.test", "ops@beta.test"]);
+        assert_eq!(parsed.in_reply_to().as_text(), Some("r1@beta.test"));
+        let threaded: Vec<&str> = parsed.references().as_text_list().unwrap().iter().map(|r| r.as_ref()).collect();
+        assert_eq!(threaded, ["first@alpha.test", "r1@beta.test"]);
+        assert_eq!(parsed.body_text(0).unwrap().trim(), "Here it is.");
+        let attached: Vec<(&str, &str, &[u8])> = parsed
+            .attachments()
+            .map(|a| (a.attachment_name().unwrap(), a.content_type().and_then(|c| c.subtype()).unwrap(), a.contents()))
+            .collect();
+        assert_eq!(
+            attached,
+            [("brief.pdf", "pdf", &b"%PDF-1.4\n"[..]), ("Q3 plan.xlsx", "vnd.openxmlformats-officedocument.spreadsheetml.sheet", &b"PK\x03\x04 sheet"[..])]
+        );
+        assert!(parsed.attachments().all(|a| a.content_disposition().is_some_and(|d| d.is_attachment())));
+    }
 
     async fn test_on(port: u16) -> lettre::transport::smtp::Error {
         let transport: Transport = Transport::builder_dangerous("127.0.0.1").port(port).build();

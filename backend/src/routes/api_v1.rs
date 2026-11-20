@@ -1,4 +1,5 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -7,10 +8,11 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use super::analytics::{self, Analytics, AnalyticsQuery};
+use super::attachments;
 use super::calls::{self, CallRow, LogBody};
 use super::directory::{self, Added, SearchQuery};
 use super::emails::{self, EmailRow};
-use super::inbox::{self, InboxThread};
+use super::inbox::{self, InboxThread, ReplyExtras, ThreadMessage as WithFiles};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::lookalikes::{self as lookalike_routes, AddBody as AddLookalikesBody};
 use super::meetings::{self, MeetingRow};
@@ -32,7 +34,7 @@ use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::lookalikes::{self, Lookalikes};
-use crate::models::{AgentRun, EmailMessage, Lead, Project, Segment, Suppression, Ts};
+use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, Segment, Suppression, Ts};
 use crate::ownership;
 use crate::state::AppState;
 
@@ -47,6 +49,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/leads/{id}/assign", post(assign_lead))
+        .route("/v1/leads/{id}/thread", get(lead_thread))
+        .route("/v1/leads/{id}/reply", post(reply_to_lead))
+        .route("/v1/attachments", post(upload_attachment).layer(DefaultBodyLimit::max(attachments::UPLOAD_BODY_LIMIT)))
+        .route("/v1/attachments/{id}", get(download_attachment))
         .route("/v1/projects/{id}/replies", get(replies))
         .route("/v1/projects/{id}/sent-emails", get(sent_emails))
         .route("/v1/projects/{id}/email-events", get(email_events))
@@ -840,6 +846,100 @@ pub(super) async fn list_inbox(
     q.owner = owner_by_email(&state.db, auth.org_id, q.owner).await?;
     let Paginated { items, total } = inbox::page_of(&state.db, auth.org_id, None, q, &page).await?;
     Ok(Json(Paginated { items: items.into_iter().map(Thread::from).collect(), total }))
+}
+
+/// One email of a lead's thread, either way, with who it copied in and its files. Download a file with GET
+/// /v1/attachments/{id} unless `stored` is false, for a lead's file over 25 MB that Splee didn't keep.
+#[derive(Serialize)]
+pub(super) struct LeadThreadMessage {
+    id: Uuid,
+    direction: String,
+    kind: String,
+    channel: String,
+    status: String,
+    subject: String,
+    body: String,
+    from_email: Option<String>,
+    to_email: Option<String>,
+    cc_emails: Vec<String>,
+    classification: Option<String>,
+    attachments: Vec<EmailAttachment>,
+    sent_at: Option<Ts>,
+    created_at: Ts,
+}
+
+impl From<WithFiles> for LeadThreadMessage {
+    fn from(WithFiles { message: m, attachments }: WithFiles) -> Self {
+        Self {
+            id: m.id,
+            direction: m.direction,
+            kind: m.kind,
+            channel: m.channel,
+            status: m.status,
+            subject: m.subject,
+            body: m.body,
+            from_email: m.from_email,
+            to_email: m.to_email,
+            cc_emails: m.cc_emails,
+            classification: m.classification,
+            attachments,
+            sent_at: m.sent_at,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct LeadThread {
+    lead_id: Uuid,
+    /// Oldest first.
+    messages: Vec<LeadThreadMessage>,
+    /// Who a reply copies in when it doesn't name anyone: everyone the lead copied on their last message, minus your own
+    /// mailboxes and the do-not-contact list.
+    reply_cc: Vec<String>,
+}
+
+/// The lead's emails both ways, like the inbox's thread.
+pub(super) async fn lead_thread(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<LeadThread>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    let emails = sqlx::query_as::<_, EmailMessage>("select * from email_messages where lead_id = $1 order by created_at")
+        .bind(lead.id)
+        .fetch_all(&state.db)
+        .await?;
+    let reply_cc = match emails.iter().rfind(|m| m.direction == "inbound") {
+        Some(inbound) => inbox::reply_all_cc(&state.db, auth.org_id, &lead, inbound).await?,
+        None => vec![],
+    };
+    let messages = inbox::with_attachments(&state.db, emails).await?.into_iter().map(LeadThreadMessage::from).collect();
+    Ok(Json(LeadThread { lead_id: lead.id, messages, reply_cc }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReplyBody {
+    body_text: String,
+    #[serde(flatten)]
+    extras: ReplyExtras,
+}
+
+/// The inbox's Send: queues a reply to the lead's last message, which goes out on the sender's next pass.
+pub(super) async fn reply_to_lead(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ReplyBody>,
+) -> AppResult<Json<LeadThreadMessage>> {
+    let queued = inbox::send_reply(&state.db, auth.org_id, id, &body.body_text, &body.extras).await?;
+    let mut with_files = inbox::with_attachments(&state.db, vec![queued]).await?;
+    Ok(Json(with_files.remove(0).into()))
+}
+
+/// A multipart form with the file as `file`, kept for a day for a reply's attachment_ids.
+pub(super) async fn upload_attachment(State(state): State<AppState>, auth: ApiKeyAuth, form: Multipart) -> AppResult<Json<EmailAttachment>> {
+    Ok(Json(attachments::upload_to(&state.db, auth.org_id, form).await?))
+}
+
+pub(super) async fn download_attachment(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Response> {
+    attachments::download_from(&state.db, auth.org_id, id).await
 }
 
 /// The pipeline's stages in board order, with how many deals each holds.

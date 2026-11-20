@@ -35,6 +35,13 @@ export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** "1.2 MB", "840 KB". */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** "1 lead", "2,340 leads". */
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${num(n)} ${n === 1 ? one : many}`;

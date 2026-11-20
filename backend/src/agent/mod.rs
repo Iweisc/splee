@@ -251,6 +251,7 @@ pub fn spawn_workers(state: AppState) {
 pub(crate) async fn expire_visitor_data(db: &PgPool) -> anyhow::Result<()> {
     crate::visitors::expire(db).await?;
     crate::audit::prune(db).await?;
+    crate::mail::attachments::delete_unused(db).await?;
     sqlx::query("delete from sessions where expires_at < now()").execute(db).await?;
     sqlx::query("delete from projects where org_id is null and created_at < now() - interval '7 days'").execute(db).await?;
     sqlx::query("delete from agent_runs where kind = 'explorer' and project_id is null and created_at < now() - interval '7 days'").execute(db).await?;

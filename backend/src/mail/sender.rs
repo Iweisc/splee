@@ -8,7 +8,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::warmup::{HOLD_DAYS, LANDING_IN_SPAM, WARMUP_SENT_TODAY};
-use super::{dns, smtp};
+use super::{attachments, dns, smtp};
 use crate::agent::{self, kind};
 use crate::hooks::{self, Alert};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
@@ -404,6 +404,11 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     let email = EmailMessage { body: as_mailbox(&state.db, &email, &mb).await?, ..email };
     let body = with_footer(&email.kind, &email.body, &unsubscribe_page, &email.language);
     let tracked = crate::tracking::prepare(state, &email, &mb, &body).await?;
+    // A reply waits in the queue a while, so an address put on the do-not-contact list meanwhile still comes off.
+    let suppressed = super::suppressed_among(&state.db, org_id, &email.cc_emails).await?;
+    let cc: Vec<String> = email.cc_emails.iter().filter(|c| !suppressed.contains(c) && !c.eq_ignore_ascii_case(&to)).cloned().collect();
+    let stored = attachments::for_sending(&state.db, email.id).await?;
+    let files: Vec<smtp::OutgoingFile> = stored.iter().map(|(filename, content_type, data)| smtp::OutgoingFile { filename, content_type, data }).collect();
 
     let built = smtp::build(
         &mb,
@@ -418,6 +423,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
             unsubscribe_url: Some(&one_click),
             warmup: None,
             html: tracked.html.as_deref(),
+            cc: &cc,
+            files: &files,
         },
     );
     let message = match built {
@@ -435,7 +442,7 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
 
     match smtp::send(&transport, message).await {
         Ok(()) => {
-            record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to).await?;
+            record_sent(state, &email, &lead, &mb, &message_id, in_reply_to.as_deref(), &to, &cc).await?;
             copy_to_bcc(state, &transport, &mb, email.project_id, &raw).await;
             Ok(())
         }
@@ -610,11 +617,12 @@ async fn record_sent(
     message_id: &str,
     in_reply_to: Option<&str>,
     to: &str,
+    cc: &[String],
 ) -> anyhow::Result<()> {
     let mut tx = state.db.begin().await?;
     sqlx::query(
         "update email_messages set status = 'sent', sent_at = now(), message_id = $2, in_reply_to = $3, mailbox_id = $4, from_email = $5,
-                                   to_email = $6, cost_micros = $7, error = '', body = $8
+                                   to_email = $6, cost_micros = $7, error = '', body = $8, cc_emails = $9
          where id = $1",
     )
     .bind(email.id)
@@ -625,6 +633,7 @@ async fn record_sent(
     .bind(to)
     .bind(mb.cost_per_email_micros)
     .bind(&email.body)
+    .bind(cc)
     .execute(&mut *tx)
     .await?;
     sqlx::query(

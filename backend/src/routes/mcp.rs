@@ -46,7 +46,7 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. find_lookalikes and add_lookalikes find companies like the user's \
 customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
-create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_analytics says which \
+create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
 search_local_businesses and add_local_businesses use Google Maps once the user connected a key.";
 
@@ -355,6 +355,8 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "approve_email" => async { value(v1::approve_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "skip_email" => async { value(v1::skip_email(st(), auth, id(a, "email_id")?).await?) }.await,
         "list_replies" => async { value(v1::list_inbox(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "get_thread" => async { value(v1::lead_thread(st(), auth, id(a, "lead_id")?).await?) }.await,
+        "reply_to_lead" => async { value(v1::reply_to_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?) }.await,
         "get_analytics" => async { value(v1::project_analytics(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "list_deals" => async {
             let stages = value(v1::list_stages(st(), auth.clone()).await?)?;
@@ -765,6 +767,34 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "get_thread",
+            "Get thread",
+            "A lead's emails both ways, oldest first, with who each one copied in and the names, types and sizes of its files. \
+             reply_cc is who reply_to_lead copies in by default.",
+            json!({ "lead_id": id_prop("A lead id from list_replies or list_leads") }),
+            &["lead_id"],
+            read.clone(),
+        ),
+        tool(
+            "reply_to_lead",
+            "Reply to lead",
+            "Sends a reply to the lead's last email from the mailbox they wrote to. It copies in everyone the lead copied, unless \
+             cc_emails names who to copy in instead. Only reply when the user asked to, with the text they agreed to.",
+            json!({
+                "lead_id": id_prop("A lead id from list_replies or list_leads"),
+                "body_text": { "type": "string", "description": "The reply, as plain text" },
+                "cc_emails": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "maxItems": 20,
+                    "description": "Optional. Everyone to copy in, in place of the lead's CC list. An empty list copies in nobody",
+                },
+                "reply_all": { "type": "boolean", "description": "Optional. false copies in nobody when cc_emails isn't given. true by default" },
+            }),
+            &["lead_id", "body_text"],
+            json!({ "readOnlyHint": false }),
+        ),
+        tool(
             "list_deals",
             "List deals",
             "The pipeline's stages in order, and its deals, the latest first, with the lead, stage, value in the currency's main unit \
@@ -1153,7 +1183,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
-                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings",
+                     "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings", "get_thread", "reply_to_lead",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research"] {

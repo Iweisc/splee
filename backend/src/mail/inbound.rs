@@ -5,7 +5,7 @@ use mail_parser::{HeaderValue, Message, MessageParser, MimeHeaders};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{imap, warmup};
+use super::{attachments, imap, warmup};
 use crate::agent::{self, kind};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
 use crate::state::AppState;
@@ -95,6 +95,19 @@ async fn poll(state: &AppState, mb: &Mailbox) -> anyhow::Result<()> {
         sqlx::query("update mailboxes set last_error = '' where id = $1 and status = 'active'").bind(mb.id).execute(&state.db).await?;
     }
     Ok(())
+}
+
+/// Who else the sender copied in, lowercased, without duplicates or anything that isn't an address.
+fn cc_addresses(msg: &Message) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for addr in msg.cc().into_iter().flat_map(|a| a.iter()) {
+        if let Some(email) = addr.address().and_then(crate::routes::util_input::email)
+            && !out.contains(&email)
+        {
+            out.push(email);
+        }
+    }
+    out
 }
 
 fn strip_brackets(id: &str) -> String {
@@ -221,6 +234,7 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
     let mut thread_ids = in_reply_to.clone();
     thread_ids.extend(header_ids(msg.references()));
     let body = msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
+    let cc = cc_addresses(&msg);
 
     let local = from.split('@').next().unwrap_or_default();
     let is_bounce = match classify(local, &msg, raw) {
@@ -250,8 +264,8 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
     let text = if is_bounce { body.trim().chars().take(4000).collect() } else { strip_quoted(&body) };
     let inbound_id: Uuid = sqlx::query_scalar(
         "insert into email_messages (project_id, lead_id, segment_id, mailbox_id, direction, kind, step, subject, body, status, message_id,
-                                     in_reply_to, from_email, to_email, classification, classification_reason)
-         values ($1, $2, $3, $4, 'inbound', 'inbound', 0, $5, $6, 'received', $7, $8, $9, $10, $11, $12)
+                                     in_reply_to, from_email, to_email, classification, classification_reason, cc_emails)
+         values ($1, $2, $3, $4, 'inbound', 'inbound', 0, $5, $6, 'received', $7, $8, $9, $10, $11, $12, $13)
          returning id",
     )
     .bind(lead.project_id)
@@ -266,12 +280,17 @@ async fn store(state: &AppState, mb: &Mailbox, raw: &[u8]) -> anyhow::Result<()>
     .bind(&mb.email)
     .bind(is_bounce.then_some("bounce"))
     .bind(if is_bounce { "Delivery failed" } else { "" })
+    .bind(&cc)
     .fetch_one(&state.db)
     .await?;
 
     if is_bounce {
         super::suppress_lead(state, &lead, project_org, "bounced", "bounce").await?;
         return Ok(super::pause_if_bouncing(&state.db, mb.id).await?);
+    }
+    // The reply is worth more than its files, so it stays even when they can't be kept.
+    if let Err(e) = attachments::store_incoming(&state.db, mb.org_id, inbound_id, &attachments::incoming(&msg)).await {
+        tracing::warn!(lead = %lead.id, error = ?e, "could not keep a reply's attachments");
     }
     // Replied for now, so no follow-up goes out while the classifier works. It sets the final status.
     sqlx::query("update leads set status = 'replied' where id = $1 and status in ('new', 'queued', 'contacted')")
@@ -437,6 +456,84 @@ mod tests {
         // A code Splee never sent is ordinary mail, here Sam's reply.
         assert!(take(&state, &jo, email("", "Sounds good.\r\n\r\nSW-QQQQQQQQ").as_bytes()).await.unwrap().is_none());
         assert_eq!(counts().await, (1, 1));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_keeps_who_it_copied_in_and_its_files(db: PgPool) {
+        let state = crate::autopilot::tests::state(db.clone());
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let jo = sqlx::query_as::<_, Mailbox>(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'jo@alpha.test', 'smtp.test', '', '') returning *",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, email, status) values ($1, 'sam@beta.test', 'contacted') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at, message_id)
+             values ($1, $2, $3, 'outbound', 'initial', 'sent', now(), 'first@alpha.test')",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(jo.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // A PDF attached, and a logo shown in the signature. The base64 is "%PDF-1.4\n" and a PNG's first 6 bytes.
+        let raw = "From: Sam <sam@beta.test>\r\nTo: jo@alpha.test\r\nCc: Kim <KIM@beta.test>, ops@beta.test, kim@beta.test, jo@alpha.test\r\n\
+                   Message-ID: <r1@beta.test>\r\nIn-Reply-To: <first@alpha.test>\r\nSubject: Re: Hello\r\nMIME-Version: 1.0\r\n\
+                   Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+                   --b\r\nContent-Type: text/plain\r\n\r\nHere's our brief.\r\n\
+                   --b\r\nContent-Type: application/pdf; name=\"brief.pdf\"\r\nContent-Disposition: attachment; filename=\"brief.pdf\"\r\n\
+                   Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n\
+                   --b\r\nContent-Type: image/png\r\nContent-Disposition: inline; filename=\"logo.png\"\r\nContent-ID: <logo>\r\n\
+                   Content-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n--b--\r\n";
+        assert!(take(&state, &jo, raw.as_bytes()).await.unwrap().is_none());
+
+        let (message, body, cc): (Uuid, String, Vec<String>) =
+            sqlx::query_as("select id, body, cc_emails from email_messages where direction = 'inbound'").fetch_one(&db).await.unwrap();
+        assert_eq!(body, "Here's our brief.");
+        assert_eq!(cc, ["kim@beta.test", "ops@beta.test", "jo@alpha.test"]);
+        type File = (String, String, i64, bool, bool, Option<Vec<u8>>);
+        let files: Vec<File> = sqlx::query_as(
+            "select a.filename, a.content_type, a.size_bytes, a.inline, a.stored, d.data from email_attachments a
+             left join email_attachment_data d on d.attachment_id = a.id where a.message_id = $1 and a.org_id = $2 order by a.filename",
+        )
+        .bind(message)
+        .bind(org)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            files,
+            [
+                ("brief.pdf".to_string(), "application/pdf".to_string(), 9, false, true, Some(b"%PDF-1.4\n".to_vec())),
+                ("logo.png".to_string(), "image/png".to_string(), 6, true, true, Some(b"\x89PNG\r\n".to_vec())),
+            ]
+        );
+
+        // A file over 25 MB is listed by name and size but its bytes aren't kept.
+        let big = vec![b'x'; super::attachments::MAX_FILE_BYTES as usize + 1];
+        let over = super::attachments::Incoming { filename: "video.mov".into(), content_type: "video/quicktime".into(), inline: false, data: &big };
+        super::attachments::store_incoming(&db, org, message, &[over]).await.unwrap();
+        let (stored, size, kept): (bool, i64, bool) = sqlx::query_as(
+            "select a.stored, a.size_bytes, exists (select 1 from email_attachment_data d where d.attachment_id = a.id) from email_attachments a
+             where a.filename = 'video.mov'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!((stored, size, kept), (false, big.len() as i64, false));
     }
 
     fn classify(from_local_part: &str, raw: &str) -> Report {

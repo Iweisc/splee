@@ -797,6 +797,25 @@ pub struct EmailMessage {
     /// The language Splee wrote it in, "" for English or an email it didn't write.
     #[sqlx(default)]
     pub language: String,
+    /// Who else a lead's reply went to, or who ours is copied to. Lowercase addresses.
+    #[sqlx(default)]
+    pub cc_emails: Vec<String>,
+}
+
+/// A file on an email, without its bytes. See mail/attachments.rs.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct EmailAttachment {
+    pub id: Uuid,
+    /// None for an upload no reply has taken yet.
+    pub message_id: Option<Uuid>,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    /// Shown in the email's body, like a signature's logo, rather than attached under it.
+    pub inline: bool,
+    /// False for a lead's file over the 25 MB limit, which is listed but can't be downloaded.
+    pub stored: bool,
+    pub created_at: Ts,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
