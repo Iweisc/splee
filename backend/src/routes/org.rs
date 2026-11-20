@@ -8,6 +8,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use super::util_input;
+use crate::audit::{self, Target};
 use crate::auth::{Auth, clear_session_cookie};
 use crate::crypto::random_token;
 use crate::error::{AppError, AppResult};
@@ -34,26 +35,30 @@ async fn get_org(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Or
 }
 
 #[derive(Deserialize)]
-struct OrgBody {
+pub(super) struct OrgBody {
     name: String,
 }
 
-async fn update_org(State(state): State<AppState>, auth: Auth, Json(body): Json<OrgBody>) -> AppResult<Json<Organization>> {
+pub(super) async fn update_org(State(state): State<AppState>, auth: Auth, Json(body): Json<OrgBody>) -> AppResult<Json<Organization>> {
     auth.require_admin()?;
     let name = body.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("Name can't be empty".into()));
     }
+    let old: String = sqlx::query_scalar("select name from organizations where id = $1").bind(auth.org_id).fetch_one(&state.db).await?;
     let org = sqlx::query_as::<_, Organization>("update organizations set name = $2 where id = $1 returning *")
         .bind(auth.org_id)
         .bind(name)
         .fetch_one(&state.db)
         .await?;
+    if old != org.name {
+        audit::record(&state.db, &auth, "org.renamed", Target::new("org", org.id, &org.name), json!({ "from": old, "to": org.name })).await;
+    }
     Ok(Json(org))
 }
 
 #[derive(Serialize, FromRow)]
-struct Member {
+pub(super) struct Member {
     user_id: Uuid,
     email: String,
     name: String,
@@ -106,18 +111,18 @@ async fn check_can_manage(db: &PgPool, auth: &Auth, user_id: Uuid, new_role: Opt
 }
 
 #[derive(Deserialize)]
-struct RoleBody {
+pub(super) struct RoleBody {
     role: String,
 }
 
-async fn update_member(
+pub(super) async fn update_member(
     State(state): State<AppState>,
     auth: Auth,
     Path(user_id): Path<Uuid>,
     Json(body): Json<RoleBody>,
 ) -> AppResult<Json<Member>> {
     util_input::one_of("role", &body.role, &["owner", "admin", "member"])?;
-    check_can_manage(&state.db, &auth, user_id, Some(&body.role)).await?;
+    let old_role = check_can_manage(&state.db, &auth, user_id, Some(&body.role)).await?;
     sqlx::query("update memberships set role = $3 where org_id = $1 and user_id = $2")
         .bind(auth.org_id)
         .bind(user_id)
@@ -129,11 +134,16 @@ async fn update_member(
         .bind(user_id)
         .fetch_one(&state.db)
         .await?;
+    if old_role != member.role {
+        let details = json!({ "from": old_role, "to": member.role });
+        audit::record(&state.db, &auth, "member.role_changed", Target::new("user", user_id, &member.email), details).await;
+    }
     Ok(Json(member))
 }
 
 async fn remove_member(State(state): State<AppState>, auth: Auth, Path(user_id): Path<Uuid>) -> AppResult<Json<Value>> {
-    check_can_manage(&state.db, &auth, user_id, None).await?;
+    let role = check_can_manage(&state.db, &auth, user_id, None).await?;
+    let email: String = sqlx::query_scalar("select email::text from users where id = $1").bind(user_id).fetch_one(&state.db).await?;
     let mut tx = state.db.begin().await?;
     sqlx::query("delete from memberships where org_id = $1 and user_id = $2")
         .bind(auth.org_id)
@@ -153,6 +163,7 @@ async fn remove_member(State(state): State<AppState>, auth: Auth, Path(user_id):
         .await?;
     sqlx::query("update mailboxes set owner_id = null where org_id = $1 and owner_id = $2").bind(auth.org_id).bind(user_id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::record(&state.db, &auth, "member.removed", Target::new("user", user_id, &email), json!({ "role": role })).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -189,6 +200,7 @@ async fn create_invite(State(state): State<AppState>, auth: Auth, Json(body): Js
     .fetch_one(&state.db)
     .await?;
     let link = format!("{}/invite/{}", state.cfg.public_url, invite.token);
+    audit::record(&state.db, &auth, "member.invited", Target::new("invite", invite.id, &email), json!({ "role": invite.role })).await;
 
     let org_name: String = sqlx::query_scalar("select name from organizations where id = $1")
         .bind(auth.org_id)

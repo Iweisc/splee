@@ -8,8 +8,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::FromRow;
 
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
@@ -177,13 +179,22 @@ async fn save(State(state): State<AppState>, auth: Auth, Json(body): Json<Body>)
     .bind(new_secret)
     .execute(&state.db)
     .await?;
+    let details = json!({
+        "endpoint": target.endpoint, "region": target.region, "bucket": target.bucket, "prefix": prefix, "tables": picked,
+        "include_bodies": body.include_bodies, "new_secret_key": new_secret,
+    });
+    audit::record(&state.db, &auth, "export.saved", audit::Target::new("export", None, &target.bucket), details).await;
     load(&state, &auth).await
 }
 
 /// Stops the daily export. The runs stay listed.
 async fn remove(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Status>> {
     auth.require_admin()?;
-    sqlx::query("delete from export_settings where org_id = $1").bind(auth.org_id).execute(&state.db).await?;
+    let bucket: Option<String> =
+        sqlx::query_scalar("delete from export_settings where org_id = $1 returning bucket").bind(auth.org_id).fetch_optional(&state.db).await?;
+    if let Some(bucket) = bucket {
+        audit::record(&state.db, &auth, "export.removed", audit::Target::new("export", None, &bucket), json!({})).await;
+    }
     load(&state, &auth).await
 }
 

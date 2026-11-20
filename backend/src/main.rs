@@ -2,6 +2,7 @@ mod ab_test;
 mod ads;
 mod agent;
 mod airtable;
+mod audit;
 mod auth;
 mod autopilot;
 mod baserow;
@@ -175,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api", routes::router())
+        .layer(axum::middleware::from_fn(audit::keep_client_ip))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

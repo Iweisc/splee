@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::util_input;
+use crate::audit::{self, Target};
 use crate::auth::Auth;
 use crate::crypto::{decrypt, encrypt};
 use crate::domains::{self, Order, Setup};
@@ -70,12 +71,16 @@ async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<Con
     .bind(encrypt(&state.cfg.app_secret, secret))
     .fetch_one(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, None, "Porkbun", true).await;
     Ok(Json(account))
 }
 
 async fn disconnect(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
     auth.require_admin()?;
-    sqlx::query("delete from registrar_accounts where org_id = $1").bind(auth.org_id).execute(&state.db).await?;
+    let removed = sqlx::query("delete from registrar_accounts where org_id = $1").bind(auth.org_id).execute(&state.db).await?;
+    if removed.rows_affected() > 0 {
+        audit::integration(&state.db, &auth, None, "Porkbun", false).await;
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -146,6 +151,12 @@ async fn buy(State(state): State<AppState>, auth: Auth, Json(body): Json<BuyBody
     let ids = domains::queue(&state.db, auth.org_id, &orders, &setup).await?;
     let queued = domains::list(&state.db, auth.org_id).await?;
     let skipped: Vec<&str> = orders.iter().map(|o| o.domain.as_str()).filter(|d| !queued.iter().any(|q| ids.contains(&q.id) && q.domain == *d)).collect();
+    for order in &orders {
+        if let Some(d) = queued.iter().find(|q| ids.contains(&q.id) && q.domain == order.domain) {
+            let details = json!({ "price_micros": order.price_micros, "provider": setup.provider });
+            audit::record(&state.db, &auth, "sending_domain.ordered", Target::new("sending_domain", d.id, &d.domain), details).await;
+        }
+    }
     let (db, tracking) = (state.db.clone(), crate::tracking::cname_target(&state.cfg.public_url));
     tokio::spawn(async move { domains::buy(&db, &pb, &ids, tracking.as_deref()).await });
     Ok(Json(json!({ "domains": queued, "skipped": skipped })))
@@ -212,5 +223,6 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
         return Err(AppError::Conflict("Check Porkbun first. It may have bought it".into()));
     }
     sqlx::query("delete from sending_domains where id = $1").bind(id).execute(&state.db).await?;
+    audit::record(&state.db, &auth, "sending_domain.removed", Target::new("sending_domain", id, &d.domain), json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }

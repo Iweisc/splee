@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::projects;
 use super::util_input;
+use crate::audit::{self, Target, Who};
 use crate::auth::{Auth, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
 use crate::crypto::sha256_hex;
 use crate::error::{AppError, AppResult};
@@ -181,13 +182,13 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
         })?;
     sqlx::query("insert into notification_prefs (user_id) values ($1)").bind(user_id).execute(&mut *tx).await?;
 
-    let org_id = match body.invite_token.as_deref() {
+    let (org_id, joined_as) = match body.invite_token.as_deref() {
         Some(token) => {
             let (org_id, role): (Uuid, String) = take_invite(&mut tx, token)
                 .await?
                 .ok_or_else(|| AppError::BadRequest("This invite is no longer valid".into()))?;
             add_member(&mut tx, org_id, user_id, &role).await?;
-            org_id
+            (org_id, Some(role))
         }
         None => {
             let org_name = if name.is_empty() { email.split('@').nth(1).unwrap_or(&email).to_string() } else { name.clone() };
@@ -196,7 +197,7 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
                 .fetch_one(&mut *tx)
                 .await?;
             add_member(&mut tx, org_id, user_id, "owner").await?;
-            org_id
+            (org_id, None)
         }
     };
 
@@ -205,9 +206,18 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
         projects::claim(&mut tx, claim.project_id, &claim.token, org_id, user_id).await?;
     }
     tx.commit().await?;
+    if let Some(role) = joined_as {
+        joined(&state, org_id, user_id, &role).await;
+    }
 
     let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
     Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
+}
+
+async fn joined(state: &AppState, org_id: Uuid, user_id: Uuid, role: &str) {
+    let email: String =
+        sqlx::query_scalar("select email::text from users where id = $1").bind(user_id).fetch_one(&state.db).await.unwrap_or_default();
+    audit::record(&state.db, Who::member(org_id, user_id), "member.joined", Target::new("user", user_id, &email), json!({ "role": role })).await;
 }
 
 async fn add_member(conn: &mut PgConnection, org_id: Uuid, user_id: Uuid, role: &str) -> AppResult<()> {
@@ -291,6 +301,7 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
         return Err(invalid());
     };
     if !verify_password(&body.password, &hash) {
+        audit::record_account(&state.db, user_id, "user.sign_in_failed", json!({ "reason": "password" })).await;
         return Err(invalid());
     }
     // The failures stay counted until the code is right too, or a known password would reset the limit between guesses.
@@ -314,6 +325,7 @@ async fn login_code(State(state): State<AppState>, jar: CookieJar, Json(body): J
     let (user_id, email) = two_factor::pending_login(&state.db, &body.two_factor_token).await?.ok_or_else(expired)?;
     count_attempt(&state.db, &email).await?;
     if !two_factor::take_code(&state.db, &state.cfg.app_secret, user_id, &body.code).await? {
+        audit::record_account(&state.db, user_id, "user.sign_in_failed", json!({ "reason": "code" })).await;
         return Err(AppError::BadRequest("That code didn't work. Try the newest one from your app.".into()));
     }
     if !two_factor::finish_login(&state.db, &body.two_factor_token).await? {
@@ -331,6 +343,7 @@ async fn sign_in(state: &AppState, jar: CookieJar, user_id: Uuid, email: &str) -
         .await?
         .ok_or_else(|| AppError::Forbidden("Your account isn't part of any organization anymore".into()))?;
     let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
+    audit::record_account(&state.db, user_id, "user.signed_in", json!({})).await;
     Ok((jar.add(cookie), Json(SignIn::Done(Box::new(me(state, user_id, org_id).await?)))))
 }
 
@@ -395,6 +408,7 @@ async fn accept_invite(State(state): State<AppState>, auth: Auth, Path(token): P
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    joined(&state, org_id, auth.user_id, &role).await;
     Ok(Json(me(&state, auth.user_id, org_id).await?))
 }
 
@@ -418,6 +432,7 @@ async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): 
     sqlx::query("update users set password_hash = $2 where id = $1").bind(auth.user_id).bind(&new_hash).execute(&mut *tx).await?;
     sqlx::query("delete from sessions where user_id = $1 and token_hash <> $2").bind(auth.user_id).bind(&auth.token_hash).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::record_account(&state.db, auth.user_id, "user.password_changed", json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -500,6 +515,7 @@ async fn two_factor_enable(State(state): State<AppState>, auth: Auth, Json(body)
     }
     let backup_codes = two_factor::replace_backup_codes(&mut tx, &state.cfg.app_secret, auth.user_id).await?;
     tx.commit().await?;
+    audit::record_account(&state.db, auth.user_id, "user.two_factor_enabled", json!({})).await;
     Ok(Json(BackupCodes { backup_codes }))
 }
 
@@ -529,6 +545,7 @@ async fn two_factor_disable(State(state): State<AppState>, auth: Auth, Json(body
     sqlx::query("delete from two_factor where user_id = $1").bind(auth.user_id).execute(&mut *tx).await?;
     sqlx::query("delete from backup_codes where user_id = $1").bind(auth.user_id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::record_account(&state.db, auth.user_id, "user.two_factor_disabled", json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -540,6 +557,7 @@ async fn new_backup_codes(State(state): State<AppState>, auth: Auth, Json(body):
     let mut tx = state.db.begin().await?;
     let backup_codes = two_factor::replace_backup_codes(&mut tx, &state.cfg.app_secret, auth.user_id).await?;
     tx.commit().await?;
+    audit::record_account(&state.db, auth.user_id, "user.backup_codes_created", json!({})).await;
     Ok(Json(BackupCodes { backup_codes }))
 }
 
@@ -698,6 +716,26 @@ mod tests {
         assert!(signed_in(&code(&state, &third, &backup_codes[1]).await));
         let Json(status) = two_factor_status(State(state.clone()), auth.clone()).await.unwrap();
         assert_eq!((status.enabled, status.backup_codes_left), (true, 8));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn sign_ins_and_two_factor_changes_go_in_the_audit_log(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        assert!(refused(&password(&state, "wrong horse").await));
+        assert!(signed_in(&password(&state, "correct horse").await));
+        turn_on(&state, &auth).await;
+        let events: Vec<(String, String, Value)> =
+            sqlx::query_as("select action, target_label, details from audit_events where org_id = $1 and actor_user_id = $2 order by created_at")
+                .bind(auth.org_id)
+                .bind(auth.user_id)
+                .fetch_all(&state.db)
+                .await
+                .unwrap();
+        let actions: Vec<&str> = events.iter().map(|(action, ..)| action.as_str()).collect();
+        // turn_on checks that a password alone still signs in before the code turns two-factor on.
+        assert_eq!(actions, ["user.sign_in_failed", "user.signed_in", "user.signed_in", "user.two_factor_enabled"]);
+        assert_eq!((events[0].1.as_str(), &events[0].2), ("ana@acme.test", &json!({ "reason": "password" })));
     }
 
     #[sqlx::test]

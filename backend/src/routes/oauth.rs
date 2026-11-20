@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::audit::{self, Who};
 use crate::auth::Auth;
 use crate::config::Config;
 use crate::crypto::{random_token, sha256_hex};
@@ -525,6 +526,7 @@ async fn exchange_code(state: &AppState, client: &Client, p: &TokenParams) -> Ap
         .await?;
     let tokens = issue(&mut tx, grant).await?;
     tx.commit().await?;
+    audit::integration(&state.db, Who::member(code.org_id, code.user_id), None, &client.name, true).await;
     Ok(Ok(tokens))
 }
 
@@ -661,19 +663,18 @@ async fn list_apps(State(state): State<AppState>, auth: Auth) -> AppResult<Json<
 
 /// Admins can disconnect any app, members the ones they connected.
 async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let revoked = sqlx::query(
-        "update oauth_grants set revoked_at = now() where id = $1 and org_id = $2 and revoked_at is null and ($3 or user_id = $4)",
+    let revoked: Option<String> = sqlx::query_scalar(
+        "update oauth_grants g set revoked_at = now() from oauth_clients c
+         where c.id = g.client_id and g.id = $1 and g.org_id = $2 and g.revoked_at is null and ($3 or g.user_id = $4) returning c.name",
     )
     .bind(id)
     .bind(auth.org_id)
     .bind(auth.require_admin().is_ok())
     .bind(auth.user_id)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
-    if revoked == 0 {
-        return Err(AppError::NotFound);
-    }
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(name) = revoked else { return Err(AppError::NotFound) };
+    audit::integration(&state.db, &auth, None, &name, false).await;
     Ok(Json(json!({ "ok": true })))
 }
 

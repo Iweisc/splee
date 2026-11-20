@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::util_input;
+use crate::audit;
 use crate::auth::Auth;
 use crate::crm::Crm;
 use crate::crypto;
@@ -431,7 +432,9 @@ async fn connect_crm(
         None => token.to_string(),
     };
     crm.check(&token).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that: {e:#}", crm.label())))?;
-    set_crm_token(&state.db, id, crm, &crypto::encrypt(&state.cfg.app_secret, &token)).await
+    let saved = set_crm_token(&state.db, id, crm, &crypto::encrypt(&state.cfg.app_secret, &token)).await?;
+    audit::integration(&state.db, &auth, Some(id), crm.label(), true).await;
+    Ok(saved)
 }
 
 async fn disconnect_crm(State(state): State<AppState>, auth: Auth, Path((id, name)): Path<(Uuid, String)>) -> AppResult<Json<ProjectSettings>> {
@@ -440,9 +443,12 @@ async fn disconnect_crm(State(state): State<AppState>, auth: Auth, Path((id, nam
     load_or_create(&state.db, id).await?;
     if crm.signs_in() {
         crate::crm::signin::disconnect(&state.db, &state.cfg, id, crm).await?;
+        audit::integration(&state.db, &auth, Some(id), crm.label(), false).await;
         return Ok(Json(load_or_create(&state.db, id).await?));
     }
-    set_crm_token(&state.db, id, crm, "").await
+    let saved = set_crm_token(&state.db, id, crm, "").await?;
+    audit::integration(&state.db, &auth, Some(id), crm.label(), false).await;
+    Ok(saved)
 }
 
 async fn set_crm_token(db: &PgPool, id: Uuid, crm: Crm, enc: &str) -> AppResult<Json<ProjectSettings>> {
@@ -480,13 +486,19 @@ async fn connect_verifier(
         return Err(AppError::BadRequest(format!("Paste your {} API key", verifier.label())));
     }
     verifier.check_key(key).await.map_err(|e| AppError::BadRequest(format!("{} didn't accept that key: {e:#}", verifier.label())))?;
-    set_verifier(&state.db, id, &body.provider, &crypto::encrypt(&state.cfg.app_secret, key)).await
+    let saved = set_verifier(&state.db, id, &body.provider, &crypto::encrypt(&state.cfg.app_secret, key)).await?;
+    audit::integration(&state.db, &auth, Some(id), verifier.label(), true).await;
+    Ok(saved)
 }
 
 async fn disconnect_verifier(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
-    load_or_create(&state.db, id).await?;
-    set_verifier(&state.db, id, "", "").await
+    let current = load_or_create(&state.db, id).await?.verifier;
+    let saved = set_verifier(&state.db, id, "", "").await?;
+    if let Some(verifier) = Verifier::parse(&current) {
+        audit::integration(&state.db, &auth, Some(id), verifier.label(), false).await;
+    }
+    Ok(saved)
 }
 
 #[derive(Deserialize)]
@@ -519,14 +531,18 @@ async fn connect_unipile(
     let hooks = unipile::add_webhooks(&base, token, &account, &url)
         .await
         .map_err(|e| AppError::BadRequest(format!("Unipile didn't take Splee's webhook for LinkedIn replies: {e:#}")))?;
-    set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name, &hooks).await
+    let saved = set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name, &hooks).await?;
+    audit::integration(&state.db, &auth, Some(id), "LinkedIn (Unipile)", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_unipile(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
     remove_unipile_webhooks(&state, id).await?;
-    set_unipile(&state.db, id, "", "", "", "", &[]).await
+    let saved = set_unipile(&state.db, id, "", "", "", "", &[]).await?;
+    audit::integration(&state.db, &auth, Some(id), "LinkedIn (Unipile)", false).await;
+    Ok(saved)
 }
 
 /// The webhooks a previous connection made, so a reconnect or disconnect doesn't leave Unipile posting to Splee.

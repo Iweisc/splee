@@ -14,6 +14,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use super::util_scope;
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::deals::{self, Move, NewDeal};
@@ -141,6 +142,7 @@ async fn connect(
     .bind(secret.as_deref().map(encrypt))
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), provider.label(), true).await;
     connections(&state.db, id).await
 }
 
@@ -181,6 +183,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path((id, name)):
     auth.project(&state.db, id).await?;
     let provider = provider(&name)?;
     sqlx::query("delete from meeting_connections where project_id = $1 and provider = $2").bind(id).bind(provider.name()).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, Some(id), provider.label(), false).await;
     connections(&state.db, id).await
 }
 

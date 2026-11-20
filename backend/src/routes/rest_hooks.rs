@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use super::api_v1::check_project;
 use super::util_input::blank_as_none;
+use crate::audit::{self, Target, Who};
 use crate::auth::{Auth, KeyAuth};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
@@ -91,20 +92,28 @@ async fn subscribe(State(state): State<AppState>, auth: KeyAuth, Json(body): Jso
     .bind(url)
     .fetch_one(&state.db)
     .await?;
+    // Only the host: the rest of a Zapier or Make hook URL is as good as a password.
+    let host = parsed.host_str().unwrap_or_default();
+    let details = json!({ "event": body.event, "host": host, "project_id": body.project_id });
+    audit::record(&state.db, &auth, "integration.connected", Target::new("hook_subscription", subscription.id, host), details).await;
     Ok(Json(subscription))
 }
 
 /// Any key of the organization can remove its subscriptions, so a zap still turns off after its key was replaced.
 async fn unsubscribe(State(state): State<AppState>, auth: KeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    delete_in(&state, auth.org_id, id).await
+    delete_in(&state, (&auth).into(), id).await
 }
 
-async fn delete_in(state: &AppState, org_id: Uuid, id: Uuid) -> AppResult<Json<Value>> {
-    let deleted =
-        sqlx::query("delete from hook_subscriptions where id = $1 and org_id = $2").bind(id).bind(org_id).execute(&state.db).await?.rows_affected();
-    if deleted == 0 {
-        return Err(AppError::NotFound);
-    }
+async fn delete_in(state: &AppState, who: Who, id: Uuid) -> AppResult<Json<Value>> {
+    let deleted: Option<(String, String)> = sqlx::query_as("delete from hook_subscriptions where id = $1 and org_id = $2 returning event, target_url")
+        .bind(id)
+        .bind(who.org_id())
+        .fetch_optional(&state.db)
+        .await?;
+    let Some((event, url)) = deleted else { return Err(AppError::NotFound) };
+    let host = Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let details = json!({ "event": event, "host": host });
+    audit::record(&state.db, who, "integration.disconnected", Target::new("hook_subscription", id, &host), details).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -147,7 +156,7 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 }
 
 async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    delete_in(&state, auth.org_id, id).await
+    delete_in(&state, (&auth).into(), id).await
 }
 
 #[cfg(test)]

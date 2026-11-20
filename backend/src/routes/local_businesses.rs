@@ -8,6 +8,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::imports::check_segment;
+use crate::audit;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::local_businesses::{self, AddOutcome, Results, SearchQuery, Usage};
@@ -33,13 +34,16 @@ struct KeyBody {
 /// The key is shared by the organization's projects and spends its Google account's money, so only admins set it.
 async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<KeyBody>) -> AppResult<Json<Usage>> {
     auth.require_admin()?;
-    Ok(Json(local_businesses::connect(&state, auth.org_id, &body.key).await?))
+    let usage = local_businesses::connect(&state, auth.org_id, &body.key).await?;
+    audit::integration(&state.db, &auth, None, "Google Places", true).await;
+    Ok(Json(usage))
 }
 
 /// Searches kept from the last 30 days stay, as they were paid for.
 async fn disconnect(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Usage>> {
     auth.require_admin()?;
     sqlx::query("delete from places_keys where org_id = $1").bind(auth.org_id).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, None, "Google Places", false).await;
     Ok(Json(local_businesses::usage(&state.db, auth.org_id).await?))
 }
 

@@ -8,6 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::util_input;
+use crate::audit::{self, Target};
 use crate::auth::Auth;
 use crate::crypto::encrypt;
 use crate::error::{AppError, AppResult};
@@ -236,6 +237,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
         AppError::Conflict(_) => AppError::Conflict("This mailbox is already connected".into()),
         other => other,
     })?;
+    audit::record(&state.db, &auth, "mailbox.connected", Target::new("mailbox", mailbox.id, &mailbox.email), json!({ "provider": "smtp" })).await;
     Ok(Json(mailbox))
 }
 
@@ -347,6 +349,7 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
     auth.require_admin()?;
     let mailbox = load(&state.db, id, auth.org_id).await?;
     sqlx::query("delete from mailboxes where id = $1").bind(mailbox.id).execute(&state.db).await?;
+    audit::record(&state.db, &auth, "mailbox.removed", Target::new("mailbox", mailbox.id, &mailbox.email), json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }
 

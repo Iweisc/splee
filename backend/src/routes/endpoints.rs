@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::util_scope;
+use crate::audit;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::Endpoint;
@@ -38,6 +39,15 @@ impl List {
         match self {
             List::Chats => "chat",
             List::Webhooks => "webhook endpoint",
+        }
+    }
+
+    /// How the audit log names one, by its host only: the rest of a chat's or webhook's URL is as good as a password.
+    fn audit_name(self, url: &str) -> String {
+        let host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        match self {
+            List::Chats => format!("Chat alerts ({host})"),
+            List::Webhooks => format!("Webhook ({host})"),
         }
     }
 }
@@ -96,17 +106,19 @@ async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Js
     if count >= MAX_ENDPOINTS {
         return Err(AppError::BadRequest(format!("A project can have up to {MAX_ENDPOINTS} of these")));
     }
-    sqlx::query_as::<_, Endpoint>(&format!("insert into {table} (project_id, url) values ($1, $2) on conflict do nothing returning *"))
+    let added = sqlx::query_as::<_, Endpoint>(&format!("insert into {table} (project_id, url) values ($1, $2) on conflict do nothing returning *"))
         .bind(id)
         .bind(url)
         .fetch_optional(&state.db)
         .await?
-        .map(Json)
-        .ok_or_else(|| AppError::BadRequest(format!("That {noun} is already added")))
+        .ok_or_else(|| AppError::BadRequest(format!("That {noun} is already added")))?;
+    audit::integration(&state.db, &auth, Some(id), &list.audit_name(&added.url), true).await;
+    Ok(Json(added))
 }
 
 async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, list: List) -> AppResult<Json<Value>> {
     let endpoint: Endpoint = util_scope::load(&state.db, list.table(), id, auth.org_id).await?;
     sqlx::query(&format!("delete from {} where id = $1", list.table())).bind(endpoint.id).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, Some(endpoint.project_id), &list.audit_name(&endpoint.url), false).await;
     Ok(Json(json!({ "ok": true })))
 }

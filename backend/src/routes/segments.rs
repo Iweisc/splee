@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::{util_input, util_scope};
 use crate::agent::{self, kind};
+use crate::audit::{self, Target};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::Segment;
@@ -364,6 +365,8 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    let details = json!({ "project_id": segment.project_id, "emails_queued": lead_ids.len() });
+    audit::record(&state.db, &auth, "campaign.launched", Target::new("campaign", segment.id, &segment.name), details).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -389,6 +392,8 @@ async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    let details = json!({ "project_id": segment.project_id, "emails_held": lead_ids.len() });
+    audit::record(&state.db, &auth, "campaign.paused", Target::new("campaign", segment.id, &segment.name), details).await;
     Ok(Json(json!({ "ok": true })))
 }
 

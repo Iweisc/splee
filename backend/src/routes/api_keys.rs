@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::audit::{self, Target};
 use crate::auth::{API_KEY_PREFIX, Auth};
 use crate::crypto::{random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
@@ -26,11 +27,11 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<A
 }
 
 #[derive(Deserialize)]
-struct CreateBody {
+pub(super) struct CreateBody {
     name: String,
 }
 
-async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<CreateBody>) -> AppResult<Json<Value>> {
+pub(super) async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<CreateBody>) -> AppResult<Json<Value>> {
     auth.require_admin()?;
     let name = body.name.trim();
     if name.is_empty() {
@@ -46,19 +47,19 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Crea
     .bind(sha256_hex(&secret))
     .fetch_one(&state.db)
     .await?;
+    audit::record(&state.db, &auth, "api_key.created", Target::new("api_key", api_key.id, &api_key.name), json!({ "prefix": api_key.prefix })).await;
     Ok(Json(json!({ "api_key": api_key, "secret": secret })))
 }
 
-async fn revoke(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+pub(super) async fn revoke(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.require_admin()?;
-    let revoked = sqlx::query("update api_keys set revoked_at = now() where id = $1 and org_id = $2 and revoked_at is null")
-        .bind(id)
-        .bind(auth.org_id)
-        .execute(&state.db)
-        .await?
-        .rows_affected();
-    if revoked == 0 {
-        return Err(AppError::NotFound);
-    }
+    let revoked: Option<(String, String)> =
+        sqlx::query_as("update api_keys set revoked_at = now() where id = $1 and org_id = $2 and revoked_at is null returning name, prefix")
+            .bind(id)
+            .bind(auth.org_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some((name, prefix)) = revoked else { return Err(AppError::NotFound) };
+    audit::record(&state.db, &auth, "api_key.revoked", Target::new("api_key", id, &name), json!({ "prefix": prefix })).await;
     Ok(Json(json!({ "ok": true })))
 }

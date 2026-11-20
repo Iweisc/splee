@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::settings::load_or_create;
+use crate::audit;
 use crate::auth::{Auth, MaybeAuth};
 use crate::crypto::{self, random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
@@ -148,6 +149,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     .execute(&state.db)
     .await
     .map_err(|e| fail(internal(&e)))?;
+    audit::integration(&state.db, &auth, Some(project), "Tumblr", true).await;
     Ok(project)
 }
 
@@ -182,6 +184,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
     .bind(id)
     .fetch_one(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), "Tumblr", false).await;
     Ok(Json(settings))
 }
 

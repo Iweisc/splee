@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::auth::ClaimBody;
 use super::{settings, util_input};
 use crate::agent::{self, kind};
+use crate::audit::{self, Target};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::{AgentRun, Project, ProjectSettings};
@@ -254,8 +255,13 @@ async fn autopilot(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     Ok(Json(crate::autopilot::status(&state.db, id).await?))
 }
 
+/// How the audit log names a project: its name, or its domain before it has one.
+fn label(project: &Project) -> &str {
+    if project.name.is_empty() { project.domain.as_deref().unwrap_or_default() } else { &project.name }
+}
+
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    auth.project(&state.db, id).await?;
+    let project = auth.project(&state.db, id).await?;
     let has_mailbox: bool = sqlx::query_scalar("select exists(select 1 from mailboxes where org_id = $1 and status = 'active')")
         .bind(auth.org_id)
         .fetch_one(&state.db)
@@ -268,14 +274,16 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     sqlx::query("update project_settings set paused = false where project_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("update projects set status = 'active' where id = $1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::record(&state.db, &auth, "project.started", Target::new("project", id, label(&project)), json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
-    auth.project(&state.db, id).await?;
+    let project = auth.project(&state.db, id).await?;
     let mut tx = state.db.begin().await?;
     sqlx::query("update project_settings set paused = true where project_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("update projects set status = 'paused' where id = $1 and status = 'active'").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::record(&state.db, &auth, "project.paused", Target::new("project", id, label(&project)), json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }

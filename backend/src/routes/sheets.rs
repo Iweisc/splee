@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::imports::check_segment;
 use super::mailbox_oauth::{self, CallbackQuery, SHEETS, SignedIn};
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
@@ -85,7 +86,7 @@ pub(super) async fn callback(state: &AppState, auth: Option<Auth>, q: CallbackQu
 }
 
 async fn save(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<(), String> {
-    let SignedIn { project_id, tokens, account, .. } = mailbox_oauth::signed_in(state, auth, q, &SHEETS).await?;
+    let SignedIn { auth, project_id, tokens, account, .. } = mailbox_oauth::signed_in(state, auth, q, &SHEETS).await?;
     let project_id = project_id.ok_or_else(|| "This sign-in expired or was already used. Connect Google Sheets again.".to_string())?;
     let refresh = tokens.refresh_token.as_deref().filter(|t| !t.is_empty()).ok_or("Google didn't let Splee stay signed in. Connect Google Sheets again.")?;
     let secret = &state.cfg.app_secret;
@@ -107,6 +108,7 @@ async fn save(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<
         tracing::error!(error = %e, "saving the Sheets sign-in failed");
         "Something went wrong saving Google Sheets. Try again.".to_string()
     })?;
+    audit::integration(&state.db, &auth, Some(project_id), "Google Sheets", true).await;
     Ok(())
 }
 
@@ -114,6 +116,7 @@ async fn save(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<
 async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Status>> {
     auth.project(&state.db, id).await?;
     sqlx::query("delete from sheet_accounts where project_id = $1").bind(id).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, Some(id), "Google Sheets", false).await;
     status(&state.db, &state, id).await
 }
 
