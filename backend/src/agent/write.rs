@@ -552,7 +552,10 @@ fn variant_rule(v: &Variant) -> String {
 
 async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject: &str, body: &str, lang: &Language) -> anyhow::Result<()> {
     let updated = sqlx::query(
-        "update email_messages set subject = $2, body = $3, variant_id = $5, language = $6
+        "update email_messages set subject = $2, body = $3, variant_id = $5, language = $6, written_at = now(),
+         -- The review window may have approved the old text while this was written. The new text waits its own window.
+         status = case when approved_via = 'review_window' and status = 'approved' then 'draft' else status end,
+         approved_via = case when approved_via = 'review_window' and status = 'approved' then null else approved_via end
          where id = (select id from email_messages where lead_id = $1 and kind = 'initial' and status = any($4)
                      order by created_at desc limit 1)",
     )
@@ -783,14 +786,20 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         };
 
         if let Some(id) = to_rewrite {
-            // The sender may have sent it while the agent was writing. Leave sent emails alone.
-            sqlx::query("update email_messages set body = $2, language = $4 where id = $1 and status = any($3)")
-                .bind(id)
-                .bind(settings.sign(&body))
-                .bind(&UNSENT[..])
-                .bind(lang.code)
-                .execute(ctx.db())
-                .await?;
+            // The sender may have sent it while the agent was writing. Leave sent emails alone. Like save_initial, new text the review
+            // window approved as the old one goes back to wait its own window.
+            sqlx::query(
+                "update email_messages set body = $2, language = $4, written_at = now(),
+                   status = case when approved_via = 'review_window' and status = 'approved' then 'draft' else status end,
+                   approved_via = case when approved_via = 'review_window' and status = 'approved' then null else approved_via end
+                 where id = $1 and status = any($3)",
+            )
+            .bind(id)
+            .bind(settings.sign(&body))
+            .bind(&UNSENT[..])
+            .bind(lang.code)
+            .execute(ctx.db())
+            .await?;
             saved += 1;
             continue;
         }

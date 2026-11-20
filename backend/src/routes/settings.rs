@@ -89,6 +89,9 @@ struct SettingsBody {
     autopilot_budget_micros: Option<i64>,
     autopilot_lead_cap: Option<i32>,
     autopilot_auto_send: Option<bool>,
+    /// A present null turns the review window off.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    review_window_hours: Option<Option<i32>>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -182,6 +185,9 @@ async fn update_settings(
     if body.autopilot_lead_cap.is_some_and(|n| !(0..=100_000).contains(&n)) {
         return bad("Autopilot lead cap must be between 0 and 100,000 a month");
     }
+    if body.review_window_hours.flatten().is_some_and(|h| !(1..=72).contains(&h)) {
+        return bad("The review window must be between 1 and 72 hours");
+    }
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
     }
@@ -251,7 +257,8 @@ async fn update_settings(
            grow_accounts = coalesce($40, grow_accounts),
            ask_for_referrals = coalesce($41, ask_for_referrals),
            watch_churn = coalesce($42, watch_churn),
-           prep_renewals = coalesce($43, prep_renewals)
+           prep_renewals = coalesce($43, prep_renewals),
+           review_window_hours = case when $44 then $45 else review_window_hours end
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -297,6 +304,8 @@ async fn update_settings(
     .bind(body.ask_for_referrals)
     .bind(body.watch_churn)
     .bind(body.prep_renewals)
+    .bind(body.review_window_hours.is_some())
+    .bind(body.review_window_hours.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(settings))

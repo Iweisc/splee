@@ -9,7 +9,7 @@ import { qs } from "@/lib/api";
 import type { EmailRow, Paginated, ProjectSummary } from "@/lib/types";
 import { cn, isPast, timeAgo } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
-import { EmailPreview } from "./email-preview";
+import { EmailPreview, sendsIn } from "./email-preview";
 import { ListKeysHint, useListKeys } from "./list-keys";
 import { SearchField } from "./search-field";
 import { ListSkeleton, LoadError, Pager, PER_PAGE, useDebounced } from "./states";
@@ -141,7 +141,9 @@ export function EmailsView({ projectId, segmentId }: { projectId?: string; segme
                         {/* In the queue, an email without a time or past it goes out at the sender's next chance. */}
                         {tab === "scheduled" && (!e.scheduled_for || isPast(e.scheduled_for))
                           ? "Next up"
-                          : timeAgo(e.sent_at ?? e.scheduled_for ?? e.created_at)}
+                          : tab === "drafts" && e.sends_at
+                            ? `Sends ${sendsIn(e.sends_at)}`
+                            : timeAgo(e.sent_at ?? e.scheduled_for ?? e.created_at)}
                       </span>
                     </span>
                     <span className="truncate text-xs text-muted-foreground">

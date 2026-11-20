@@ -60,6 +60,7 @@ mod rate_limit;
 mod reddit;
 mod reports;
 mod rest_hooks;
+mod review_window;
 mod routes;
 mod score;
 mod signals;

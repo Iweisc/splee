@@ -349,7 +349,7 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     sqlx::query("update segments set status = 'working' where id = $1").bind(segment.id).execute(&mut *tx).await?;
     // Pausing turned queued follow-ups back into drafts, so starting queues them again for the day they were due.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
-        "update email_messages set status = 'approved',
+        "update email_messages set status = 'approved', approved_via = 'person',
            scheduled_for = case when kind = 'follow_up' then coalesce(scheduled_for, now()) else now() end
          where segment_id = $1 and kind in ('initial', 'follow_up') and status = 'draft' returning lead_id",
     )
@@ -376,7 +376,7 @@ async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     sqlx::query("update segments set status = 'paused' where id = $1").bind(segment.id).execute(&mut *tx).await?;
     // Manual and auto replies are answers to real people, so pausing a campaign leaves them queued.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
-        "update email_messages set status = 'draft'
+        "update email_messages set status = 'draft', approved_via = null
          where segment_id = $1 and kind in ('initial', 'follow_up') and status in ('approved', 'scheduled')
          returning lead_id",
     )

@@ -385,6 +385,8 @@ export interface ProjectSettings extends CrmStatus {
   autopilot_lead_cap: number;
   /** Autopilot's emails go out without approval. */
   autopilot_auto_send: boolean;
+  /** Drafts nobody reviewed or edited go out this many hours after they were written, 1 to 72. null keeps them waiting. */
+  review_window_hours: number | null;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */
@@ -1517,6 +1519,8 @@ export interface EmailMessage {
   language: string;
   /** Who else a lead's reply went to, or who ours is copied to. Lowercase. */
   cc_emails: string[];
+  /** Who approved it, once it was. */
+  approved_via: "person" | "review_window" | null;
 }
 
 /** A file on an email, without its bytes. Download it from /attachments/:id when `stored`. */
@@ -1674,6 +1678,8 @@ export interface EmailRow extends EmailMessage {
   segment_name: string | null;
   project_name: string;
   variant_name: string | null;
+  /** When a draft goes out on its own if nobody reviews it. null when it waits for a person. */
+  sends_at: Ts | null;
 }
 
 export interface InboxThread {

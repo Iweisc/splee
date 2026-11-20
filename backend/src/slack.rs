@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::config::SlackApp;
 use crate::crypto;
 use crate::models::Ts;
+use crate::review_window;
 use crate::state::AppState;
 
 pub const API_URL: &str = "https://slack.com/api";
@@ -352,12 +353,15 @@ pub struct DigestEmail {
     pub company: String,
     pub subject: String,
     pub body: String,
+    /// When it goes out if nobody reviews it, with a review window on. See review_window.rs.
+    pub sends_at: Option<Ts>,
 }
 
 pub struct DigestCampaign {
     pub id: Uuid,
     pub name: String,
     pub count: i64,
+    pub first_sends_at: Option<Ts>,
 }
 
 /// The emails a project has waiting for approval. `before` is when it was counted, so Approve all only approves what it said.
@@ -373,6 +377,16 @@ pub struct Digest {
 
 fn emails(n: i64) -> String {
     if n == 1 { "1 email".into() } else { format!("{n} emails") }
+}
+
+/// "in 5 hours", counted from when the digest counted. The window is at most 72 hours, so hours always read fine.
+fn time_left(at: Ts, now: Ts) -> String {
+    let minutes = (at - now).num_minutes();
+    if minutes < 60 {
+        return "within the hour".into();
+    }
+    let hours = (minutes + 30) / 60;
+    if hours == 1 { "in 1 hour".into() } else { format!("in {hours} hours") }
 }
 
 impl Digest {
@@ -393,7 +407,8 @@ impl Digest {
                 "confirm": plain("Approve"),
                 "deny": plain("Cancel"),
             });
-            let mut block = section(format!("*{}*\n{} waiting", escape(&cut(&c.name, 200)), emails(c.count)));
+            let first = c.first_sends_at.map(|at| format!(". The first sends on its own {}", time_left(at, self.before))).unwrap_or_default();
+            let mut block = section(format!("*{}*\n{} waiting{first}", escape(&cut(&c.name, 200)), emails(c.count)));
             block["block_id"] = json!(format!("campaign:{}", c.id));
             block["accessory"] = approve;
             blocks.push(block);
@@ -406,7 +421,8 @@ impl Digest {
         }
         for e in &self.emails {
             let who = if e.company.trim().is_empty() { escape(&e.lead_name) } else { format!("{} at {}", escape(&e.lead_name), escape(&e.company)) };
-            blocks.push(section(format!("*{who}*\n{}\n{}", escape(&cut(&e.subject, 150)), quote(&e.body, 400))));
+            let sends = e.sends_at.map(|at| format!("_Sends on its own {} unless you skip it_\n", time_left(at, self.before))).unwrap_or_default();
+            blocks.push(section(format!("*{who}*\n{sends}{}\n{}", escape(&cut(&e.subject, 150)), quote(&e.body, 400))));
             let actions = [primary(button("approve_email", "Approve", e.id)), button("skip_email", "Skip", e.id)];
             blocks.push(json!({ "type": "actions", "block_id": format!("email:{}", e.id), "elements": actions }));
         }
@@ -606,18 +622,23 @@ pub async fn load_digest(db: &sqlx::PgPool, public_url: &str, project_id: Uuid) 
     if total == 0 {
         return Ok(None);
     }
-    let campaigns: Vec<(Uuid, String, i64)> = sqlx::query_as(&format!(
-        "select s.id, s.name, count(*) from email_messages e join segments s on s.id = e.segment_id where {WAITING} and e.created_at <= $2
-         group by s.id, s.name order by count(*) desc, s.name"
+    let campaigns: Vec<(Uuid, String, i64, Option<Ts>)> = sqlx::query_as(&format!(
+        "select s.id, s.name, count(*), min({sends_at}) from email_messages e join segments s on s.id = e.segment_id
+           left join project_settings ps on ps.project_id = e.project_id
+         where {WAITING} and e.created_at <= $2
+         group by s.id, s.name order by count(*) desc, s.name",
+        sends_at = *review_window::SENDS_AT
     ))
     .bind(project_id)
     .bind(before)
     .fetch_all(db)
     .await?;
-    let emails: Vec<(Uuid, String, String, String, String)> = if total as usize <= DIGEST_EACH_UP_TO {
+    let emails: Vec<(Uuid, String, String, String, String, Option<Ts>)> = if total as usize <= DIGEST_EACH_UP_TO {
         sqlx::query_as(&format!(
-            "select e.id, l.full_name, l.company_name, e.subject, e.body from email_messages e join leads l on l.id = e.lead_id
-             where {WAITING} and e.created_at <= $2 order by e.created_at"
+            "select e.id, l.full_name, l.company_name, e.subject, e.body, {sends_at} from email_messages e join leads l on l.id = e.lead_id
+               left join segments s on s.id = e.segment_id left join project_settings ps on ps.project_id = e.project_id
+             where {WAITING} and e.created_at <= $2 order by e.created_at",
+            sends_at = *review_window::SENDS_AT
         ))
         .bind(project_id)
         .bind(before)
@@ -629,8 +650,11 @@ pub async fn load_digest(db: &sqlx::PgPool, public_url: &str, project_id: Uuid) 
     Ok(Some(Digest {
         project_name,
         total,
-        campaigns: campaigns.into_iter().map(|(id, name, count)| DigestCampaign { id, name, count }).collect(),
-        emails: emails.into_iter().map(|(id, lead_name, company, subject, body)| DigestEmail { id, lead_name, company, subject, body }).collect(),
+        campaigns: campaigns.into_iter().map(|(id, name, count, first_sends_at)| DigestCampaign { id, name, count, first_sends_at }).collect(),
+        emails: emails
+            .into_iter()
+            .map(|(id, lead_name, company, subject, body, sends_at)| DigestEmail { id, lead_name, company, subject, body, sends_at })
+            .collect(),
         before,
         link: format!("{}/app/p/{project_id}/emails", public_url.trim_end_matches('/')),
     }))
@@ -772,7 +796,7 @@ mod tests {
     }
 
     fn digest(total: i64, each: usize) -> Digest {
-        let campaign = DigestCampaign { id: Uuid::new_v4(), name: "Founders in Lisbon".into(), count: total };
+        let campaign = DigestCampaign { id: Uuid::new_v4(), name: "Founders in Lisbon".into(), count: total, first_sends_at: None };
         let emails = (0..each)
             .map(|i| DigestEmail {
                 id: Uuid::new_v4(),
@@ -780,6 +804,7 @@ mod tests {
                 company: "Acme".into(),
                 subject: "Quick idea".into(),
                 body: "Hi there".into(),
+                sends_at: None,
             })
             .collect();
         Digest {
@@ -817,6 +842,17 @@ mod tests {
         let one = digest(1, 1).blocks();
         assert_eq!(one[0]["text"]["text"], "*1 email is waiting for approval* in Fieldnote");
         assert_eq!(one[1]["accessory"]["text"]["text"], "Approve 1");
+
+        // With a review window, each says when it goes out on its own.
+        let mut windowed = digest(2, 2);
+        windowed.campaigns[0].first_sends_at = Some(windowed.before + chrono::Duration::minutes(290));
+        windowed.emails[0].sends_at = windowed.campaigns[0].first_sends_at;
+        windowed.emails[1].sends_at = Some(windowed.before + chrono::Duration::minutes(20));
+        let blocks = windowed.blocks();
+        assert_eq!(blocks[1]["text"]["text"], "*Founders in Lisbon*\n2 emails waiting. The first sends on its own in 5 hours");
+        assert_eq!(blocks[3]["text"]["text"], "*Lead 0 at Acme*\n_Sends on its own in 5 hours unless you skip it_\nQuick idea\n>Hi there");
+        assert!(blocks[5]["text"]["text"].as_str().unwrap().contains("_Sends on its own within the hour unless you skip it_"));
+        assert_eq!(time_left(windowed.before + chrono::Duration::minutes(80), windowed.before), "in 1 hour");
     }
 
     #[test]

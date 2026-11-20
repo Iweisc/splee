@@ -11,6 +11,7 @@ import { money, num } from "@/lib/utils";
 
 const MAX_BUDGET_USD = 100_000;
 const MAX_LEADS = 100_000;
+const REVIEW_WINDOW_HOURS = { min: 1, max: 72, start: 24 };
 
 const APPROVAL: { value: "approve" | "send"; label: string; description: string }[] = [
   { value: "approve", label: "Approve each email", description: "What it writes waits on the Emails page until you approve it." },
@@ -20,6 +21,10 @@ const APPROVAL: { value: "approve" | "send"; label: string; description: string 
 function problem(s: ProjectSettings) {
   if (s.autopilot_budget_micros < 0 || s.autopilot_budget_micros > MAX_BUDGET_USD * 1_000_000) return `Budget must be between $0 and ${money(MAX_BUDGET_USD * 1_000_000, { cents: false })}`;
   if (s.autopilot_lead_cap < 0 || s.autopilot_lead_cap > MAX_LEADS) return `New leads must be between 0 and ${num(MAX_LEADS)}`;
+  const hours = s.review_window_hours;
+  if (hours !== null && !(hours >= REVIEW_WINDOW_HOURS.min && hours <= REVIEW_WINDOW_HOURS.max)) {
+    return `The review window must be between ${REVIEW_WINDOW_HOURS.min} and ${REVIEW_WINDOW_HOURS.max} hours`;
+  }
   return null;
 }
 
@@ -162,6 +167,34 @@ export default function AutopilotPage() {
               options={APPROVAL}
               className="@xl:grid-cols-2"
             />
+          </Section>
+
+          <Section
+            title="Send drafts nobody reviews"
+            description="A first email or follow-up waiting in a sending campaign goes out on its own once the hours below pass, within your schedule and daily limit. Edit a draft and it waits for you. Auto-replies and meeting follow-ups always wait."
+            actions={
+              <Switch
+                checked={s.review_window_hours !== null}
+                onChange={(on) => update({ review_window_hours: on ? REVIEW_WINDOW_HOURS.start : null })}
+                label="Send drafts nobody reviews"
+              />
+            }
+          >
+            {s.review_window_hours !== null && (
+              <Field label="Send them after" hint="1 to 72 hours from when the draft was written.">
+                <div className="relative max-w-48">
+                  <NumberInput
+                    min={REVIEW_WINDOW_HOURS.min}
+                    max={REVIEW_WINDOW_HOURS.max}
+                    step={1}
+                    value={s.review_window_hours}
+                    onValueChange={(n) => update({ review_window_hours: Math.round(n) })}
+                    className="pr-16 tabular-nums"
+                  />
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-muted-foreground">hours</span>
+                </div>
+              </Field>
+            )}
           </Section>
         </>
       )}

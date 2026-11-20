@@ -10,7 +10,7 @@ import { Address, Message, Spinner } from "@/components/ui/misc";
 import { api } from "@/lib/api";
 import { languageName } from "@/lib/languages";
 import type { EmailRow } from "@/lib/types";
-import { dateTime } from "@/lib/utils";
+import { dateTime, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { isActive, useProjectRuns } from "./run-progress";
 import { MicroLabel, toastError } from "./states";
@@ -29,6 +29,11 @@ export const EMAIL_KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string>
   retention: "Retention",
   story_ask: "Case study ask",
 };
+
+/** How long a draft has before the review window sends it: "in 5h". Under a minute or past, the sender's next pass takes it. */
+export function sendsIn(ts: string): string {
+  return new Date(ts).getTime() - Date.now() < 60_000 ? "any minute" : timeAgo(ts);
+}
 
 function keptEdits(key: string, email: EmailRow): { subject: string; body: string } | null {
   if (typeof window === "undefined") return null;
@@ -152,6 +157,20 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
               <dd className="text-foreground">
                 <Address email={email.from_email} />
               </dd>
+            </>
+          )}
+          {email.sends_at && (
+            <>
+              <dt>Sends on its own</dt>
+              <dd className="text-foreground first-letter:uppercase">
+                {sendsIn(email.sends_at)} <span className="whitespace-nowrap text-muted-foreground">({dateTime(email.sends_at)})</span>
+              </dd>
+            </>
+          )}
+          {email.approved_via === "review_window" && (
+            <>
+              <dt>Approval</dt>
+              <dd className="text-foreground">{email.status === "sent" ? "Sent after the review window" : "Approved after the review window"}</dd>
             </>
           )}
           {email.sent_at ? (

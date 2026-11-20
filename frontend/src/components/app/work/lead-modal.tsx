@@ -585,6 +585,9 @@ function ThreadItem({ message: m, events }: { message: EmailMessage; events: Ema
       {!inbound && m.error && (m.status === "failed" || m.status === "cancelled") && (
         <p className={cn("mt-2 text-xs", m.status === "failed" ? "text-red-700" : "text-muted-foreground")}>Not sent: {m.error}</p>
       )}
+      {m.approved_via === "review_window" && (
+        <p className="mt-2 text-xs text-muted-foreground">{m.status === "sent" ? "Sent after the review window" : "Approved after the review window"}</p>
+      )}
       {events.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
           {events.map((e) => (

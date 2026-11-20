@@ -135,11 +135,23 @@ pub(super) async fn check_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppRes
     Ok(())
 }
 
-pub(super) async fn list_projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<Project>>> {
-    let projects = sqlx::query_as::<_, Project>("select * from projects where org_id = $1 order by created_at desc")
-        .bind(auth.org_id)
-        .fetch_all(&state.db)
-        .await?;
+#[derive(Serialize, FromRow)]
+pub(super) struct ApiProject {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    project: Project,
+    /// Hours a draft waits for review before it goes out on its own, or null when drafts wait for a person.
+    review_window_hours: Option<i32>,
+}
+
+pub(super) async fn list_projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<ApiProject>>> {
+    let projects = sqlx::query_as::<_, ApiProject>(
+        "select p.*, s.review_window_hours from projects p left join project_settings s on s.project_id = p.id
+         where p.org_id = $1 order by p.created_at desc",
+    )
+    .bind(auth.org_id)
+    .fetch_all(&state.db)
+    .await?;
     Ok(Json(projects))
 }
 
@@ -835,6 +847,10 @@ pub(super) struct Email {
     status: String,
     scheduled_for: Option<Ts>,
     created_at: Ts,
+    /// "person" or "review_window" once approved.
+    approved_via: Option<String>,
+    /// When a draft goes out on its own if nobody reviews it.
+    sends_at: Option<Ts>,
 }
 
 impl From<EmailRow> for Email {
@@ -858,6 +874,8 @@ impl From<EmailRow> for Email {
             status: e.status,
             scheduled_for: e.scheduled_for,
             created_at: e.created_at,
+            approved_via: e.approved_via,
+            sends_at: r.sends_at,
         }
     }
 }

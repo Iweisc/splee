@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,7 +14,8 @@ use crate::agent::{self, kind};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::mail;
-use crate::models::EmailMessage;
+use crate::models::{EmailMessage, Ts};
+use crate::review_window;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -35,15 +38,23 @@ pub(crate) struct EmailRow {
     pub project_name: String,
     /// The A/B test variant's name, when it was written for one.
     pub variant_name: Option<String>,
+    /// When a draft goes out on its own if nobody reviews it. See review_window.rs.
+    pub sends_at: Option<Ts>,
 }
 
-const ROW_SELECT: &str = "select e.*, l.full_name as lead_name, l.email::text as lead_email, l.company_name,
-       s.name as segment_name, p.name as project_name, v.name as variant_name
-     from email_messages e
-     join leads l on l.id = e.lead_id
-     join projects p on p.id = e.project_id
-     left join segments s on s.id = e.segment_id
-     left join segment_variants v on v.id = e.variant_id";
+static ROW_SELECT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "select e.*, l.full_name as lead_name, l.email::text as lead_email, l.company_name,
+           s.name as segment_name, p.name as project_name, v.name as variant_name, {} as sends_at
+         from email_messages e
+         join leads l on l.id = e.lead_id
+         join projects p on p.id = e.project_id
+         left join project_settings ps on ps.project_id = e.project_id
+         left join segments s on s.id = e.segment_id
+         left join segment_variants v on v.id = e.variant_id",
+        *review_window::SENDS_AT
+    )
+});
 
 #[derive(Deserialize, Default)]
 pub(super) struct ListQuery {
@@ -96,7 +107,7 @@ pub(super) async fn page_of(db: &PgPool, org_id: Uuid, q: ListQuery, page: &Page
     } else {
         "coalesce(e.sent_at, e.scheduled_for, e.created_at) desc"
     };
-    let items = sqlx::query_as::<_, EmailRow>(&format!("{ROW_SELECT} {LIST_FILTER} order by {order} limit $7 offset $8"))
+    let items = sqlx::query_as::<_, EmailRow>(&format!("{} {LIST_FILTER} order by {order} limit $7 offset $8", *ROW_SELECT))
     .bind(org_id)
     .bind(q.project_id)
     .bind(q.segment_id)
@@ -111,7 +122,7 @@ pub(super) async fn page_of(db: &PgPool, org_id: Uuid, q: ListQuery, page: &Page
 }
 
 async fn load(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<EmailRow> {
-    sqlx::query_as::<_, EmailRow>(&format!("{ROW_SELECT} where e.id = $1 and p.org_id = $2"))
+    sqlx::query_as::<_, EmailRow>(&format!("{} where e.id = $1 and p.org_id = $2", *ROW_SELECT))
         .bind(id)
         .bind(org_id)
         .fetch_optional(db)
@@ -153,9 +164,18 @@ pub(crate) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: Update
     let mut tx = db.begin().await?;
     sqlx::query(
         "update email_messages set
+           -- An edit keeps the draft out of the review window, since someone has looked at it.
+           edited_at = case when ($2 is not null and $2 is distinct from subject) or ($3 is not null and $3 is distinct from body) then now() else edited_at end,
            subject = coalesce($2, subject),
            body = coalesce($3, body),
-           status = coalesce($4, status),
+           -- The window may have approved it while this edit waited for the row. The edit puts it back to wait for a person.
+           status = case when $4 is null and approved_via = 'review_window' and status = 'approved'
+                              and (($2 is not null and $2 is distinct from subject) or ($3 is not null and $3 is distinct from body)) then 'draft'
+                         else coalesce($4, status) end,
+           approved_via = case when $4 = 'approved' then 'person'
+                               when $4 is null and approved_via = 'review_window' and status = 'approved'
+                                    and (($2 is not null and $2 is distinct from subject) or ($3 is not null and $3 is distinct from body)) then null
+                               else approved_via end,
            scheduled_for = case when $4 = 'approved' then coalesce(scheduled_for, now()) else scheduled_for end,
            error = case when $4 = 'approved' then '' else error end,
            -- Sending a failed email again gives a server that asked to try later its full set of tries again.
