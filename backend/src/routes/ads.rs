@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::util_scope;
 use crate::ads::{self, Connection, Platform};
+use crate::audit;
 use crate::auth::{Auth, MaybeAuth};
 use crate::config::Config;
 use crate::crypto::{self, random_token, sha256_hex};
@@ -209,6 +210,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     let code = q.code.filter(|c| !c.is_empty()).ok_or_else(again)?;
     let verifier = crypto::decrypt(&state.cfg.app_secret, &pending.code_verifier_enc).map_err(|e| fail(internal(&e)))?;
     ads::connect(state, pending.org_id, project, platform, &code, &verifier).await.map_err(fail)?;
+    audit::integration(&state.db, &auth, Some(project), label, true).await;
     Ok((project, platform))
 }
 
@@ -282,6 +284,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path((id, name)):
     if let Some(conn) = Connection::find(&state.db, id, platform).await? {
         ads::disconnect(&state, &conn).await?;
     }
+    audit::integration(&state.db, &auth, Some(id), platform.label(), false).await;
     status(&state.db, &state.cfg, id, None).await
 }
 

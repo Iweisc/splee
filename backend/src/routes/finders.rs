@@ -8,6 +8,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use super::settings::load_or_create;
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
@@ -97,6 +98,7 @@ async fn connect(
     .bind(crypto::encrypt(&state.cfg.app_secret, &key))
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), finder.label(), true).await;
     finders(&state.db, id).await
 }
 
@@ -104,6 +106,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path((id, name)):
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
     sqlx::query("delete from project_finders where project_id = $1 and provider = $2").bind(id).bind(&name).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, Some(id), Finder::parse(&name).map_or(name.as_str(), |f| f.label()), false).await;
     finders(&state.db, id).await
 }
 

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{util_input, util_scope};
+use crate::audit;
 use crate::auth::Auth;
 use crate::blog::{self, Fault, Ghost, Webflow, WordPress};
 use crate::crypto;
@@ -256,7 +257,19 @@ async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Js
     .bind(weekly_cap)
     .fetch_one(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), &label(&added), true).await;
     Ok(Json(added))
+}
+
+/// How the audit log names a blog, like "WordPress (blog.acme.com)".
+fn label(blog: &Blog) -> String {
+    let kind = match blog.kind.as_str() {
+        "wordpress" => "WordPress",
+        "ghost" => "Ghost",
+        "webflow" => "Webflow",
+        other => other,
+    };
+    format!("{kind} ({})", blog.account)
 }
 
 #[derive(Deserialize)]
@@ -286,6 +299,7 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
     sqlx::query("update social_posts set status = 'draft', updated_at = now() where blog_id = $1 and status = 'approved'").bind(blog.id).execute(&mut *tx).await?;
     sqlx::query("delete from blogs where id = $1").bind(blog.id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::integration(&state.db, &auth, Some(blog.project_id), &label(&blog), false).await;
     Ok(Json(json!({ "ok": true })))
 }
 

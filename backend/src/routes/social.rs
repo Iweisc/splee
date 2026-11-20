@@ -16,6 +16,7 @@ use super::settings::load_or_create;
 use super::{util_input, util_scope};
 use crate::agent::x::{self, Cookies};
 use crate::agent::{self, kind};
+use crate::audit;
 use crate::auth::Auth;
 use crate::blog;
 use crate::bluesky::{self, Bluesky};
@@ -492,13 +493,17 @@ async fn connect_x(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
         .await
         .map_err(|e| AppError::BadRequest(format!("X didn't accept those cookies ({e:#}). Copy them again from a browser that's signed in to x.com")))?;
     let secret = &state.cfg.app_secret;
-    set_x(&state, id, &crypto::encrypt(secret, &cookies.auth_token), &crypto::encrypt(secret, &cookies.ct0), &handle).await
+    let saved = set_x(&state, id, &crypto::encrypt(secret, &cookies.auth_token), &crypto::encrypt(secret, &cookies.ct0), &handle).await?;
+    audit::integration(&state.db, &auth, Some(id), "X", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_x(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_x(&state, id, "", "", "").await
+    let saved = set_x(&state, id, "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "X", false).await;
+    Ok(saved)
 }
 
 async fn set_x(state: &AppState, id: Uuid, token: &str, ct0: &str, handle: &str) -> AppResult<Json<ProjectSettings>> {
@@ -542,13 +547,17 @@ async fn connect_reddit(State(state): State<AppState>, auth: Auth, Path(id): Pat
     let name = Reddit::sign_in(&login).await.map_err(refused)?.me().await.map_err(refused)?;
     let secret = &state.cfg.app_secret;
     let enc = (crypto::encrypt(secret, &login.secret), crypto::encrypt(secret, &login.password));
-    set_reddit(&state, id, &login.client_id, &enc.0, &name, &enc.1).await
+    let saved = set_reddit(&state, id, &login.client_id, &enc.0, &name, &enc.1).await?;
+    audit::integration(&state.db, &auth, Some(id), "Reddit", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_reddit(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_reddit(&state, id, "", "", "", "").await
+    let saved = set_reddit(&state, id, "", "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Reddit", false).await;
+    Ok(saved)
 }
 
 async fn set_reddit(state: &AppState, id: Uuid, client_id: &str, secret: &str, username: &str, password: &str) -> AppResult<Json<ProjectSettings>> {
@@ -582,13 +591,17 @@ async fn connect_bluesky(State(state): State<AppState>, auth: Auth, Path(id): Pa
         return Err(AppError::BadRequest("Fill in the handle and app password".into()));
     }
     let session = Bluesky::sign_in(&login).await.map_err(|e| AppError::BadRequest(e.message()))?;
-    set_bluesky(&state, id, &session.handle, &crypto::encrypt(&state.cfg.app_secret, &login.password)).await
+    let saved = set_bluesky(&state, id, &session.handle, &crypto::encrypt(&state.cfg.app_secret, &login.password)).await?;
+    audit::integration(&state.db, &auth, Some(id), "Bluesky", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_bluesky(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_bluesky(&state, id, "", "").await
+    let saved = set_bluesky(&state, id, "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Bluesky", false).await;
+    Ok(saved)
 }
 
 async fn set_bluesky(state: &AppState, id: Uuid, handle: &str, password: &str) -> AppResult<Json<ProjectSettings>> {
@@ -621,13 +634,17 @@ async fn connect_mastodon(State(state): State<AppState>, auth: Auth, Path(id): P
     }
     let account = Mastodon::new(&base, token).await.map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
     let enc = crypto::encrypt(&state.cfg.app_secret, token);
-    set_mastodon(&state, id, &base, &enc, &account.handle, account.max_chars).await
+    let saved = set_mastodon(&state, id, &base, &enc, &account.handle, account.max_chars).await?;
+    audit::integration(&state.db, &auth, Some(id), "Mastodon", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_mastodon(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_mastodon(&state, id, "", "", "", 500).await
+    let saved = set_mastodon(&state, id, "", "", "", 500).await?;
+    audit::integration(&state.db, &auth, Some(id), "Mastodon", false).await;
+    Ok(saved)
 }
 
 async fn set_mastodon(state: &AppState, id: Uuid, url: &str, token: &str, handle: &str, max_chars: i32) -> AppResult<Json<ProjectSettings>> {
@@ -660,13 +677,17 @@ async fn connect_threads(State(state): State<AppState>, auth: Auth, Path(id): Pa
         return Err(AppError::BadRequest("Paste the access token".into()));
     }
     let account = Threads::new(token, "").map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
-    set_threads(&state, id, &crypto::encrypt(&state.cfg.app_secret, token), &account.id, &account.username).await
+    let saved = set_threads(&state, id, &crypto::encrypt(&state.cfg.app_secret, token), &account.id, &account.username).await?;
+    audit::integration(&state.db, &auth, Some(id), "Threads", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_threads(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_threads(&state, id, "", "", "").await
+    let saved = set_threads(&state, id, "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Threads", false).await;
+    Ok(saved)
 }
 
 async fn set_threads(state: &AppState, id: Uuid, token: &str, user_id: &str, username: &str) -> AppResult<Json<ProjectSettings>> {
@@ -702,13 +723,17 @@ async fn connect_youtube(State(state): State<AppState>, auth: Auth, Path(id): Pa
     let channel = YouTube::sign_in(&login).await.map_err(refused)?.me().await.map_err(refused)?;
     let secret = &state.cfg.app_secret;
     let enc = (crypto::encrypt(secret, &login.secret), crypto::encrypt(secret, &login.refresh_token));
-    set_youtube(&state, id, &login.client_id, &enc.0, &enc.1, &channel.id, &channel.name).await
+    let saved = set_youtube(&state, id, &login.client_id, &enc.0, &enc.1, &channel.id, &channel.name).await?;
+    audit::integration(&state.db, &auth, Some(id), "YouTube", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_youtube(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_youtube(&state, id, "", "", "", "", "").await
+    let saved = set_youtube(&state, id, "", "", "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "YouTube", false).await;
+    Ok(saved)
 }
 
 async fn set_youtube(state: &AppState, id: Uuid, client_id: &str, secret: &str, token: &str, channel_id: &str, channel: &str) -> AppResult<Json<ProjectSettings>> {
@@ -751,13 +776,17 @@ async fn connect_stackexchange(State(state): State<AppState>, auth: Auth, Path(i
     }
     let user = se.me().await.map_err(refused)?;
     let enc = crypto::encrypt(&state.cfg.app_secret, token);
-    set_stackexchange(&state, id, key, &enc, &user.site, &user.account, &user.name).await
+    let saved = set_stackexchange(&state, id, key, &enc, &user.site, &user.account, &user.name).await?;
+    audit::integration(&state.db, &auth, Some(id), "Stack Exchange", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_stackexchange(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_stackexchange(&state, id, "", "", "", "", "").await
+    let saved = set_stackexchange(&state, id, "", "", "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Stack Exchange", false).await;
+    Ok(saved)
 }
 
 async fn set_stackexchange(state: &AppState, id: Uuid, key: &str, token: &str, site: &str, account: &str, user: &str) -> AppResult<Json<ProjectSettings>> {
@@ -791,13 +820,17 @@ async fn connect_dev(State(state): State<AppState>, auth: Auth, Path(id): Path<U
         return Err(AppError::BadRequest("Paste the API key".into()));
     }
     let username = Dev::new(key).map_err(|e| AppError::BadRequest(e.message()))?.me().await.map_err(|e| AppError::BadRequest(e.message()))?;
-    set_dev(&state, id, &crypto::encrypt(&state.cfg.app_secret, key), &username).await
+    let saved = set_dev(&state, id, &crypto::encrypt(&state.cfg.app_secret, key), &username).await?;
+    audit::integration(&state.db, &auth, Some(id), "DEV", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_dev(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_dev(&state, id, "", "").await
+    let saved = set_dev(&state, id, "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "DEV", false).await;
+    Ok(saved)
 }
 
 async fn set_dev(state: &AppState, id: Uuid, key: &str, username: &str) -> AppResult<Json<ProjectSettings>> {
@@ -834,13 +867,17 @@ async fn connect_lemmy(State(state): State<AppState>, auth: Auth, Path(id): Path
     let handle = lemmy.me().await.map_err(refused)?;
     let secret = &state.cfg.app_secret;
     let enc = (crypto::encrypt(secret, &b.password), crypto::encrypt(secret, &lemmy.jwt()));
-    set_lemmy(&state, id, &base, username, &enc.0, &enc.1, &handle).await
+    let saved = set_lemmy(&state, id, &base, username, &enc.0, &enc.1, &handle).await?;
+    audit::integration(&state.db, &auth, Some(id), "Lemmy", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_lemmy(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_lemmy(&state, id, "", "", "", "", "").await
+    let saved = set_lemmy(&state, id, "", "", "", "", "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Lemmy", false).await;
+    Ok(saved)
 }
 
 async fn set_lemmy(state: &AppState, id: Uuid, url: &str, username: &str, password: &str, jwt: &str, handle: &str) -> AppResult<Json<ProjectSettings>> {
@@ -884,13 +921,17 @@ async fn connect_nostr(State(state): State<AppState>, auth: Auth, Path(id): Path
     }
     let pubkey = nostr::pubkey(&key);
     let enc = crypto::encrypt(&state.cfg.app_secret, &hex::encode(key.to_bytes()));
-    set_nostr(&state, id, &enc, &pubkey, &nostr::npub(&pubkey), &relays).await
+    let saved = set_nostr(&state, id, &enc, &pubkey, &nostr::npub(&pubkey), &relays).await?;
+    audit::integration(&state.db, &auth, Some(id), "Nostr", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_nostr(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_nostr(&state, id, "", "", "", &[]).await
+    let saved = set_nostr(&state, id, "", "", "", &[]).await?;
+    audit::integration(&state.db, &auth, Some(id), "Nostr", false).await;
+    Ok(saved)
 }
 
 async fn set_nostr(state: &AppState, id: Uuid, key: &str, pubkey: &str, npub: &str, relays: &[String]) -> AppResult<Json<ProjectSettings>> {
@@ -926,13 +967,17 @@ async fn connect_hashnode(State(state): State<AppState>, auth: Auth, Path(id): P
     let account = Hashnode::new(token).map_err(refused)?.me().await.map_err(refused)?;
     let first = account.publications.first().and_then(|p| p["id"].as_str()).unwrap_or_default().to_string();
     let enc = crypto::encrypt(&state.cfg.app_secret, token);
-    set_hashnode(&state, id, &enc, &account.username, json!(account.publications), &first).await
+    let saved = set_hashnode(&state, id, &enc, &account.username, json!(account.publications), &first).await?;
+    audit::integration(&state.db, &auth, Some(id), "Hashnode", true).await;
+    Ok(saved)
 }
 
 async fn disconnect_hashnode(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    set_hashnode(&state, id, "", "", json!([]), "").await
+    let saved = set_hashnode(&state, id, "", "", json!([]), "").await?;
+    audit::integration(&state.db, &auth, Some(id), "Hashnode", false).await;
+    Ok(saved)
 }
 
 async fn set_hashnode(state: &AppState, id: Uuid, token: &str, username: &str, publications: Value, publication: &str) -> AppResult<Json<ProjectSettings>> {
@@ -1036,6 +1081,7 @@ async fn add_forum(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
     .bind(category.map(|c| c.1).unwrap_or_default())
     .fetch_one(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), &format!("Discourse ({})", added.account), true).await;
     Ok(Json(added))
 }
 
@@ -1046,6 +1092,7 @@ async fn remove_forum(State(state): State<AppState>, auth: Auth, Path(id): Path<
     sqlx::query("update social_posts set status = 'draft', updated_at = now() where forum_id = $1 and status = 'approved'").bind(forum.id).execute(&mut *tx).await?;
     sqlx::query("delete from discourse_forums where id = $1").bind(forum.id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::integration(&state.db, &auth, Some(forum.project_id), &format!("Discourse ({})", forum.account), false).await;
     Ok(Json(json!({ "ok": true })))
 }
 

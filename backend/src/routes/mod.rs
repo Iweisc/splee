@@ -92,6 +92,7 @@ pub mod suppressions;
 pub mod notifications;
 pub(crate) mod analytics;
 pub mod api_keys;
+mod audit;
 pub mod api_v1;
 pub(crate) mod mcp;
 mod rest_hooks;
@@ -171,6 +172,7 @@ pub fn router() -> Router<AppState> {
         .merge(suppressions::router())
         .merge(notifications::router())
         .merge(api_keys::router())
+        .merge(audit::router())
         .merge(api_v1::router())
         .merge(extension::router())
         .merge(mcp::router())

@@ -9,6 +9,7 @@ import {
   ChartLine,
   CalendarClock,
   CircleUser,
+  ClipboardList,
   DatabaseBackup,
   FileText,
   GraduationCap,
@@ -91,7 +92,8 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
   },
 ];
 
-export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
+/** `admin` items show to owners and admins only. */
+export const orgNav: { label: string; href: string; icon: LucideIcon; admin?: boolean }[] = [
   { label: "Domains", href: "/app/sending-domains", icon: Globe },
   { label: "Mailboxes", href: "/app/domains", icon: Server }, // D2
   { label: "Deliverability", href: "/app/deliverability", icon: ShieldCheck },
@@ -101,6 +103,7 @@ export const orgNav: { label: string; href: string; icon: LucideIcon }[] = [
   { label: "Notifications", href: "/app/notifications", icon: Bell }, // D2
   { label: "API keys", href: "/app/api-keys", icon: KeyRound }, // D2
   { label: "Data export", href: "/app/data-export", icon: DatabaseBackup },
+  { label: "Audit log", href: "/app/audit", icon: ClipboardList, admin: true },
   { label: "Account", href: "/app/account", icon: CircleUser },
 ];
 

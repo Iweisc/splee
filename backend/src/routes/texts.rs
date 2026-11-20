@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::leads::{LEAD_ROW_SELECT, LeadRow};
 use super::util_scope;
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
@@ -154,6 +155,7 @@ async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<Con
     .bind(auth.user_id)
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, None, "Twilio", true).await;
     status(State(state), auth).await
 }
 
@@ -161,6 +163,7 @@ async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<Con
 async fn disconnect(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Status>> {
     auth.require_admin()?;
     sqlx::query("delete from twilio_accounts where org_id = $1").bind(auth.org_id).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, None, "Twilio", false).await;
     status(State(state), auth).await
 }
 

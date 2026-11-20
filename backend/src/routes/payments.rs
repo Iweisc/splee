@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
@@ -100,6 +101,7 @@ async fn connect(
     .bind(crypto::encrypt(&state.cfg.app_secret, key))
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), provider.label(), true).await;
     connections(&state.db, id).await
 }
 
@@ -140,6 +142,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path((id, name)):
     auth.project(&state.db, id).await?;
     let provider = provider(&name)?;
     sqlx::query("delete from payment_connections where project_id = $1 and provider = $2").bind(id).bind(provider.name()).execute(&state.db).await?;
+    audit::integration(&state.db, &auth, Some(id), provider.label(), false).await;
     connections(&state.db, id).await
 }
 

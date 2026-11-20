@@ -18,6 +18,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::{emails, inbox, util_scope};
+use crate::audit;
 use crate::auth::{Auth, MaybeAuth};
 use crate::crypto::{self, random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
@@ -216,7 +217,9 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     .execute(&mut *tx)
     .await
     .map_err(|e| internal(&e))?;
-    tx.commit().await.map_err(|e| internal(&e))
+    tx.commit().await.map_err(|e| internal(&e))?;
+    audit::integration(&state.db, &auth, None, "Slack", true).await;
+    Ok(())
 }
 
 /// The org's bot, or a 400 saying Slack isn't connected.
@@ -285,6 +288,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth) -> AppResult<Json
     sqlx::query("delete from slack_installs where org_id = $1").bind(auth.org_id).execute(&mut *tx).await?;
     sqlx::query("delete from slack_channels c using projects p where p.id = c.project_id and p.org_id = $1").bind(auth.org_id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::integration(&state.db, &auth, None, "Slack", false).await;
     Ok(Json(json!({ "ok": true })))
 }
 

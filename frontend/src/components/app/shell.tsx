@@ -164,9 +164,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="mt-4">
             <p className="px-2 pb-1 font-mono text-[11px] tracking-wide text-muted-foreground uppercase">{me.org.name}</p>
-            {orgNav.map((item) => (
-              <NavLink key={item.href} href={item.href} icon={item.icon} label={item.label} active={pathname.startsWith(item.href)} />
-            ))}
+            {orgNav
+              .filter((item) => !item.admin || me.role === "owner" || me.role === "admin")
+              .map((item) => (
+                <NavLink key={item.href} href={item.href} icon={item.icon} label={item.label} active={pathname.startsWith(item.href)} />
+              ))}
           </div>
         </nav>
 

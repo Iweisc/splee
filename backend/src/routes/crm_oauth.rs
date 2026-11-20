@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::settings::load_or_create;
+use crate::audit;
 use crate::auth::{Auth, MaybeAuth};
 use crate::crm::{self, Crm, signin};
 use crate::crypto::{self, random_token, sha256_hex};
@@ -154,6 +155,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     let verifier = crypto::decrypt(&state.cfg.app_secret, &pending.code_verifier_enc).map_err(|e| fail(internal(&e)))?;
     load_or_create(&state.db, project).await.map_err(|e| fail(internal(&e)))?;
     signin::connect(state, project, crm, &pending.site, q.accounts_server.as_deref(), &code, &verifier).await.map_err(fail)?;
+    audit::integration(&state.db, &auth, Some(project), label, true).await;
     Ok((project, crm))
 }
 

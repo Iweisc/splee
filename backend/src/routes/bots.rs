@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::settings::load_or_create;
 use super::util_scope;
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::discord::Discord;
@@ -90,6 +91,7 @@ async fn connect_discord(State(state): State<AppState>, auth: Auth, Path(id): Pa
     .execute(&state.db)
     .await?;
     social_channels::sync(&state.db, id, "discord", &found).await?;
+    audit::integration(&state.db, &auth, Some(id), "Discord", true).await;
     settings(&state, id).await
 }
 
@@ -105,6 +107,7 @@ async fn disconnect_discord(State(state): State<AppState>, auth: Auth, Path(id):
     .bind(id)
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), "Discord", false).await;
     settings(&state, id).await
 }
 
@@ -160,6 +163,7 @@ async fn connect_telegram(State(state): State<AppState>, auth: Auth, Path(id): P
     .bind(bot.reads_all)
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), "Telegram", true).await;
     settings(&state, id).await
 }
 
@@ -175,6 +179,7 @@ async fn disconnect_telegram(State(state): State<AppState>, auth: Auth, Path(id)
     .bind(id)
     .execute(&state.db)
     .await?;
+    audit::integration(&state.db, &auth, Some(id), "Telegram", false).await;
     settings(&state, id).await
 }
 

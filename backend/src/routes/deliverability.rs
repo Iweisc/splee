@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::mailbox_oauth::{self, CallbackQuery, POSTMASTER, SignedIn};
+use crate::audit;
 use crate::auth::Auth;
 use crate::crypto;
 use crate::deliverability::{self, Report, postmaster};
@@ -96,6 +97,7 @@ async fn disconnect(State(state): State<AppState>, auth: Auth) -> AppResult<Json
     sqlx::query("delete from postmaster_connections where org_id = $1").bind(auth.org_id).execute(&mut *tx).await?;
     sqlx::query("delete from postmaster_days where org_id = $1").bind(auth.org_id).execute(&mut *tx).await?;
     tx.commit().await?;
+    audit::integration(&state.db, &auth, None, "Google Postmaster Tools", false).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -139,5 +141,6 @@ async fn save(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Result<
     if let Err(e) = postmaster::sync(state, auth.org_id).await {
         tracing::info!(error = %e, "first Postmaster Tools sync failed");
     }
+    audit::integration(&state.db, &auth, None, "Google Postmaster Tools", true).await;
     Ok(())
 }

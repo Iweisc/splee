@@ -54,6 +54,22 @@ pub struct ApiKey {
     pub created_at: Ts,
 }
 
+/// An audit log entry (audit.rs). actor_name is the member's name or email, or the key's name, and empty for one deleted since.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct AuditEvent {
+    pub id: Uuid,
+    pub action: String,
+    pub actor_user_id: Option<Uuid>,
+    pub actor_key_id: Option<Uuid>,
+    pub actor_name: String,
+    pub target_type: String,
+    pub target_id: Option<Uuid>,
+    pub target_label: String,
+    pub details: Value,
+    pub ip: Option<String>,
+    pub created_at: Ts,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct NotificationPrefs {
     pub user_id: Uuid,

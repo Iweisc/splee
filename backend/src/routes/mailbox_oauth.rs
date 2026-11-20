@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::util_input;
+use crate::audit::{self, Target};
 use crate::auth::{Auth, MaybeAuth};
 use crate::crypto::{self, random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
@@ -214,7 +215,7 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
 
     let hosts = provider.hosts(account.consumer);
     // Reconnecting an address that's already here, with a password or a revoked sign-in, keeps its history and settings.
-    sqlx::query_scalar(
+    let id: Uuid = sqlx::query_scalar(
         "insert into mailboxes (org_id, email, provider, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc, imap_host, imap_port,
            imap_username, imap_password_enc, oauth_refresh_token_enc, oauth_access_token_enc, oauth_expires_at, ramp_up, warmup, warmup_daily_cap,
            total_daily_limit, hold_until_warm, owner_id)
@@ -247,7 +248,9 @@ async fn finish(state: &AppState, auth: Option<Auth>, q: CallbackQuery) -> Resul
     .bind(auth.user_id)
     .fetch_one(&state.db)
     .await
-    .map_err(|e| internal(&e))
+    .map_err(|e| internal(&e))?;
+    audit::record(&state.db, &auth, "mailbox.connected", Target::new("mailbox", id, &email), json!({ "provider": provider.name() })).await;
+    Ok(id)
 }
 
 #[cfg(test)]

@@ -95,6 +95,21 @@ export interface ApiKey {
   created_at: Ts;
 }
 
+/** An audit log entry (backend/src/audit.rs lists the actions). `actor_name` is empty when the member or key is gone. */
+export interface AuditEvent {
+  id: UUID;
+  action: string;
+  actor_user_id: UUID | null;
+  actor_key_id: UUID | null;
+  actor_name: string;
+  target_type: string;
+  target_id: UUID | null;
+  target_label: string;
+  details: Record<string, unknown>;
+  ip: string | null;
+  created_at: Ts;
+}
+
 /** An app someone allowed on the OAuth consent page, like ChatGPT or Claude.ai. */
 export interface ConnectedApp {
   id: UUID;
