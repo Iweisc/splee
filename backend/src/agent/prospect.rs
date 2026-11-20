@@ -65,11 +65,12 @@ pub async fn project_targeting(db: &sqlx::PgPool, project_id: Uuid) -> anyhow::R
     Ok(value.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
 }
 
-/// Suppressed emails and domains of the project's organization. Demo projects have none.
+/// Suppressed emails and domains of the project's organization, with its lists covering the project. Demo projects have none.
 async fn suppressions(ctx: &Ctx, project: &Project) -> anyhow::Result<HashSet<String>> {
     let Some(org_id) = project.org_id else { return Ok(HashSet::new()) };
-    let values: Vec<String> = sqlx::query_scalar("select lower(value::text) from suppressions where org_id = $1")
+    let values: Vec<String> = sqlx::query_scalar(crate::routes::suppression_lists::SUPPRESSED_VALUES)
         .bind(org_id)
+        .bind(project.id)
         .fetch_all(ctx.db())
         .await?;
     Ok(values.into_iter().collect())

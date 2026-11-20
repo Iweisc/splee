@@ -90,8 +90,9 @@ pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, r
     if linkedin {
         sqlx::query("select pg_advisory_xact_lock(hashtextextended('linkedin-leads:' || $1::text, 0))").bind(project_id).execute(&mut *tx).await?;
     }
-    let suppressed: HashSet<String> = sqlx::query_scalar::<_, String>("select value::text from suppressions where org_id = $1")
+    let suppressed: HashSet<String> = sqlx::query_scalar::<_, String>(super::suppression_lists::SUPPRESSED_VALUES)
         .bind(org_id)
+        .bind(project_id)
         .fetch_all(&mut *tx)
         .await?
         .into_iter()

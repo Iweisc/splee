@@ -89,6 +89,7 @@ pub mod meetings;
 pub mod settings;
 pub mod materials;
 pub mod imports;
+pub mod suppression_lists;
 pub mod suppressions;
 pub mod notifications;
 pub(crate) mod analytics;
@@ -172,6 +173,7 @@ pub fn router() -> Router<AppState> {
         .merge(materials::router())
         .merge(imports::router())
         .merge(suppressions::router())
+        .merge(suppression_lists::router())
         .merge(notifications::router())
         .merge(api_keys::router())
         .merge(audit::router())

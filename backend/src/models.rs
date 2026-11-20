@@ -956,6 +956,20 @@ pub struct Suppression {
     pub created_at: Ts,
 }
 
+/// A named do-not-contact list. See migration 0177 and routes/suppression_lists.rs.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SuppressionList {
+    pub id: Uuid,
+    pub name: String,
+    /// "people" (emails) or "companies" (domains).
+    pub kind: String,
+    /// The projects it covers, or null for all of them. Deleted projects are left out.
+    pub project_ids: Option<Vec<Uuid>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: Ts,
+    pub entries: i64,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Import {
     pub id: Uuid,

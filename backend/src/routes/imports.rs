@@ -175,13 +175,13 @@ impl Upload {
     }
 }
 
-struct Csv {
-    headers: Vec<String>,
+pub(crate) struct Csv {
+    pub headers: Vec<String>,
     /// (line number in the file, cells)
-    rows: Vec<(usize, Vec<String>)>,
+    pub rows: Vec<(usize, Vec<String>)>,
 }
 
-fn parse_csv(bytes: &[u8]) -> AppResult<Csv> {
+pub(crate) fn parse_csv(bytes: &[u8]) -> AppResult<Csv> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let mut reader = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).from_reader(bytes);
     let to_strings = |r: &csv::ByteRecord| r.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>();

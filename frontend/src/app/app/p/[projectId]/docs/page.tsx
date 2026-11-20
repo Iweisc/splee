@@ -396,6 +396,54 @@ function endpoints(projectId: string): Endpoint[] {
       response: `{ "added": 2 }`,
     },
     {
+      method: "POST",
+      path: "/suppression-lists/people",
+      summary:
+        "Add up to 10,000 people to a named list, like your CRM's customers, kept apart from unsubscribes and bounces. The list is made when your organization has none by that name. Splee never contacts them in the projects it covers, and queued emails and texts to them are cancelled. project_ids sets those projects, null or left out on a new list means all of them. skipped counts invalid emails and ones already on the list. 422 for an empty project_ids or a project outside your organization.",
+      body: `{ "list": "CRM customers", "people": [{ "email": "sarah@northwind.studio" }], "project_ids": ["${projectId}"] }`,
+      response: `{
+  "list": { "id": "3c7d…", "name": "CRM customers", "kind": "people", "project_ids": ["${projectId}"], "created_by": null, "created_at": "2026-11-21T09:00:00Z", "entries": 1 },
+  "added": 1,
+  "skipped": 0
+}`,
+    },
+    {
+      method: "POST",
+      path: "/suppression-lists/companies",
+      summary: "The same for companies: everyone whose email domain or company domain is on the list is left alone in the projects it covers.",
+      body: `{ "list": "Partner agencies", "domains": ["northwind.studio"] }`,
+      response: `{ "list": { "id": "8a21…", "name": "Partner agencies", "kind": "companies", "project_ids": null, "created_by": null, "created_at": "2026-11-21T09:00:00Z", "entries": 1 }, "added": 1, "skipped": 0 }`,
+    },
+    {
+      method: "GET",
+      path: "/suppression-lists",
+      summary: "Your organization's lists, newest first, with how many entries each has. project_ids is null for a list that covers every project.",
+      response: `[{ "id": "3c7d…", "name": "CRM customers", "kind": "people", "project_ids": ["${projectId}"], "created_by": null, "created_at": "2026-11-21T09:00:00Z", "entries": 1 }]`,
+    },
+    {
+      method: "GET",
+      path: "/suppression-lists/3c7d…/entries?limit=100&offset=0",
+      summary: "A list's emails or domains in alphabetical order.",
+      params: [
+        ["limit", "1 to 1,000, default 100"],
+        ["offset", "how many to skip, default 0"],
+      ],
+      response: `{ "items": ["sarah@northwind.studio"], "total": 1 }`,
+    },
+    {
+      method: "PATCH",
+      path: "/suppression-lists/3c7d…",
+      summary: "Change the projects a list covers. Send null for all projects.",
+      body: `{ "project_ids": null }`,
+      response: `{ "id": "3c7d…", "name": "CRM customers", "kind": "people", "project_ids": null, "created_by": null, "created_at": "2026-11-21T09:00:00Z", "entries": 1 }`,
+    },
+    {
+      method: "DELETE",
+      path: "/suppression-lists/3c7d…",
+      summary: "Delete a list and everything on it. Splee can contact those people again from the next send.",
+      response: `{ "ok": true }`,
+    },
+    {
       method: "GET",
       path: `/projects/${projectId}/replies?since=2026-11-01T00:00:00Z`,
       summary:

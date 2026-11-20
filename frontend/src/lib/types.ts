@@ -2059,6 +2059,25 @@ export interface Suppression {
   created_at: Ts;
 }
 
+/** A named do-not-contact list: emails for people, domains for companies. */
+export interface SuppressionList {
+  id: UUID;
+  name: string;
+  kind: "people" | "companies";
+  /** null covers every project. */
+  project_ids: UUID[] | null;
+  created_by: UUID | null;
+  created_at: Ts;
+  entries: number;
+}
+
+/** A CSV column the list upload could read, with how many of its cells are emails or domains. */
+export interface SuppressionListColumn {
+  header: string;
+  kind: SuppressionList["kind"] | null;
+  values: number;
+}
+
 export interface Import {
   id: UUID;
   project_id: UUID;
