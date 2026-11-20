@@ -203,7 +203,7 @@ impl Seeded {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await });
         Self { state, base, http: reqwest::Client::new(), fake, acme, project, sarah: sarah.id, tom: tom.id, beta_sarah: beta_sarah.id, mailbox }
     }

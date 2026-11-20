@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 
 use crate::config::Config;
 use crate::models::AgentEvent;
+use crate::rate_limit::RateLimiter;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -12,4 +13,6 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     /// Every agent event is persisted first, then broadcast here so SSE handlers can push it live.
     pub events: broadcast::Sender<AgentEvent>,
+    /// Requests per organization on the public API and the MCP server.
+    pub rate_limits: RateLimiter,
 }

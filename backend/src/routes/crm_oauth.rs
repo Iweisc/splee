@@ -237,7 +237,7 @@ mod tests {
             }
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let router = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+            let router = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
             tokio::spawn(async move { axum::serve(listener, router).await });
             let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
             Self { base, client, db, fake, state, acme: projects[0], theirs: projects[2] }

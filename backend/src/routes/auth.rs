@@ -617,7 +617,7 @@ mod tests {
             news_sites_url: String::new(),
             s3_api_url: String::new(),
         };
-        AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 }
+        AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() }
     }
 
     /// Ana, the owner of Acme, signed in as `auth`, with the password "correct horse".

@@ -139,7 +139,12 @@ impl Server {
     async fn start(db: PgPool) -> Self {
         let fake = Fake::start().await;
         fake.bucket("warehouse");
-        let state = AppState { db: db.clone(), cfg: Arc::new(config(&fake.base)), events: tokio::sync::broadcast::channel(16).0 };
+        let state = AppState {
+            db: db.clone(),
+            cfg: Arc::new(config(&fake.base)),
+            events: tokio::sync::broadcast::channel(16).0,
+            rate_limits: Default::default(),
+        };
 
         let chats: Arc<Mutex<Vec<Value>>> = Arc::default();
         let got = chats.clone();
@@ -190,7 +195,7 @@ impl Server {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await });
         Self {
             base,

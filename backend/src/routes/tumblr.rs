@@ -214,7 +214,12 @@ mod tests {
         async fn start(db: PgPool) -> Self {
             let (app, sent) = fake_tumblr().await;
             let other = FakeProvider::start().await;
-            let state = AppState { db: db.clone(), cfg: Arc::new(Config { tumblr: Some(app), ..config(&other) }), events: tokio::sync::broadcast::channel(1).0 };
+            let state = AppState {
+                db: db.clone(),
+                cfg: Arc::new(Config { tumblr: Some(app), ..config(&other) }),
+                events: tokio::sync::broadcast::channel(1).0,
+                rate_limits: Default::default(),
+            };
             let mut projects = vec![];
             for (email, orgs) in [("ana@acme.test", vec!["acme", "beta"]), ("cy@other.test", vec!["other"])] {
                 let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, 'x', 'x') returning id").bind(email).fetch_one(&db).await.unwrap();
@@ -234,7 +239,7 @@ mod tests {
             }
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let router = Router::new().nest("/api", crate::routes::router()).with_state(state);
+            let router = Router::new().nest("/api", crate::routes::router(&state)).with_state(state);
             tokio::spawn(async move { axum::serve(listener, router).await });
             let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
             Self { base, client, db, sent, acme: projects[0], theirs: projects[2] }

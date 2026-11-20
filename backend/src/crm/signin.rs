@@ -484,7 +484,7 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn state(&self, db: PgPool) -> AppState {
-            AppState { db, cfg: Arc::new(self.cfg()), events: tokio::sync::broadcast::channel(1).0 }
+            AppState { db, cfg: Arc::new(self.cfg()), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() }
         }
 
         /// Where each CRM's API and tokens are on the fake.

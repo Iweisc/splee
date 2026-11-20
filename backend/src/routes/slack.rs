@@ -832,7 +832,12 @@ mod tests {
         /// Ana is an admin of Acme, which added Splee to Slack workspace T1. Eve is only in Beta, on workspace T2.
         async fn start(db: PgPool) -> Self {
             let (fake, fake_url) = FakeSlack::start().await;
-            let state = AppState { db: db.clone(), cfg: Arc::new(config(&fake_url)), events: tokio::sync::broadcast::channel(1).0 };
+            let state = AppState {
+                db: db.clone(),
+                cfg: Arc::new(config(&fake_url)),
+                events: tokio::sync::broadcast::channel(1).0,
+                rate_limits: Default::default(),
+            };
             let mut orgs = vec![];
             for (org, user, email, team) in [("Acme", "Ana Silva", "ana@acme.test", "T1"), ("Beta", "Eve", "eve@beta.test", "T2")] {
                 let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(org).fetch_one(&db).await.unwrap();
@@ -884,7 +889,7 @@ mod tests {
 
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+            let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
             tokio::spawn(async move { axum::serve(listener, app).await });
             let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
             Self { state, base, client, fake, fake_url, acme: orgs[0], project, segment, lead, draft, quiet_lead, beta_draft }

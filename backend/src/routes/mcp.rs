@@ -65,7 +65,22 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
         Ok(org_id) => org_id,
         Err(res) => return res,
     };
-    let Ok(message) = serde_json::from_slice::<Value>(&body) else {
+    // The same per-organization limits as the public API, which most tools call into.
+    let permit = match state.rate_limits.acquire(org_id) {
+        Ok(permit) => permit,
+        Err(refused) => {
+            let mut res = failure(StatusCode::TOO_MANY_REQUESTS, -32000, &refused.message);
+            refused.stamp(res.headers_mut());
+            return res;
+        }
+    };
+    let mut res = answer(&state, org_id, &headers, &body).await;
+    permit.quota.stamp(res.headers_mut());
+    res
+}
+
+async fn answer(state: &AppState, org_id: Uuid, headers: &HeaderMap, body: &Bytes) -> Response {
+    let Ok(message) = serde_json::from_slice::<Value>(body) else {
         return failure(StatusCode::BAD_REQUEST, -32700, "The body isn't JSON");
     };
     if !message.is_object() {
@@ -76,7 +91,7 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
     let header_version = headers.get("mcp-protocol-version").and_then(|v| v.to_str().ok());
     let asked = message["params"]["_meta"][VERSION_KEY].as_str().or(header_version);
     if message["method"] != "initialize" && asked.is_some_and(|v| !LEGACY.contains(&v)) {
-        return stateless(&state, org_id, &headers, &message).await;
+        return stateless(state, org_id, headers, &message).await;
     }
     // Notifications, like notifications/initialized, and responses need nothing back.
     let (Some(id), Some(method)) = (message.get("id"), message.get("method").and_then(Value::as_str)) else {
@@ -87,7 +102,7 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(&state, org_id, &params).await,
+        "tools/call" => call_tool(state, org_id, &params).await,
         _ => Err((-32601, format!("Unknown method {method}"))),
     };
     Json(match outcome {
@@ -1105,10 +1120,10 @@ mod tests {
                 news_sites_url: String::new(),
                 s3_api_url: String::new(),
             };
-            let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 };
+            let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/api/mcp", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", super::router().merge(super::v1::router())).with_state(state);
+            let app = Router::new().nest("/api", super::router().merge(super::v1::router(&state))).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { url, client: reqwest::Client::new() }
         }
@@ -1201,6 +1216,9 @@ mod tests {
         assert_eq!(server.client.get(&server.url).bearer_auth(KEY).send().await.unwrap().status(), 405);
         let res = server.client.post(&server.url).bearer_auth(KEY).header("origin", "https://evil.example").json(&json!({})).send().await.unwrap();
         assert_eq!(res.status(), 403);
+        // The public API's per-organization rate limit covers MCP too.
+        let res = server.client.post(&server.url).bearer_auth(KEY).json(&json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" })).send().await.unwrap();
+        assert_eq!((res.headers()["ratelimit-limit"].to_str().unwrap(), res.headers().contains_key("ratelimit-remaining")), ("10000", true));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

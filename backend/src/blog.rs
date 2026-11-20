@@ -816,7 +816,7 @@ pub(crate) mod fake {
     pub async fn state(db: &PgPool, base: &str) -> AppState {
         let provider = crate::mail::oauth::tests::FakeProvider::start().await;
         let cfg = Config { webflow_api_url: format!("{base}/webflow"), ..crate::mail::oauth::tests::config(&provider) };
-        AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 }
+        AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() }
     }
 
     /// The fake's address and what it was sent.

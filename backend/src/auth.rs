@@ -2,6 +2,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
 use axum::http::request::Parts;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
@@ -170,15 +171,25 @@ impl FromRequestParts<AppState> for KeyAuth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let key = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or(AppError::Unauthorized)?;
-        let (org_id, key_id) = api_key(&state.db, key).await?.ok_or(AppError::Unauthorized)?;
-        Ok(KeyAuth { org_id, key_id })
+        // The /v1 layer already looked the key up for its rate limit.
+        if let Some(auth) = parts.extensions.get::<KeyAuth>() {
+            return Ok(auth.clone());
+        }
+        let key = bearer(&parts.headers).ok_or(AppError::Unauthorized)?;
+        KeyAuth::find(&state.db, key).await?.ok_or(AppError::Unauthorized)
     }
+}
+
+impl KeyAuth {
+    /// A live API key's organization and id. None for a wrong or revoked key.
+    pub async fn find(db: &PgPool, key: &str) -> sqlx::Result<Option<KeyAuth>> {
+        Ok(api_key(db, key).await?.map(|(org_id, key_id)| KeyAuth { org_id, key_id }))
+    }
+}
+
+/// The token of `Authorization: Bearer <token>`.
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
 }
 
 /// The organization of a live API key.

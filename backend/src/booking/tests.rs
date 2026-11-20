@@ -218,7 +218,7 @@ fn state(db: PgPool) -> AppState {
         news_sites_url: String::new(),
         s3_api_url: String::new(),
     };
-    AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0 }
+    AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() }
 }
 
 /// An org with a project, a mailbox and a booking page open every day from 9:00 to 17:00 London time.

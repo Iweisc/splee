@@ -545,10 +545,15 @@ mod tests {
 
     impl Api {
         async fn start(db: &PgPool) -> Self {
-            let state = AppState { db: db.clone(), cfg: Arc::new(config()), events: tokio::sync::broadcast::channel(1).0 };
+            let state = AppState {
+                db: db.clone(),
+                cfg: Arc::new(config()),
+                events: tokio::sync::broadcast::channel(1).0,
+                rate_limits: Default::default(),
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", crate::routes::router()).with_state(state);
+            let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { base, client: reqwest::Client::new() }
         }

@@ -358,7 +358,12 @@ mod tests {
             let (fake_url, sent) = fake::start().await;
             let base_cfg = (*crate::autopilot::tests::state(db.clone()).cfg).clone();
             let cfg = Config { app_secret: "test-secret".into(), public_url: PUBLIC.into(), twilio_api_url: fake_url, ..base_cfg };
-            let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0 };
+            let state = AppState {
+                db: db.clone(),
+                cfg: Arc::new(cfg),
+                events: tokio::sync::broadcast::channel(1).0,
+                rate_limits: Default::default(),
+            };
             let user = |email: &'static str| sqlx::query_scalar::<_, Uuid>("insert into users (email, password_hash) values ($1, 'x') returning id").bind(email).fetch_one(&db);
             let session = |user: Uuid, org: Uuid, name: &'static str| {
                 sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
@@ -415,7 +420,7 @@ mod tests {
 
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", crate::routes::router()).with_state(state.clone());
+            let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { state, base, client: reqwest::Client::new(), sent, acme_org, project, jo, beta_user, beta_project, sam, beta_lead }
         }
