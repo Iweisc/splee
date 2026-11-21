@@ -49,7 +49,7 @@ stop_campaign and approve_campaign run it, archive_campaign puts away one that's
 and update_project_controls sets the project's sending, limits, schedule, autopilot and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
 customers. download_companies hands over a search's companies as CSV, with a link to the whole file. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
-create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
+create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
 search_local_businesses and add_local_businesses use Google Maps once the user connected a key. For a lead list the user already has, \
 import_campaign makes a campaign of exactly those leads. For a first email the user wrote themselves, update_my_copy (or \
@@ -431,6 +431,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "list_replies" => async { value(v1::list_inbox(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "get_thread" => async { value(v1::lead_thread(st(), auth, id(a, "lead_id")?).await?) }.await,
         "reply_to_lead" => async { value(v1::reply_to_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?) }.await,
+        "mark_replied" => async { value(v1::mark_replied(st(), auth, id(a, "lead_id")?).await?) }.await,
         "get_analytics" => async { value(v1::project_analytics(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "list_deals" => async {
             let stages = value(v1::list_stages(st(), auth.clone()).await?)?;
@@ -1206,6 +1207,15 @@ fn tools() -> Vec<Value> {
             json!({ "readOnlyHint": false }),
         ),
         tool(
+            "mark_replied",
+            "Mark replied",
+            "Takes a reply the user answered outside Splee, or that needs no answer, out of Needs reply, and cancels the agent's reply \
+             draft still waiting for it. The thread comes back when the lead writes again. The lead's status doesn't change.",
+            json!({ "lead_id": id_prop("A lead id from list_replies or list_leads") }),
+            &["lead_id"],
+            json!({ "readOnlyHint": false }),
+        ),
+        tool(
             "list_deals",
             "List deals",
             "The pipeline's stages in order, and its deals, the latest first, with the lead, stage, value in the currency's main unit \
@@ -1765,7 +1775,7 @@ mod tests {
         for name in ["list_projects", "create_campaign", "search_companies", "add_companies", "find_people", "write_emails", "get_run",
                      "list_leads", "list_companies", "list_emails_to_approve", "approve_email", "skip_email", "list_replies", "list_deals",
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings", "get_thread", "reply_to_lead",
-                     "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
+                     "mark_replied", "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",

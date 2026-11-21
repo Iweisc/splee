@@ -388,7 +388,7 @@ Migration 0187 adds `segments.archived_at`. `segments::archive` sets it, then ru
 | POST | /chats/:id/takeover | `{on}` | the thread. Off hands it back to the model. |
 | POST | /inbox/messages/:id/approve | `{body?, cc_emails?, attachment_ids?}` | approves a pending `auto_reply` draft. The draft starts with `reply_cc`. `cc_emails` replaces it, checked like a reply's. |
 | POST | /inbox/threads/:lead_id/status | `{status}` | updates lead status (hot, meeting_booked, not_interested...) |
-| POST | /inbox/threads/:lead_id/done | | `{ok}`. Sets `handled_at` on the lead's replies, for one that needs no answer. The thread leaves `needs_reply` until the lead writes again. |
+| POST | /inbox/threads/:lead_id/done | | `{ok}`. Sets `handled_at` on the lead's replies, for one that needs no answer, clears `remind_at` and cancels the lead's `auto_reply` draft. The thread leaves `needs_reply` until the lead writes again. 409 for a lead with no reply. |
 | POST | /inbox/threads/:lead_id/remind | `{days?: 1-30, at?: timestamp}` | `{ok}`. Sets `remind_at` to `at` (within the next year) or `days` from now, and marks the replies handled like `done`. The thread comes back to `needs_reply` once `remind_at` passes. Neither clears the reminder. |
 | GET | /projects/:id/linkedin?segment_id | | `[{lead: LeadRow, messages: LinkedinMessage[]}]` |
 | POST | /leads/:id/linkedin | | `{run_id}` (linkedin_sequence) |
@@ -1123,7 +1123,7 @@ A key acts for its whole organization, like a member: anything a member may do i
 
 Retries and limits (`routes/util_idempotency.rs`, `rate_limit.rs`, migration 0178), in one layer on the `api_v1` router. A POST, PATCH or DELETE with `Idempotency-Key` (1-255 printable ASCII, else 400) claims `(org, key)` in `idempotency_keys` before it runs. A repeat with the same method, path and body hash gets the kept status and body with `Idempotent-Replayed: true` and runs nothing, another request with that key is 422, and a repeat while the first runs is 409. 2xx and 4xx other than 409 and 429 are kept for 24 hours. A 5xx, a dropped request or a body over 1 MB releases the key so a retry runs. Without the header nothing changes. Each organization gets `rate_limit::LIMITS` (10,000 requests an hour, a fixed window from its first, and 150 in flight), in memory, on `/v1` and `/api/mcp` with a key or token. Every response carries `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` (seconds), and over either limit it's 429 with `Retry-After` and `{error}` (MCP: a JSON-RPC error, -32000). Cookie-session routes aren't limited.
 
-Threads and files (migration 0176): `GET /v1/leads/:id/thread` → `{lead_id, messages: [{id, direction, kind, channel, status, subject, body, from_email, to_email, cc_emails, classification, attachments: [{id, message_id, filename, content_type, size_bytes, inline, stored, created_at}], sent_at, created_at}], reply_cc}`, oldest first. `POST /v1/attachments` takes a multipart `file` and `GET /v1/attachments/:id` downloads one, as `/attachments` in the app. `POST /v1/leads/:id/reply` `{body_text, cc_emails?, reply_all? (default true), attachment_ids?}` queues a reply like the inbox's and returns it as a thread message.
+Threads and files (migration 0176): `GET /v1/leads/:id/thread` → `{lead_id, messages: [{id, direction, kind, channel, status, subject, body, from_email, to_email, cc_emails, classification, attachments: [{id, message_id, filename, content_type, size_bytes, inline, stored, created_at}], sent_at, created_at}], reply_cc}`, oldest first. `POST /v1/attachments` takes a multipart `file` and `GET /v1/attachments/:id` downloads one, as `/attachments` in the app. `POST /v1/leads/:id/reply` `{body_text, cc_emails?, reply_all? (default true), attachment_ids?}` queues a reply like the inbox's and returns it as a thread message. `POST /v1/leads/:id/mark-replied`, explee.com's `mark-replied`, is the inbox's Done for a reply answered outside Splee → `{lead_id, answered_through}`, the latest reply's `created_at`. The lead's status stays.
 
 Saved searches (migration 0184): `GET` and `POST /v1/projects/:id/saved-searches`, `DELETE /v1/saved-searches/:id` and `GET /v1/saved-searches/:id/new` are the app's routes above. A key's search has no owner, an MCP sign-in's is the member's, and reading `/new` here doesn't set `opened_at`.
 
@@ -1188,6 +1188,7 @@ Auth is `Authorization: Bearer …` with an API key (`splee_…`, checked like `
 | approve_email, skip_email | `POST /v1/emails/:id/approve`, `/skip` |
 | list_replies | `GET /v1/inbox` (`owner` as for list_leads) |
 | get_thread, reply_to_lead | `GET /v1/leads/:id/thread`, `POST /v1/leads/:id/reply` (`body_text`, `cc_emails`, `reply_all`) |
+| mark_replied | `POST /v1/leads/:id/mark-replied` |
 | assign_lead | `POST /v1/leads/:id/assign` with `owner` a member's email or id, or null |
 | list_deals | `GET /v1/deal-stages` and `GET /v1/deals` → `{stages: [{name, kind, probability, deals}], items, total}` (id, project, lead, company, stage, status, value, currency, close date, owner, lost reason, stage_changed_at) |
 | create_deal, move_deal | `POST /v1/deals`, `POST /v1/deals/:id/move` with `stage` as a name |

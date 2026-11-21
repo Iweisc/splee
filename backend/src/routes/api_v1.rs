@@ -93,6 +93,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/leads/{id}/assign", post(assign_lead))
         .route("/v1/leads/{id}/thread", get(lead_thread))
         .route("/v1/leads/{id}/reply", post(reply_to_lead))
+        .route("/v1/leads/{id}/mark-replied", post(mark_replied))
         .route("/v1/attachments", post(upload_attachment).layer(DefaultBodyLimit::max(attachments::UPLOAD_BODY_LIMIT)))
         .route("/v1/attachments/{id}", get(download_attachment))
         .route("/v1/projects/{id}/replies", get(replies))
@@ -1735,6 +1736,19 @@ pub(super) async fn reply_to_lead(
     Ok(Json(with_files.remove(0).into()))
 }
 
+#[derive(Serialize)]
+pub(super) struct MarkedReplied {
+    lead_id: Uuid,
+    /// When the lead's latest reply came in. A reply after it brings the thread back to Needs reply.
+    answered_through: Ts,
+}
+
+/// The inbox's Done, for a reply answered outside Splee. The lead's status stays as it is.
+pub(super) async fn mark_replied(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<MarkedReplied>> {
+    let answered_through = inbox::mark_replied(&state.db, auth.org_id, id).await?;
+    Ok(Json(MarkedReplied { lead_id: id, answered_through }))
+}
+
 /// A multipart form with the file as `file`, kept for a day for a reply's attachment_ids.
 pub(super) async fn upload_attachment(State(state): State<AppState>, auth: ApiKeyAuth, form: Multipart) -> AppResult<Json<EmailAttachment>> {
     Ok(Json(attachments::upload_to(&state.db, auth.org_id, form).await?))
@@ -2857,5 +2871,62 @@ mod tests {
         assert_eq!(api.patch(&format!("/v1/projects/{b}/my-copy"), json!({ "body": "Hi" })).await.0, 404);
         let theirs: String = sqlx::query_scalar("select my_copy_source from segments where id = $1").bind(other).fetch_one(&db).await.unwrap();
         assert_eq!(theirs, "project");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_marked_answered_leaves_needs_reply_until_the_lead_writes_again(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let lead: Uuid = sqlx::query_scalar(
+            "insert into leads (project_id, full_name, email, status, remind_at)
+             values ($1, 'Ana', 'ana@smile.example', 'replied', now() + interval '1 day') returning id",
+        )
+        .bind(a)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let path = format!("/v1/leads/{lead}/mark-replied");
+        let (status, _, body) = api.post(KEYS[0], &path, None, json!({})).await;
+        assert_eq!(status, 409, "{body}");
+
+        let write = |at: &'static str| {
+            sqlx::query(
+                "insert into email_messages (project_id, lead_id, direction, kind, status, created_at)
+                 values ($1, $2, 'inbound', 'inbound', 'received', $3::timestamptz)",
+            )
+            .bind(a)
+            .bind(lead)
+            .bind(at)
+            .execute(&db)
+        };
+        write("2026-11-20T09:00:00Z").await.unwrap();
+        write("2026-11-20T10:00:00Z").await.unwrap();
+        sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', 'auto_reply', 'draft')")
+            .bind(a)
+            .bind(lead)
+            .execute(&db)
+            .await
+            .unwrap();
+        let needs_reply = || async { api.get("/v1/inbox?filter=needs_reply").await.1["total"].clone() };
+        assert_eq!(needs_reply().await, json!(1));
+
+        assert_eq!(api.post(KEYS[1], &path, None, json!({})).await.0, 404, "another organization's lead");
+        let (status, _, body) = api.post(KEYS[0], &path, None, json!({})).await;
+        assert_eq!((status, body), (200, json!({ "lead_id": lead, "answered_through": "2026-11-20T10:00:00Z" })));
+        assert_eq!(needs_reply().await, json!(0));
+        let left: (String, bool) = sqlx::query_as(
+            "select l.status, l.remind_at is null and not exists (select 1 from email_messages e where e.lead_id = l.id and e.status = 'draft')
+             from leads l where l.id = $1",
+        )
+        .bind(lead)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(left, ("replied".to_string(), true), "the status stays, and the reminder and the agent's draft are gone");
+
+        write("2026-11-20T11:00:00Z").await.unwrap();
+        assert_eq!(needs_reply().await, json!(1), "a new reply brings the thread back");
     }
 }
