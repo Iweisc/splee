@@ -68,8 +68,8 @@ pub fn router(state: &AppState) -> Router<AppState> {
 /// `model` reads POST /v1/companies/filters' descriptions. Tests pass a fake.
 pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> {
     Router::new()
-        .route("/v1/projects", get(list_projects))
-        .route("/v1/projects/{id}", patch(update_project))
+        .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/{id}", get(get_project).patch(update_project))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
         .route("/v1/campaigns/{id}", get(get_campaign).patch(update_campaign))
         .route("/v1/campaigns/import", post(import_campaign).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)))
@@ -689,6 +689,8 @@ pub(super) struct ProjectControls {
     review_window_hours: Option<i32>,
     /// Email spend a calendar month (UTC) may reach before first emails and follow-ups wait for the 1st, or null for no cap.
     monthly_cap_micros: Option<i64>,
+    /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
+    sender_name: String,
 }
 
 impl From<ProjectSettings> for ProjectControls {
@@ -708,8 +710,39 @@ impl From<ProjectSettings> for ProjectControls {
             autopilot_auto_send: s.autopilot_auto_send,
             review_window_hours: s.review_window_hours,
             monthly_cap_micros: s.monthly_cap_micros,
+            sender_name: s.sender_name,
         }
     }
+}
+
+/// A project as GET /v1/projects lists it, with its controls.
+#[derive(Serialize)]
+pub(super) struct ProjectWithControls {
+    #[serde(flatten)]
+    project: Project,
+    controls: ProjectControls,
+}
+
+/// The organization's project, else a 404.
+async fn load_project(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<Project> {
+    let project = sqlx::query_as::<_, Project>("select * from projects where id = $1 and org_id = $2").bind(id).bind(org_id);
+    project.fetch_optional(db).await?.ok_or(AppError::NotFound)
+}
+
+pub(super) async fn get_project(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectWithControls>> {
+    let project = load_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(ProjectWithControls { project, controls: settings::load_or_create(&state.db, id).await?.into() }))
+}
+
+/// The app's New project: Splee researches the business from its website or description, then suggests campaigns. Poll run_id
+/// with GET /v1/runs/{id}.
+pub(super) async fn create_project(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Json(body): Json<projects::CreateBody>,
+) -> AppResult<Json<Value>> {
+    let (project, run_id) = projects::insert(&state.db, auth.org_id, auth.user_id, body).await?;
+    Ok(Json(json!({ "project_id": project.id, "run_id": run_id })))
 }
 
 /// The cap PATCH /v1/projects/{id} sets as monthly_cap_micros, and what the project's emails cost since the 1st.
@@ -726,12 +759,7 @@ pub(super) async fn update_project(
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> AppResult<Json<ProjectControls>> {
-    let project = sqlx::query_as::<_, Project>("select * from projects where id = $1 and org_id = $2")
-        .bind(id)
-        .bind(auth.org_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let project = load_project(&state.db, id, auth.org_id).await?;
     let controls: settings::Controls = strict(body)?;
     // Like the app's toggle, which offers Start only while paused and Pause only while sending.
     let paused = settings::load_or_create(&state.db, id).await?.paused;
@@ -2614,6 +2642,38 @@ mod tests {
         let (status, owned) = api.get("/v1/sending-domains").await;
         assert_eq!((status, owned[0]["domain"].as_str(), owned[0]["status"].as_str()), (200, Some("getacme.com"), Some("registered")), "{owned}");
         assert_eq!(api.send(Method::GET, KEYS[1], "/v1/sending-domains", None, None).await.2, json!([]));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_project_is_made_and_read_with_its_sender_name(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+
+        // New project, as in the app: the website is cleaned up and names it, and an explore run researches the business.
+        assert_eq!(api.post(KEYS[0], "/v1/projects", None, json!({})).await.0, 400);
+        let (status, _, made) = api.post(KEYS[0], "/v1/projects", None, json!({ "domain": "https://www.Fieldnote.example/about" })).await;
+        assert_eq!(status, 200, "{made}");
+        let id: Uuid = made["project_id"].as_str().unwrap().parse().unwrap();
+        let run: Uuid = made["run_id"].as_str().unwrap().parse().unwrap();
+        let (kind, project): (String, Uuid) =
+            sqlx::query_as("select kind, project_id from agent_runs where id = $1").bind(run).fetch_one(&db).await.unwrap();
+        assert_eq!((kind.as_str(), project), ("explore", id));
+        let (status, project) = api.get(&format!("/v1/projects/{id}")).await;
+        assert_eq!((status, project["domain"].as_str(), project["name"].as_str()), (200, Some("fieldnote.example"), Some("fieldnote.example")));
+        assert_eq!((project["controls"]["sending"].clone(), project["controls"]["sender_name"].clone()), (json!(false), json!("")));
+        assert_eq!(api.get(&format!("/v1/projects/{b}")).await.0, 404);
+
+        // The sender name is a name: its spaces collapse, and an address or one over 100 characters is refused.
+        let path = format!("/v1/projects/{a}");
+        let (status, controls) = api.patch(&path, json!({ "sender_name": "  Maya   Patel " })).await;
+        assert_eq!((status, controls["sender_name"].clone()), (200, json!("Maya Patel")), "{controls}");
+        for name in ["maya@fieldnote.example".to_string(), "M".repeat(101), "Maya\nPatel".to_string()] {
+            assert_eq!(api.patch(&path, json!({ "sender_name": name })).await.0, 400, "{name}");
+        }
+        assert_eq!(api.get(&path).await.1["controls"]["sender_name"], "Maya Patel");
+        assert_eq!(api.patch(&path, json!({ "sender_name": "" })).await.1["sender_name"], "");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

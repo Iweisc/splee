@@ -75,6 +75,31 @@ function endpoints(projectId: string): Endpoint[] {
 ]`,
     },
     {
+      method: "POST",
+      path: "/projects",
+      summary:
+        "Start a project for a business, like New project in the app. Splee researches the business from its website or description, which takes a few minutes, so poll run_id with GET /runs/{id}.",
+      params: [
+        ["domain", "the business's website"],
+        ["description", "what it sells and to whom, when there's no website"],
+      ],
+      body: `{ "domain": "acme.com" }`,
+      response: `{ "project_id": "${projectId}", "run_id": "9b4f…" }`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}`,
+      summary: "One project as the list shows it, with what Splee learned about the business in company, and its controls as PATCH below returns them.",
+      response: `{
+  "id": "${projectId}",
+  "name": "Acme",
+  "domain": "acme.com",
+  "status": "active",
+  "company": { "name": "Acme", "…": "…" },
+  "controls": { "sending": true, "daily_email_limit": 80, "sender_name": "Maya Patel", "…": "…" }
+}`,
+    },
+    {
       method: "GET",
       path: `/projects/${projectId}/campaigns`,
       summary:
@@ -268,6 +293,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["autopilot, autopilot_budget_micros, autopilot_lead_cap, autopilot_auto_send", "autopilot on or off, its monthly Claude budget and new-lead cap, and whether its emails skip approval"],
         ["review_window_hours", "1 to 72, or null so drafts wait for a person"],
         ["monthly_cap_micros", "$1 to $1,000,000 of email spend a month, or null for no cap"],
+        ["sender_name", "the name the agent signs emails with, up to 100 characters and not an address, or empty for the team"],
       ],
       body: `{ "daily_email_limit": 80, "autopilot": true, "autopilot_budget_micros": 50000000 }`,
       response: `{
@@ -284,7 +310,8 @@ function endpoints(projectId: string): Endpoint[] {
   "autopilot_lead_cap": 500,
   "autopilot_auto_send": false,
   "review_window_hours": null,
-  "monthly_cap_micros": null
+  "monthly_cap_micros": null,
+  "sender_name": "Maya Patel"
 }`,
     },
     {
