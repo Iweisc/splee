@@ -146,10 +146,19 @@ impl FromRequestParts<AppState> for MaybeAuth {
     }
 }
 
-/// Public API v1 auth: `Authorization: Bearer splee_<token>`.
+/// Public API v1 auth: `Authorization: Bearer splee_<token>`. The MCP server makes one for an API key or an OAuth token.
 #[derive(Debug, Clone)]
 pub struct ApiKeyAuth {
     pub org_id: Uuid,
+    /// Who the audit log names: the key, or the member who signed an MCP client in. Neither for Ask Splee, which only reads.
+    pub key_id: Option<Uuid>,
+    pub user_id: Option<Uuid>,
+}
+
+impl ApiKeyAuth {
+    pub fn org(org_id: Uuid) -> Self {
+        Self { org_id, key_id: None, user_id: None }
+    }
 }
 
 pub const API_KEY_PREFIX: &str = "splee_";
@@ -158,8 +167,8 @@ impl FromRequestParts<AppState> for ApiKeyAuth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let KeyAuth { org_id, .. } = KeyAuth::from_request_parts(parts, state).await?;
-        Ok(ApiKeyAuth { org_id })
+        let KeyAuth { org_id, key_id } = KeyAuth::from_request_parts(parts, state).await?;
+        Ok(ApiKeyAuth { org_id, key_id: Some(key_id), user_id: None })
     }
 }
 
@@ -194,11 +203,6 @@ impl KeyAuth {
 /// The token of `Authorization: Bearer <token>`.
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
-}
-
-/// The organization of a live API key.
-pub async fn api_key_org(db: &PgPool, key: &str) -> sqlx::Result<Option<Uuid>> {
-    Ok(api_key(db, key).await?.map(|(org_id, _)| org_id))
 }
 
 /// The organization and id of a live API key.

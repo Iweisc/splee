@@ -110,10 +110,83 @@ function endpoints(projectId: string): Endpoint[] {
       method: "PATCH",
       path: "/campaigns/5d0a…",
       summary:
-        "Set the language a campaign writes its emails, follow-ups, texts and LinkedIn messages in. lead writes to each lead in the language set on them, else their country's, else their company website's, else English. Emails already written keep theirs until they're rewritten. Returns the campaign like the list above.",
+        "Set the language a campaign writes its emails, follow-ups, texts and LinkedIn messages in. lead writes to each lead in the language set on them, else their country's, else their company website's, else English. Emails already written keep theirs until they're rewritten. Any other field is a 422. Returns the campaign like the list above.",
       params: [["language", "lead, the default, or one of en, de, fr, es, pt, it, nl, sv, nb, da, fi, pl, cs, sk, ro, bg, hu, el, tr, ru, uk, ar, he, ja, ko, zh, zh-Hant, hi, id, ms, th, vi"]],
       body: `{ "language": "de" }`,
       response: `{ "id": "5d0a…", "language": "de", "…": "…" }`,
+    },
+    {
+      method: "GET",
+      path: "/campaigns/5d0a…",
+      summary:
+        "Everything the campaign's page shows: its funnel like the list above, why it has its status, who it targets, the brief its emails are written from, the project's schedule and follow-ups it sends on, and an imported campaign's emails. read_only says what can't be changed and why.",
+      response: `{
+  "id": "5d0a…",
+  "project_id": "${projectId}",
+  "name": "Design studios",
+  "status": "paused",
+  "status_reason": "Paused. Its unsent emails wait as drafts until it starts again",
+  "language": "lead",
+  "targeting": { "industries": ["Design"], "countries": ["US"] },
+  "pain_points": "Chasing late invoices",
+  "angle": "Get paid on time without awkward emails",
+  "schedule": { "sending": true, "timezone": "America/New_York", "send_days": [1, 2, 3, 4, 5], "send_start_hour": 9, "send_end_hour": 17, "daily_email_limit": 50 },
+  "follow_ups": [{ "delay_days": 3, "enabled": true, "instructions": "" }],
+  "imported_from": null,
+  "sequence": [],
+  "read_only": [{ "field": "schedule", "reason": "Every campaign in the project shares it. Change it with PATCH /v1/projects/{id}" }],
+  "…": "…"
+}`,
+    },
+    {
+      method: "POST",
+      path: "/campaigns/5d0a…/start",
+      summary:
+        "The campaign's Start button: it sends on the project's schedule, and its drafts are approved for sending. A campaign that's already sending stays as it is, so a repeat is harmless.",
+      response: `{ "accepted": true }`,
+    },
+    {
+      method: "POST",
+      path: "/campaigns/5d0a…/stop",
+      summary:
+        "The campaign's Pause button: its unsent first emails and follow-ups go back to drafts until it starts again. Replies still come in. A campaign that isn't sending stays as it is.",
+      response: `{ "accepted": true }`,
+    },
+    {
+      method: "POST",
+      path: "/campaigns/5d0a…/approve",
+      summary:
+        "Splee has no review step for a whole campaign, so this approves each of its first emails and follow-ups waiting as drafts, like Approve on each one. A paused campaign holds them until it starts.",
+      response: `{ "accepted": true, "approved": 12 }`,
+    },
+    {
+      method: "PATCH",
+      path: `/projects/${projectId}`,
+      summary:
+        "The project's sending controls. Send only what changes, or {} to read them. sending is the project's Start and Pause sending, and turning it on without an active mailbox is a 409 that saves nothing. Any other field is a 422.",
+      params: [
+        ["sending", "true or false"],
+        ["daily_email_limit, daily_text_limit", "1 to 5,000 emails and 1 to 1,000 texts a day"],
+        ["timezone, send_days, send_start_hour, send_end_hour", "the send window, days 1 (Monday) to 7 (Sunday)"],
+        ["autopilot, autopilot_budget_micros, autopilot_lead_cap, autopilot_auto_send", "autopilot on or off, its monthly Claude budget and new-lead cap, and whether its emails skip approval"],
+        ["review_window_hours", "1 to 72, or null so drafts wait for a person"],
+      ],
+      body: `{ "daily_email_limit": 80, "autopilot": true, "autopilot_budget_micros": 50000000 }`,
+      response: `{
+  "project_id": "${projectId}",
+  "sending": true,
+  "daily_email_limit": 80,
+  "daily_text_limit": 50,
+  "timezone": "America/New_York",
+  "send_days": [1, 2, 3, 4, 5],
+  "send_start_hour": 9,
+  "send_end_hour": 17,
+  "autopilot": true,
+  "autopilot_budget_micros": 50000000,
+  "autopilot_lead_cap": 500,
+  "autopilot_auto_send": false,
+  "review_window_hours": null
+}`,
     },
     {
       method: "GET",
@@ -496,6 +569,70 @@ function endpoints(projectId: string): Endpoint[] {
     }
   ],
   "total": 1
+}`,
+    },
+    {
+      method: "GET",
+      path: "/hot-leads?since=2026-11-01T00:00:00Z",
+      summary:
+        "Every hot lead in your organization, newest first, with the reply that made them hot. Pass since as the newest became_hot_at you've seen to get only new ones.",
+      params: [
+        ["since", "optional, only leads that became hot after this"],
+        ["project_id", "optional, all projects without it"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "lead_id": "c42e…",
+      "project_id": "${projectId}",
+      "campaign_id": "5d0a…",
+      "campaign": "Design studios",
+      "name": "Sarah Chen",
+      "email": "sarah@northwind.studio",
+      "title": "Founder",
+      "company_name": "Northwind Studio",
+      "company_domain": "northwind.studio",
+      "linkedin_url": "https://www.linkedin.com/in/sarah-chen",
+      "status": "hot",
+      "reply_id": "71aa…",
+      "reply": "Sounds interesting, can you send times for next week?",
+      "why_hot": "Asks to schedule a call",
+      "became_hot_at": "2026-11-04T10:12:00Z"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/inbox/changes?cursor=1762251120000000_71aa…`,
+      summary:
+        "Replies that came in since the cursor, oldest first, so you can poll without missing or repeating one. Pass next_cursor as cursor next time, and call again straight away while has_more is true. A reply shows up about 5 seconds after it arrives, and classification is null until Splee has read it.",
+      params: [
+        ["cursor", "next_cursor from the last call"],
+        ["since", "on the first call instead, only replies after this. Without either, from the first reply"],
+        ["limit", "1 to 500, default 100"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "71aa…",
+      "lead_id": "c42e…",
+      "campaign_id": "5d0a…",
+      "lead_name": "Sarah Chen",
+      "lead_email": "sarah@northwind.studio",
+      "company_name": "Northwind Studio",
+      "channel": "email",
+      "from_email": "sarah@northwind.studio",
+      "subject": "Re: Northwind Studio x Acme",
+      "body": "Sounds interesting, can you send times for next week?",
+      "classification": "hot",
+      "received_at": "2026-11-04T10:12:00Z"
+    }
+  ],
+  "next_cursor": "1762251120000000_71aa…",
+  "has_more": false
 }`,
     },
     {

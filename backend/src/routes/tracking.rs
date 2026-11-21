@@ -301,7 +301,7 @@ mod tests {
             .unwrap();
         }
         let list = |org: Uuid, project: Uuid| {
-            super::super::api_v1::email_events(State(state.clone()), ApiKeyAuth { org_id: org }, Path(project), Query(serde_json::from_str("{}").unwrap()))
+            super::super::api_v1::email_events(State(state.clone()), ApiKeyAuth::org(org), Path(project), Query(serde_json::from_str("{}").unwrap()))
         };
         let Json(events) = list(ours, project).await.unwrap();
         let events = serde_json::to_value(events).unwrap();

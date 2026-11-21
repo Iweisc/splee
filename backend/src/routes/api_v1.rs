@@ -3,6 +3,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
@@ -17,9 +18,12 @@ use super::inbox::{self, InboxThread, ReplyExtras, ThreadMessage as WithFiles};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::lookalikes::{self as lookalike_routes, AddBody as AddLookalikesBody};
 use super::meetings::{self, MeetingRow};
+use super::outreach;
+use super::projects;
 use super::research;
 use super::runs;
 use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
+use super::settings;
 use super::sheets::{self, ImportedNow};
 use super::stats::{self, Totals};
 use super::suppression_lists::{self as lists, Kind, ScopeBody};
@@ -37,15 +41,21 @@ use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::lookalikes::{self, Lookalikes};
-use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, Segment, Suppression, SuppressionList, Ts};
+use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, Suppression, SuppressionList, Ts};
 use crate::ownership;
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
+        .route("/v1/projects/{id}", patch(update_project))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
-        .route("/v1/campaigns/{id}", patch(update_campaign))
+        .route("/v1/campaigns/{id}", get(get_campaign).patch(update_campaign))
+        .route("/v1/campaigns/{id}/start", post(start_campaign))
+        .route("/v1/campaigns/{id}/stop", post(stop_campaign))
+        .route("/v1/campaigns/{id}/approve", post(approve_campaign))
+        .route("/v1/hot-leads", get(hot_leads))
+        .route("/v1/projects/{id}/inbox/changes", get(inbox_changes))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
         .route("/v1/projects/{id}/leads/upsert", post(upsert_lead))
         .route("/v1/projects/{id}/companies", get(list_companies))
@@ -233,7 +243,13 @@ pub(super) async fn create_campaign(
     Ok(Json(json!({ "campaign_id": segment.id, "run_id": run_id })))
 }
 
+/// A PATCH body. A field the route doesn't take is a 422, so a typo never reads as a change that happened.
+fn strict<T: DeserializeOwned>(body: Value) -> AppResult<T> {
+    serde_json::from_value(body).map_err(|e| AppError::Unprocessable(format!("Invalid body: {e}")))
+}
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CampaignUpdate {
     language: String,
 }
@@ -243,14 +259,243 @@ pub(super) async fn update_campaign(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
-    Json(body): Json<CampaignUpdate>,
+    Json(body): Json<Value>,
 ) -> AppResult<Json<Campaign>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let body: CampaignUpdate = strict(body)?;
     let language = body.language.trim();
     segments::check_language(language)?;
     sqlx::query("update segments set language = $2 where id = $1").bind(segment.id).bind(language).execute(&state.db).await?;
     let row = segments::with_stats(&state.db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)?;
     Ok(Json(Campaign::from(row)))
+}
+
+/// A campaign as its page shows it, with the project's schedule and follow-ups it sends on.
+#[derive(Serialize)]
+pub(super) struct CampaignDetail {
+    #[serde(flatten)]
+    campaign: Campaign,
+    project_id: Uuid,
+    /// Why it has its status, in a sentence.
+    status_reason: String,
+    icon: String,
+    est_size: i64,
+    fit_score: i32,
+    /// Who it targets: the object the campaign page edits, which the agent fills in from the description.
+    targeting: Value,
+    /// The brief its emails are written from.
+    pain_points: String,
+    angle: String,
+    track_clicks: bool,
+    track_opens: bool,
+    lead_pages: bool,
+    schedule: Schedule,
+    /// The project's follow-ups after the first email, each an email or a call some days later.
+    follow_ups: Value,
+    /// The tool an imported campaign came from, or null for one made in Splee.
+    imported_from: Option<String>,
+    /// An imported campaign's emails. Empty for one made in Splee.
+    sequence: Vec<SegmentStep>,
+    /// What can't be changed on this campaign, and why.
+    read_only: Vec<ReadOnly>,
+}
+
+/// When the project sends. Every campaign in it shares this.
+#[derive(Serialize)]
+struct Schedule {
+    /// False while the project's sending is paused, which holds every campaign in it.
+    sending: bool,
+    timezone: String,
+    /// 1 (Monday) to 7 (Sunday).
+    send_days: Vec<i32>,
+    send_start_hour: i32,
+    send_end_hour: i32,
+    daily_email_limit: i32,
+}
+
+#[derive(Serialize)]
+struct ReadOnly {
+    field: &'static str,
+    reason: String,
+}
+
+pub(super) async fn get_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<CampaignDetail>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let row = segments::with_stats(&state.db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)?;
+    let ab_test = ab_test::load(&state.db, &[&segment]).await?.remove(&segment.id);
+    let settings = settings::load_or_create(&state.db, segment.project_id).await?;
+    let imported = outreach::steps_of(&state.db, segment.id).await?;
+    // The optimizer stamps auto_paused_at when it pauses a campaign. A person may have resumed and paused it since.
+    let by_optimizer: bool = sqlx::query_scalar(
+        "select exists (select 1 from segments s where s.id = $1 and s.auto_paused_at is not null
+           and not exists (select 1 from audit_events a where a.target_id = s.id and a.action = 'campaign.paused' and a.created_at > s.auto_paused_at))",
+    )
+    .bind(segment.id)
+    .fetch_one(&state.db)
+    .await?;
+    let mut read_only = vec![
+        ReadOnly { field: "schedule", reason: "Every campaign in the project shares it. Change it with PATCH /v1/projects/{id}".into() },
+        ReadOnly { field: "follow_ups", reason: "Every campaign in the project shares them. Change them in the project's settings in the app".into() },
+    ];
+    if let Some(tool) = &imported.imported_from {
+        read_only.push(ReadOnly { field: "sequence", reason: format!("It came from {tool}, and Splee sends these emails as written") });
+    }
+    Ok(Json(CampaignDetail {
+        status_reason: status_reason(&segment, !settings.paused, by_optimizer),
+        project_id: segment.project_id,
+        icon: segment.icon,
+        est_size: segment.est_size,
+        fit_score: segment.fit_score,
+        targeting: segment.targeting,
+        pain_points: segment.pain_points,
+        angle: segment.angle,
+        track_clicks: segment.track_clicks,
+        track_opens: segment.track_opens,
+        lead_pages: segment.lead_pages,
+        schedule: Schedule {
+            sending: !settings.paused,
+            timezone: settings.timezone,
+            send_days: settings.send_days,
+            send_start_hour: settings.send_start_hour,
+            send_end_hour: settings.send_end_hour,
+            daily_email_limit: settings.daily_email_limit,
+        },
+        follow_ups: settings.follow_ups,
+        imported_from: imported.imported_from,
+        sequence: imported.steps,
+        read_only,
+        campaign: Campaign { ab_test, ..Campaign::from(row) },
+    }))
+}
+
+fn status_reason(segment: &Segment, project_sending: bool, by_optimizer: bool) -> String {
+    match (segment.status.as_str(), segment.auto_paused_at) {
+        ("draft", _) => "Not started. Starting it approves its drafts for sending".into(),
+        ("paused", Some(at)) if by_optimizer => format!(
+            "Splee's optimizer paused it on {}, for too few hot leads per email sent. Once started again it stays running",
+            at.format("%b %-d, %Y")
+        ),
+        ("paused", _) => "Paused. Its unsent emails wait as drafts until it starts again".into(),
+        _ if !project_sending => "Started, but sending is paused for the whole project".into(),
+        ("scaling", _) => "Sending ahead of the project's other campaigns, since it gets hot leads for fewer emails".into(),
+        _ => "Sending on the project's schedule".into(),
+    }
+}
+
+fn accepted() -> Json<Value> {
+    Json(json!({ "accepted": true }))
+}
+
+/// The campaign's Start button: it sends, and its drafts are approved. The app only offers Start on a campaign that isn't
+/// sending, so on one that is, nothing changes and a scaling campaign stays scaling.
+pub(super) async fn start_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    if !segments::running(&segment) {
+        segments::launch(&state.db, &auth, &segment).await?;
+    }
+    Ok(accepted())
+}
+
+/// The campaign's Pause button: its unsent emails go back to drafts. Replies keep coming in. A campaign that isn't sending
+/// is left as it is, like the app, which only offers Pause on a sending one.
+pub(super) async fn stop_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    if segments::running(&segment) {
+        segments::hold(&state.db, &auth, &segment).await?;
+    }
+    Ok(accepted())
+}
+
+/// Splee has no review state for a whole campaign. This is the Approve button on each of its first emails and follow-ups
+/// that wait as drafts, as POST /v1/emails/{id}/approve does one at a time. A paused campaign holds them until it starts.
+pub(super) async fn approve_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let drafts: Vec<Uuid> = sqlx::query_scalar(
+        "select id from email_messages where segment_id = $1 and direction = 'outbound' and kind in ('initial', 'follow_up') and status = 'draft'
+         order by created_at, id",
+    )
+    .bind(segment.id)
+    .fetch_all(&state.db)
+    .await?;
+    for &email in &drafts {
+        emails::update_one(&state.db, auth.org_id, email, emails::UpdateBody { status: Some("approved".into()), ..Default::default() }).await?;
+    }
+    Ok(Json(json!({ "accepted": true, "approved": drafts.len() })))
+}
+
+/// A project's sending controls, as PATCH /v1/projects/{id} takes them.
+#[derive(Serialize)]
+pub(super) struct ProjectControls {
+    project_id: Uuid,
+    /// False while the project's Pause sending holds every campaign in it.
+    sending: bool,
+    daily_email_limit: i32,
+    daily_text_limit: i32,
+    timezone: String,
+    send_days: Vec<i32>,
+    send_start_hour: i32,
+    send_end_hour: i32,
+    /// Keeps sending campaigns stocked with written emails within the monthly budget and lead cap.
+    autopilot: bool,
+    /// Claude spend a calendar month (UTC) may reach, counting runs started by hand.
+    autopilot_budget_micros: i64,
+    /// New leads emailed a month.
+    autopilot_lead_cap: i32,
+    /// Autopilot's emails go out without approval.
+    autopilot_auto_send: bool,
+    /// Hours a draft waits for review before it goes out on its own, or null when drafts wait for a person.
+    review_window_hours: Option<i32>,
+}
+
+impl From<ProjectSettings> for ProjectControls {
+    fn from(s: ProjectSettings) -> Self {
+        Self {
+            project_id: s.project_id,
+            sending: !s.paused,
+            daily_email_limit: s.daily_email_limit,
+            daily_text_limit: s.daily_text_limit,
+            timezone: s.timezone,
+            send_days: s.send_days,
+            send_start_hour: s.send_start_hour,
+            send_end_hour: s.send_end_hour,
+            autopilot: s.autopilot,
+            autopilot_budget_micros: s.autopilot_budget_micros,
+            autopilot_lead_cap: s.autopilot_lead_cap,
+            autopilot_auto_send: s.autopilot_auto_send,
+            review_window_hours: s.review_window_hours,
+        }
+    }
+}
+
+/// The project's sending controls, with the settings page's checks, and its Start and Pause sending buttons as `sending`.
+/// An empty body changes nothing and returns them.
+pub(super) async fn update_project(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> AppResult<Json<ProjectControls>> {
+    let project = sqlx::query_as::<_, Project>("select * from projects where id = $1 and org_id = $2")
+        .bind(id)
+        .bind(auth.org_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let controls: settings::Controls = strict(body)?;
+    // Like the app's toggle, which offers Start only while paused and Pause only while sending.
+    let paused = settings::load_or_create(&state.db, id).await?.paused;
+    let (start, pause) = (controls.sending == Some(true) && paused, controls.sending == Some(false) && !paused);
+    // Before anything is saved, so a refused start leaves the other fields as they were.
+    if start && !projects::has_mailbox(&state.db, auth.org_id).await? {
+        return Err(AppError::Conflict(projects::NO_MAILBOX.into()));
+    }
+    settings::apply(&state.db, auth.org_id, id, controls.into()).await?;
+    if start {
+        projects::start_sending(&state.db, &auth, &project).await?;
+    } else if pause {
+        projects::pause_sending(&state.db, &auth, &project).await?;
+    }
+    Ok(Json(settings::load_or_create(&state.db, id).await?.into()))
 }
 
 pub(super) async fn list_leads(
@@ -506,6 +751,166 @@ async fn replies(
     .fetch_all(&state.db)
     .await?;
     Ok(Json(messages))
+}
+
+#[derive(Deserialize)]
+pub(super) struct HotLeadsQuery {
+    /// Only leads that became hot after this. Pass the newest became_hot_at you've seen.
+    since: Option<Ts>,
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    project_id: Option<Uuid>,
+}
+
+/// A lead whose reply the classifier called hot, with that first hot reply.
+#[derive(Serialize, FromRow)]
+pub(super) struct HotLead {
+    lead_id: Uuid,
+    project_id: Uuid,
+    campaign_id: Option<Uuid>,
+    campaign: Option<String>,
+    name: String,
+    email: Option<String>,
+    title: String,
+    company_name: String,
+    company_domain: Option<String>,
+    linkedin_url: String,
+    /// Their status now: hot, or meeting_booked and on from there.
+    status: String,
+    reply_id: Uuid,
+    /// The reply that made them hot.
+    reply: String,
+    /// Why the classifier called it hot.
+    why_hot: String,
+    /// When that reply arrived.
+    became_hot_at: Ts,
+}
+
+/// The first hot reply of each of the organization's leads, over `email_messages e` and `projects p`. The first, so a later
+/// hot reply from the same lead doesn't bring them back as new.
+const FIRST_HOT: &str = "select distinct on (e.lead_id) e.lead_id, e.id as reply_id, e.body as reply, e.classification_reason as why_hot,
+           e.created_at as became_hot_at
+         from email_messages e join projects p on p.id = e.project_id
+         where p.org_id = $1 and e.direction = 'inbound' and e.classification = 'hot' and ($3::uuid is null or e.project_id = $3)
+         order by e.lead_id, e.created_at, e.id";
+
+/// Every hot lead across the organization, newest first, for following them without re-listing each project's inbox.
+pub(super) async fn hot_leads(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<HotLeadsQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<HotLead>>> {
+    if let Some(project) = q.project_id {
+        check_project(&state.db, project, auth.org_id).await?;
+    }
+    let filter = "($2::timestamptz is null or h.became_hot_at > $2)";
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({FIRST_HOT}) h where {filter}"))
+        .bind(auth.org_id)
+        .bind(q.since)
+        .bind(q.project_id)
+        .fetch_one(&state.db)
+        .await?;
+    let items = sqlx::query_as::<_, HotLead>(&format!(
+        "select h.*, l.project_id, l.segment_id as campaign_id, s.name as campaign, l.full_name as name, l.email::text as email, l.title,
+                l.company_name, l.company_domain, l.linkedin_url, l.status
+         from ({FIRST_HOT}) h join leads l on l.id = h.lead_id left join segments s on s.id = l.segment_id
+         where {filter} order by h.became_hot_at desc, h.lead_id desc limit $4 offset $5"
+    ))
+    .bind(auth.org_id)
+    .bind(q.since)
+    .bind(q.project_id)
+    .bind(page.limit())
+    .bind(page.offset())
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(Paginated { items, total }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct ChangesQuery {
+    /// next_cursor from the last call.
+    cursor: Option<String>,
+    /// On the first call, only replies after this. Without either, from the project's first reply.
+    since: Option<Ts>,
+    limit: Option<i64>,
+}
+
+/// A reply that came in, by email or to a text.
+#[derive(Serialize, FromRow)]
+pub(super) struct InboundReply {
+    id: Uuid,
+    lead_id: Uuid,
+    campaign_id: Option<Uuid>,
+    lead_name: String,
+    lead_email: Option<String>,
+    company_name: String,
+    channel: String,
+    from_email: Option<String>,
+    subject: String,
+    body: String,
+    /// hot, question, not_interested, ooo, unsubscribe, bounce or other. Null while the classifier hasn't read it yet.
+    classification: Option<String>,
+    received_at: Ts,
+}
+
+#[derive(Serialize)]
+pub(super) struct InboxChanges {
+    /// Oldest first.
+    items: Vec<InboundReply>,
+    /// Pass it as cursor next time. Null only when there's been no reply yet and no cursor or since to keep.
+    next_cursor: Option<String>,
+    /// More are waiting now, so call again straight away.
+    has_more: bool,
+}
+
+/// Replies are read this long after they arrive, so one whose insert started first but committed last is never skipped.
+const SETTLE: &str = "5 seconds";
+const MAX_CHANGES: i64 = 500;
+
+/// A place in the project's replies, after (received_at, id). Opaque to clients.
+fn cursor(at: Ts, id: Uuid) -> String {
+    format!("{}_{id}", at.timestamp_micros())
+}
+
+fn parse_cursor(cursor: &str) -> AppResult<(Ts, Uuid)> {
+    let parsed: Option<(Ts, Uuid)> = cursor.split_once('_').and_then(|(micros, id)| Some((Ts::from_timestamp_micros(micros.parse().ok()?)?, id.parse().ok()?)));
+    parsed.ok_or_else(|| AppError::BadRequest("cursor isn't one this API gave out. Pass next_cursor from the last call".into()))
+}
+
+/// New replies since the cursor, oldest first, each exactly once: they're ordered by when they arrived and then by id, and the
+/// cursor is the last one returned.
+pub(super) async fn inbox_changes(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ChangesQuery>,
+) -> AppResult<Json<InboxChanges>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let after = match (q.cursor.as_deref().filter(|c| !c.is_empty()), q.since) {
+        (Some(c), _) => Some(parse_cursor(c)?),
+        // The largest id, so a reply at exactly `since` counts as before it, like the other since filters.
+        (None, Some(since)) => Some((since, Uuid::from_u128(u128::MAX))),
+        (None, None) => None,
+    };
+    let limit = q.limit.unwrap_or(100).clamp(1, MAX_CHANGES);
+    let mut items = sqlx::query_as::<_, InboundReply>(&format!(
+        "select e.id, e.lead_id, e.segment_id as campaign_id, l.full_name as lead_name, l.email::text as lead_email, l.company_name, e.channel,
+                e.from_email::text as from_email, e.subject, e.body, e.classification, e.created_at as received_at
+         from email_messages e join leads l on l.id = e.lead_id
+         where e.project_id = $1 and e.direction = 'inbound' and e.created_at <= now() - interval '{SETTLE}'
+           and ($2::timestamptz is null or (e.created_at, e.id) > ($2, $3))
+         order by e.created_at, e.id limit $4"
+    ))
+    .bind(id)
+    .bind(after.map(|(at, _)| at))
+    .bind(after.map(|(_, id)| id))
+    .bind(limit + 1)
+    .fetch_all(&state.db)
+    .await?;
+    let has_more = items.len() as i64 > limit;
+    items.truncate(limit as usize);
+    let next = items.last().map(|m| (m.received_at, m.id)).or(after);
+    Ok(Json(InboxChanges { items, next_cursor: next.map(|(at, id)| cursor(at, id)), has_more }))
 }
 
 /// The polling twin of the email_sent webhook: what Splee sent, oldest first, for logging outreach in a CRM.
@@ -1251,6 +1656,16 @@ mod tests {
         async fn post(&self, key: &str, path: &str, idempotency_key: Option<&str>, body: Value) -> (u16, HeaderMap, Value) {
             self.send(Method::POST, key, path, idempotency_key, Some(body)).await
         }
+
+        async fn get(&self, path: &str) -> (u16, Value) {
+            let (status, _, body) = self.send(Method::GET, KEYS[0], path, None, None).await;
+            (status, body)
+        }
+
+        async fn patch(&self, path: &str, body: Value) -> (u16, Value) {
+            let (status, _, body) = self.send(Method::PATCH, KEYS[0], path, None, Some(body)).await;
+            (status, body)
+        }
     }
 
     /// Two organizations, each with a project and an API key from KEYS.
@@ -1273,6 +1688,27 @@ mod tests {
             projects.push(project);
         }
         [projects[0], projects[1]]
+    }
+
+    /// A campaign in the project with one lead and a first email waiting as a draft. Returns the campaign and the email.
+    async fn campaign(db: &PgPool, project: Uuid, status: &str) -> (Uuid, Uuid) {
+        let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status) values ($1, 'Dentists', $2) returning id")
+            .bind(project)
+            .bind(status)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let email: Uuid = sqlx::query_scalar(
+            "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Ana', 'ana@smile.example') returning id)
+             insert into email_messages (project_id, lead_id, segment_id, direction, kind, subject, body, status)
+             select $1, l.id, $2, 'outbound', 'initial', 'Hi', 'Hello', 'draft' from l returning id",
+        )
+        .bind(project)
+        .bind(segment)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        (segment, email)
     }
 
     async fn count(db: &PgPool, sql: &str) -> i64 {
@@ -1401,5 +1837,267 @@ mod tests {
         assert_eq!((status, header(&headers, "ratelimit-remaining")), (200, Some("1")), "another organization has its own hour");
         let (status, headers, _) = api.send(Method::GET, "splee_wrong", "/v1/projects", None, None).await;
         assert_eq!((status, header(&headers, "ratelimit-limit")), (401, None));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn campaigns_start_stop_and_approve_like_the_app_buttons(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let (segment, _) = campaign(&db, a, "draft").await;
+        let (theirs, _) = campaign(&db, b, "draft").await;
+        let api = Api::start(&db, LIMITS).await;
+        let state = |id: Uuid| {
+            let db = db.clone();
+            async move {
+                sqlx::query_as::<_, (String, String, Option<String>, String)>(
+                    "select s.status, e.status, e.approved_via, l.status from segments s join email_messages e on e.segment_id = s.id
+                     join leads l on l.id = e.lead_id where s.id = $1",
+                )
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+            }
+        };
+        let row = |status: &str, email: &str, via: Option<&str>, lead: &str| (status.to_string(), email.to_string(), via.map(String::from), lead.to_string());
+
+        let (status, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
+        assert_eq!((status, detail["status"].as_str(), detail["project_id"].as_str()), (200, Some("draft"), Some(a.to_string().as_str())), "{detail}");
+        assert!(detail["status_reason"].as_str().unwrap().starts_with("Not started"), "{detail}");
+        assert_eq!((detail["schedule"]["sending"].clone(), detail["schedule"]["daily_email_limit"].is_number()), (json!(false), true));
+        assert!(detail["follow_ups"].is_array() && detail["targeting"].is_object(), "{detail}");
+        let read_only: Vec<&str> = detail["read_only"].as_array().unwrap().iter().map(|r| r["field"].as_str().unwrap()).collect();
+        assert_eq!(read_only, ["schedule", "follow_ups"]);
+
+        // Another organization's campaign looks like one that doesn't exist, and nothing happens to it.
+        assert_eq!(api.get(&format!("/v1/campaigns/{theirs}")).await.0, 404);
+        for action in ["start", "stop", "approve"] {
+            assert_eq!(api.post(KEYS[0], &format!("/v1/campaigns/{theirs}/{action}"), None, json!({})).await.0, 404, "{action}");
+        }
+        assert_eq!(state(theirs).await, row("draft", "draft", None, "new"));
+
+        // Start is the app's Start: the campaign sends and its drafts are approved. A retry with the key replays, and a
+        // repeat without one changes nothing, so it's audited once, under the key.
+        let start = format!("/v1/campaigns/{segment}/start");
+        let (status, headers, body) = api.post(KEYS[0], &start, Some("start-1"), json!({})).await;
+        assert_eq!((status, body, header(&headers, "idempotent-replayed")), (200, json!({ "accepted": true }), None));
+        assert_eq!(state(segment).await, row("working", "approved", Some("person"), "queued"));
+        let (status, headers, _) = api.post(KEYS[0], &start, Some("start-1"), json!({})).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, Some("true")));
+        sqlx::query("update segments set status = 'scaling' where id = $1").bind(segment).execute(&db).await.unwrap();
+        assert_eq!(api.post(KEYS[0], &start, None, json!({})).await.2, json!({ "accepted": true }));
+        assert_eq!(state(segment).await.0, "scaling", "starting a sending campaign leaves it as it is");
+        let audited = "select count(*) from audit_events where action = 'campaign.launched' and actor_key_id is not null";
+        assert_eq!(count(&db, audited).await, 1);
+
+        // Stop is the app's Pause: unsent emails go back to drafts. Twice is the same as once.
+        for _ in 0..2 {
+            let (status, _, body) = api.post(KEYS[0], &format!("/v1/campaigns/{segment}/stop"), None, json!({})).await;
+            assert_eq!((status, body), (200, json!({ "accepted": true })));
+            assert_eq!(state(segment).await, row("paused", "draft", None, "new"));
+        }
+        assert_eq!(count(&db, "select count(*) from audit_events where action = 'campaign.paused'").await, 1);
+        let (_, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
+        assert!(detail["status_reason"].as_str().unwrap().starts_with("Paused."), "{detail}");
+        // The optimizer paused it after the person last did.
+        sqlx::query("update segments set auto_paused_at = now() + interval '1 minute' where id = $1").bind(segment).execute(&db).await.unwrap();
+        let (_, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
+        assert!(detail["status_reason"].as_str().unwrap().contains("optimizer"), "{detail}");
+
+        // Approve is each draft's Approve button. A paused campaign keeps them until it starts.
+        let approve = format!("/v1/campaigns/{segment}/approve");
+        assert_eq!(api.post(KEYS[0], &approve, None, json!({})).await.2, json!({ "accepted": true, "approved": 1 }));
+        assert_eq!(state(segment).await, row("paused", "approved", Some("person"), "queued"));
+        assert_eq!(api.post(KEYS[0], &approve, None, json!({})).await.2, json!({ "accepted": true, "approved": 0 }));
+
+        // An imported campaign's emails are sent as written.
+        sqlx::query("update segments set imported_from = 'instantly' where id = $1").bind(segment).execute(&db).await.unwrap();
+        sqlx::query("insert into segment_steps (segment_id, position, subject, body) values ($1, 0, 'Quick one', 'Hi {first_name}')")
+            .bind(segment)
+            .execute(&db)
+            .await
+            .unwrap();
+        let (_, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
+        assert_eq!((detail["imported_from"].as_str(), detail["sequence"][0]["body"].as_str()), (Some("Instantly"), Some("Hi {first_name}")));
+        assert_eq!(detail["read_only"][2]["field"], "sequence", "{detail}");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn project_controls_take_only_fields_they_know(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let (segment, _) = campaign(&db, a, "draft").await;
+        let api = Api::start(&db, LIMITS).await;
+        let project = format!("/v1/projects/{a}");
+
+        let (status, controls) = api.patch(&project, json!({ "daily_email_limit": 80, "review_window_hours": 24, "autopilot": true })).await;
+        assert_eq!(status, 200, "{controls}");
+        assert_eq!((controls["daily_email_limit"].clone(), controls["review_window_hours"].clone(), controls["autopilot"].clone()), (json!(80), json!(24), json!(true)));
+        assert_eq!(controls["sending"], false);
+        let (status, body) = api.patch(&project, json!({ "daily_limit": 5 })).await;
+        assert!(status == 422 && body["error"].as_str().unwrap().contains("unknown field `daily_limit`"), "{status} {body}");
+        assert_eq!(api.patch(&project, json!({ "daily_email_limit": 0 })).await.0, 400);
+        assert_eq!(api.patch(&format!("/v1/projects/{b}"), json!({ "daily_email_limit": 70 })).await.0, 404);
+        let (status, unchanged) = api.patch(&project, json!({})).await;
+        assert_eq!((status, unchanged["daily_email_limit"].clone()), (200, json!(80)));
+
+        // Turning sending on needs a mailbox, like the app's Start sending, and a refusal saves nothing.
+        let (status, body) = api.patch(&project, json!({ "sending": true, "daily_email_limit": 90 })).await;
+        assert!(status == 409 && body["error"].as_str().unwrap().contains("mailbox"), "{status} {body}");
+        assert_eq!(api.patch(&project, json!({})).await.1["daily_email_limit"], 80);
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(a).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'ana@acme.example', 'smtp.test', '', '')")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let (status, controls) = api.patch(&project, json!({ "sending": true })).await;
+            assert_eq!((status, controls["sending"].clone()), (200, json!(true)), "{controls}");
+        }
+        assert_eq!(count(&db, "select count(*) from audit_events where action = 'project.started' and actor_key_id is not null").await, 1);
+        let (_, controls) = api.patch(&project, json!({ "sending": false, "review_window_hours": null })).await;
+        assert_eq!((controls["sending"].clone(), controls["review_window_hours"].clone()), (json!(false), Value::Null));
+        let paused: bool = sqlx::query_scalar("select paused from project_settings where project_id = $1").bind(a).fetch_one(&db).await.unwrap();
+        assert!(paused);
+
+        // The campaign PATCH refuses fields it doesn't take too, rather than ignoring them.
+        let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "name": "Renamed" })).await;
+        assert_eq!(status, 422, "{body}");
+        let language: String = sqlx::query_scalar("select language from segments where id = $1").bind(segment).fetch_one(&db).await.unwrap();
+        assert_eq!(language, "lead");
+    }
+
+    /// A lead in the project with an inbound message `ago` before now, classified as given. Returns the lead.
+    async fn reply(db: &PgPool, project: Uuid, name: &str, classification: &str, ago: &str) -> Uuid {
+        let lead: Uuid = sqlx::query_scalar(
+            "insert into leads (project_id, full_name, email, title, company_name, company_domain, linkedin_url)
+             values ($1, $2, $2 || '@acme.example', 'Founder', $2 || ' Co', $2 || '.example', 'https://www.linkedin.com/in/' || $2) returning id",
+        )
+        .bind(project)
+        .bind(name)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        another_reply(db, project, lead, classification, ago).await;
+        lead
+    }
+
+    async fn another_reply(db: &PgPool, project: Uuid, lead: Uuid, classification: &str, ago: &str) -> Uuid {
+        sqlx::query_scalar(
+            "insert into email_messages (project_id, lead_id, direction, kind, subject, body, status, classification, classification_reason, created_at)
+             values ($1, $2, 'inbound', 'inbound', 'Re', 'Reply ' || $4, 'received', $3, 'Wants a call', now() - $4::interval) returning id",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(classification)
+        .bind(ago)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    fn at(db_time: crate::models::Ts) -> String {
+        db_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn hot_leads_are_newest_first_and_honor_since_and_project(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let second: Uuid = sqlx::query_scalar("insert into projects (org_id, name) select org_id, 'Second' from projects where id = $1 returning id")
+            .bind(a)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let anna = reply(&db, a, "anna", "hot", "3 days").await;
+        // A second hot reply doesn't make her new again.
+        another_reply(&db, a, anna, "hot", "1 day").await;
+        let bo = reply(&db, second, "bo", "hot", "2 days").await;
+        reply(&db, a, "cy", "question", "1 hour").await;
+        reply(&db, b, "dee", "hot", "1 hour").await;
+        let api = Api::start(&db, LIMITS).await;
+
+        let (status, page) = api.get("/v1/hot-leads").await;
+        assert_eq!((status, page["total"].clone()), (200, json!(2)), "{page}");
+        let ids: Vec<&str> = page["items"].as_array().unwrap().iter().map(|l| l["lead_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, [bo.to_string(), anna.to_string()]);
+        let first = &page["items"][1];
+        assert_eq!((first["name"].as_str(), first["email"].as_str()), (Some("anna"), Some("anna@acme.example")));
+        assert_eq!((first["title"].as_str(), first["company_domain"].as_str()), (Some("Founder"), Some("anna.example")));
+        assert_eq!((first["reply"].as_str(), first["why_hot"].as_str(), first["linkedin_url"].as_str()), (Some("Reply 3 days"), Some("Wants a call"), Some("https://www.linkedin.com/in/anna")));
+
+        let since: crate::models::Ts = sqlx::query_scalar("select now() - interval '60 hours'").fetch_one(&db).await.unwrap();
+        let (_, page) = api.get(&format!("/v1/hot-leads?since={}", at(since))).await;
+        assert_eq!((page["total"].clone(), page["items"][0]["lead_id"].clone()), (json!(1), json!(bo)), "{page}");
+        let (_, page) = api.get(&format!("/v1/hot-leads?project_id={a}")).await;
+        assert_eq!((page["total"].clone(), page["items"][0]["lead_id"].clone()), (json!(1), json!(anna)), "{page}");
+        assert_eq!(api.get(&format!("/v1/hot-leads?project_id={b}")).await.0, 404);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn inbox_changes_return_each_reply_once_across_pages(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let anna = reply(&db, a, "anna", "hot", "50 minutes").await;
+        for ago in ["40 minutes", "30 minutes", "20 minutes"] {
+            another_reply(&db, a, anna, "question", ago).await;
+        }
+        // Two at the same moment, told apart by id.
+        sqlx::query("update email_messages set created_at = (select created_at from email_messages where body = 'Reply 30 minutes') where body = 'Reply 20 minutes'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', 'initial', 'sent')")
+            .bind(a)
+            .bind(anna)
+            .execute(&db)
+            .await
+            .unwrap();
+        let fresh = another_reply(&db, a, anna, "other", "0 seconds").await;
+        reply(&db, b, "dee", "hot", "10 minutes").await;
+        let expected: Vec<String> = sqlx::query_scalar(
+            "select id::text from email_messages where project_id = $1 and direction = 'inbound' and id <> $2 order by created_at, id",
+        )
+        .bind(a)
+        .bind(fresh)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(expected.len(), 4);
+        let api = Api::start(&db, LIMITS).await;
+        let changes = format!("/v1/projects/{a}/inbox/changes");
+
+        let (mut seen, mut cursor) = (vec![], String::new());
+        loop {
+            let (status, page) = api.get(&format!("{changes}?limit=3&cursor={cursor}")).await;
+            assert_eq!(status, 200, "{page}");
+            seen.extend(page["items"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_string()));
+            cursor = page["next_cursor"].as_str().unwrap().to_string();
+            if page["has_more"] == false {
+                break;
+            }
+        }
+        assert_eq!(seen, expected, "each settled reply once, in order, and the one still settling not yet");
+
+        // Once it has settled it comes next, and then the cursor stays put.
+        sqlx::query("update email_messages set created_at = now() - interval '6 seconds' where id = $1").bind(fresh).execute(&db).await.unwrap();
+        let (_, page) = api.get(&format!("{changes}?cursor={cursor}")).await;
+        assert_eq!((page["items"].as_array().unwrap().len(), page["items"][0]["id"].clone()), (1, json!(fresh)), "{page}");
+        assert_eq!(page["items"][0]["classification"], "other");
+        let cursor = page["next_cursor"].as_str().unwrap().to_string();
+        let (_, page) = api.get(&format!("{changes}?cursor={cursor}")).await;
+        assert_eq!((page["items"].as_array().unwrap().len(), page["next_cursor"].as_str()), (0, Some(cursor.as_str())));
+
+        let third: crate::models::Ts = sqlx::query_scalar("select created_at from email_messages where id::text = $1").bind(&expected[1]).fetch_one(&db).await.unwrap();
+        let (_, page) = api.get(&format!("{changes}?since={}", at(third))).await;
+        let ids: Vec<&str> = page["items"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, [expected[2].as_str(), expected[3].as_str(), fresh.to_string().as_str()]);
+        assert_eq!(api.get(&format!("{changes}?cursor=nope")).await.0, 400);
+        assert_eq!(api.get(&format!("/v1/projects/{b}/inbox/changes")).await.0, 404);
     }
 }
