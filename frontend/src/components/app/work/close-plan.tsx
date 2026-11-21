@@ -63,8 +63,9 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
   const writing = plan?.status === "writing";
   if (!plan || (!plan.goal && !plan.steps.length)) {
     return (
-      <section className="flex items-start justify-between gap-3 rounded-xl border border-dashed border-border-strong p-4">
-        <div className="min-w-0">
+      // The button wraps under the text on a phone rather than squeezing it into a narrow column.
+      <section className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-xl border border-dashed border-border-strong p-4">
+        <div className="min-w-0 flex-1 basis-56">
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <ListChecks className="size-3.5" /> Close plan
           </p>
@@ -89,7 +90,7 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
 
   const done = plan.steps.filter((s) => s.done_at).length;
   return (
-    <section className="rounded-xl border border-border p-4">
+    <section className="@container rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <p className="flex items-center gap-1.5 text-sm font-medium">
           <ListChecks className="size-3.5" /> Close plan
@@ -97,7 +98,7 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
         <span className="text-xs text-muted-foreground tabular-nums">
           {done} of {plan.steps.length} done
         </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {writing ? (
             <span className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" /> Writing…
@@ -152,17 +153,20 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
               {step.detail && !step.done_at && <p className="text-xs text-pretty text-muted-foreground">{step.detail}</p>}
               {step.done_by === "them" && <p className="text-xs text-brand-700">Ticked off by {them}</p>}
             </div>
-            <span
-              className={cn(
-                "shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] font-medium",
-                step.side === "them" ? "bg-sky-50 text-sky-700" : "bg-black/5 text-foreground",
-              )}
-            >
-              {step.side === "them" ? them : "You"}
-            </span>
-            <span className={cn("w-12 shrink-0 text-right text-xs tabular-nums", overdue(step) ? "text-danger" : "text-muted-foreground")}>
-              {step.due_date ? dueLabel(step.due_date) : "–"}
-            </span>
+            {/* On a phone the date goes under whose step it is, or the title gets a column too narrow for its words. */}
+            <div className="flex shrink-0 flex-col items-end gap-1 @sm:flex-row @sm:items-start @sm:gap-2.5">
+              <span
+                className={cn(
+                  "rounded-full px-1.5 text-[11px] leading-[18px] font-medium",
+                  step.side === "them" ? "bg-sky-50 text-sky-700" : "bg-black/5 text-foreground",
+                )}
+              >
+                {step.side === "them" ? them : "You"}
+              </span>
+              <span className={cn("w-12 text-right text-xs tabular-nums", overdue(step) ? "text-danger" : "text-muted-foreground")}>
+                {step.due_date ? dueLabel(step.due_date) : "–"}
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => remove(step)}
