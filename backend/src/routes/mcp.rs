@@ -42,23 +42,39 @@ const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 /// How long a stateless client may keep tools/list and server/discover. The tools only change with a new Splee version.
 const CACHE_MS: u64 = 3_600_000;
 
-const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
-list_projects (or create_project for a new business), then list_campaigns or create_campaign, \
-search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
-list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition and update_campaign \
-changes it, start_campaign, stop_campaign and approve_campaign run it, get_campaign_send_state says whether it's sending and \
-what holds it, archive_campaign puts away one that's done and \
-unarchive_campaign brings it back, \
-and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
-checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
-find_lookalikes and add_lookalikes find companies like the user's \
-customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. suggest_sending_domains and check_sending_domains find domains to send cold email from, which the user buys on the Domains page. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. find_phone finds a person's mobile from their LinkedIn profile. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done, and list_tasks finds a lost one. Approved \
-emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
-create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. get_analytics says which \
-campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
-search_local_businesses and add_local_businesses use Google Maps once the user connected a key. For a lead list the user already has, \
-import_campaign makes a campaign of exactly those leads. For a first email the user wrote themselves, update_my_copy (or \
-update_project_my_copy for every campaign) sends it with each lead's details filled in, and preview_my_copy shows it for three leads.";
+const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. \
+A typical loop: list_projects (or create_project for a new business), then list_campaigns or create_campaign, search_companies (fill_company_filters \
+turns a sentence into its filters) and add_companies, find_people, write_emails, then list_emails_to_approve and approve_email or skip_email. \
+get_campaign reads a campaign's whole definition and update_campaign changes it, start_campaign, stop_campaign and approve_campaign run it, \
+get_campaign_send_state says whether it's sending and what holds it, archive_campaign puts away one that's done and unarchive_campaign brings it \
+back, and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
+checks against the month's email spend. \
+list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
+find_lookalikes and add_lookalikes find companies like the user's customers. \
+download_companies hands over a search's companies as CSV, with a link to the whole file. \
+find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. \
+suggest_sending_domains and check_sending_domains find domains to send cold email from, which the user buys on the Domains page. \
+add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and \
+list_research shows the answers. \
+list_company_signals shows companies that just raised money or announced news. \
+save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. \
+create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved \
+searches and find_lookalikes in the projects it covers. \
+It never stops an email. \
+find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 \
+in the background for get_email_batch to follow. \
+find_phone finds a person's mobile from their LinkedIn profile. \
+Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done, and list_tasks finds a lost one. \
+Approved emails go out from the user's own mailboxes on the project's schedule. \
+Hot replies open deals on the pipeline, which list_deals, create_deal and move_deal follow to won or lost. \
+assign_lead gives a lead to someone on the team. \
+get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. \
+get_analytics says which campaigns, mailboxes, follow-ups and send times get replies. \
+For local businesses like dentists or gyms in a city, search_local_businesses and add_local_businesses use Google Maps once the user connected a \
+key. \
+For a lead list the user already has, import_campaign makes a campaign of exactly those leads. \
+For a first email the user wrote themselves, update_my_copy (or update_project_my_copy for every campaign) sends it with each lead's details filled \
+in, and preview_my_copy shows it for three leads.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
