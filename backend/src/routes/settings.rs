@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -14,6 +15,7 @@ use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::models::{ProjectSettings, WebhookDelivery};
+use crate::monthly_cap::{self, Cap};
 use crate::state::AppState;
 use crate::unipile;
 use crate::verify::Verifier;
@@ -21,6 +23,7 @@ use crate::verify::Verifier;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/settings", get(get_settings).put(update_settings))
+        .route("/projects/{id}/monthly-cap", get(monthly_cap))
         .route("/projects/{id}/integrations/test", post(test_integration))
         .route("/projects/{id}/integrations/webhook-secret", post(replace_webhook_secret))
         .route("/projects/{id}/integrations/webhook-deliveries", get(list_deliveries))
@@ -45,6 +48,12 @@ pub async fn load_or_create(db: &PgPool, project_id: Uuid) -> AppResult<ProjectS
 async fn get_settings(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     Ok(Json(load_or_create(&state.db, id).await?))
+}
+
+/// The cap from the settings and what the month's emails cost so far, for the Daily limit page.
+async fn monthly_cap(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Cap>> {
+    auth.project(&state.db, id).await?;
+    Ok(Json(monthly_cap::status(&state.db, id, Utc::now()).await?))
 }
 
 // `paused` is left out on purpose: unpausing goes through POST /projects/:id/start, which checks for an active mailbox.
@@ -92,6 +101,9 @@ pub(super) struct SettingsBody {
     /// A present null turns the review window off.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     review_window_hours: Option<Option<i32>>,
+    /// A present null removes the cap.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    monthly_cap_micros: Option<Option<i64>>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -146,6 +158,8 @@ pub(super) struct Controls {
     autopilot_auto_send: Option<bool>,
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     review_window_hours: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    monthly_cap_micros: Option<Option<i64>>,
 }
 
 impl From<Controls> for SettingsBody {
@@ -162,6 +176,7 @@ impl From<Controls> for SettingsBody {
             autopilot_lead_cap: c.autopilot_lead_cap,
             autopilot_auto_send: c.autopilot_auto_send,
             review_window_hours: c.review_window_hours,
+            monthly_cap_micros: c.monthly_cap_micros,
             ..Default::default()
         }
     }
@@ -231,6 +246,9 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     }
     if body.review_window_hours.flatten().is_some_and(|h| !(1..=72).contains(&h)) {
         return bad("The review window must be between 1 and 72 hours");
+    }
+    if body.monthly_cap_micros.flatten().is_some_and(|m| !(1_000_000..=1_000_000_000_000).contains(&m)) {
+        return bad("The monthly cap must be between $1 and $1,000,000");
     }
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
@@ -302,7 +320,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            ask_for_referrals = coalesce($41, ask_for_referrals),
            watch_churn = coalesce($42, watch_churn),
            prep_renewals = coalesce($43, prep_renewals),
-           review_window_hours = case when $44 then $45 else review_window_hours end
+           review_window_hours = case when $44 then $45 else review_window_hours end,
+           monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -350,6 +369,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.prep_renewals)
     .bind(body.review_window_hours.is_some())
     .bind(body.review_window_hours.flatten())
+    .bind(body.monthly_cap_micros.is_some())
+    .bind(body.monthly_cap_micros.flatten())
     .fetch_one(db)
     .await?;
     Ok(settings)

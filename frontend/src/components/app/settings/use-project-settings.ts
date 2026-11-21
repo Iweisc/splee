@@ -52,6 +52,8 @@ export function useProjectSettings() {
       // The overview reads settings through ProjectDetail, so refresh that copy too.
       mutateKey(`/projects/${projectId}`);
       mutateKey(`/projects/${projectId}/autopilot`);
+      // The Daily limit page says whether the saved monthly cap is reached.
+      mutateKey(`/projects/${projectId}/monthly-cap`);
       // The Schedule page's stats count days and hours in the saved time zone.
       mutateKey(`/projects/${projectId}/stats/weekdays`);
       mutateKey(`/projects/${projectId}/stats/hours`);

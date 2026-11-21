@@ -12,6 +12,7 @@ use super::{attachments, dns, smtp};
 use crate::agent::{self, kind};
 use crate::hooks::{self, Alert};
 use crate::models::{EmailMessage, Lead, Mailbox, Ts};
+use crate::monthly_cap;
 use crate::state::AppState;
 use crate::verify::{self, Lookup, Verdict};
 
@@ -43,6 +44,7 @@ struct SendingProject {
     paused: bool,
     autopilot: bool,
     autopilot_lead_cap: i32,
+    monthly_cap_micros: Option<i64>,
 }
 
 impl SendingProject {
@@ -77,7 +79,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     schedule_follow_ups(state).await?;
     let projects = sqlx::query_as::<_, SendingProject>(
         "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused,
-                s.autopilot, s.autopilot_lead_cap
+                s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros
          from projects p join project_settings s on s.project_id = p.id
          where p.org_id is not null and exists (
              select 1 from email_messages e where e.project_id = p.id and e.direction = 'outbound'
@@ -138,10 +140,16 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     } else {
         i64::MAX
     };
+    // Past the month's cap, cold emails wait for the 1st. Replies to leads still go out.
+    let mut cap_left = match p.monthly_cap_micros {
+        Some(cap) => cap - monthly_cap::spent_since(&state.db, p.id, crate::autopilot::month_start(now)).await?,
+        None => i64::MAX,
+    };
     // Replies sent in this tick also use up the day's room, so cold emails stop at the limit rather than one past it.
     let mut room = cold_slots;
     for email in due {
-        if room <= 0 && !REPLY_KINDS.contains(&email.kind.as_str()) {
+        let cold = !REPLY_KINDS.contains(&email.kind.as_str());
+        if cold && (room <= 0 || cap_left <= 0) {
             continue;
         }
         if email.kind == "initial" {
@@ -150,8 +158,12 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
             }
             new_leads -= 1;
         }
+        let id = email.id;
         deliver(state, p.org_id, email).await?;
         room -= 1;
+        if p.monthly_cap_micros.is_some() {
+            cap_left -= monthly_cap::cost_of(&state.db, id).await?;
+        }
     }
     Ok(())
 }
@@ -874,6 +886,68 @@ mod tests {
         sqlx::query("update project_settings set autopilot = false").execute(&db).await.unwrap();
         super::tick(&state).await.unwrap();
         assert_eq!(status().await.unwrap(), "cancelled");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn cold_emails_wait_once_the_months_email_spend_reaches_the_cap(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query(
+            "insert into project_settings (project_id, paused, send_days, send_start_hour, send_end_hour, monthly_cap_micros)
+             values ($1, false, '{1,2,3,4,5,6,7}', 0, 24, 5000000)",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        // $5 of emails this month reaches the cap. Last month's $50 doesn't count.
+        sqlx::query(
+            "with l as (insert into leads (project_id, email, status) values ($1, 'ana@sent.example', 'contacted') returning id)
+             insert into email_messages (project_id, lead_id, direction, kind, status, sent_at, cost_micros)
+             select $1, id, 'outbound', 'initial', 'sent', at, cost
+             from l, (values (now(), 5000000), (now() - interval '40 days', 50000000)) v (at, cost)",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        // The next lead is on the do-not-contact list, so a send attempt cancels an email without SMTP, and one the cap holds
+        // stays approved.
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'bo@held.example', 'email', 'manual')")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id, email, status) values ($1, 'bo@held.example', 'queued') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let email = |kind: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', $3, 'approved') returning id",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(kind)
+            .fetch_one(&db)
+        };
+        let (first, reply) = (email("initial").await.unwrap(), email("manual_reply").await.unwrap());
+        let state = crate::autopilot::tests::state(db.clone());
+        let status = |id: Uuid| sqlx::query_scalar::<_, String>("select status from email_messages where id = $1").bind(id).fetch_one(&db);
+
+        super::tick(&state).await.unwrap();
+        assert_eq!((status(first).await.unwrap(), status(reply).await.unwrap()), ("approved".into(), "cancelled".into()), "the reply still went");
+        let now = chrono::Utc::now();
+        let cap = crate::monthly_cap::status(&db, project, now).await.unwrap();
+        assert_eq!((cap.spent_this_month_micros, cap.reached, cap.resumes_at), (5_000_000, true, Some(crate::autopilot::next_month(now))));
+
+        sqlx::query("update project_settings set monthly_cap_micros = 10000000").execute(&db).await.unwrap();
+        super::tick(&state).await.unwrap();
+        assert_eq!(status(first).await.unwrap(), "cancelled");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

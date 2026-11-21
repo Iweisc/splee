@@ -49,6 +49,7 @@ mod meetings;
 mod my_copy;
 mod meta;
 mod models;
+mod monthly_cap;
 mod nocodb;
 mod nostr;
 mod notion;

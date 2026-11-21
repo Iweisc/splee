@@ -427,6 +427,8 @@ export interface ProjectSettings extends CrmStatus {
   autopilot_auto_send: boolean;
   /** Drafts nobody reviewed or edited go out this many hours after they were written, 1 to 72. null keeps them waiting. */
   review_window_hours: number | null;
+  /** The most the project may spend on emails in a calendar month (UTC), $1 to $1,000,000. null is no cap. */
+  monthly_cap_micros: number | null;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */
@@ -440,6 +442,15 @@ export interface ProjectSettings extends CrmStatus {
 export type AssignRule = "off" | "round_robin" | "mailbox";
 
 /** GET /projects/:id/autopilot. Spend and leads count the current calendar month (UTC). */
+/** GET /projects/:id/monthly-cap: the cap, what the month's sent emails cost, and whether cold emails wait for `resumes_at`. */
+export interface MonthlyCap {
+  project_id: UUID;
+  monthly_cap_micros: number | null;
+  spent_this_month_micros: number;
+  reached: boolean;
+  resumes_at: string | null;
+}
+
 export interface AutopilotStatus {
   enabled: boolean;
   auto_send: boolean;
