@@ -1004,6 +1004,7 @@ function endpoints(projectId: string): Endpoint[] {
         "Reply threads like the Inbox page, the latest first, with the last message in either direction cut to 300 characters.",
       params: [
         ["project_id", "optional, all projects without it"],
+        ["segment_id", "optional, only the threads of this campaign's leads"],
         ["filter", "all, needs_reply, hot, auto_replied or other, default all"],
         ["q", "optional text in the lead's name, email or company"],
         ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
@@ -1013,6 +1014,7 @@ function endpoints(projectId: string): Endpoint[] {
     {
       "lead_id": "c42e…",
       "project_id": "${projectId}",
+      "campaign_id": "5d0a…",
       "project_name": "Acme",
       "lead_name": "Sarah Chen",
       "lead_email": "sarah@northwind.studio",
@@ -1074,6 +1076,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["cursor", "next_cursor from the last call"],
         ["since", "on the first call instead, only replies after this. Without either, from the first reply"],
         ["limit", "1 to 500, default 100"],
+        ["segment_id", "optional, only this campaign's replies"],
       ],
       response: `{
   "items": [
