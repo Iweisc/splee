@@ -48,8 +48,9 @@ export function ProposalSection({ deal }: { deal: Deal }) {
   const writing = proposal?.status === "writing";
   if (!proposal?.title) {
     return (
-      <section className="flex items-start justify-between gap-3 rounded-xl border border-dashed border-border-strong p-4">
-        <div className="min-w-0">
+      // The button wraps under the text on a phone rather than squeezing it into a narrow column.
+      <section className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-xl border border-dashed border-border-strong p-4">
+        <div className="min-w-0 flex-1 basis-56">
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <FileSignature className="size-3.5" /> Proposal
           </p>
@@ -95,7 +96,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
     return (
       <section className="flex flex-wrap items-center gap-3 rounded-xl border border-brand-200 bg-brand-50/60 p-4">
         <BadgeCheck className="size-5 shrink-0 text-brand-700" />
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-56">
           <p className="text-sm font-medium text-brand-800">
             Accepted by {[proposal.accepted_name, proposal.accepted_title].filter(Boolean).join(", ")} {timeAgo(proposal.accepted_at)}
           </p>
@@ -124,7 +125,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
         <p className="flex items-center gap-1.5 text-sm font-medium">
           <FileSignature className="size-3.5" /> Proposal
         </p>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {writing ? (
             <span className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" /> Writing…
