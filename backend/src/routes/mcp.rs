@@ -51,7 +51,8 @@ emails go out from the user's own mailboxes on the project's schedule. Hot repli
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
 search_local_businesses and add_local_businesses use Google Maps once the user connected a key. For a lead list the user already has, \
-import_campaign makes a campaign of exactly those leads.";
+import_campaign makes a campaign of exactly those leads. For a first email the user wrote themselves, update_my_copy (or \
+update_project_my_copy for every campaign) sends it with each lead's details filled in, and preview_my_copy shows it for three leads.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -265,6 +266,11 @@ const EMAIL_BATCH_NEXT: &str = "This runs in the background, within the organiza
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
 const IMPORT_NEXT: &str = "The leads go in in the background, usually within seconds. Call get_campaign_import with task_id until status is \
 completed or failed, then list_campaign_import_rows says what became of each lead.";
+const MY_COPY_TEXT_RULES: &str = "Changes the user's own first email or turns it on or off. Pass only what changes. Variables: \
+{{first_name}}, {{company}}, {{job_title}}, {{company_city}}, {{sender_first_name}}, {{sender_name}}, {{sender_company}}, each \
+with an optional fallback like {{company_city|your city}}. A lead missing one with no fallback gets the AI email. {a|b} picks one \
+option per lead. Up to 5 {{ai: instruction}} lines are written for each lead. The signature goes under the text unless it ends \
+with the sender's name. A text with a mistake is refused with what to fix, and nothing is saved.";
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at", "review_window_hours"];
 const LEAD_FIELDS: &[&str] = &[
     "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
@@ -434,6 +440,18 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "get_campaign" => async { value(v1::get_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "get_my_copy" => async { value(v1::campaign_my_copy(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "update_my_copy" => async { value(v1::update_campaign_my_copy(st(), auth, id(a, "segment_id")?, Json(my_copy_body(a))).await?) }.await,
+        "set_my_copy_source" => async {
+            value(v1::set_my_copy_source(st(), auth, id(a, "segment_id")?, Json(json!({ "source": a["source"] }))).await?)
+        }
+        .await,
+        "preview_my_copy" => async { value(v1::preview_my_copy(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "get_project_my_copy" => async { value(v1::project_my_copy(st(), auth, id(a, "project_id")?).await?) }.await,
+        "update_project_my_copy" => async {
+            value(v1::update_project_my_copy(st(), auth, id(a, "project_id")?, Json(my_copy_body(a))).await?)
+        }
+        .await,
         "start_campaign" => async { value(v1::start_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "stop_campaign" => async { value(v1::stop_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "approve_campaign" => async { value(v1::approve_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
@@ -525,6 +543,13 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
 
 fn value<T: Serialize>(Json(body): Json<T>) -> AppResult<Value> {
     serde_json::to_value(body).map_err(|e| AppError::Internal(e.into()))
+}
+
+/// The PATCH body of the my-copy routes: the arguments it takes that were passed.
+fn my_copy_body(args: &Value) -> Value {
+    let body: serde_json::Map<String, Value> =
+        ["mode", "subject", "body"].iter().filter_map(|k| args.get(*k).filter(|v| !v.is_null()).map(|v| (k.to_string(), v.clone()))).collect();
+    Value::Object(body)
 }
 
 fn parse<T: DeserializeOwned>(args: &Value) -> AppResult<T> {
@@ -1168,6 +1193,70 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "get_my_copy",
+            "Get campaign first email",
+            "A campaign's first email setup. mode instructions has the agent write every first email (from the campaign's angle, \
+             in instructions). mode my_copy sends the user's own subject and body with each lead's details filled in, to 9 leads in \
+             10, and the AI email to the other tenth so the two can be compared, with how each did in results. Follow-ups are \
+             written as before. source project means the campaign sends the project's first email, campaign its own.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            read.clone(),
+        ),
+        tool(
+            "update_my_copy",
+            "Update campaign first email",
+            MY_COPY_TEXT_RULES,
+            json!({
+                "campaign_id": campaign,
+                "mode": { "type": "string", "enum": ["instructions", "my_copy"], "description": "Optional. my_copy sends the user's text" },
+                "subject": { "type": "string", "description": "Optional. Empty sends \"<your company> x <their company>\"" },
+                "body": { "type": "string", "description": "Optional. Needed to turn my_copy on" },
+            }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
+            "set_my_copy_source",
+            "Set campaign first email source",
+            "project makes the campaign send the project's first email, campaign gives it its own. Nothing is lost: switching back \
+             brings the other text back. A campaign's first own text starts as a copy of the project's.",
+            json!({ "campaign_id": campaign, "source": { "type": "string", "enum": ["project", "campaign"] } }),
+            &["campaign_id", "source"],
+            control.clone(),
+        ),
+        tool(
+            "preview_my_copy",
+            "Preview campaign first email",
+            "The user's text as the campaign's first 3 leads get it: variables and {a|b} filled in, and each {{ai: …}} line shown \
+             as its instruction, since the agent writes those with the email. A lead that gets the AI email instead says why in note.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            read.clone(),
+        ),
+        tool(
+            "get_project_my_copy",
+            "Get project first email",
+            "The project's default first email, which every campaign in campaign_ids sends: mode, subject and body as in \
+             get_my_copy, and the project's extra instructions for every AI email.",
+            json!({ "project_id": project }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "update_project_my_copy",
+            "Update project first email",
+            MY_COPY_TEXT_RULES,
+            json!({
+                "project_id": project,
+                "mode": { "type": "string", "enum": ["instructions", "my_copy"], "description": "Optional. my_copy sends the user's text" },
+                "subject": { "type": "string", "description": "Optional. Empty sends \"<your company> x <their company>\"" },
+                "body": { "type": "string", "description": "Optional. Needed to turn my_copy on" },
+            }),
+            &["project_id"],
+            control.clone(),
+        ),
+        tool(
             "start_campaign",
             "Start campaign",
             "The campaign's Start button: it sends on the project's schedule, and its drafts are approved for sending. A campaign \
@@ -1592,7 +1681,8 @@ mod tests {
                      "list_hot_leads", "get_inbox_changes",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "import_campaign", "get_campaign_import",
-                     "list_campaign_import_rows"] {
+                     "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",
+                     "get_project_my_copy", "update_project_my_copy"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));

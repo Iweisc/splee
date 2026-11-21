@@ -111,6 +111,7 @@ pub mod explorer;
 pub mod unsubscribe;
 pub(crate) mod reports;
 mod variants;
+mod my_copy;
 mod util_airtable;
 mod util_baserow;
 mod util_grist;
@@ -209,6 +210,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(today::router())
         .merge(reports::router())
         .merge(variants::router())
+        .merge(my_copy::router())
         .merge(bookings::router())
         .merge(booking_pages::router())
         .merge(forms::router())

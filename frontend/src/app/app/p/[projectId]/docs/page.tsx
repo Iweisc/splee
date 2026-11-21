@@ -11,7 +11,7 @@ import { Badge, type BadgeTone } from "@/components/ui/misc";
 import { useOrigin } from "@/hooks/use-origin";
 
 interface Endpoint {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   summary: string;
   params?: [name: string, description: string][];
@@ -54,7 +54,7 @@ const LEAD = `{
   "scored_at": "2026-11-11T08:20:00Z"
 }`;
 
-const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PATCH: "amber", DELETE: "red" };
+const METHOD_TONES: Record<Endpoint["method"], BadgeTone> = { GET: "blue", POST: "green", PUT: "neutral", PATCH: "amber", DELETE: "red" };
 
 const indent = (json: string, spaces: number) => json.replaceAll("\n", `\n${" ".repeat(spaces)}`);
 
@@ -173,6 +173,72 @@ function endpoints(projectId: string): Endpoint[] {
       path: "/campaigns/5d0a…/unarchive",
       summary: "Bring an archived campaign back to the list, paused. It sends again once you start it. A repeat changes nothing.",
       response: `{ "id": "5d0a…", "status": "paused", "archived_at": null, "…": "…" }`,
+    },
+    {
+      method: "GET",
+      path: "/campaigns/5d0a…/my-copy",
+      summary:
+        "The campaign's first email. mode instructions has the agent write each one from the campaign's angle, returned as instructions. mode my_copy sends your own subject and body with each lead's details filled in to 9 leads in 10, and the AI email to the other tenth, so results can compare reply rates. Follow-ups are written as before. source project means the campaign sends the project's first email, and mode, subject and body are the project's.",
+      response: `{
+  "campaign_id": "5d0a…",
+  "project_id": "${projectId}",
+  "source": "campaign",
+  "mode": "my_copy",
+  "subject": "{Quick|Short} question, {{first_name}}",
+  "body": "Hi {{first_name}},\\n\\n{{ai: one line about their clinic}}\\n\\nDoes {{company}} still book visits by phone?",
+  "instructions": "Get paid on time without awkward emails",
+  "results": { "my_copy": { "sent": 212, "replies": 19 }, "ai": { "sent": 24, "replies": 1 }, "note": "Not enough data yet. Each side needs at least 30 sends before the reply rates mean much." }
+}`,
+    },
+    {
+      method: "PATCH",
+      path: "/campaigns/5d0a…/my-copy",
+      summary:
+        "Change the campaign's own first email, or turn My copy on or off. Send only what changes. A text with a mistake is a 422 with the sentence to fix, and nothing is saved. A campaign that sends the project's first email is a 409: change the project's below, or switch its source first.",
+      params: [
+        ["mode", "instructions or my_copy, which needs a body"],
+        ["subject", "up to 300 characters. Empty sends “Your company x Their company”"],
+        ["body", "up to 3,000 characters"],
+        ["variables", "{{first_name}}, {{company}}, {{job_title}}, {{company_city}}, {{sender_first_name}}, {{sender_name}}, {{sender_company}}, each with an optional fallback like {{company_city|your city}}. A lead missing one with no fallback gets the AI email"],
+        ["{a|b}", "one option picked per lead, the same one every time"],
+        ["{{ai: instruction}}", "up to 5 lines in the body the agent writes for each lead"],
+      ],
+      body: `{ "mode": "my_copy", "body": "Hi {{first_name}},\\n\\nDoes {{company}} still book visits by phone?" }`,
+      response: `{ "campaign_id": "5d0a…", "source": "campaign", "mode": "my_copy", "…": "…" }`,
+    },
+    {
+      method: "PUT",
+      path: "/campaigns/5d0a…/my-copy/source",
+      summary:
+        "project sends the project's first email, campaign the campaign's own. Nothing is lost: switching back brings the other text back. A campaign's first own text starts as a copy of the project's.",
+      body: `{ "source": "campaign" }`,
+      response: `{ "campaign_id": "5d0a…", "source": "campaign", "…": "…" }`,
+    },
+    {
+      method: "GET",
+      path: "/campaigns/5d0a…/my-copy/preview",
+      summary:
+        "Your text as the campaign's first 3 leads get it, signed like the real email. An {{ai: …}} line shows its instruction, since the agent writes it with the email. gets is ai for a lead that gets the AI email instead, with why in note.",
+      response: `{
+  "mode": "my_copy",
+  "emails": [{
+    "lead_id": "c42e…",
+    "lead_name": "Sarah Chen",
+    "lead_company": "Northwind Studio",
+    "gets": "my_copy",
+    "subject": "Quick question, Sarah",
+    "body": "Hi Sarah,\\n\\n[Written for each lead: one line about their clinic]\\n\\nDoes Northwind Studio still book visits by phone?\\n\\nAlex Morgan",
+    "sender_name": "Alex Morgan",
+    "note": null
+  }]
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/my-copy`,
+      summary:
+        "The project's default first email, sent by every campaign in campaign_ids. PATCH it with the same fields as a campaign's. instructions are the project's extra instructions for every AI email.",
+      response: `{ "project_id": "${projectId}", "mode": "instructions", "subject": "", "body": "", "instructions": "Never mention pricing.", "campaign_ids": ["5d0a…"] }`,
     },
     {
       method: "PATCH",

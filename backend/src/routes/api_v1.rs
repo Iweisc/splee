@@ -1,7 +1,7 @@
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use super::inbox::{self, InboxThread, ReplyExtras, ThreadMessage as WithFiles};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
 use super::lookalikes::{self as lookalike_routes, AddBody as AddLookalikesBody};
 use super::meetings::{self, MeetingRow};
+use super::my_copy::{self, CampaignCopy, Preview, ProjectCopy, SourceBody};
 use super::outreach;
 use super::projects;
 use super::research;
@@ -64,6 +65,10 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/campaigns/{id}/approve", post(approve_campaign))
         .route("/v1/campaigns/{id}/archive", post(archive_campaign))
         .route("/v1/campaigns/{id}/unarchive", post(unarchive_campaign))
+        .route("/v1/campaigns/{id}/my-copy", get(campaign_my_copy).patch(update_campaign_my_copy))
+        .route("/v1/campaigns/{id}/my-copy/source", put(set_my_copy_source))
+        .route("/v1/campaigns/{id}/my-copy/preview", get(preview_my_copy))
+        .route("/v1/projects/{id}/my-copy", get(project_my_copy).patch(update_project_my_copy))
         .route("/v1/hot-leads", get(hot_leads))
         .route("/v1/projects/{id}/inbox/changes", get(inbox_changes))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
@@ -538,6 +543,47 @@ pub(super) async fn approve_campaign(State(state): State<AppState>, auth: ApiKey
         emails::update_one(&state.db, auth.org_id, email, emails::UpdateBody { status: Some("approved".into()), ..Default::default() }).await?;
     }
     Ok(Json(json!({ "accepted": true, "approved": drafts.len() })))
+}
+
+/// The campaign's first email: Instructions or My copy, and the project's or its own. See routes/my_copy.rs.
+pub(super) async fn campaign_my_copy(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<CampaignCopy>> {
+    Ok(Json(my_copy::campaign(&state.db, auth.org_id, id).await?))
+}
+
+pub(super) async fn update_campaign_my_copy(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> AppResult<Json<CampaignCopy>> {
+    Ok(Json(my_copy::update_campaign(&state.db, auth.org_id, id, strict(body)?).await?))
+}
+
+pub(super) async fn set_my_copy_source(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> AppResult<Json<CampaignCopy>> {
+    let body: SourceBody = strict(body)?;
+    Ok(Json(my_copy::set_source(&state.db, auth.org_id, id, body.source).await?))
+}
+
+pub(super) async fn preview_my_copy(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Preview>> {
+    Ok(Json(my_copy::campaign_preview(&state.db, auth.org_id, id, Default::default()).await?))
+}
+
+pub(super) async fn project_my_copy(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectCopy>> {
+    Ok(Json(my_copy::project(&state.db, auth.org_id, id).await?))
+}
+
+pub(super) async fn update_project_my_copy(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> AppResult<Json<ProjectCopy>> {
+    Ok(Json(my_copy::update_project(&state.db, auth.org_id, id, strict(body)?).await?))
 }
 
 /// A project's sending controls, as PATCH /v1/projects/{id} takes them.
@@ -2623,5 +2669,85 @@ mod tests {
         let (status, _, body) = api.post(KEYS[0], "/v1/campaigns/import", None, follow_ups).await;
         assert_eq!(status, 422, "{body}");
         assert_eq!(count(&db, "select count(*) from segments").await, before);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn my_copy_switches_mode_and_source_without_losing_text_and_stays_in_its_organization(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let (segment, _) = campaign(&db, a, "draft").await;
+        let (other, _) = campaign(&db, b, "draft").await;
+        // A lead my_copy's pinned split keeps on the user's text.
+        sqlx::query("insert into leads (id, project_id, segment_id, full_name, first_name, company_name, email, created_at)
+                     values ('00000000-0000-0000-0000-000000000001', $1, $2, 'Ana Ruiz', 'Ana', 'Smile', 'ana@ruiz.example', now() - interval '1 day')")
+            .bind(a)
+            .bind(segment)
+            .execute(&db)
+            .await
+            .unwrap();
+        let api = Api::start(&db, LIMITS).await;
+        let mine = format!("/v1/campaigns/{segment}/my-copy");
+        let project = format!("/v1/projects/{a}/my-copy");
+        let put = |path: String, body: Value| {
+            let api = api.clone();
+            async move {
+                let (status, _, body) = api.send(Method::PUT, KEYS[0], &path, None, Some(body)).await;
+                (status, body)
+            }
+        };
+
+        // A campaign starts on the project's first email, the AI one, and can't change it here while it follows the project.
+        let (status, copy) = api.get(&mine).await;
+        assert_eq!(status, 200, "{copy}");
+        assert_eq!((copy["source"].clone(), copy["mode"].clone(), copy["body"].clone()), (json!("project"), json!("instructions"), json!("")));
+        assert!(copy["results"]["note"].as_str().unwrap().starts_with("Not enough data"));
+        assert_eq!(api.patch(&mine, json!({ "body": "Hi" })).await.0, 409);
+
+        // The project's text is checked before anything is saved.
+        let (status, body) = api.patch(&project, json!({ "mode": "my_copy" })).await;
+        assert!(status == 422 && body["error"].as_str().unwrap().contains("Write the email's body"), "{status} {body}");
+        let (status, body) = api.patch(&project, json!({ "mode": "my_copy", "body": "Hi {{frist_name}}" })).await;
+        assert!(status == 422 && body["error"].as_str().unwrap().contains("{{frist_name}} isn't a variable"), "{status} {body}");
+        assert_eq!(api.patch(&project, json!({ "tone": "direct" })).await.0, 422);
+        assert_eq!(api.patch(&project, json!({ "mode": "sometimes" })).await.0, 422);
+        assert_eq!(api.get(&project).await.1["mode"], "instructions");
+        let (status, saved) = api.patch(&project, json!({ "mode": "my_copy", "subject": "{Hi|Hello} {{first_name}}", "body": "How is {{company}}?" })).await;
+        assert_eq!(status, 200, "{saved}");
+        assert_eq!(saved["campaign_ids"], json!([segment]));
+        assert_eq!(api.get(&mine).await.1["body"], "How is {{company}}?");
+
+        // What leads get: the text filled in for each, with no Claude call.
+        let (status, preview) = api.get(&format!("{mine}/preview")).await;
+        assert_eq!(status, 200, "{preview}");
+        let emails = preview["emails"].as_array().unwrap();
+        let ana = emails.iter().find(|e| e["lead_id"] == "00000000-0000-0000-0000-000000000001").unwrap();
+        assert!(ana["subject"] == "Hi Ana" || ana["subject"] == "Hello Ana", "{ana}");
+        assert_eq!((ana["body"].clone(), ana["gets"].clone()), (json!("How is Smile?"), json!("my_copy")));
+
+        // Custom starts as a copy of the project's, and switching either way loses neither text.
+        let (status, custom) = put(format!("{mine}/source"), json!({ "source": "campaign" })).await;
+        assert_eq!((status, custom["source"].clone(), custom["body"].clone()), (200, json!("campaign"), json!("How is {{company}}?")));
+        assert_eq!(api.patch(&mine, json!({ "body": "Does your {{job_title|team}} plan visits?" })).await.0, 200);
+        let (_, custom) = api.patch(&mine, json!({ "mode": "instructions" })).await;
+        assert_eq!((custom["mode"].clone(), custom["body"].clone()), (json!("instructions"), json!("Does your {{job_title|team}} plan visits?")));
+        let (_, back) = put(format!("{mine}/source"), json!({ "source": "project" })).await;
+        assert_eq!((back["mode"].clone(), back["body"].clone()), (json!("my_copy"), json!("How is {{company}}?")));
+        let (_, again) = put(format!("{mine}/source"), json!({ "source": "campaign" })).await;
+        assert_eq!((again["mode"].clone(), again["body"].clone()), (json!("instructions"), json!("Does your {{job_title|team}} plan visits?")));
+        assert_eq!(put(format!("{mine}/source"), json!({ "source": "elsewhere" })).await.0, 422);
+        let (_, kept) = api.get(&project).await;
+        assert_eq!((kept["body"].clone(), kept["campaign_ids"].clone()), (json!("How is {{company}}?"), json!([])));
+
+        // Another organization's campaign and project are 404 on every route.
+        let theirs = format!("/v1/campaigns/{other}/my-copy");
+        assert_eq!(api.get(&theirs).await.0, 404);
+        assert_eq!(api.patch(&theirs, json!({ "mode": "instructions" })).await.0, 404);
+        assert_eq!(put(format!("{theirs}/source"), json!({ "source": "campaign" })).await.0, 404);
+        assert_eq!(api.get(&format!("{theirs}/preview")).await.0, 404);
+        assert_eq!(api.get(&format!("/v1/projects/{b}/my-copy")).await.0, 404);
+        assert_eq!(api.patch(&format!("/v1/projects/{b}/my-copy"), json!({ "body": "Hi" })).await.0, 404);
+        let theirs: String = sqlx::query_scalar("select my_copy_source from segments where id = $1").bind(other).fetch_one(&db).await.unwrap();
+        assert_eq!(theirs, "project");
     }
 }

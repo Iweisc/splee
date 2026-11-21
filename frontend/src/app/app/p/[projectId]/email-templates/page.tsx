@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import useSWR from "swr";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { OptionCards } from "@/components/app/settings/option-cards";
+import { MyCopyCard } from "@/components/app/work/my-copy";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { MicroLabel, toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ const MIN_WORDS = 30;
 const MAX_WORDS = 250;
 
 export default function EmailTemplatesPage() {
+  const { projectId } = useParams<{ projectId: string }>();
   return (
     <ProjectSettingsPage
       title="Email templates"
@@ -90,6 +92,8 @@ export default function EmailTemplatesPage() {
           </Section>
 
           <ExampleEmail s={s} />
+          {/* Saved on its own: it isn't part of the settings the save bar saves. Campaigns send it unless they have their own. */}
+          <MyCopyCard scope={{ kind: "project", projectId }} className="p-6" />
           <RewriteUnsent dirty={dirty} />
         </>
       )}
