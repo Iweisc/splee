@@ -28,18 +28,21 @@ export function LeadPagesCard({ segment }: { segment: SegmentWithStats }) {
     );
 
   return (
-    <Card className="flex items-start gap-4 p-5">
-      <div className="min-w-0 flex-1">
-        <MicroLabel className="flex items-center gap-1.5">
-          <PanelsTopLeft className="size-3.5" /> Personal pages
-        </MicroLabel>
-        <p className="mt-1 text-sm font-medium">A page written for each lead</p>
-        <p className="mt-0.5 text-sm text-pretty text-muted-foreground">
-          The writer adds a short page to each first email: a headline about their company, three ways you&apos;d help them, proof from your materials
-          and your booking link. When a lead opens it, their score goes up and your chats hear about it. Applies to emails written from now on.
-        </p>
+    <Card className="p-5">
+      {/* The switch sits beside the heading alone, so the description runs the card's full width under both. */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <MicroLabel className="flex items-center gap-1.5">
+            <PanelsTopLeft className="size-3.5" /> Personal pages
+          </MicroLabel>
+          <p className="mt-1 text-sm font-medium">A page written for each lead</p>
+        </div>
+        <Switch checked={segment.lead_pages} onChange={save} disabled={pending === "lead_pages"} label="A page written for each lead" />
       </div>
-      <Switch checked={segment.lead_pages} onChange={save} disabled={pending === "lead_pages"} label="A page written for each lead" />
+      <p className="mt-0.5 text-sm text-pretty text-muted-foreground">
+        The writer adds a short page to each first email: a headline about their company, three ways you&apos;d help them, proof from your materials and
+        your booking link. When a lead opens it, their score goes up and your chats hear about it. Applies to emails written from now on.
+      </p>
     </Card>
   );
 }
