@@ -79,7 +79,52 @@ pub async fn public_addrs(url: &Url) -> anyhow::Result<Vec<SocketAddr>> {
 /// The ports of receivers tests run on this machine, which are let through as if public. Everything else on loopback is
 /// still refused, so the tests of the refusal keep their meaning. Only test builds have this.
 #[cfg(test)]
-pub(crate) static TEST_RECEIVERS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+static TEST_RECEIVERS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// Serves `app` on a port of this machine that `public_client` lets through, for a test's fake site or webhook receiver.
+/// The port leaves the list when the test's runtime drops the server. A port left on it let a later test that the system
+/// handed the same port reach this machine, so a test of the refusal failed at random.
+#[cfg(test)]
+pub(crate) async fn serve_test_receiver(app: axum::Router) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    TEST_RECEIVERS.lock().unwrap().push(port);
+    // Built out here so the task holds it whole, even if it's dropped before it first runs.
+    let receiver = TestReceiver { port, listener };
+    tokio::spawn(async move { axum::serve(receiver, app).await.unwrap() });
+    port
+}
+
+/// A test receiver's listener. It owns the socket so that it can take the port off the list before the socket closes,
+/// and no other test can be handed the port while it's still let through.
+#[cfg(test)]
+struct TestReceiver {
+    port: u16,
+    listener: tokio::net::TcpListener,
+}
+
+#[cfg(test)]
+impl Drop for TestReceiver {
+    // This runs before the fields are dropped, so the socket is still open. A poisoned lock is taken anyway, since a
+    // panic here while a failing test unwinds would abort the whole run.
+    fn drop(&mut self) {
+        TEST_RECEIVERS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&p| p != self.port);
+    }
+}
+
+#[cfg(test)]
+impl axum::serve::Listener for TestReceiver {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        axum::serve::Listener::accept(&mut self.listener).await
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
 
 pub async fn post_json(raw: &str, body: &Value, secret: Option<&str>) -> anyhow::Result<()> {
     let url = Url::parse(raw.trim())?;
@@ -919,6 +964,17 @@ pub(crate) fn is_public(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_receiver_port_is_refused_again_once_its_test_ends() {
+        let runtime = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let first = runtime();
+        let port = first.block_on(serve_test_receiver(axum::Router::new()));
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        assert!(first.block_on(public_addrs(&url)).is_ok());
+        drop(first);
+        assert!(runtime().block_on(public_addrs(&url)).is_err());
+    }
 
     #[test]
     fn chat_alerts_match_each_app() {

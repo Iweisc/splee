@@ -470,10 +470,7 @@ mod tests {
             .route("/chat/{id}", post(chat))
             .fallback(get(site))
             .with_state(fake.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        hooks::TEST_RECEIVERS.lock().unwrap().push(port);
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let port = hooks::serve_test_receiver(app).await;
         (fake, format!("http://127.0.0.1:{port}"))
     }
 

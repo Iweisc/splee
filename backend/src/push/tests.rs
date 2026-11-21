@@ -165,10 +165,7 @@ impl PushService {
                 }
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        crate::hooks::TEST_RECEIVERS.lock().unwrap().push(port);
-        tokio::spawn(async move { axum::serve(listener, app).await });
+        let port = crate::hooks::serve_test_receiver(app).await;
         Self { base: format!("http://127.0.0.1:{port}"), hits }
     }
 

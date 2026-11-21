@@ -839,11 +839,7 @@ pub(crate) mod fake {
             )
             .route("/webflow/collections/{id}/items/live", axum::routing::post(|State(w): State<Shared>, h: HeaderMap, Json(b): Json<Value>| webflow_new_item(w, h, b, true)))
             .with_state(world.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        // hooks::public_client lets this port through as if it were public.
-        hooks::TEST_RECEIVERS.lock().unwrap().push(port);
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let port = hooks::serve_test_receiver(app).await;
         (format!("http://127.0.0.1:{port}"), world)
     }
 }

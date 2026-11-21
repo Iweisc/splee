@@ -155,10 +155,7 @@ impl Server {
                 async move { got.lock().unwrap().push(body) }
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        crate::hooks::TEST_RECEIVERS.lock().unwrap().push(port);
-        tokio::spawn(async move { axum::serve(listener, chat).await });
+        let port = crate::hooks::serve_test_receiver(chat).await;
 
         let mut orgs = vec![];
         for name in ["acme", "other"] {
