@@ -464,6 +464,54 @@ mod tests {
         assert_eq!(got.lock().unwrap().len(), 2);
     }
 
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn erasing_leads_posts_only_their_ids_in_order(db: PgPool) {
+        let (a, _) = seed(&db).await;
+        let api = Api::start(state(&db)).await;
+        let (url, got) = receiver().await;
+        let hook = json!({"event": "lead_erased", "target_url": format!("{url}/zap"), "project_id": a.project});
+        assert_eq!(api.post(KEY_A, "/v1/hooks", hook).await.0, 200);
+        // The project's own webhook endpoint, sending this event only.
+        sqlx::query(
+            "insert into project_settings (project_id, webhook_events) values ($1, '{lead_erased}')
+             on conflict (project_id) do update set webhook_events = excluded.webhook_events",
+        )
+        .bind(a.project)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("insert into webhook_endpoints (project_id, url) values ($1, $2)")
+            .bind(a.project)
+            .bind(format!("{url}/endpoint"))
+            .execute(&db)
+            .await
+            .unwrap();
+        let mut sarah = lead(&db, a.project, "sarah@northwind.example").await;
+        sqlx::query("update leads set segment_id = $2 where id = $1").bind(sarah.id).bind(a.segment).execute(&db).await.unwrap();
+        sarah.segment_id = Some(a.segment);
+        let ben = lead(&db, a.project, "ben@northwind.example").await;
+
+        super::super::leads::erase(&db, a.id, &[sarah.clone(), ben.clone()], true).await.unwrap();
+        wait_for(&got, 4).await;
+        let posts = got.lock().unwrap().clone();
+        for path in ["/zap", "/endpoint"] {
+            let sent: Vec<Value> = posts.iter().filter(|p| p.0 == path).map(|p| serde_json::from_str(&p.2).unwrap()).collect();
+            let leads: Vec<(&str, &Value, &Value)> = sent.iter().map(|p| (p["event"].as_str().unwrap(), &p["lead"], &p["forgotten"])).collect();
+            let (sarah_ids, ben_ids) = (json!({"id": sarah.id, "campaign_id": a.segment}), json!({"id": ben.id, "campaign_id": null}));
+            assert_eq!(leads, [("lead_erased", &sarah_ids, &json!(true)), ("lead_erased", &ben_ids, &json!(true))], "{path}");
+        }
+        assert!(posts.iter().all(|p| !p.2.contains("northwind") && !p.2.contains("Sarah")), "nothing that names them");
+
+        // Before anything was sent, a trigger's setup screen gets an example of the same shape.
+        let (status, samples) = api.get(KEY_B, "/v1/hooks/samples/lead_erased").await;
+        assert_eq!((status, samples[0]["event"].as_str()), (200, Some("lead_erased")), "{samples}");
+        let mut keys: Vec<&String> = samples[0]["lead"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["campaign_id", "id"]);
+    }
+
     #[sqlx::test]
     #[ignore = "needs Postgres"]
     async fn a_410_turns_the_subscription_off(db: PgPool) {

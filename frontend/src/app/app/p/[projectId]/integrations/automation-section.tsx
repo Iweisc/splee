@@ -24,6 +24,7 @@ const HOOK_EVENTS: Record<HookEvent, string> = {
   status_changed: "Lead status changed",
   "deal.won": "Deal won",
   lead_added: "New lead added",
+  lead_erased: "Lead deleted",
 };
 
 /** Which tool a subscription posts to, told apart by the host of its URL. n8n runs on your own host, so it may show as that. */

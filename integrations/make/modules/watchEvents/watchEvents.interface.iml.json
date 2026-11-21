@@ -75,6 +75,11 @@
                 "name": "meeting_at",
                 "type": "date",
                 "label": "Meeting at"
+            },
+            {
+                "name": "campaign_id",
+                "type": "text",
+                "label": "Campaign ID"
             }
         ]
     },
@@ -166,5 +171,15 @@
         "name": "url",
         "type": "url",
         "label": "Open in Splee"
+    },
+    {
+        "name": "forgotten",
+        "type": "boolean",
+        "label": "Forgotten"
+    },
+    {
+        "name": "erased_at",
+        "type": "date",
+        "label": "Deleted at"
     }
 ]

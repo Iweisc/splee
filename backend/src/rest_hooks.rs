@@ -15,7 +15,7 @@ use crate::models::{Lead, Ts};
 use crate::state::AppState;
 
 /// The events a subscription can be for. Keep in sync with HOOK_EVENTS on the integrations page and the apps in integrations/.
-pub const EVENTS: [&str; 6] = ["hot_lead", "lead_replied", "meeting_booked", "status_changed", "deal.won", "lead_added"];
+pub const EVENTS: [&str; 7] = ["hot_lead", "lead_replied", "meeting_booked", "status_changed", "deal.won", "lead_added", hooks::LEAD_ERASED];
 
 pub const LEAD_ADDED: &str = "lead_added";
 
@@ -212,6 +212,11 @@ pub async fn samples(db: &PgPool, public_url: &str, org_id: Uuid, project_id: Op
 /// What an event looks like when the organization has none yet. Keep in sync with PAYLOAD on the integrations page.
 fn example(public_url: &str, event: &str) -> Value {
     let (project, lead) = ("9b1f6c2e-0000-4000-8000-000000000001", "c42e7a10-0000-4000-8000-000000000002");
+    if event == hooks::LEAD_ERASED {
+        let campaign = "5d0a9e3b-0000-4000-8000-000000000005".parse().ok();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-20T10:00:00Z").map(|t| t.to_utc()).unwrap_or_default();
+        return hooks::erased_payload(project.parse().unwrap_or_default(), "Acme", lead.parse().unwrap_or_default(), campaign, false, at);
+    }
     let status = match event {
         "hot_lead" | "deal.won" => "hot",
         "lead_replied" => "replied",

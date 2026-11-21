@@ -312,8 +312,11 @@ async fn record_row(db: &sqlx::PgPool, table: &str, column: &str, project_id: Uu
     }
 }
 
+/// A lead someone deleted or forgot. Its payload carries only the ids an integration got the lead with, so it can delete its copy.
+pub const LEAD_ERASED: &str = "lead_erased";
+
 /// The lead events a project's webhook can subscribe to. Keep in sync with EVENTS on the integrations page.
-pub const EVENTS: [&str; 17] = [
+pub const EVENTS: [&str; 18] = [
     "hot_lead",
     "lead_replied",
     "meeting_booked",
@@ -331,6 +334,7 @@ pub const EVENTS: [&str; 17] = [
     "deal.stage_changed",
     "deal.won",
     "deal.lost",
+    LEAD_ERASED,
 ];
 
 /// What an event carries besides the lead: the reply that set it off, the email Splee sent or that was opened or clicked, a reminder, a form's answers,
@@ -349,6 +353,21 @@ struct Recipients {
 
 /// The recipients of a lead event, or None when nothing gets it.
 async fn lead_event(db: &sqlx::PgPool, public_url: &str, project_id: Uuid, event: &str, lead: &Lead, detail: Detail) -> sqlx::Result<Option<Recipients>> {
+    let Some(Audience { urls, subscriptions, secret, name }) = audience(db, project_id, event).await? else { return Ok(None) };
+    let payload = payload(public_url, project_id, &name, event, lead, detail);
+    Ok(Some(Recipients { urls, subscriptions, secret, payload }))
+}
+
+/// Who gets a project's event, with the project's signing secret and name.
+struct Audience {
+    urls: Vec<String>,
+    subscriptions: Vec<crate::rest_hooks::Target>,
+    secret: String,
+    name: String,
+}
+
+/// The audience of a project's event, or None when nothing gets it.
+async fn audience(db: &sqlx::PgPool, project_id: Uuid, event: &str) -> sqlx::Result<Option<Audience>> {
     let subscriptions = crate::rest_hooks::targets(db, project_id, event).await?;
     if !subscriptions.is_empty() {
         // Subscriptions are signed with the project's secret too, and an older project may have no settings yet.
@@ -369,8 +388,7 @@ async fn lead_event(db: &sqlx::PgPool, public_url: &str, project_id: Uuid, event
     if urls.is_empty() && subscriptions.is_empty() {
         return Ok(None);
     }
-    let payload = payload(public_url, project_id, &name, event, lead, detail);
-    Ok(Some(Recipients { urls, subscriptions, secret, payload }))
+    Ok(Some(Audience { urls, subscriptions, secret, name }))
 }
 
 /// The JSON every lead event posts. Keep in sync with PAYLOAD on the integrations page.
@@ -407,20 +425,74 @@ pub async fn send_lead_event(state: &AppState, project_id: Uuid, event: &'static
             }
             for url in urls {
                 let (db, secret, payload) = (state.db.clone(), secret.clone(), payload.clone());
-                tokio::spawn(async move {
-                    let result = post_json_retrying(&url, &payload, Some(&secret)).await;
-                    if let Err(e) = &result {
-                        tracing::warn!(error = %e, event, "webhook failed");
-                    }
-                    record(&db, project_id, Alert::Webhook, &url, &result).await;
-                    if let Err(e) = log_delivery(&db, project_id, event, &url, &payload, &result).await {
-                        tracing::warn!(error = %e, "couldn't log the webhook delivery");
-                    }
-                });
+                tokio::spawn(async move { post_to_endpoint(&db, project_id, event, &url, &payload, &secret).await });
             }
         }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, event, "couldn't load the webhook settings"),
+    }
+}
+
+/// Posts an event to one of the project's webhook endpoints and keeps how it went for the integrations page.
+async fn post_to_endpoint(db: &sqlx::PgPool, project_id: Uuid, event: &str, url: &str, payload: &Value, secret: &str) {
+    let result = post_json_retrying(url, payload, Some(secret)).await;
+    if let Err(e) = &result {
+        tracing::warn!(error = %e, event, "webhook failed");
+    }
+    record(db, project_id, Alert::Webhook, url, &result).await;
+    if let Err(e) = log_delivery(db, project_id, event, url, payload, &result).await {
+        tracing::warn!(error = %e, "couldn't log the webhook delivery");
+    }
+}
+
+/// What lead_erased posts. The lead is gone, so it has only the ids, never a name or an address. Keep in sync with PAYLOAD
+/// on the integrations page.
+pub fn erased_payload(project_id: Uuid, project_name: &str, lead_id: Uuid, campaign_id: Option<Uuid>, forgotten: bool, at: Ts) -> Value {
+    json!({
+        "event": LEAD_ERASED,
+        "project": {"id": project_id, "name": project_name},
+        "lead": {"id": lead_id, "campaign_id": campaign_id},
+        // Forget, which also put the address on the do-not-contact list, rather than Delete.
+        "forgotten": forgotten,
+        "erased_at": at,
+        "reply": null,
+    })
+}
+
+/// Posts lead_erased for leads just erased from a project, given as (lead, campaign), to the project's webhook endpoints that
+/// send it and the subscriptions to it. Each URL gets one background task that posts the leads in order, so deleting a
+/// thousand leads doesn't open a thousand connections to one receiver.
+pub async fn send_erased(db: &sqlx::PgPool, project_id: Uuid, leads: &[(Uuid, Option<Uuid>)], forgotten: bool) {
+    let audience = match audience(db, project_id, LEAD_ERASED).await {
+        Ok(Some(audience)) => audience,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "couldn't load the webhook settings");
+            return;
+        }
+    };
+    let at = chrono::Utc::now();
+    let payloads: Vec<Value> =
+        leads.iter().map(|&(lead, campaign)| erased_payload(project_id, &audience.name, lead, campaign, forgotten, at)).collect();
+    for target in audience.subscriptions {
+        let (db, secret, payloads) = (db.clone(), audience.secret.clone(), payloads.clone());
+        tokio::spawn(async move {
+            // Only a subscription turned off by 410 Gone stops the rest. Each lead's erasure stands on its own, so a post that
+            // failed after its retries doesn't hold back the next one.
+            for payload in &payloads {
+                if !crate::rest_hooks::deliver(&db, project_id, LEAD_ERASED, &target, payload, &secret).await {
+                    break;
+                }
+            }
+        });
+    }
+    for url in audience.urls {
+        let (db, secret, payloads) = (db.clone(), audience.secret.clone(), payloads.clone());
+        tokio::spawn(async move {
+            for payload in &payloads {
+                post_to_endpoint(&db, project_id, LEAD_ERASED, &url, payload, &secret).await;
+            }
+        });
     }
 }
 
