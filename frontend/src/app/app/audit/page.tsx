@@ -21,6 +21,7 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
       "user.signed_in": "Signed in",
       "user.sign_in_failed": "Failed to sign in",
       "user.password_changed": "Changed password",
+      "user.password_reset": "Reset password",
       "user.identity_linked": "Connected a sign-in",
       "user.identity_unlinked": "Removed a sign-in",
       "user.two_factor_enabled": "Turned on 2FA",

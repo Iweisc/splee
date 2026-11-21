@@ -16,7 +16,7 @@ const noSubscription = () => () => {};
 // a server or a Referer header, unlike a query.
 const tokenInHash = () => new URLSearchParams(window.location.hash.slice(1)).get("two_factor_token");
 
-export function SigninForm({ next, ssoError }: { next: string | null; ssoError: string | null }) {
+export function SigninForm({ next, ssoError, passwordReset }: { next: string | null; ssoError: string | null; passwordReset: boolean }) {
   const router = useRouter();
   const { mutate } = useMe();
   const [email, setEmail] = useState("");
@@ -86,6 +86,9 @@ export function SigninForm({ next, ssoError }: { next: string | null; ssoError: 
     <Card className="w-full max-w-[400px] p-8">
       <h1 className="text-2xl font-medium tracking-tight">Sign in</h1>
       <p className="mt-1 text-sm text-muted-foreground">Welcome back.</p>
+      {passwordReset && (
+        <p className="mt-4 rounded-lg bg-brand-50 px-3 py-2 text-sm text-pretty text-brand-800">Password changed. Sign in with your new password.</p>
+      )}
       {ssoError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger">{ssoError}</p>}
       <SsoButtons params={{ next }} />
       <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
@@ -99,8 +102,10 @@ export function SigninForm({ next, ssoError }: { next: string | null; ssoError: 
           Sign in
         </Button>
       </form>
-      <p className="mt-4 text-center text-xs text-muted-foreground">
-        Forgot your password? <span className="whitespace-nowrap">Ask whoever hosts Splee to reset it.</span>
+      <p className="mt-4 text-center text-sm">
+        <Link href="/forgot-password" className="text-muted-foreground hover:text-foreground hover:underline">
+          Forgot your password?
+        </Link>
       </p>
       <p className="mt-4 text-center text-sm text-muted-foreground">
         New to Splee?{" "}

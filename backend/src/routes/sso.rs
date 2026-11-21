@@ -399,10 +399,10 @@ async fn sign_in(state: &AppState, provider: Provider, account: &ProviderAccount
     let next = p.next.clone().or_else(|| p.invite.as_ref().map(|t| format!("/invite/{t}"))).unwrap_or_else(|| "/app".into());
     // The provider stands in for the password, so two-factor still asks for its code on the sign-in page.
     if two_factor::enabled(db, user_id).await.map_err(internal)? {
-        let token = two_factor::start_login(db, user_id).await.map_err(internal)?;
+        let token = two_factor::start_login(&mut *db.acquire().await.map_err(internal)?, user_id).await.map_err(internal)?;
         return Ok(Outcome::Go(format!("{}#two_factor_token={token}", page_url("/signin", &[("next", &next)]))));
     }
-    let (cookie, _) = start_session(state, user_id, &email, json!({ "method": provider.name() })).await.map_err(internal)?;
+    let (cookie, _) = start_session(state, &state.db, user_id, &email, json!({ "method": provider.name() })).await.map_err(internal)?;
     Ok(Outcome::SignedIn(Box::new(cookie), next))
 }
 
@@ -414,7 +414,7 @@ async fn create(state: &AppState, provider: Provider, account: &ProviderAccount,
     link(&mut tx, new.user_id, provider, account).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     new.joined(state).await;
-    let (cookie, _) = start_session(state, new.user_id, &email, json!({ "method": provider.name() })).await.map_err(internal)?;
+    let (cookie, _) = start_session(state, &state.db, new.user_id, &email, json!({ "method": provider.name() })).await.map_err(internal)?;
     let next = p.next.clone().or_else(|| p.claim.as_ref().map(|c| format!("/app/p/{}", c.project_id))).unwrap_or_else(|| "/app".into());
     Ok(Outcome::SignedIn(Box::new(cookie), next))
 }
