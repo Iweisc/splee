@@ -348,6 +348,32 @@ pub fn spawn_lead_alert(state: &AppState, lead: &Lead, pref: Pref, push: Push) {
     tokio::spawn(async move { lead_alert(&state, &lead, pref, &push).await });
 }
 
+/// The member, when they're in the project's organization, not away, and `pref` lets the push through.
+async fn member_recipient(db: &sqlx::PgPool, project_id: Uuid, user_id: Uuid, pref: Pref) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(&format!(
+        "select m.user_id from memberships m join projects p on p.org_id = m.org_id left join notification_prefs n on n.user_id = m.user_id
+         where p.id = $1 and m.user_id = $2 and not m.away and {}",
+        pref.sql()
+    ))
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+/// Pushes to one member about one of the project's things, like their saved search (see member_recipient). Failures are
+/// logged, never returned.
+pub async fn member_alert(state: &AppState, project_id: Uuid, user_id: Uuid, pref: Pref, push: &Push) {
+    let result: anyhow::Result<()> = async {
+        let users = member_recipient(&state.db, project_id, user_id, pref).await?;
+        send_to(state, &users, push).await.map(drop)
+    }
+    .await;
+    if let Err(e) = result {
+        tracing::warn!(%user_id, error = %e, "couldn't push to the member");
+    }
+}
+
 fn who(lead: &Lead) -> String {
     if lead.company_name.is_empty() { lead.full_name.clone() } else { format!("{} ({})", lead.full_name, lead.company_name) }
 }
@@ -421,7 +447,7 @@ pub async fn approval_digests(state: &AppState) -> anyhow::Result<()> {
 pub async fn send_test(state: &AppState, user_id: Uuid) -> anyhow::Result<Vec<Sent>> {
     let push = Push {
         title: "Splee notifications are on".into(),
-        body: "Hot replies, questions, emails to approve and your reminders show up here.".into(),
+        body: "Hot replies, questions, emails to approve, your reminders and new companies for your saved searches show up here.".into(),
         url: format!("{}/app/notifications", state.cfg.public_url),
         tag: "test".into(),
     };

@@ -433,3 +433,44 @@ async fn each_member_sees_and_removes_only_their_own_browsers(db: PgPool) {
     let left: i64 = sqlx::query_scalar("select count(*) from push_subscriptions").fetch_one(&db).await.unwrap();
     assert_eq!(left, 0);
 }
+
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn a_saved_search_pushes_its_owner_when_the_daily_digest_is_on(db: PgPool) {
+    use crate::models::SavedSearch;
+    use crate::saved_searches::{Found, announce};
+    let state = state(&db);
+    let service = PushService::start().await;
+    let (acme, beta) = (org(&db, "Acme").await, org(&db, "Beta").await);
+    let (ana, ben, eve) = (member(&db, acme, "ana").await, member(&db, acme, "ben").await, member(&db, beta, "eve").await);
+    let ana_phone = subscribe(&db, ana, &service, "ana").await;
+    subscribe(&db, ben, &service, "ben").await;
+    subscribe(&db, eve, &service, "eve").await;
+    sqlx::query("insert into notification_prefs (user_id, daily_digest) values ($1, false)").bind(ben).execute(&db).await.unwrap();
+    let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Fieldnote') returning id").bind(acme).fetch_one(&db).await.unwrap();
+    let search = |owner: Uuid| {
+        sqlx::query_as::<_, SavedSearch>("insert into saved_searches (project_id, user_id, name, city) values ($1, $2, 'Dentists in Leeds', 'Leeds') returning *")
+            .bind(project)
+            .bind(owner)
+            .fetch_one(&db)
+    };
+    let found = Found { at: "2026-11-21T09:00:00Z".parse().unwrap(), new: 2, added: Some(("Dentists".into(), 2)) };
+
+    let anas = search(ana).await.unwrap();
+    announce(&state, &anas, &found).await;
+    let hits = service.take();
+    assert_eq!(hits.iter().map(|(p, _, _)| p.as_str()).collect::<Vec<_>>(), ["ana"]);
+    let message: Value = serde_json::from_slice(&decrypt(ana_phone.private, &d(&ana_phone.p256dh), &d(&ana_phone.auth), &hits[0].2).unwrap()).unwrap();
+    assert_eq!(message["title"], "New companies for Dentists in Leeds");
+    assert_eq!(message["body"], "2 new companies match Dentists in Leeds. Added 2 to Dentists.");
+    assert_eq!(message["url"], format!("https://splee.test/app/p/{project}/companies?tab=database&search={}&since=2026-11-21T09:00:00Z", anas.id));
+    assert_eq!(message["tag"], format!("saved-search-{}", anas.id));
+
+    announce(&state, &search(ben).await.unwrap(), &found).await;
+    assert!(service.take().is_empty(), "Ben turned the daily digest off");
+    announce(&state, &search(eve).await.unwrap(), &found).await;
+    assert!(service.take().is_empty(), "Eve isn't in the project's organization");
+    sqlx::query("update memberships set away = true where user_id = $1").bind(ana).execute(&db).await.unwrap();
+    announce(&state, &anas, &found).await;
+    assert!(service.take().is_empty(), "Ana is away");
+}

@@ -36,18 +36,31 @@ pub fn router() -> Router<AppState> {
 /// Counting every match of a broad search, like all restaurants in the US, is slow, so the count stops here.
 const COUNT_CAP: i64 = 10_000;
 
-#[derive(Deserialize)]
-pub(super) struct SearchQuery {
-    q: Option<String>,
-    country: Option<String>,
-    city: Option<String>,
-    category: Option<String>,
+#[derive(Deserialize, Default)]
+pub(crate) struct SearchQuery {
+    pub q: Option<String>,
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub category: Option<String>,
     #[serde(default)]
-    has_email: bool,
+    pub has_email: bool,
     #[serde(default)]
-    has_phone: bool,
+    pub has_phone: bool,
     /// A tool's name or a category's key from the tech catalogue.
-    tech: Option<String>,
+    pub tech: Option<String>,
+}
+
+impl SearchQuery {
+    /// A 400 for a country that isn't two letters or a tool Splee can't detect.
+    pub(crate) fn search(&self) -> AppResult<Search> {
+        let mut search = Search::new(self.q.as_deref(), self.country.as_deref(), self.city.as_deref(), self.category.as_deref(), self.has_email, self.has_phone)
+            .map_err(AppError::BadRequest)?;
+        if let Some(filter) = self.tech.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            let names = fingerprints::named(filter).ok_or_else(|| AppError::BadRequest(format!("Splee can't detect {filter} yet. Pass a tool's name or a category.")))?;
+            search.tech = Some(names.into_iter().map(String::from).collect());
+        }
+        Ok(search)
+    }
 }
 
 #[derive(Serialize)]
@@ -64,12 +77,7 @@ async fn search(State(state): State<AppState>, _auth: Auth, Query(q): Query<Sear
 }
 
 pub(super) async fn page_of(db: &PgPool, q: &SearchQuery, page: &PageQuery) -> AppResult<Page> {
-    let mut search = Search::new(q.q.as_deref(), q.country.as_deref(), q.city.as_deref(), q.category.as_deref(), q.has_email, q.has_phone)
-        .map_err(AppError::BadRequest)?;
-    if let Some(filter) = q.tech.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        let names = fingerprints::named(filter).ok_or_else(|| AppError::BadRequest(format!("Splee can't detect {filter} yet. Pass a tool's name or a category.")))?;
-        search.tech = Some(names.into_iter().map(String::from).collect());
-    }
+    let search = q.search()?;
     let total = directory::count(db, &search, COUNT_CAP).await?;
     let items = directory::search(db, &search, page.limit(), page.offset()).await?;
     Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })
@@ -114,9 +122,9 @@ struct AddBody {
 }
 
 #[derive(Serialize)]
-pub(super) struct Added {
-    added: u64,
-    skipped: u64,
+pub(crate) struct Added {
+    pub added: u64,
+    pub skipped: u64,
 }
 
 /// Adds companies from the database to a campaign as new companies, where "Find people" picks them up like the ones the agent
@@ -128,7 +136,7 @@ async fn add(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Js
 }
 
 /// The caller checks that the campaign belongs to the project and the project to the organization.
-pub(super) async fn add_domains(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> AppResult<Added> {
+pub(crate) async fn add_domains(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> AppResult<Added> {
     if domains.len() > MAX_ADD {
         return Err(AppError::BadRequest(format!("Add at most {MAX_ADD} companies at a time")));
     }

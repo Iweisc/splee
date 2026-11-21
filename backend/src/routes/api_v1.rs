@@ -1,7 +1,7 @@
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::attachments;
 use super::calls::{self, CallRow, LogBody};
 use super::directory::{self, Added, SearchQuery};
+use super::saved_searches::{self, NewMatches, NewSearch, SearchRow};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread, ReplyExtras, ThreadMessage as WithFiles};
 use super::leads::{self, CompanyRow, LeadDetail, LeadRow};
@@ -79,6 +80,9 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/suppression-lists/{id}/entries", get(suppression_list_entries))
         .route("/v1/companies", get(search_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
+        .route("/v1/projects/{id}/saved-searches", get(list_saved_searches).post(save_search))
+        .route("/v1/saved-searches/{id}", delete(delete_saved_search))
+        .route("/v1/saved-searches/{id}/new", get(new_matches))
         .route("/v1/projects/{id}/lookalikes", get(list_lookalikes).post(add_lookalikes))
         .route("/v1/segments/{id}/find-people", post(find_people))
         .route("/v1/local-businesses", get(search_local_businesses))
@@ -1131,6 +1135,39 @@ pub(super) async fn add_companies(
 ) -> AppResult<Json<Added>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     Ok(Json(directory::add_domains(&state.db, auth.org_id, segment.project_id, segment.id, &body.domains).await?))
+}
+
+pub(super) async fn list_saved_searches(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<SearchRow>>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(saved_searches::list_of(&state.db, id).await?))
+}
+
+/// Without a member behind the key, nobody owns the search, so only its chat alerts and GET .../new say what it finds.
+pub(super) async fn save_search(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<NewSearch>,
+) -> AppResult<Json<SearchRow>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(saved_searches::create_in(&state, id, auth.user_id, body).await?))
+}
+
+pub(super) async fn delete_saved_search(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    saved_searches::delete_one(&state.db, id, auth.org_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Unlike opening it in the app, reading it here leaves its new matches counted as new.
+pub(super) async fn new_matches(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SinceQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<NewMatches>> {
+    let search = saved_searches::load(&state.db, id, auth.org_id).await?;
+    Ok(Json(saved_searches::matches_of(&state.db, &search, q.since, &page).await?))
 }
 
 #[derive(Deserialize)]

@@ -14,7 +14,7 @@ mod blogs;
 pub(crate) mod bookings;
 mod chat;
 mod booking_pages;
-mod directory;
+pub(crate) mod directory;
 mod endpoints;
 mod expansions;
 mod exports;
@@ -61,6 +61,7 @@ pub(crate) mod finders;
 mod payments;
 mod plays;
 mod saved_replies;
+mod saved_searches;
 mod research;
 mod scores;
 mod slack;
@@ -212,6 +213,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(forms::router())
         .merge(calendar::router())
         .merge(directory::router())
+        .merge(saved_searches::router())
         .merge(lookalikes::router())
         .merge(local_businesses::router())
         .merge(slack::router())

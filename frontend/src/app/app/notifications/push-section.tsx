@@ -151,8 +151,8 @@ export function PushSection() {
       }
       description={
         <span className="block text-pretty">
-          Hot replies, questions from leads, emails waiting for approval and your reminders, even when Splee isn&apos;t open. They follow your Hot
-          leads and Daily digest settings above.
+          Hot replies, questions from leads, emails waiting for approval, your reminders and new companies for your saved searches, even when Splee
+          isn&apos;t open. They follow your Hot leads and Daily digest settings above.
         </span>
       }
       actions={

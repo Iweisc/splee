@@ -72,26 +72,10 @@ async fn activity(db: &sqlx::PgPool, filter: &str, id: Uuid, days: i32) -> sqlx:
 }
 
 async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result<()> {
+    let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
     let orgs: Vec<Uuid> = sqlx::query_scalar("select id from organizations").fetch_all(&state.db).await?;
     for org_id in orgs {
-        let activity = activity(&state.db, "p.org_id = $1", org_id, days).await?;
-        let stopped: Vec<(String, String, bool)> = sqlx::query_as(
-            "select email::text, last_error, recheck_at is not null from mailboxes where org_id = $1 and status = 'error' order by email",
-        )
-        .bind(org_id)
-        .fetch_all(&state.db)
-        .await?;
-        let bouncing: Vec<_> = crate::routes::mailboxes::org_stats(&state.db, org_id).await?.into_iter().filter(MailboxStats::bouncing).collect();
-        // A stopped or bouncing mailbox gets a digest even on a quiet day: it may be why the day was quiet.
-        let active: Vec<_> = activity.into_iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
-        if active.is_empty() && stopped.is_empty() && bouncing.is_empty() {
-            continue;
-        }
-        let waiting = crate::routes::inbox::needs_reply_count(&state.db, org_id, None).await?;
-        let body = digest_body(days, &active, waiting, &stopped, &bouncing, &state.cfg.public_url);
-        let subject = if days == 1 { "Your daily Splee digest" } else { "Your weekly Splee report" };
-
-        for (user_id, to) in recipients(state, org_id, kind).await? {
+        for (user_id, to, body) in digests_of(state, org_id, kind, days).await? {
             if claim(&state.db, user_id, org_id, kind).await? && !super::send_system_email(state, org_id, &to, subject, &body).await? {
                 // No active mailbox to send from. Nothing else in the org will send either.
                 break;
@@ -99,6 +83,36 @@ async fn send_digests(state: &AppState, kind: &str, days: i32) -> anyhow::Result
         }
     }
     Ok(())
+}
+
+/// Each recipient's digest in the organization, as (user, email, body). Only the daily one has their saved searches, so a
+/// quiet day still gets a digest for a member whose search found companies.
+async fn digests_of(state: &AppState, org_id: Uuid, kind: &str, days: i32) -> anyhow::Result<Vec<(Uuid, String, String)>> {
+    let activity = activity(&state.db, "p.org_id = $1", org_id, days).await?;
+    let stopped: Vec<(String, String, bool)> =
+        sqlx::query_as("select email::text, last_error, recheck_at is not null from mailboxes where org_id = $1 and status = 'error' order by email")
+            .bind(org_id)
+            .fetch_all(&state.db)
+            .await?;
+    let bouncing: Vec<_> = crate::routes::mailboxes::org_stats(&state.db, org_id).await?.into_iter().filter(MailboxStats::bouncing).collect();
+    // A stopped or bouncing mailbox gets a digest even on a quiet day: it may be why the day was quiet.
+    let active: Vec<_> = activity.into_iter().filter(|a| a.sent > 0 || a.replies > 0).collect();
+    let quiet = active.is_empty() && stopped.is_empty() && bouncing.is_empty();
+    let mut waiting = None;
+    let mut digests = Vec::new();
+    for (user_id, to) in recipients(state, org_id, kind).await? {
+        let searches =
+            if days == 1 { crate::saved_searches::digest_lines(&state.db, &state.cfg.public_url, user_id, org_id).await? } else { Vec::new() };
+        if quiet && searches.is_empty() {
+            continue;
+        }
+        if waiting.is_none() {
+            waiting = Some(crate::routes::inbox::needs_reply_count(&state.db, org_id, None).await?);
+        }
+        let replies = waiting.unwrap_or_default();
+        digests.push((user_id, to, digest_body(days, &active, replies, &stopped, &bouncing, &searches, &state.cfg.public_url)));
+    }
+    Ok(digests)
 }
 
 /// Marks today's weekly chat report as sent for every project that wants one and has a chat channel, and returns them.
@@ -153,13 +167,15 @@ pub async fn notify_team(state: &AppState, project_id: Uuid, org_id: Uuid, alert
 }
 
 /// `stopped` is each stopped mailbox's address, error, and whether the sender tests it again by itself.
-/// `bouncing` is the mailboxes whose last 30 days bounced too often.
+/// `bouncing` is the mailboxes whose last 30 days bounced too often. `searches` is a line for each of the reader's saved
+/// searches that found companies.
 fn digest_body(
     days: i32,
     active: &[ProjectActivity],
     waiting: i64,
     stopped: &[(String, String, bool)],
     bouncing: &[MailboxStats],
+    searches: &[String],
     public_url: &str,
 ) -> String {
     let period = if days == 1 { "the last 24 hours" } else { "the last 7 days" };
@@ -187,6 +203,13 @@ fn digest_body(
         }
         body += "Past 5%, providers start sending a mailbox's mail to spam, and past 10% Splee pauses it. ";
         body += "Check the addresses in your lead lists before you send more.\n";
+    }
+    if !searches.is_empty() {
+        body += if body.is_empty() { "" } else { "\n" };
+        body += "New in the company database:\n";
+        for line in searches {
+            body += &format!("{line}\n");
+        }
     }
     if waiting > 0 {
         let replies = if waiting == 1 { "1 reply is" } else { &format!("{waiting} replies are") };
@@ -232,17 +255,17 @@ mod tests {
     #[test]
     fn a_stopped_mailbox_is_in_the_digest_even_on_a_quiet_day() {
         let stopped = [("lewis@acme.test".to_string(), "SMTP: authentication failed".to_string(), false)];
-        let quiet = digest_body(1, &[], 0, &stopped, &[], "https://app.test");
+        let quiet = digest_body(1, &[], 0, &stopped, &[], &[], "https://app.test");
         assert!(quiet.starts_with("lewis@acme.test has stopped sending: SMTP: authentication failed\n"), "{quiet}");
         assert!(quiet.contains("press Test on https://app.test/app/domains"), "{quiet}");
 
         let retrying = [("maya@acme.test".to_string(), "SMTP: 5.4.5 Daily user sending limit exceeded".to_string(), true)];
-        let waits = digest_body(1, &[], 0, &retrying, &[], "https://app.test");
+        let waits = digest_body(1, &[], 0, &retrying, &[], &[], "https://app.test");
         assert!(waits.starts_with("maya@acme.test has stopped sending, and Splee tests it again on its own: SMTP: 5.4.5"), "{waits}");
         assert!(!waits.contains("press Test"), "{waits}");
 
         let busy = [ProjectActivity { name: "Northwind".into(), sent: 12, replies: 2, hot: 1, spend_micros: 1_500_000 }];
-        let normal = digest_body(1, &busy, 2, &[], &[], "https://app.test");
+        let normal = digest_body(1, &busy, 2, &[], &[], &[], "https://app.test");
         assert!(normal.contains("Northwind: 12 emails sent, 2 replies, 1 hot, $1.50 spent\n"), "{normal}");
         assert!(!normal.contains("stopped sending"), "{normal}");
         assert!(normal.contains("2 replies are waiting for an answer."), "{normal}");
@@ -255,7 +278,7 @@ mod tests {
         assert!(!stats(40, 2).bouncing(), "exactly 5% is fine");
         assert!(stats(40, 3).bouncing());
 
-        let body = digest_body(1, &[], 0, &[], &[stats(48, 7)], "https://app.test");
+        let body = digest_body(1, &[], 0, &[], &[stats(48, 7)], &[], "https://app.test");
         assert!(body.starts_with("lewis@acme.test bounced 15% of the 48 leads it emailed in the last 30 days.\n"), "{body}");
         assert!(body.contains("Check the addresses in your lead lists"), "{body}");
     }
@@ -283,6 +306,60 @@ mod tests {
         assert!(claim_weekly_reports(&db).await.unwrap().is_empty());
         let week = activity(&db, "p.id = $1", wants, 7).await.unwrap();
         assert_eq!(week[0].summary(), "P: 0 emails sent, 0 replies, 0 hot, $0.00 spent");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_saved_search_that_found_companies_is_in_its_owners_daily_digest(db: sqlx::PgPool) {
+        let provider = crate::mail::oauth::tests::FakeProvider { url: String::new(), hits: Default::default(), forms: Default::default() };
+        let cfg = crate::config::Config { public_url: "https://splee.test".into(), ..crate::mail::oauth::tests::config(&provider) };
+        let state = AppState { db: db.clone(), cfg: std::sync::Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() };
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let member = |email: &'static str, digest: bool| {
+            let db = db.clone();
+            async move {
+                let id: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ($1, 'x') returning id").bind(email).fetch_one(&db).await.unwrap();
+                sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(org).bind(id).execute(&db).await.unwrap();
+                sqlx::query("insert into notification_prefs (user_id, daily_digest) values ($1, $2)").bind(id).bind(digest).execute(&db).await.unwrap();
+                id
+            }
+        };
+        let (ana, ben) = (member("ana@example.com", true).await, member("ben@example.com", false).await);
+        member("cy@example.com", true).await;
+        let mut searches = Vec::new();
+        for owner in [ana, ben] {
+            let id: Uuid = sqlx::query_scalar("insert into saved_searches (project_id, user_id, name, city) values ($1, $2, 'Dentists in Leeds', 'Leeds') returning id")
+                .bind(project)
+                .bind(owner)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            // The baseline, one found yesterday morning and one found a while back.
+            sqlx::query(
+                "insert into saved_search_matches (search_id, domain, found_at)
+                 values ($1, 'old.co.uk', null), ($1, 'new.co.uk', date_trunc('second', now()) - interval '1 hour'), ($1, 'gone.co.uk', now() - interval '3 days')",
+            )
+            .bind(id)
+            .execute(&db)
+            .await
+            .unwrap();
+            searches.push(id);
+        }
+
+        let digests = digests_of(&state, org, "daily_digest", 1).await.unwrap();
+        assert_eq!(digests.len(), 1, "Ben turned the digest off, and Cy has nothing on a quiet day");
+        let (user, to, body) = &digests[0];
+        assert_eq!((*user, to.as_str()), (ana, "ana@example.com"));
+        let since: chrono::DateTime<Utc> = sqlx::query_scalar("select found_at from saved_search_matches where search_id = $1 and domain = 'new.co.uk'")
+            .bind(searches[0])
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let link = crate::saved_searches::link("https://splee.test", project, searches[0], since);
+        assert!(body.starts_with(&format!("New in the company database:\n1 new company matches Dentists in Leeds: {link}\n")), "{body}");
+        assert!(body.ends_with("Open your inbox: https://splee.test/app/inbox"), "{body}");
+        assert!(digests_of(&state, org, "weekly_report", 7).await.unwrap().is_empty(), "the weekly report leaves searches out");
     }
 
     #[sqlx::test]

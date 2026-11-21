@@ -63,6 +63,7 @@ mod reports;
 mod rest_hooks;
 mod review_window;
 mod routes;
+mod saved_searches;
 mod score;
 mod signals;
 mod site_contacts;
@@ -149,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
     mail::spawn_workers(state.clone());
     deliverability::spawn_worker(state.clone());
     directory_queue::spawn_worker(state.db.clone());
+    saved_searches::spawn_worker(state.clone());
     hiring::spawn_worker(state.db.clone());
     jobchanges::spawn_worker(state.clone());
     tech::spawn_worker(state.db.clone());

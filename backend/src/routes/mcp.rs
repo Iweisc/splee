@@ -46,7 +46,7 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, and update_project_controls sets the project's sending, limits, schedule, autopilot \
 and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
-customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -324,6 +324,10 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         .await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "list_saved_searches" => async { value(v1::list_saved_searches(st(), auth, id(a, "project_id")?).await?) }.await,
+        "save_search" => async { value(v1::save_search(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
+        "delete_saved_search" => async { value(v1::delete_saved_search(st(), auth, id(a, "search_id")?).await?) }.await,
+        "list_new_matches" => async { value(v1::new_matches(st(), auth, id(a, "search_id")?, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "find_lookalikes" => async {
             let mut a = a.clone();
             if let Some(seeds) = a["seeds"].as_array() {
@@ -607,6 +611,59 @@ fn tools() -> Vec<Value> {
             }),
             &["campaign_id", "domains"],
             adds.clone(),
+        ),
+        tool(
+            "list_saved_searches",
+            "List saved company searches",
+            "A project's saved company database searches with their filters. Splee checks each about hourly for companies that \
+             match and didn't before. new_matches counts the ones found since the search was last opened in the app, and \
+             too_broad says it matched over 10,000 companies, so it isn't checked.",
+            json!({ "project_id": project }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "save_search",
+            "Save company search",
+            "Saves search_companies filters under a name, so Splee checks them about hourly and reports companies that match \
+             later, like ones from a country loaded into the database. What matches now isn't reported. With chat_alerts, the \
+             project's chat hears about new matches. With campaign_id, up to 200 new matches a check are added to that campaign \
+             the way add_companies adds them. Up to 50 a project.",
+            json!({
+                "project_id": project,
+                "name": { "type": "string", "description": "Up to 120 characters, like \"Dentists in Leeds\"" },
+                "q": { "type": "string", "description": "Words in the name or category" },
+                "country": { "type": "string", "description": "Two-letter country code, like GB" },
+                "city": { "type": "string" },
+                "category": { "type": "string", "description": "Exact category, like dental_clinic" },
+                "has_email": { "type": "boolean" },
+                "has_phone": { "type": "boolean" },
+                "tech": { "type": "string", "description": "A tool or tool category, as search_companies takes it" },
+                "chat_alerts": { "type": "boolean", "description": "Post new matches to the project's chat" },
+                "campaign_id": id_prop("Optional. A campaign of the project to add new matches to"),
+            }),
+            &["project_id", "name"],
+            adds.clone(),
+        ),
+        tool(
+            "delete_saved_search",
+            "Delete saved company search",
+            "Deletes a saved search. Splee stops checking it, and companies it added to a campaign stay there.",
+            json!({ "search_id": id_prop("A search id from list_saved_searches") }),
+            &["search_id"],
+            json!({ "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true }),
+        ),
+        tool(
+            "list_new_matches",
+            "List new matches of a saved search",
+            "The companies a saved search found after it was saved, newest first, each with found_at. Without since, the ones \
+             found since it was last opened in the app. Reading them here doesn't change that.",
+            page_props(json!({
+                "search_id": id_prop("A search id from list_saved_searches"),
+                "since": { "type": "string", "format": "date-time", "description": "Optional. Only companies found at or after this" },
+            })),
+            &["search_id"],
+            read.clone(),
         ),
         tool(
             "find_lookalikes",
@@ -1315,7 +1372,8 @@ mod tests {
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
-                     "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes"] {
+                     "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes",
+                     "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
