@@ -44,8 +44,9 @@ const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
-list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
-stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and unarchive_campaign brings it back, \
+list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition and update_campaign \
+changes it, start_campaign, stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and \
+unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
 checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back. \
 find_lookalikes and add_lookalikes find companies like the user's \
@@ -474,16 +475,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "archive_campaign" => async { value(v1::archive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "unarchive_campaign" => async { value(v1::unarchive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "update_project_controls" => async {
-            // The rest of the arguments are the PATCH body, which refuses fields it doesn't know.
-            let mut body = a.clone();
-            if let Some(body) = body.as_object_mut() {
-                body.remove("project_id");
-                body.remove("per_page");
-            }
-            value(v1::update_project(st(), auth, id(a, "project_id")?, Json(body)).await?)
+            value(v1::update_project(st(), auth, id(a, "project_id")?, Json(patch_body(a, "project_id"))).await?)
         }
         .await,
         "get_monthly_cap" => async { value(v1::project_monthly_cap(st(), auth, id(a, "project_id")?).await?) }.await,
+        "update_campaign" => async { value(v1::update_campaign(st(), auth, id(a, "segment_id")?, Json(patch_body(a, "segment_id"))).await?) }.await,
         "list_hot_leads" => async { value(v1::hot_leads(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "get_inbox_changes" => async { value(v1::inbox_changes(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "assign_lead" => async {
@@ -571,6 +567,16 @@ fn my_copy_body(args: &Value) -> Value {
 
 fn parse<T: DeserializeOwned>(args: &Value) -> AppResult<T> {
     serde_json::from_value(args.clone()).map_err(|e| AppError::BadRequest(format!("Invalid arguments: {e}")))
+}
+
+/// The arguments besides the id, for a PATCH that refuses fields it doesn't know.
+fn patch_body(args: &Value, id: &str) -> Value {
+    let mut body = args.clone();
+    if let Some(body) = body.as_object_mut() {
+        body.remove(id);
+        body.remove("per_page");
+    }
+    body
 }
 
 fn id(args: &Value, key: &str) -> AppResult<Path<Uuid>> {
@@ -663,6 +669,7 @@ fn tools() -> Vec<Value> {
     let read = json!({ "readOnlyHint": true });
     let adds = json!({ "readOnlyHint": false, "destructiveHint": false });
     let control = json!({ "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true });
+    let texts = json!({ "type": "array", "items": { "type": "string" } });
     let project = id_prop("A project id from list_projects");
     let campaign = id_prop("A campaign id from list_campaigns or create_campaign");
     vec![
@@ -1312,6 +1319,34 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "update_campaign",
+            "Update campaign",
+            "Changes a campaign's definition as its page does and returns it as get_campaign does. Pass only what changes. Each \
+             targeting list sent replaces that list, and the others stay. Emails already written keep their brief and language \
+             until they're rewritten. The schedule and follow-ups are the project's, so they're refused here.",
+            json!({
+                "campaign_id": campaign,
+                "name": { "type": "string" },
+                "description": { "type": "string", "description": "Who the campaign is for, in a sentence or two" },
+                "targeting": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "industries": texts, "roles": texts, "company_sizes": texts, "countries": texts, "exclude_countries": texts,
+                        "keywords": texts, "exclude_keywords": texts,
+                    },
+                },
+                "pain_points": { "type": "string", "description": "The problems the emails speak to" },
+                "angle": { "type": "string", "description": "How the emails pitch the offer" },
+                "language": { "type": "string", "enum": LANGUAGE_CHOICES.as_slice(), "description": "en, another language code, or lead" },
+                "track_clicks": { "type": "boolean" },
+                "track_opens": { "type": "boolean" },
+                "lead_pages": { "type": "boolean", "description": "A personal page for each lead, written with the first email" },
+            }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
             "get_my_copy",
             "Get campaign first email",
             "A campaign's first email setup. mode instructions has the agent write every first email (from the campaign's angle, \
@@ -1809,6 +1844,7 @@ mod tests {
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",
                      "list_hot_leads", "get_inbox_changes", "find_companies_by_domains", "get_monthly_cap",
+                     "update_campaign",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",
@@ -2248,6 +2284,9 @@ mod tests {
         assert!(!is_error && serde_json::from_str::<Value>(&text).unwrap()["language"] == "nl", "{text}");
         let (is_error, _) = server.call(KEY, "set_campaign_language", json!({ "campaign_id": other_segment, "language": "nl" })).await;
         assert!(is_error);
+        let (is_error, text) = server.call(KEY, "update_campaign", json!({ "campaign_id": segment, "angle": "Fewer no-shows" })).await;
+        let updated: Value = serde_json::from_str(&text).unwrap();
+        assert!(!is_error && updated["angle"] == "Fewer no-shows" && updated["language"] == "nl", "{text}");
         let (is_error, _) = server.call(KEY, "set_lead_language", json!({ "lead_id": olaf, "language": "de" })).await;
         assert!(is_error);
         let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "language": "de" })).await;
