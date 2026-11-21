@@ -46,7 +46,7 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
-customers. download_companies hands over a search's companies as CSV, with a link to the whole file. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. download_companies hands over a search's companies as CSV, with a link to the whole file. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -344,6 +344,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "list_campaign_import_rows" => async { value(v1::campaign_import_rows(st(), auth, id(a, "task_id")?, Query(parse(a)?)).await?) }.await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "list_company_dedup_lists" => async { value(v1::list_dedup_lists(st(), auth).await?) }.await,
+        "create_company_dedup_list" => async { value(v1::add_to_dedup_list(st(), auth, Json(parse(a)?)).await?) }.await,
+        "get_company_dedup_list" => async { value(v1::get_dedup_list(st(), auth, id(a, "list_id")?, Query(parse(a)?)).await?) }.await,
+        "set_company_dedup_list_projects" => async { value(v1::rescope_dedup_list(st(), auth, id(a, "list_id")?, Json(parse(a)?)).await?) }.await,
+        "delete_company_dedup_list" => async { value(v1::delete_dedup_list(st(), auth, id(a, "list_id")?).await?) }.await,
         "list_saved_searches" => async { value(v1::list_saved_searches(st(), auth, id(a, "project_id")?).await?) }.await,
         "save_search" => async { value(v1::save_search(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
         "delete_saved_search" => async { value(v1::delete_saved_search(st(), auth, id(a, "search_id")?).await?) }.await,
@@ -578,7 +583,7 @@ async fn downloaded(state: &AppState, res: Response, args: &Value) -> AppResult<
     }
     let base = format!("{}/api/v1/companies/export", state.cfg.public_url.trim_end_matches('/'));
     let mut url = Url::parse(&base).map_err(|e| AppError::Internal(e.into()))?;
-    for key in ["q", "country", "city", "category", "has_email", "has_phone", "tech", "domains"] {
+    for key in ["q", "country", "city", "category", "has_email", "has_phone", "tech", "project_id", "include_hidden", "domains"] {
         let value = match &args[key] {
             Value::String(v) if !v.trim().is_empty() => v.as_str(),
             Value::Bool(true) => "true",
@@ -733,8 +738,9 @@ fn tools() -> Vec<Value> {
             "Search company database",
             "Searches the company database (businesses with a website from Overture Maps), the most reliable listings first. q matches \
              words at the start of words in the name or category. Each company's tech lists the tools its website and DNS show it \
-             uses, once Splee has scanned it, which it does for every project's companies. total stops counting at 10,000, and capped \
-             says there are more.",
+             uses, once Splee has scanned it, which it does for every project's companies. Companies on the organization's dedup \
+             lists are left out: the lists for every project, and with project_id that project's too. total stops counting at \
+             10,000, and capped says there are more.",
             page_props(json!({
                 "q": { "type": "string", "description": "Words in the name or category, like \"dental\"" },
                 "country": { "type": "string", "description": "Two-letter country code, like GB" },
@@ -745,6 +751,8 @@ fn tools() -> Vec<Value> {
                 "tech": { "type": "string", "description": "Only companies that use this tool, like HubSpot, or a tool of this category: crm, \
                     marketing, email_sending, support, analytics, sales_intelligence, advertising, ecommerce, cms, payments, hosting, \
                     scheduling, email or workplace" },
+                "project_id": id_prop("Optional. The project searching, so its dedup lists apply too"),
+                "include_hidden": { "type": "boolean", "description": "Optional. True to show the companies on dedup lists too" },
             })),
             &[],
             read.clone(),
@@ -800,6 +808,69 @@ fn tools() -> Vec<Value> {
             "Deletes a saved search. Splee stops checking it, and companies it added to a campaign stay there.",
             json!({ "search_id": id_prop("A search id from list_saved_searches") }),
             &["search_id"],
+            json!({ "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true }),
+        ),
+        tool(
+            "list_company_dedup_lists",
+            "List company dedup lists",
+            "The organization's dedup lists, newest first, each with its size in domains and project_ids, null when it covers \
+             every project.",
+            json!({}),
+            &[],
+            read.clone(),
+        ),
+        tool(
+            "create_company_dedup_list",
+            "Add companies to a dedup list",
+            "Adds up to 10,000 domains or website addresses to the organization's dedup list of that name, making it when there's \
+             none. Searches in the projects it covers leave those companies out: search_companies, download_companies, saved \
+             searches and find_lookalikes. It only hides search results and never stops an email or adding a company to a campaign. \
+             skipped counts invalid domains and ones already on it.",
+            json!({
+                "name": { "type": "string", "description": "The list's name, like \"CRM accounts\"" },
+                "domains": { "type": "array", "items": { "type": "string" }, "maxItems": 10_000, "description": "Domains like acme.com" },
+                "project_ids": {
+                    "type": ["array", "null"],
+                    "items": { "type": "string", "format": "uuid" },
+                    "description": "Optional. The projects it covers, null for all. Left out, a new list covers all and an existing one keeps its own",
+                },
+            }),
+            &["name", "domains"],
+            adds.clone(),
+        ),
+        tool(
+            "get_company_dedup_list",
+            "Get a company dedup list",
+            "A dedup list with its domains in alphabetical order, 100 at a time unless limit says up to 1,000.",
+            json!({
+                "list_id": id_prop("A list id from list_company_dedup_lists"),
+                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Optional. Domains to return, 100 by default" },
+                "offset": { "type": "integer", "minimum": 0, "description": "Optional. Domains to skip" },
+            }),
+            &["list_id"],
+            read.clone(),
+        ),
+        tool(
+            "set_company_dedup_list_projects",
+            "Set a dedup list's projects",
+            "Changes the projects whose searches a dedup list hides companies from.",
+            json!({
+                "list_id": id_prop("A list id from list_company_dedup_lists"),
+                "project_ids": {
+                    "type": ["array", "null"],
+                    "items": { "type": "string", "format": "uuid" },
+                    "description": "Project ids, or null for all",
+                },
+            }),
+            &["list_id", "project_ids"],
+            control.clone(),
+        ),
+        tool(
+            "delete_company_dedup_list",
+            "Delete a company dedup list",
+            "Deletes a dedup list and its domains. Its companies show up in searches again right away.",
+            json!({ "list_id": id_prop("A list id from list_company_dedup_lists") }),
+            &["list_id"],
             json!({ "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true }),
         ),
         tool(
@@ -883,6 +954,8 @@ fn tools() -> Vec<Value> {
                 "has_email": { "type": "boolean", "description": "Only companies that list an email" },
                 "has_phone": { "type": "boolean", "description": "Only companies that list a phone" },
                 "tech": { "type": "string", "description": "Only companies that use this tool or a tool of this category, like search_companies" },
+                "project_id": id_prop("Optional. The project searching, so its dedup lists apply too"),
+                "include_hidden": { "type": "boolean", "description": "Optional. True to include the companies on dedup lists" },
                 "domains": { "type": "array", "items": { "type": "string" }, "description": "Optional. Only these of the search's companies, up to 500" },
                 "per_page": { "type": "integer", "minimum": 1, "maximum": MAX_DOWNLOAD_ROWS, "description": "Rows in the answer, 20 by default" },
             }),
@@ -1682,7 +1755,8 @@ mod tests {
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",
-                     "get_project_my_copy", "update_project_my_copy"] {
+                     "get_project_my_copy", "update_project_my_copy", "list_company_dedup_lists", "create_company_dedup_list",
+                     "get_company_dedup_list", "set_company_dedup_list_projects", "delete_company_dedup_list"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -2160,6 +2234,49 @@ mod tests {
         assert!(found["csv"].as_str().unwrap().contains("\n'=Grin Dental,grin.co.uk,"), "{text}");
         assert_eq!(found["download_url"], "http://localhost:3346/api/v1/companies/export?category=dental_clinic&domains=grin.co.uk%2Ccafe.co.uk");
         assert!(!super::read_tools().iter().any(|t| t["name"] == "download_companies"), "Ask Splee doesn't spend the downloads");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn dedup_lists_hide_companies_from_search_companies(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        for domain in ["smile.co.uk", "grin.co.uk"] {
+            sqlx::query(
+                "insert into directory_companies (domain, name, website, city, country_code, category, categories, source_id, release)
+                 values ($1, $1, 'https://' || $1, 'Leeds', 'GB', 'dental_clinic', '{dental_clinic}', 'x', 'r')",
+            )
+            .bind(domain)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let server = &Server::start(db).await;
+        let total = |args: Value| async move {
+            let (is_error, text) = server.call(KEY, "search_companies", args).await;
+            assert!(!is_error, "{text}");
+            serde_json::from_str::<Value>(&text).unwrap()["total"].clone()
+        };
+
+        let args = json!({ "name": "CRM accounts", "domains": ["https://www.Smile.co.uk/"], "project_ids": [other_project] });
+        assert!(server.call(KEY, "create_company_dedup_list", args).await.0, "another org's project");
+        let args = json!({ "name": "CRM accounts", "domains": ["https://www.Smile.co.uk/"], "project_ids": [project] });
+        let (is_error, text) = server.call(KEY, "create_company_dedup_list", args).await;
+        assert!(!is_error, "{text}");
+        let list_id = serde_json::from_str::<Value>(&text).unwrap()["list"]["id"].clone();
+        assert_eq!(total(json!({ "category": "dental_clinic", "project_id": project })).await, json!(1));
+        assert_eq!(total(json!({ "category": "dental_clinic", "project_id": project, "include_hidden": true })).await, json!(2));
+        assert_eq!(total(json!({ "category": "dental_clinic" })).await, json!(2), "a list for one project");
+
+        let (_, text) = server.call(KEY, "set_company_dedup_list_projects", json!({ "list_id": list_id, "project_ids": null })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["project_ids"], Value::Null, "{text}");
+        assert_eq!(total(json!({ "category": "dental_clinic" })).await, json!(1));
+        let (_, text) = server.call(KEY, "get_company_dedup_list", json!({ "list_id": list_id })).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["domains"], json!(["smile.co.uk"]), "{text}");
+        let (_, text) = server.call(KEY, "list_company_dedup_lists", json!({})).await;
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()[0]["size"], json!(1), "{text}");
+        let (is_error, _) = server.call(KEY, "delete_company_dedup_list", json!({ "list_id": list_id })).await;
+        assert!(!is_error);
+        assert_eq!(total(json!({ "category": "dental_clinic" })).await, json!(2));
     }
 
     #[sqlx::test]

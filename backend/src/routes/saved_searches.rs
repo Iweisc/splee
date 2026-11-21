@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+use super::dedup_lists;
 use super::directory::SearchQuery;
 use super::imports::check_segment;
 use super::util_pagination::{PageQuery, Paginated};
@@ -89,7 +90,10 @@ pub(super) async fn create_in(state: &AppState, project_id: Uuid, user_id: Optio
         return Err(AppError::BadRequest("Pick at least one filter to save".into()));
     }
     // A bad country or a tool Splee can't detect is turned away here rather than at every check.
-    f.search()?;
+    f.search(None)?;
+    if f.include_hidden {
+        return Err(AppError::BadRequest("Saved searches always leave out the companies on your dedup lists".into()));
+    }
     check_segment(state, project_id, body.segment_id).await?;
     let saved: i64 = sqlx::query_scalar("select count(*) from saved_searches where project_id = $1").bind(project_id).fetch_one(&state.db).await?;
     if saved >= MAX_PER_PROJECT {
@@ -158,11 +162,17 @@ pub(super) async fn matches_of(db: &PgPool, search: &SavedSearch, since: Option<
             .await?,
     };
     let Some(since) = since else { return Ok(NewMatches { since: None, page: Paginated { items: Vec::new(), total: 0 } }) };
-    const FROM: &str = "from saved_search_matches m join directory_companies d on d.domain = m.domain where m.search_id = $1 and m.found_at >= $2";
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) {FROM}")).bind(search.id).bind(since).fetch_one(db).await?;
-    let items = sqlx::query_as(&format!("select {LISTING}, m.found_at {FROM} order by m.found_at desc, d.confidence desc, d.domain limit $3 offset $4"))
+    // A company put on a dedup list after it was found is left out here too.
+    let hidden = dedup_lists::hidden("(select org_id from projects where id = $3)", "$3", "d.domain");
+    let from = format!(
+        "from saved_search_matches m join directory_companies d on d.domain = m.domain
+         where m.search_id = $1 and m.found_at >= $2 and not {hidden}"
+    );
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) {from}")).bind(search.id).bind(since).bind(search.project_id).fetch_one(db).await?;
+    let items = sqlx::query_as(&format!("select {LISTING}, m.found_at {from} order by m.found_at desc, d.confidence desc, d.domain limit $4 offset $5"))
         .bind(search.id)
         .bind(since)
+        .bind(search.project_id)
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(db)

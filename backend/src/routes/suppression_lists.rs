@@ -85,7 +85,7 @@ async fn one(db: &PgPool, org_id: Uuid, id: Uuid) -> AppResult<SuppressionList> 
 }
 
 /// A scope a client sent: None for every project, else a non-empty set of the org's own projects.
-async fn check_scope(db: &PgPool, org_id: Uuid, ids: Option<Vec<Uuid>>) -> AppResult<Option<Vec<Uuid>>> {
+pub(super) async fn check_scope(db: &PgPool, org_id: Uuid, ids: Option<Vec<Uuid>>) -> AppResult<Option<Vec<Uuid>>> {
     let Some(mut ids) = ids else { return Ok(None) };
     ids.sort();
     ids.dedup();
@@ -99,7 +99,7 @@ async fn check_scope(db: &PgPool, org_id: Uuid, ids: Option<Vec<Uuid>>) -> AppRe
     Ok(Some(ids))
 }
 
-fn check_name(name: &str) -> AppResult<&str> {
+pub(super) fn check_name(name: &str) -> AppResult<&str> {
     let name = name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("Name the list".into()));
@@ -279,6 +279,17 @@ fn best_column(columns: &[Column]) -> Option<usize> {
         }
     }
     best
+}
+
+/// The cells of a CSV's column of `kind`: `column` when it holds that kind, else the column with the most, the first on a tie.
+pub(super) fn column_of(csv: &Csv, kind: Kind, column: Option<usize>) -> Option<impl Iterator<Item = &str>> {
+    let columns = read_columns(csv);
+    let holds = |i: &usize| columns.get(*i).is_some_and(|c| c.kind == Some(kind.as_str()));
+    let i = match column {
+        Some(i) => Some(i).filter(holds)?,
+        None => (0..columns.len()).filter(holds).min_by_key(|&i| (std::cmp::Reverse(columns[i].values), i))?,
+    };
+    Some(cells(csv, i))
 }
 
 #[derive(Deserialize)]

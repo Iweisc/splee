@@ -273,13 +273,15 @@ function endpoints(projectId: string): Endpoint[] {
       method: "GET",
       path: "/companies?q=dental&city=Leeds&country=GB",
       summary:
-        "Search the company database, the most reliable listings first. q matches words at the start of words in the name or category. total stops counting at 10,000, and capped says there are more.",
+        "Search the company database, the most reliable listings first. q matches words at the start of words in the name or category. Companies on your dedup lists are left out. total stops counting at 10,000, and capped says there are more.",
       params: [
         ["q", "optional words in the name or category"],
         ["country", "optional two-letter code, like GB"],
         ["city", "optional city, any case"],
         ["category", "optional exact category, like dental_clinic"],
         ["has_email, has_phone", "optional true to keep only companies that list one"],
+        ["project_id", "optional project searching, so its dedup lists apply as well as the ones for every project"],
+        ["include_hidden", "optional true to include the companies on your dedup lists"],
         ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
       ],
       response: `{
@@ -299,6 +301,47 @@ function endpoints(projectId: string): Endpoint[] {
   "total": 125,
   "capped": false
 }`,
+    },
+    {
+      method: "POST",
+      path: "/dedup/companies",
+      summary:
+        "Add up to 10,000 domains or website addresses to a named dedup list, like your CRM's accounts or a competitor's clients. The list is made when your organization has none by that name. The company search, its downloads, saved searches and lookalikes leave those companies out in the projects it covers. It only hides search results and never stops an email, unlike do-not-contact. project_ids sets those projects, null or left out on a new list means all of them. skipped counts invalid domains and ones already on the list. 422 for an empty project_ids or a project outside your organization.",
+      body: `{ "name": "CRM accounts", "domains": ["northwind.studio", "https://www.globex.com/"], "project_ids": ["${projectId}"] }`,
+      response: `{
+  "list": { "id": "6e1b…", "name": "CRM accounts", "project_ids": ["${projectId}"], "created_by": null, "created_at": "2026-11-21T09:00:00Z", "size": 2 },
+  "added": 2,
+  "skipped": 0
+}`,
+    },
+    {
+      method: "GET",
+      path: "/dedup/companies",
+      summary: "Your organization's dedup lists, newest first, with how many domains each has. project_ids is null for a list that covers every project.",
+      response: `[{ "id": "6e1b…", "name": "CRM accounts", "project_ids": ["${projectId}"], "created_by": null, "created_at": "2026-11-21T09:00:00Z", "size": 2 }]`,
+    },
+    {
+      method: "GET",
+      path: "/dedup/companies/6e1b…?limit=100&offset=0",
+      summary: "A dedup list with its domains in alphabetical order.",
+      params: [
+        ["limit", "1 to 1,000, default 100"],
+        ["offset", "how many to skip, default 0"],
+      ],
+      response: `{ "id": "6e1b…", "name": "CRM accounts", "project_ids": ["${projectId}"], "created_by": null, "created_at": "2026-11-21T09:00:00Z", "size": 2, "domains": ["globex.com", "northwind.studio"] }`,
+    },
+    {
+      method: "PATCH",
+      path: "/dedup/companies/6e1b…",
+      summary: "Change the projects a dedup list covers. Send null for all projects.",
+      body: `{ "project_ids": null }`,
+      response: `{ "id": "6e1b…", "name": "CRM accounts", "project_ids": null, "created_by": null, "created_at": "2026-11-21T09:00:00Z", "size": 2 }`,
+    },
+    {
+      method: "DELETE",
+      path: "/dedup/companies/6e1b…",
+      summary: "Delete a dedup list and its domains. Those companies show up in searches again right away.",
+      response: `{ "ok": true }`,
     },
     {
       method: "POST",

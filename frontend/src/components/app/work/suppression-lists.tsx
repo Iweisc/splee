@@ -15,14 +15,14 @@ import { api, qs } from "@/lib/api";
 import type { Paginated, ProjectSummary, SuppressionList, SuppressionListColumn } from "@/lib/types";
 import { cn, num, plural, timeAgo } from "@/lib/utils";
 
-type Scope = string[] | null;
+export type Scope = string[] | null;
 
 const KINDS: Record<SuppressionList["kind"], { label: string; one: string; many: string }> = {
   people: { label: "People", one: "email", many: "emails" },
   companies: { label: "Companies", one: "domain", many: "domains" },
 };
 
-function scopeLabel(scope: Scope, projects: ProjectSummary[] | undefined) {
+export function scopeLabel(scope: Scope, projects: ProjectSummary[] | undefined) {
   if (scope === null) return "All projects";
   if (scope.length === 1) return projects?.find((p) => p.id === scope[0])?.name ?? "1 project";
   return plural(scope.length, "project");
@@ -87,7 +87,7 @@ export function SuppressionLists() {
           No lists yet. A CSV with a column of emails blocks those people. A column of domains blocks everyone at those companies.
         </p>
       ) : (
-        <ul className="-mx-6 divide-y divide-border border-y border-border">
+        <ul className="-mx-6 -mb-6 divide-y divide-border border-t border-border">
           {lists.map((l) => (
             <li key={l.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-3 text-sm">
               <div className="min-w-0 flex-1 basis-48">
@@ -227,7 +227,7 @@ function ScopeForm({ list, projects, onDone }: { list: SuppressionList; projects
 }
 
 /** All projects, including ones made later, or the ones ticked. */
-function ScopePicker({ scope, onChange, projects }: { scope: Scope; onChange: (scope: Scope) => void; projects: ProjectSummary[] | undefined }) {
+export function ScopePicker({ scope, onChange, projects }: { scope: Scope; onChange: (scope: Scope) => void; projects: ProjectSummary[] | undefined }) {
   const toggle = (id: string) => {
     const now = new Set(scope ?? []);
     if (now.has(id)) now.delete(id);

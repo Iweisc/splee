@@ -118,8 +118,10 @@ async fn run(db: &PgPool, project_id: Uuid, args: &Value) -> Result<String, Stri
         args["has_phone"].as_bool().unwrap_or(false),
     )?;
     search.skip_project = Some(project_id);
-    let limit = args["limit"].as_i64().unwrap_or(25).clamp(1, MAX_LIMIT);
+    search.hide_project = Some(project_id);
     let failed = |e: sqlx::Error| format!("The company database failed: {e}");
+    search.hide_org = sqlx::query_scalar("select org_id from projects where id = $1").bind(project_id).fetch_one(db).await.map_err(failed)?;
+    let limit = args["limit"].as_i64().unwrap_or(25).clamp(1, MAX_LIMIT);
     let pool = directory::search(db, &search, limit * POOL, 0).await.map_err(failed)?;
     let more = pool.len() as i64 > limit;
     let found = best(db, project_id, pool, limit).await.map_err(failed)?;
@@ -231,6 +233,11 @@ mod tests {
         let domains: Vec<&str> = found.lines().filter_map(|l| l.strip_prefix("- ")?.split(' ').next()).collect();
         assert_eq!(domains, ["visitor.co.uk", "leeds.co.uk"]);
         assert!(found.ends_with("for more."), "{found}");
+
+        // The organization's dedup lists hide companies from the agent too.
+        crate::routes::dedup_lists::add_by_name(&db, org, "CRM accounts", Some(Some(vec![project])), ["visitor.co.uk"]).await.unwrap();
+        let found = super::run(&db, project, &json!({"q": "dental", "limit": 2})).await.unwrap();
+        assert!(!found.contains("visitor.co.uk"), "{found}");
     }
 
     #[sqlx::test]

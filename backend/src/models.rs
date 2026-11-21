@@ -995,6 +995,19 @@ pub struct Suppression {
     pub created_at: Ts,
 }
 
+/// A named list of domains the company database search leaves out. See migration 0189 and routes/dedup_lists.rs.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct DedupList {
+    pub id: Uuid,
+    pub name: String,
+    /// The projects whose searches it hides companies from, or null for all of them. Deleted projects are left out.
+    pub project_ids: Option<Vec<Uuid>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: Ts,
+    /// How many domains it has.
+    pub size: i64,
+}
+
 /// A named do-not-contact list. See migration 0177 and routes/suppression_lists.rs.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SuppressionList {

@@ -33,6 +33,8 @@ impl SavedSearch {
             has_email: self.has_email,
             has_phone: self.has_phone,
             tech: Some(self.tech.clone()),
+            project_id: Some(self.project_id),
+            include_hidden: false,
         }
     }
 }
@@ -49,7 +51,8 @@ pub struct Found {
 /// returns None, so nobody hears about the whole existing result set. So does a check that finds nothing new, and one
 /// that finds the search has grown past SEEN_CAP, which stops watching it and drops its matches.
 pub async fn check(db: &PgPool, search: &SavedSearch) -> AppResult<Option<Found>> {
-    let filter = search.query().search()?;
+    let org_id: Option<Uuid> = sqlx::query_scalar("select org_id from projects where id = $1").bind(search.project_id).fetch_one(db).await?;
+    let filter = search.query().search(org_id)?;
     // Whole seconds, so the alert's link names exactly the found_at its companies have.
     let at = Utc::now().trunc_subsecs(0);
     let seen: i64 = sqlx::query_scalar("select count(*) from saved_search_matches where search_id = $1").bind(search.id).fetch_one(db).await?;

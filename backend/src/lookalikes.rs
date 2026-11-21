@@ -481,14 +481,16 @@ pub async fn rank(db: &PgPool, project_id: Uuid, org_id: Option<Uuid>, profile: 
         .collect())
 }
 
-/// Seeds, the project's companies, domain and competitors, and the organization's do-not-contact list and lists.
+/// Seeds, the project's companies, domain and competitors, the organization's do-not-contact list and lists, and its dedup lists.
 fn excluded() -> String {
     format!(
         "d.domain <> all($3)
              and not exists (select 1 from companies c where c.project_id = $1 and c.domain = d.domain::citext)
              and not exists (select 1 from suppressions s where s.org_id = $2 and s.value in (d.domain, d.email, split_part(d.email, '@', 2)))
+             and not {}
              and not {}",
-        crate::routes::suppression_lists::listed("$2", "$1", "d.email", "d.domain")
+        crate::routes::suppression_lists::listed("$2", "$1", "d.email", "d.domain"),
+        crate::routes::dedup_lists::hidden("$2", "$1", "d.domain")
     )
 }
 
@@ -1013,6 +1015,25 @@ pub(crate) mod tests {
         assert_eq!(found.results[1].reasons, ["Tax advisor, like 1 of your 4 customers", "In Greater London, GB, like 1 of your 4 customers"]);
         assert_eq!(found.results[3].reasons, ["In West Yorkshire, GB, like 2 of your 4 customers", "Uses HubSpot, like 3 of your 4 customers"]);
         assert!(!found.database_empty);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn dedup_lists_hide_matches_in_their_projects_until_deleted(db: PgPool) {
+        let (org, project) = org_and_project(&db, "Acme").await;
+        customers(&db, org, project).await;
+        let (_, elsewhere) = org_and_project(&db, "Acme too").await;
+        sqlx::query("update projects set org_id = $1 where id = $2").bind(org).bind(elsewhere).execute(&db).await.unwrap();
+        use crate::routes::dedup_lists;
+        dedup_lists::add_by_name(&db, org, "Elsewhere", Some(Some(vec![elsewhere])), ["tally.example"]).await.unwrap();
+        let list = dedup_lists::add_by_name(&db, org, "Competitor clients", Some(Some(vec![project])), ["https://www.Ledger.example/"]).await.unwrap();
+
+        let found = find(&db, project, None).await.unwrap();
+        assert_eq!(ranked(&found), [("tally.example", 45), ("berlin.example", 30), ("bakery.example", 28)]);
+        dedup_lists::delete(&db, org, list.list.id).await.unwrap();
+        let found = find(&db, project, None).await.unwrap();
+        assert_eq!(ranked(&found)[0], ("ledger.example", 93));
     }
 
     #[sqlx::test]

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -134,6 +134,10 @@ pub struct Search {
     pub tech: Option<Vec<String>>,
     /// Only these domains, like the rows ticked on the Companies page.
     pub domains: Option<Vec<String>>,
+    /// Leaves out the domains on this org's dedup lists that cover `hide_project`, or only its lists for every project
+    /// without one. None shows them, like "Include hidden companies".
+    pub hide_org: Option<Uuid>,
+    pub hide_project: Option<Uuid>,
 }
 
 impl Search {
@@ -163,6 +167,8 @@ impl Search {
             skip_project: None,
             tech: None,
             domains: None,
+            hide_org: None,
+            hide_project: None,
         })
     }
 
@@ -177,10 +183,16 @@ impl Search {
             .bind(self.skip_project)
             .bind(&self.tech)
             .bind(&self.domains)
+            .bind(self.hide_org)
+            .bind(self.hide_project)
     }
 }
 
-const FILTER: &str = "from directory_companies d
+/// $1 to $11 are Search::bind's, so a query's own values start at $12.
+static FILTER: LazyLock<String> = LazyLock::new(|| {
+    let hidden = crate::routes::dedup_lists::hidden("$10", "$11::uuid", "d.domain");
+    format!(
+        "from directory_companies d
     where ($1::text is null or search @@ to_tsquery('simple', $1))
       and ($2::text is null or country_code = $2)
       and ($3::text is null or lower(city) = lower($3))
@@ -189,7 +201,10 @@ const FILTER: &str = "from directory_companies d
       and (not $6 or phone is not null)
       and ($7::uuid is null or not exists (select 1 from companies c where c.project_id = $7 and c.domain = d.domain::citext))
       and ($8::text[] is null or d.domain in (select lower(t.domain::text) from tech_scans t where t.techs && $8))
-      and ($9::text[] is null or d.domain = any($9))";
+      and ($9::text[] is null or d.domain = any($9))
+      and ($10::uuid is null or not {hidden})"
+    )
+});
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Listing {
@@ -214,14 +229,14 @@ pub const LISTING: &str = "d.domain, d.name, d.website, d.phone, d.email, d.addr
 
 /// The matches, the most reliable listings first.
 pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sqlx::Result<Vec<Listing>> {
-    let sql = format!("select {LISTING} {FILTER} order by confidence desc, domain limit $10 offset $11");
+    let sql = format!("select {LISTING} {} order by confidence desc, domain limit $12 offset $13", *FILTER);
     let rows = search.bind(&sql).bind(limit).bind(offset).fetch_all(db).await?;
     rows.iter().map(Listing::from_row).collect()
 }
 
 /// How many companies match, counting no further than `cap` + 1, since counting every restaurant in the US is slow.
 pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> {
-    let sql = format!("select count(*) from (select 1 {FILTER} limit {cap} + 1) matches");
+    let sql = format!("select count(*) from (select 1 {} limit {cap} + 1) matches", *FILTER);
     search.bind(&sql).fetch_one(db).await?.try_get(0)
 }
 
@@ -230,10 +245,11 @@ pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> 
 pub async fn record_unseen(db: &PgPool, search: &Search, search_id: Uuid, found_at: Option<DateTime<Utc>>, limit: i64) -> sqlx::Result<u64> {
     let sql = format!(
         "insert into saved_search_matches (search_id, domain, found_at)
-         select $10, d.domain, $11 {FILTER}
-           and not exists (select 1 from saved_search_matches m where m.search_id = $10 and m.domain = d.domain)
-         limit $12
-         on conflict do nothing"
+         select $12, d.domain, $13 {}
+           and not exists (select 1 from saved_search_matches m where m.search_id = $12 and m.domain = d.domain)
+         limit $14
+         on conflict do nothing",
+        *FILTER
     );
     Ok(search.bind(&sql).bind(search_id).bind(found_at).bind(limit).execute(db).await?.rows_affected())
 }
@@ -261,7 +277,7 @@ pub struct Export {
 
 /// How many matches there are from `offset` on, counting no further than `limit` + 1, so the caller knows when there are more.
 pub async fn count_from(db: &PgPool, search: &Search, offset: i64, limit: i64) -> sqlx::Result<i64> {
-    let sql = format!("select count(*) from (select 1 {FILTER} limit $10 offset $11) matches");
+    let sql = format!("select count(*) from (select 1 {} limit $12 offset $13) matches", *FILTER);
     search.bind(&sql).bind(limit + 1).bind(offset).fetch_one(db).await?.try_get(0)
 }
 
@@ -270,8 +286,9 @@ pub fn export(db: PgPool, search: Search, limit: i64, offset: i64) -> impl Strea
     async_stream::try_stream! {
         let sql = format!(
             "select name, domain, website, email, phone, address, city, region, postcode, country_code, category, confidence, source_id, release
-             {FILTER}
-             order by confidence desc, domain limit $10 offset $11"
+             {}
+             order by confidence desc, domain limit $12 offset $13",
+            *FILTER
         );
         let mut rows = search.bind(&sql).bind(limit).bind(offset).fetch(&db);
         while let Some(row) = rows.try_next().await? {

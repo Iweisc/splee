@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bookmark, Building2, Download, Mail, Pencil, Phone, Search, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
@@ -128,6 +129,8 @@ function DirectorySearch({
   const [hasPhone, setHasPhone] = useState(start?.has_phone ?? false);
   // The page has no field for it. A search saved through the API can have it, and opening one shows it as a chip.
   const [tech, setTech] = useState(start?.tech ?? "");
+  // Shows the companies the organization's dedup lists hide. Saved searches always leave them out.
+  const [includeHidden, setIncludeHidden] = useState(false);
   const [page, setPage] = useState(1);
   // The saved search whose filters these are, until one changes.
   const [open, setOpen] = useState<Linked | null>(start ? { id: start.id, since: since ?? start.new_since } : null);
@@ -145,7 +148,16 @@ function DirectorySearch({
   const { data: saved } = useSWR<SavedSearch[]>(savedSearchesKey(projectId), fetcher);
   const opened = open && saved?.find((s) => s.id === open.id);
   const empty = countries?.length === 0;
-  const search = { ...filters, country, has_email: hasEmail || null, has_phone: hasPhone || null, tech: tech || null };
+  const { data: hidden } = useSWR<{ hidden: number }>(`/projects/${projectId}/dedup/hidden`, fetcher);
+  const search = {
+    ...filters,
+    country,
+    has_email: hasEmail || null,
+    has_phone: hasPhone || null,
+    tech: tech || null,
+    project_id: projectId,
+    include_hidden: includeHidden || null,
+  };
   const key = empty ? null : `/directory/companies${qs({ ...search, page, per_page: PER_PAGE })}`;
   const { data, error, mutate, isLoading } = useSWR<DirectoryPage>(key, fetcher, { keepPreviousData: true });
   // keepPreviousData shows the last results while typing or loading. They no longer match the filters, so they can't be ticked.
@@ -332,6 +344,24 @@ function DirectorySearch({
           </div>
         </div>
 
+        {!!hidden?.hidden && (
+          // The links wrap together, so a phone never leaves one word of the sentence on its own line.
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+            <p className="text-pretty">
+              {includeHidden
+                ? `Showing the ${plural(hidden.hidden, "company", "companies")} your lists hide.`
+                : `${plural(hidden.hidden, "company", "companies")} hidden by your lists.`}
+            </p>
+            <div className="flex items-center gap-3 whitespace-nowrap font-medium text-foreground">
+              <button type="button" onClick={() => filter(setIncludeHidden)(!includeHidden)} className="underline-offset-2 hover:underline">
+                {includeHidden ? "Hide them" : "Show them"}
+              </button>
+              <Link href="/app/hidden-companies" className="underline-offset-2 hover:underline">
+                Manage lists
+              </Link>
+            </div>
+          </div>
+        )}
         {error ? (
           <LoadError error={error} retry={() => mutate()} what="companies" />
         ) : !data ? (
