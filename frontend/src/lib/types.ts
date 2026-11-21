@@ -971,6 +971,40 @@ export interface SegmentWithStats extends Segment {
   cost_per_hot_micros: number | null;
 }
 
+/** The first thing holding a campaign, in the order a person would clear them. See backend/src/send_state.rs. */
+export type SendStateName =
+  | "archived"
+  | "not_started"
+  | "paused"
+  | "project_paused"
+  | "no_mailbox"
+  | "awaiting_approval"
+  | "nothing_queued"
+  | "scheduled"
+  | "monthly_cap_reached"
+  | "lead_cap_reached"
+  | "daily_limit_reached"
+  | "mailboxes_full"
+  | "outside_hours"
+  | "sending";
+
+/** GET /segments/:id/send-state: whether the campaign sends now and, if not, what holds it. */
+export interface SendState {
+  campaign_id: string;
+  state: SendStateName;
+  sending_now: boolean;
+  message: string;
+  today: {
+    sent: number;
+    queued: number;
+    drafts: number;
+    project_sent: number;
+    daily_email_limit: number;
+    /** When its next email can go out, or null while it sends now or nothing is queued. */
+    next_send_at: string | null;
+  };
+}
+
 /** Why a lead or company scores what it does, the strongest first. "against" is what holds it down. */
 export interface ScoreReason {
   text: string;
