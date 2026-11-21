@@ -196,9 +196,10 @@ export default function SocialPage({ params }: PageProps<"/app/p/[projectId]/soc
 
   return (
     <>
+      {/* The empty state below names every site to connect, so a new one goes there and this stays short. */}
       <PageHeader
         title="Social"
-        description="The agent finds recent threads on X, Reddit, Bluesky, Mastodon, Threads, Lemmy, Nostr, Tumblr, Discourse forums and LinkedIn, messages in your Discord channels and Telegram groups, comments on your Facebook Pages and Instagram posts, articles on Hashnode, videos on YouTube and questions on Stack Exchange where your buyers talk about the problem you solve, and drafts helpful replies, a few posts and articles, including ones for your own blog. Splee posts the ones you approve from your own accounts."
+        description="The agent finds recent conversations where your buyers talk about the problem you solve, on the sites and groups you connect. It drafts helpful replies and a few posts and articles, including ones for your own blog, and Splee posts the ones you approve from your own accounts."
         actions={
           connected.length > 0 && (
             <Button onClick={start} loading={starting} disabled={!!run}>
