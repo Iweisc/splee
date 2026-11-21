@@ -46,7 +46,8 @@ const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email 
 list_projects (or create_project for a new business), then list_campaigns or create_campaign, \
 search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition and update_campaign \
-changes it, start_campaign, stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and \
+changes it, start_campaign, stop_campaign and approve_campaign run it, get_campaign_send_state says whether it's sending and \
+what holds it, archive_campaign puts away one that's done and \
 unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
 checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
@@ -462,6 +463,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "get_campaign" => async { value(v1::get_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "get_campaign_send_state" => async { value(v1::campaign_send_state(st(), auth, id(a, "segment_id")?).await?) }.await,
         "get_my_copy" => async { value(v1::campaign_my_copy(st(), auth, id(a, "segment_id")?).await?) }.await,
         "update_my_copy" => async { value(v1::update_campaign_my_copy(st(), auth, id(a, "segment_id")?, Json(my_copy_body(a))).await?) }.await,
         "set_my_copy_source" => async {
@@ -1397,6 +1399,18 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "get_campaign_send_state",
+            "Is a campaign sending",
+            "Whether a campaign's emails go out now and, if not, the one thing holding them: state (sending, scheduled, archived, \
+             not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued, monthly_cap_reached, \
+             lead_cap_reached, daily_limit_reached, mailboxes_full or outside_hours), message, next_action (the call that clears it, \
+             null when it only waits), today's counts with next_send_at, and the allowed_actions. Ask the user before a next_action \
+             that starts sending.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            read.clone(),
+        ),
+        tool(
             "update_campaign",
             "Update campaign",
             "Changes a campaign's definition as its page does and returns it as get_campaign does. Pass only what changes. Each \
@@ -1945,6 +1959,7 @@ mod tests {
                      "list_sending_domains", "suggest_sending_domains", "check_sending_domains",
                      "get_project", "create_project",
                      "list_tasks",
+                     "get_campaign_send_state",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",

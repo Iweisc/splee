@@ -182,6 +182,21 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "GET",
+      path: "/campaigns/5d0a…/send-state",
+      summary:
+        "Whether the campaign's emails go out now and, if not, the one thing holding them, checked in the order you'd fix them. state is sending, scheduled, archived, not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued, monthly_cap_reached, lead_cap_reached, daily_limit_reached, mailboxes_full or outside_hours, and sending_now is true for the first two. next_action is the call that clears it, null when it only has to wait. today counts the campaign's first emails and follow-ups, project_sent counts every email against the project's shared daily limit, and next_send_at says when the next one can go out. allowed_actions lists the calls below that change something now.",
+      response: `{
+  "campaign_id": "5d0a…",
+  "state": "outside_hours",
+  "sending_now": false,
+  "message": "Outside sending hours. The next emails go out Mon Nov 23, 09:00 Europe/London",
+  "next_action": null,
+  "today": { "sent": 0, "queued": 24, "drafts": 0, "project_sent": 0, "daily_email_limit": 30, "next_send_at": "2026-11-23T09:00:00Z" },
+  "allowed_actions": ["stop", "archive"]
+}`,
+    },
+    {
       method: "POST",
       path: "/campaigns/5d0a…/start",
       summary:

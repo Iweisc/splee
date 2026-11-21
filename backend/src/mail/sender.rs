@@ -57,10 +57,14 @@ impl SendingProject {
     }
 
     fn day_start(&self, now: Ts) -> Ts {
-        let tz = self.tz();
-        let midnight = now.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0).expect("midnight exists");
-        tz.from_local_datetime(&midnight).earliest().map(|d| d.with_timezone(&Utc)).unwrap_or(now)
+        day_start(self.tz(), now)
     }
+}
+
+/// Midnight of `now`'s day in the project's timezone, when its daily email limit starts again.
+pub fn day_start(tz: Tz, now: Ts) -> Ts {
+    let midnight = now.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0).expect("midnight exists");
+    tz.from_local_datetime(&midnight).earliest().map(|d| d.with_timezone(&Utc)).unwrap_or(now)
 }
 
 /// Whether a project's send days and hours, in its timezone, include now. LinkedIn sends keep to the same window.
@@ -69,6 +73,24 @@ pub fn in_window(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, now: Ts) 
     let day = local.weekday().number_from_monday() as i32;
     let hour = local.hour() as i32;
     days.contains(&day) && hour >= start_hour && hour < end_hour
+}
+
+/// `from` when it's in the send window, else the start of the next one within a week, or None for a window that never opens.
+/// Mirrors nextSendWindow on the project page.
+pub fn window_opens(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, from: Ts) -> Option<Ts> {
+    if in_window(tz, days, start_hour, end_hour, from) {
+        return Some(from);
+    }
+    // Quarter-hour steps, because some timezones are offset by 30 or 45 minutes.
+    let quarter = chrono::Duration::minutes(15);
+    let mut t = from.with_minute(from.minute() / 15 * 15).and_then(|t| t.with_second(0)).and_then(|t| t.with_nanosecond(0)).unwrap_or(from);
+    for _ in 0..8 * 24 * 4 {
+        t += quarter;
+        if in_window(tz, days, start_hour, end_hour, t) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
@@ -268,7 +290,7 @@ const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 
 /// Mailboxes of the org that may still send campaigns today, least used first. A warming mailbox also stays under its
 /// total with today's warmup emails. One held until warm sends none in its first 14 days of warmup, or while its warmup
 /// emails land in spam.
-async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
+pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
     Ok(sqlx::query_as::<_, Mailbox>(&format!(
         "select m.* from mailboxes m
          left join lateral (select count(*) as sent, max(sent_at) as last_sent from email_messages e
@@ -285,7 +307,11 @@ async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
 async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
-    let available = mailboxes_with_room(db, org_id).await?;
+    pick_from(db, mailboxes_with_room(db, org_id).await?, email).await
+}
+
+/// pick_mailbox's choice among `available`, the organization's mailboxes_with_room.
+pub(crate) async fn pick_from(db: &sqlx::PgPool, available: Vec<Mailbox>, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
     if email.kind == "initial" {
         return Ok(available.into_iter().next());
     }
