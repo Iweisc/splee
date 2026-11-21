@@ -1112,6 +1112,21 @@ export interface SavedSearchMatches extends Paginated<DirectoryCompany & { found
   since: string | null;
 }
 
+/** What POST /directory/filters made of a description: the search's filters, null or false where it set none, and a sentence
+ * on what it couldn't turn into one, or "". */
+export interface DescribedFilters {
+  filters: {
+    q: string | null;
+    country: string | null;
+    city: string | null;
+    category: string | null;
+    has_email: boolean;
+    has_phone: boolean;
+    tech: string | null;
+  };
+  note: string;
+}
+
 /** How many rows Download CSV takes: the matches, up to the 50,000 one download holds. `capped` says more match. */
 export interface DirectoryDownload {
   rows: number;

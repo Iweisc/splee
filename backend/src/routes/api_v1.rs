@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -13,7 +15,7 @@ use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::attachments;
 use super::calls::{self, CallRow, LogBody};
 use super::dedup_lists::{self, Contents, OffsetQuery as DedupPage};
-use super::directory::{self, Added, SearchQuery};
+use super::directory::{self, Added, DescribeBody, SearchQuery};
 use super::directory_export::{self, ExportQuery};
 use super::saved_searches::{self, NewMatches, NewSearch, SearchRow};
 use super::emails::{self, EmailRow};
@@ -41,6 +43,7 @@ use crate::ab_test::{self, AbTest};
 use crate::audit::Who;
 use crate::auth::{self, ApiKeyAuth, KeyAuth};
 use crate::campaign_imports::{self, RowOutcome, SubmittedLead};
+use crate::company_filters::{self, Claude, Described, Model};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::email_lookups::{self, Batch, BatchPerson, Found, Person};
 use crate::error::{AppError, AppResult};
@@ -55,6 +58,11 @@ use crate::ownership;
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
+    router_with(state, Arc::new(Claude))
+}
+
+/// `model` reads POST /v1/companies/filters' descriptions. Tests pass a fake.
+pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> {
     Router::new()
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{id}", patch(update_project))
@@ -102,6 +110,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/dedup/companies/{id}", get(get_dedup_list).patch(rescope_dedup_list).delete(delete_dedup_list))
         .route("/v1/companies", get(search_companies))
         .route("/v1/companies/export", get(export_companies))
+        .route("/v1/companies/filters", post(companies_filters))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/projects/{id}/saved-searches", get(list_saved_searches).post(save_search))
         .route("/v1/saved-searches/{id}", delete(delete_saved_search))
@@ -132,6 +141,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/projects/{id}/watch-list", post(add_to_watch_list))
         .route("/v1/exports", get(list_exports))
         .route_layer(middleware::from_fn_with_state(state.clone(), guard))
+        .layer(Extension(model))
 }
 
 /// Every /v1 request counts against its organization's rate limit, and a write with an Idempotency-Key runs at most once.
@@ -1325,6 +1335,16 @@ pub(super) async fn search_companies(
     Ok(Json(directory::page_of(&state.db, auth.org_id, &q, &page).await?))
 }
 
+/// The filters a sentence like "dentists in Leeds that list an email" stands for, to pass to GET /v1/companies.
+pub(super) async fn companies_filters(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Extension(model): Extension<Arc<dyn Model>>,
+    Json(body): Json<DescribeBody>,
+) -> AppResult<Json<Described>> {
+    Ok(Json(company_filters::describe(&state, model.as_ref(), auth.org_id, &body.query).await?))
+}
+
 /// The search as a file, up to 50,000 rows a page. See routes/directory_export.rs.
 pub(super) async fn export_companies(
     State(state): State<AppState>,
@@ -1896,6 +1916,7 @@ pub(super) async fn list_exports(State(state): State<AppState>, auth: ApiKeyAuth
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use axum::Router;
@@ -1919,10 +1940,14 @@ mod tests {
 
     impl Api {
         async fn start(db: &PgPool, limits: Limits) -> Self {
+            Self::start_with(db, limits, Arc::new(crate::company_filters::Claude)).await
+        }
+
+        async fn start_with(db: &PgPool, limits: Limits, model: Arc<dyn crate::company_filters::Model>) -> Self {
             let state = AppState { rate_limits: RateLimiter::new(limits), ..crate::autopilot::tests::state(db.clone()) };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
-            let app = Router::new().nest("/api", super::router(&state)).with_state(state);
+            let app = Router::new().nest("/api", super::router_with(&state, model)).with_state(state);
             tokio::spawn(async move { axum::serve(listener, app).await });
             Self { base, client: reqwest::Client::new() }
         }
@@ -2100,6 +2125,37 @@ mod tests {
         let (status, headers, _) = api.post(KEYS[0], &campaigns, Some("order-2"), leeds).await;
         assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None));
         assert_eq!(count(&db, "select count(*) from segments").await, 2);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_description_becomes_filters_within_the_organizations_hour(db: PgPool) {
+        use crate::company_filters::tests::{Fake, leeds_dentists, seed as seed_directory};
+
+        seed(&db).await;
+        seed_directory(&db).await;
+        let answer = crate::company_filters::Answer { note: "Company size isn't a filter.".into(), ..leeds_dentists() };
+        let api = Api::start_with(&db, LIMITS, Arc::new(Fake::new(answer))).await;
+        let path = "/v1/companies/filters";
+        let query = json!({ "query": "dentists in Leeds with an email that use Shopify, 10 to 50 staff" });
+
+        let (status, _, body) = api.post(KEYS[0], path, None, query.clone()).await;
+        assert_eq!(status, 200, "{body}");
+        let filters = json!({ "q": null, "country": "GB", "city": "Leeds", "category": "dental_clinic", "has_email": true, "has_phone": false, "tech": "Shopify" });
+        assert_eq!(body, json!({ "filters": filters, "note": "Company size isn't a filter." }));
+        assert_eq!(api.post(KEYS[0], path, None, json!({ "query": " " })).await.0, 400);
+        assert_eq!(api.post(KEYS[0], path, None, json!({})).await.0, 422);
+        assert_eq!(api.post("splee_wrong", path, None, query.clone()).await.0, 401);
+
+        for _ in 1..30 {
+            assert_eq!(api.post(KEYS[0], path, None, query.clone()).await.0, 200);
+        }
+        let (status, headers, body) = api.post(KEYS[0], path, None, query.clone()).await;
+        assert_eq!(status, 429, "{body}");
+        assert!(header(&headers, "retry-after").unwrap().parse::<u64>().unwrap() > 3500);
+        assert!(body["error"].as_str().unwrap().contains("30 searches from a description this hour"), "{body}");
+        assert_eq!(api.post(KEYS[1], path, None, query).await.0, 200, "another organization has its own hour");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

@@ -303,32 +303,51 @@ pub struct Country {
     pub companies: i64,
 }
 
-/// Grouping millions of rows takes seconds, and the list only changes with an import, so it's kept for a while.
-const COUNTRIES_TTL: Duration = Duration::from_secs(10 * 60);
-static COUNTRIES: Mutex<Option<(Instant, Arc<Vec<Country>>)>> = Mutex::new(None);
+/// Grouping millions of rows takes seconds, and the lists only change with an import, so they're kept for a while.
+const LISTS_TTL: Duration = Duration::from_secs(10 * 60);
+type Cached<T> = Mutex<Option<(Instant, Arc<Vec<T>>)>>;
+static COUNTRIES: Cached<Country> = Mutex::new(None);
+static CATEGORIES: Cached<String> = Mutex::new(None);
+/// The categories offered to the model that turns a description into filters, the most common first.
+const TOP_CATEGORIES: i64 = 400;
 
-/// The countries that have companies, most companies first.
-pub async fn countries(db: &PgPool) -> sqlx::Result<Arc<Vec<Country>>> {
-    if let Some((at, list)) = COUNTRIES.lock().expect("not poisoned").as_ref()
-        && at.elapsed() < COUNTRIES_TTL
+async fn cached<T>(cache: &Cached<T>, load: impl Future<Output = sqlx::Result<Vec<T>>>) -> sqlx::Result<Arc<Vec<T>>> {
+    if let Some((at, list)) = cache.lock().expect("not poisoned").as_ref()
+        && at.elapsed() < LISTS_TTL
     {
         return Ok(list.clone());
     }
-    let list = Arc::new(
-        sqlx::query_as::<_, Country>("select country_code, count(*) as companies from directory_companies group by 1 order by 2 desc, 1")
-            .fetch_all(db)
-            .await?,
-    );
+    let list = Arc::new(load.await?);
     // An empty table isn't kept, so the page sees a first import right away instead of after the wait.
     if !list.is_empty() {
-        *COUNTRIES.lock().expect("not poisoned") = Some((Instant::now(), list.clone()));
+        *cache.lock().expect("not poisoned") = Some((Instant::now(), list.clone()));
     }
     Ok(list)
 }
 
-/// Called when an import from the Companies page finishes, so its country shows up there right away.
-pub fn forget_countries() {
+/// The countries that have companies, most companies first.
+pub async fn countries(db: &PgPool) -> sqlx::Result<Arc<Vec<Country>>> {
+    let load = sqlx::query_as::<_, Country>("select country_code, count(*) as companies from directory_companies group by 1 order by 2 desc, 1").fetch_all(db);
+    cached(&COUNTRIES, load).await
+}
+
+/// The most common primary categories, like dental_clinic, most companies first.
+pub async fn categories(db: &PgPool) -> sqlx::Result<Arc<Vec<String>>> {
+    let load = sqlx::query_scalar("select category from directory_companies where category is not null group by 1 order by count(*) desc, 1 limit $1")
+        .bind(TOP_CATEGORIES)
+        .fetch_all(db);
+    cached(&CATEGORIES, load).await
+}
+
+/// Whether any company has the category, in its list of categories as search matches it.
+pub async fn has_category(db: &PgPool, category: &str) -> sqlx::Result<bool> {
+    sqlx::query_scalar("select exists (select 1 from directory_companies where categories @> array[$1])").bind(category).fetch_one(db).await
+}
+
+/// Called when an import from the Companies page finishes, so its country and categories show up right away.
+pub fn forget_lists() {
     *COUNTRIES.lock().expect("not poisoned") = None;
+    *CATEGORIES.lock().expect("not poisoned") = None;
 }
 
 /// A company from the database to add to a campaign, with why it fits.

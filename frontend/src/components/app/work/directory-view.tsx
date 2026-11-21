@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bookmark, Building2, Download, Mail, Pencil, Phone, Search, X } from "lucide-react";
+import { Bookmark, Building2, Download, Mail, Pencil, Phone, Search, Sparkles, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass, LinkButton } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { api, qs } from "@/lib/api";
 import { countryName } from "@/lib/countries";
 import { SOURCE_URL } from "@/lib/source";
 import type {
+  DescribedFilters,
   DirectoryCompany,
   DirectoryCountry,
   DirectoryDownload,
@@ -109,6 +110,48 @@ function suggestedName(f: Filters) {
   return (where ? `${what} in ${where}` : what).slice(0, 120);
 }
 
+/** A sentence turned into the filters below, which stay as editable as ones typed in. */
+function Describe({ onFill }: { onFill: (f: DescribedFilters["filters"]) => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const res = await api<DescribedFilters>("/directory/filters", { body: { query: text } });
+      onFill(res.filters);
+      setNote(res.note);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form onSubmit={submit} className="border-b border-border p-3">
+      <label htmlFor="describe-companies" className="mb-1.5 block text-sm font-medium">
+        Describe the companies you want
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <Input
+          id="describe-companies"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          maxLength={500}
+          placeholder="Dental clinics in Leeds that list an email"
+          className="h-9 min-w-64 flex-[999_1_0%]"
+        />
+        <Button type="submit" variant="outline" className="h-9 flex-auto" loading={busy} disabled={!text.trim()}>
+          <Sparkles className="size-4" />
+          Fill in filters
+        </Button>
+      </div>
+      {note && <p className="mt-2 text-sm text-pretty text-muted-foreground">{note}</p>}
+    </form>
+  );
+}
+
 function DirectorySearch({
   projectId,
   operator,
@@ -198,6 +241,17 @@ function DirectorySearch({
     turnPage(1);
     setOpen({ id: s.id, since: s.new_since });
   };
+  const fill = (f: DescribedFilters["filters"]) => {
+    setQ(f.q ?? "");
+    setCountry(f.country ?? "");
+    setCity(f.city ?? "");
+    setCategory(f.category?.replaceAll("_", " ") ?? "");
+    setHasEmail(f.has_email);
+    setHasPhone(f.has_phone);
+    setTech(f.tech ?? "");
+    turnPage(1);
+    setOpen(null);
+  };
   const pageDomains = data?.items.map((c) => c.domain) ?? [];
   const allPicked = pageDomains.length > 0 && pageDomains.every((d) => picked.has(d));
 
@@ -233,6 +287,7 @@ function DirectorySearch({
         <SavedSearches searches={saved} openId={open?.id} onOpen={openSearch} onEdit={(search) => setEditing({ search })} />
       )}
       <Card className="overflow-hidden">
+        <Describe onFill={fill} />
         {picked.size > 0 ? (
           <PickedBar
             projectId={projectId}

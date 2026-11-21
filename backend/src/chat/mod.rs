@@ -20,7 +20,7 @@ use crate::state::AppState;
 pub const WIDGET: &str = include_str!("widget.js");
 /// The longest visitor message, in characters.
 pub const MAX_LENGTH: usize = 1000;
-const MODEL: &str = "claude-haiku-5-5";
+pub(crate) const MODEL: &str = "claude-haiku-5-5";
 /// What one answer may cost before the CLI stops it. Each call holds this much of the monthly cap while it runs.
 const BUDGET_PER_ANSWER: f64 = 0.05;
 pub const ANSWER_HOLD_MICROS: i64 = (BUDGET_PER_ANSWER * 1_000_000.0) as i64;

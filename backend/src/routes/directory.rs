@@ -16,6 +16,7 @@ use super::util_input;
 use super::util_lead_import::{self, NewLead};
 use super::util_pagination::PageQuery;
 use crate::auth::Auth;
+use crate::company_filters::{self, Claude, Described};
 use crate::directory::{self, Country, Listing, Search};
 use crate::directory_queue::{self, DirectoryImport};
 use crate::error::{AppError, AppResult};
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/directory/companies", get(search))
         .route("/directory/countries", get(countries))
+        .route("/directory/filters", post(filters_from_text))
         .route("/directory/imports", get(imports).post(queue))
         .route("/projects/{id}/directory/add", post(add))
         .route("/projects/{id}/directory/people", post(find_people))
@@ -91,6 +93,16 @@ pub(super) async fn page_of(db: &PgPool, org_id: Uuid, q: &SearchQuery, page: &P
     let total = directory::count(db, &search, COUNT_CAP).await?;
     let items = directory::search(db, &search, page.limit(), page.offset()).await?;
     Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DescribeBody {
+    pub query: String,
+}
+
+/// The filters a sentence like "dentists in Leeds that list an email" stands for, for the page to fill in.
+async fn filters_from_text(State(state): State<AppState>, auth: Auth, Json(body): Json<DescribeBody>) -> AppResult<Json<Described>> {
+    Ok(Json(company_filters::describe(&state, &Claude, auth.org_id, &body.query).await?))
 }
 
 /// The countries that have companies, most companies first.

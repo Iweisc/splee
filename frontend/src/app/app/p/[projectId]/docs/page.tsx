@@ -280,6 +280,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["city", "optional city, any case"],
         ["category", "optional exact category, like dental_clinic"],
         ["has_email, has_phone", "optional true to keep only companies that list one"],
+        ["tech", "optional tool, like HubSpot, or tool category, like crm"],
         ["project_id", "optional project searching, so its dedup lists apply as well as the ones for every project"],
         ["include_hidden", "optional true to include the companies on your dedup lists"],
         ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
@@ -342,6 +343,25 @@ function endpoints(projectId: string): Endpoint[] {
       path: "/dedup/companies/6e1b…",
       summary: "Delete a dedup list and its domains. Those companies show up in searches again right away.",
       response: `{ "ok": true }`,
+    },
+    {
+      method: "POST",
+      path: "/companies/filters",
+      summary:
+        "Turn a description into the search's filters, to pass to GET /companies as they are. Splee only uses categories and countries the database has and tools it can detect, and note says what it couldn't turn into a filter, like company size. 30 an hour per organization, then 429 with Retry-After.",
+      body: `{ "query": "Dental clinics in Leeds that list an email and use Shopify, 10 to 50 staff" }`,
+      response: `{
+  "filters": {
+    "q": null,
+    "country": "GB",
+    "city": "Leeds",
+    "category": "dental_clinic",
+    "has_email": true,
+    "has_phone": false,
+    "tech": "Shopify"
+  },
+  "note": "Company size isn't a filter."
+}`,
     },
     {
       method: "POST",

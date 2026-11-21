@@ -13,6 +13,7 @@ mod calls;
 mod campaign_imports;
 mod chat;
 mod close_plans;
+mod company_filters;
 mod config;
 mod contests;
 mod crm;
