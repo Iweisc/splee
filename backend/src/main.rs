@@ -19,6 +19,7 @@ mod contests;
 mod crm;
 mod crypto;
 mod deal_desk;
+mod deal_rooms;
 mod deals;
 mod deliverability;
 mod dev;

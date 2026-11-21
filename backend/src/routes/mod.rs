@@ -40,6 +40,7 @@ mod one_on_ones;
 mod commissions;
 mod capacity;
 mod contests;
+mod deal_rooms;
 mod deal_desk;
 mod playbook;
 mod ramps;
@@ -159,6 +160,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(playbook::router())
         .merge(commissions::router())
         .merge(contests::router())
+        .merge(deal_rooms::router())
         .merge(capacity::router())
         .merge(deal_desk::router())
         .merge(ramps::router())

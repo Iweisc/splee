@@ -3402,6 +3402,62 @@ export interface PublicReferralPage {
   booking_url: string | null;
 }
 
+/** A deal's page for the buyer. See backend/src/deal_rooms.rs. */
+export interface DealRoomContent {
+  headline: string;
+  intro: string;
+  proof: { material_id: UUID; why: string }[];
+}
+
+export interface DealRoomProof {
+  material_id: UUID;
+  title: string;
+  content: string;
+  why: string;
+}
+
+export interface DealRoomQuestion {
+  id: UUID;
+  name: string;
+  question: string;
+  /** The agent's answer, for the team to check. */
+  draft: string;
+  /** What the team published. */
+  answer: string | null;
+  answered_at: string | null;
+  drafting: boolean;
+  created_at: string;
+}
+
+export interface DealRoom {
+  id: UUID;
+  deal_id: UUID;
+  token: string;
+  status: "writing" | "ready" | "failed";
+  room: DealRoomContent | null;
+  views: number;
+  first_viewed_at: string | null;
+  last_viewed_at: string | null;
+  url: string;
+  proof: DealRoomProof[];
+  questions: DealRoomQuestion[];
+}
+
+export interface PublicDealRoom {
+  room: DealRoomContent;
+  first_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  sender_name: string;
+  booking_url: string | null;
+  plan: { goal: string; url: string; steps: ClosePlanStep[] } | null;
+  proposal: { title: string; url: string; held: boolean; accepted: boolean } | null;
+  proof: DealRoomProof[];
+  questions: { name: string; question: string; answer: string; answered_at: string | null }[];
+}
+
 /** A case study the agent drafted from a won deal. The sections never name the customer. See backend/src/agent/stories.rs. */
 export interface StoryDraft {
   title: string;

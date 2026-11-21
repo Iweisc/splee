@@ -14,6 +14,7 @@ mod channels;
 pub mod close_plans;
 pub mod committee;
 pub mod deal_desk;
+pub mod deal_rooms;
 mod directory;
 mod places;
 mod discourse;
@@ -117,6 +118,8 @@ pub mod kind {
     pub const TEAM_BRIEF: &str = "team_brief";
     pub const DEAL_DESK: &str = "deal_desk";
     pub const CUSTOMER_STORY: &str = "customer_story";
+    pub const DEAL_ROOM: &str = "deal_room";
+    pub const ROOM_ANSWER: &str = "room_answer";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -422,6 +425,8 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::TEAM_BRIEF => team_brief::run(ctx).await,
         kind::DEAL_DESK => deal_desk::run(ctx).await,
         kind::CUSTOMER_STORY => stories::run(ctx).await,
+        kind::DEAL_ROOM => deal_rooms::write(ctx).await,
+        kind::ROOM_ANSWER => deal_rooms::answer(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }
