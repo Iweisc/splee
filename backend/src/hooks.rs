@@ -758,8 +758,8 @@ pub fn announce_cancelled(state: &AppState, lead: &Lead, was: Option<Ts>) {
     });
 }
 
-/// Tells each project's chat and webhook about inbox reminders that just came due. A reminder more than a day overdue is skipped, so
-/// one set before this ran, or while the server was down, doesn't page anyone.
+/// Tells each project's chat and webhook, and the browsers of whoever the lead belongs to, about inbox reminders that just came
+/// due. A reminder more than a day overdue is skipped, so one set before this ran, or while the server was down, doesn't page anyone.
 pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {
     for lead in claim_due_reminders(&state.db).await? {
         let project: String =
@@ -770,6 +770,7 @@ pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {
         let notes = lead.notes.trim();
         let alert = ChatAlert { label: "Follow-up due", summary: &summary, quote: (!notes.is_empty()).then_some(notes), link: &link, link_text: "Open the conversation" };
         post_chat(&state.db, lead.project_id, &alert).await;
+        crate::push::spawn_lead_alert(state, &lead, crate::push::Pref::Always, crate::push::reminder(&state.cfg.public_url, &lead, &project));
         let reminder = json!({"at": lead.remind_at, "notes": lead.notes});
         send_lead_event(state, lead.project_id, "follow_up_due", &lead, Some(("reminder", reminder))).await;
     }

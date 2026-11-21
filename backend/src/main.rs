@@ -56,6 +56,7 @@ mod places;
 mod plays;
 mod porkbun;
 mod proposals;
+mod push;
 mod rate_limit;
 mod reddit;
 mod reports;

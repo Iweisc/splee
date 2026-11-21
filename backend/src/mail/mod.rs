@@ -70,6 +70,8 @@ pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::hooks::announce_due_reminders(&s), "reminder alerts").await });
     let s = state.clone();
+    tokio::spawn(async move { every(Duration::from_secs(900), || crate::push::approval_digests(&s), "approval pushes").await });
+    let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::rest_hooks::post_new_leads(&s), "new lead hooks").await });
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(600), || crate::tracking::recheck_hosts(&s), "tracking hosts").await });

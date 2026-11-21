@@ -203,6 +203,10 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
         hooks::send_lead_event(&ctx.state, t.project.id, "hot_lead", &t.lead, Some(("reply", reply("hot")))).await;
         notify_hot(&ctx.state, t, &verdict.reason).await;
     }
+    if verdict.classification == "question" {
+        let push = crate::push::reply(&ctx.state.cfg.public_url, &t.lead, &t.project.name, &t.inbound.body, false);
+        crate::push::spawn_lead_alert(&ctx.state, &t.lead, crate::push::Pref::HotLeads, push);
+    }
     if matches!(verdict.classification.as_str(), "hot" | "question") {
         let mode: Option<String> = sqlx::query_scalar("select auto_reply_mode from project_settings where project_id = $1")
             .bind(t.project.id)
@@ -220,7 +224,7 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
     Ok(())
 }
 
-/// Chat, CRM and email alerts for a hot lead. The webhook gets it as a lead event. Failures are logged, they never fail the run.
+/// Chat, push, CRM and email alerts for a hot lead. The webhook gets it as a lead event. Failures are logged, they never fail the run.
 async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     let link = hooks::lead_url(&state.cfg.public_url, t.project.id, t.lead.id);
     let who = format!("{} ({})", t.lead.full_name, t.lead.company_name);
@@ -228,6 +232,8 @@ async fn notify_hot(state: &AppState, t: &Thread, reason: &str) {
     let summary = format!("{who} replied to {}", t.project.name);
     let alert = hooks::ChatAlert { label: "Hot lead", summary: &summary, quote: Some(&snippet), link: &link, link_text: "Open the inbox" };
     hooks::post_chat(&state.db, t.project.id, &alert).await;
+    let push = crate::push::reply(&state.cfg.public_url, &t.lead, &t.project.name, &t.inbound.body, true);
+    crate::push::spawn_lead_alert(state, &t.lead, crate::push::Pref::HotLeads, push);
     let note = format!("Hot lead in Splee. They replied:\n\n{}\n\nWhy it's hot: {reason}\n{link}", t.inbound.body.trim());
     crate::crm::sync(state, t.project.id, &t.lead, &note).await;
 

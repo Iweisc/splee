@@ -148,6 +148,17 @@ export interface NotificationPrefs {
   weekly_report: boolean;
 }
 
+/** A browser the member turned push notifications on in. The server keeps its endpoint and keys to itself. */
+export interface PushDevice {
+  id: UUID;
+  /** Like "Chrome on macOS". */
+  user_agent: string;
+  created_at: Ts;
+  last_success_at: Ts | null;
+  /** Sends in a row that didn't go through. */
+  failures: number;
+}
+
 /** The organization's Slack workspace and the channel each project posts to. `available` is false without a Slack app on the server. */
 export interface SlackStatus {
   available: boolean;

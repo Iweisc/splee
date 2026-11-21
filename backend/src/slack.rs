@@ -453,6 +453,7 @@ pub fn mark_done(blocks: &Value, block_id: &str, note: &str) -> Value {
 }
 
 /// The emails a digest counts and Approve all approves: first emails and follow-ups the writer drafted, in project $1.
+/// Keep in sync with push::WAITING.
 pub const WAITING: &str = "e.project_id = $1 and e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status = 'draft'";
 
 /// The hot reply message for a lead's latest reply, as it stands now: the draft if one waits, or the answer that went out

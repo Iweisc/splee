@@ -34,6 +34,8 @@ k256 = { version = "0.14.0", default-features = false, features = ["schnorr", "s
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1", "tokio1-rustls", "builder", "smtp-transport", "hostname", "ring", "rustls-native-certs"] }
 mail-parser = "0.11.9"
 reqwest = { version = "0.13.5", default-features = false, features = ["form", "gzip", "json", "multipart", "rustls"] }
+# P-256 ECDH, ECDSA, HKDF and AES-GCM for browser push (push/mod.rs). Already in the tree through rustls.
+ring = "0.17.14"
 rrule = "0.14.0"
 # Signs the data export's requests to S3-compatible storage (exports/s3.rs). Sans-IO, so reqwest sends them.
 rusty-s3 = "0.11.0"
