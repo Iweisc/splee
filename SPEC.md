@@ -673,6 +673,20 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | GET | /discount-approvals | | asks waiting on open deals, the oldest first, for owners and admins, and none for everyone else. Each is `{id, deal_id, project_id, lead_name, company, discount_pct, discount_limit_pct, reason, asked_by, created_at, read, read_status, status, decided_by, decided_at, note}` |
 | POST | /discount-approvals/:id | `{approve, note?}` | the deal's proposal. Owners and admins only. 400 once decided or replaced |
 
+### Deal rooms
+
+`deal_rooms.rs`, `agent/deal_rooms.rs`, `routes/deal_rooms.rs`, migration 0192, the Deal room section in an open deal's window, and the buyer's page at PUBLIC_URL/room/{token}. A deal has at most one room (`deal_rooms`), with a 20-character token that stays the same when it's written again. The agent (`deal_room`) writes `room`, `{headline, intro, proof: [{material_id, why}]}`, from the conversation, picking up to 3 of the project's 20 newest case studies from Materials, each with why it fits them. The page shows nothing until the room is written, or once the deal is lost. It shows the welcome, both companies, the close plan once it has a goal, the proposal once it has a title (held or accepted says so), the picked case studies, the answered questions and the booking link of the last email sent to the lead. The buyer asks a question with their name (`deal_room_questions`), which posts to the project's chats and has the agent (`room_answer`) draft an answer from Materials, the plan, the proposal's prices when the buyer can accept it, earlier answers and the conversation, saying it'll find out rather than guess. The team edits and publishes it, and only published answers show on the page. The page reports a load from the browser, except with `?preview=1`, which the app's Open link adds and which hides the question form. The first load posts to the project's chats. Loads are limited to 30 a minute per address and questions to 5.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /deals/:id/room | | `{id, deal_id, token, url, status, room, views, first_viewed_at, last_viewed_at, proof: [{material_id, title, content, why}], questions: [{id, name, question, draft, answer, answered_at, drafting, created_at}]}` or null. `status` is `writing`, `ready` or `failed` |
+| POST | /deals/:id/room | | the same, with the agent writing it now. 400 for a closed deal |
+| POST | /room-questions/:id | `{answer}` | the room, with the answer on the page, or taken down when it's empty. 400 past 4,000 characters |
+| DELETE | /room-questions/:id | | the room, without the question |
+| GET | /room-pages/:token | | public. `{room, first_name, company, company_domain, from_name, from_domain, sender_name, booking_url, plan: {goal, url, steps}, proposal: {title, url, held, accepted}, proof, questions: [{name, question, answer, answered_at}]}`. 404 before it's written or once the deal is lost |
+| POST | /room-pages/:token/view | | public. 204 |
+| POST | /room-pages/:token/questions | `{name, question}` | public. 204. 400 without a name or question, or past 120 and 2,000 characters. 429 past 5 a minute |
+
 ### Deal health
 
 `agent/health.rs`, migration 0149, the rating on pipeline cards, the Health section in an open deal's window and the Rate deal health switch on the Autopilot page (`project_settings.deal_health`, on by default). Every hour, up to 50 open deals in projects with the switch on get a `deal_health` row and run: deals never rated, deals whose last touch (`deals::LAST_TOUCH`) is newer than their latest rating, and deals rated more than 3 days ago, never while one is being written. Deals carry `health` (`{health, likelihood, why, next_step, created_at}`, the latest written rating, or null) and `health_writing`, whether a rating is running, the first one included. The board's Weighted figure uses the agent's likelihood for rated open deals and the stage's probability for the rest, once any open deal is rated.
