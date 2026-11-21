@@ -1,85 +1,148 @@
 "use client";
 
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { MicroLabel } from "@/components/app/work/states";
-import { NumberInput } from "@/components/ui/form";
+import { Field, NumberInput, Switch } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { todayLimit } from "@/lib/mailbox";
-import type { Mailbox } from "@/lib/types";
-import { num } from "@/lib/utils";
+import type { Mailbox, MonthlyCap, ProjectSettings } from "@/lib/types";
+import { money, num } from "@/lib/utils";
 
 const MIN = 1;
 const MAX = 5000;
 // Most projects sit well under this, so the slider stays precise. Larger limits go in the number box.
 const SLIDER_MAX = 1000;
+const CAP_USD = { min: 1, max: 1_000_000, start: 100 };
+
+function problem(s: ProjectSettings) {
+  if (s.daily_email_limit < MIN || s.daily_email_limit > MAX) return `Daily limit must be between ${MIN} and ${num(MAX)}`;
+  const cap = s.monthly_cap_micros;
+  if (cap !== null && !(cap >= CAP_USD.min * 1_000_000 && cap <= CAP_USD.max * 1_000_000)) {
+    return `The monthly cap must be between $${CAP_USD.min} and ${money(CAP_USD.max * 1_000_000, { cents: false })}`;
+  }
+  return null;
+}
 
 export default function DailyLimitPage() {
+  const { projectId } = useParams<{ projectId: string }>();
   const { data: mailboxes, error: mailboxesError } = useSWR<Mailbox[]>("/mailboxes", fetcher);
+  const { data: cap } = useSWR<MonthlyCap>(`/projects/${projectId}/monthly-cap`, fetcher);
   const capacity = mailboxes?.filter((m) => m.status === "active").reduce((sum, m) => sum + todayLimit(m), 0);
+  // Without a price on any mailbox, sent emails cost nothing here and a cap never stops anything.
+  const unpriced = mailboxes !== undefined && mailboxes.every((m) => m.cost_per_email_micros === 0);
 
   return (
-    <ProjectSettingsPage
-      title="Daily limit"
-      description="How many emails this project may send per day."
-      problem={(s) => (s.daily_email_limit < MIN || s.daily_email_limit > MAX ? `Daily limit must be between ${MIN} and ${num(MAX)}` : null)}
-    >
+    <ProjectSettingsPage title="Daily limit" description="How many emails this project may send per day." problem={problem}>
       {(s, update) => (
-        <Section
-          title="Emails per day"
-          description="Cold emails stop for the day once this project has sent this many. Replies to leads count toward it but are never held back."
-        >
-          <div className="flex items-center gap-4">
-            <input
-              type="range"
-              min={MIN}
-              max={SLIDER_MAX}
-              step={1}
-              value={Math.min(Math.max(s.daily_email_limit, MIN), SLIDER_MAX)}
-              onChange={(e) => update({ daily_email_limit: Number(e.target.value) })}
-              className="h-2 flex-1 cursor-pointer accent-black"
-              aria-label="Daily limit"
-            />
-            <div className="relative w-32">
-              <NumberInput
+        <>
+          <Section
+            title="Emails per day"
+            description="Cold emails stop for the day once this project has sent this many. Replies to leads count toward it but are never held back."
+          >
+            <div className="flex items-center gap-4">
+              <input
+                type="range"
                 min={MIN}
-                max={MAX}
+                max={SLIDER_MAX}
                 step={1}
-                value={s.daily_email_limit}
-                onValueChange={(n) => update({ daily_email_limit: Math.round(n) })}
-                className="pr-12 tabular-nums"
-                aria-label="Emails per day"
+                value={Math.min(Math.max(s.daily_email_limit, MIN), SLIDER_MAX)}
+                onChange={(e) => update({ daily_email_limit: Number(e.target.value) })}
+                className="h-2 flex-1 cursor-pointer accent-black"
+                aria-label="Daily limit"
               />
-              <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-muted-foreground">/day</span>
+              <div className="relative w-32">
+                <NumberInput
+                  min={MIN}
+                  max={MAX}
+                  step={1}
+                  value={s.daily_email_limit}
+                  onValueChange={(n) => update({ daily_email_limit: Math.round(n) })}
+                  className="pr-12 tabular-nums"
+                  aria-label="Emails per day"
+                />
+                <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-muted-foreground">/day</span>
+              </div>
             </div>
-          </div>
-          <div className="mt-2 flex justify-between font-mono text-[11px] text-muted-foreground">
-            <span>{MIN}</span>
-            <span>{num(SLIDER_MAX)}</span>
-          </div>
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <Stat label="Per 30 days" value={`up to ${num(s.daily_email_limit * 30)}`} />
-            <Stat label="Your active mailboxes allow" value={capacity !== undefined ? `${num(capacity)}/day` : mailboxesError ? "Couldn't load" : null} />
-          </div>
-          {capacity === 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Nothing sends until you{" "}
-              <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
-                connect a mailbox
-              </Link>
-              .
-            </p>
-          ) : (
-            capacity !== undefined &&
-            capacity < s.daily_email_limit && (
+            <div className="mt-2 flex justify-between font-mono text-[11px] text-muted-foreground">
+              <span>{MIN}</span>
+              <span>{num(SLIDER_MAX)}</span>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <Stat label="Per 30 days" value={`up to ${num(s.daily_email_limit * 30)}`} />
+              <Stat
+                label="Your active mailboxes allow"
+                value={capacity !== undefined ? `${num(capacity)}/day` : mailboxesError ? "Couldn't load" : null}
+              />
+            </div>
+            {capacity === 0 ? (
               <p className="mt-3 text-sm text-muted-foreground">
-                Your mailboxes&apos; own limits are lower, so this project will send at most {num(capacity)} a day, shared with your other projects.
+                Nothing sends until you{" "}
+                <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
+                  connect a mailbox
+                </Link>
+                .
               </p>
-            )
-          )}
-        </Section>
+            ) : (
+              capacity !== undefined &&
+              capacity < s.daily_email_limit && (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Your mailboxes&apos; own limits are lower, so this project will send at most {num(capacity)} a day, shared with your other projects.
+                </p>
+              )
+            )}
+          </Section>
+
+          <Section
+            title="Monthly cap"
+            description="The most this project may spend on emails in a calendar month (UTC), at each mailbox's price per email. Once it's reached, first emails and follow-ups wait for the 1st. Replies to leads still go out."
+            actions={
+              <Switch
+                checked={s.monthly_cap_micros !== null}
+                onChange={(on) => update({ monthly_cap_micros: on ? CAP_USD.start * 1_000_000 : null })}
+                label="Monthly cap"
+              />
+            }
+          >
+            {s.monthly_cap_micros !== null && (
+              <>
+                <Field label="Email spend" hint={cap ? `${money(cap.spent_this_month_micros)} spent so far this month.` : "Sent emails this month."}>
+                  <div className="relative w-48">
+                    <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                    <NumberInput
+                      min={CAP_USD.min}
+                      max={CAP_USD.max}
+                      step={1}
+                      value={s.monthly_cap_micros / 1_000_000}
+                      onValueChange={(usd) => update({ monthly_cap_micros: Math.round(usd * 1_000_000) })}
+                      className="pr-16 pl-7 tabular-nums"
+                      aria-label="Monthly cap"
+                    />
+                    <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-muted-foreground">/month</span>
+                  </div>
+                </Field>
+                {cap?.reached && cap.resumes_at && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Reached. First emails and follow-ups wait until{" "}
+                    {new Date(cap.resumes_at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}, or raise the cap.
+                  </p>
+                )}
+                {unpriced && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Your mailboxes have no price per email, so nothing counts toward the cap. Set one on{" "}
+                    <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
+                      each mailbox
+                    </Link>
+                    .
+                  </p>
+                )}
+              </>
+            )}
+          </Section>
+        </>
       )}
     </ProjectSettingsPage>
   );

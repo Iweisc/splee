@@ -46,7 +46,9 @@ const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email 
 list_projects, then list_campaigns or create_campaign, search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and unarchive_campaign brings it back, \
-and update_project_controls sets the project's sending, limits, schedule, autopilot and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
+and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
+checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back. \
+find_lookalikes and add_lookalikes find companies like the user's \
 customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. get_analytics says which \
@@ -481,6 +483,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
             value(v1::update_project(st(), auth, id(a, "project_id")?, Json(body)).await?)
         }
         .await,
+        "get_monthly_cap" => async { value(v1::project_monthly_cap(st(), auth, id(a, "project_id")?).await?) }.await,
         "list_hot_leads" => async { value(v1::hot_leads(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "get_inbox_changes" => async { value(v1::inbox_changes(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "assign_lead" => async {
@@ -1436,9 +1439,20 @@ fn tools() -> Vec<Value> {
                 "autopilot_auto_send": { "type": "boolean", "description": "Optional. Autopilot's emails go out without approval" },
                 "review_window_hours": { "type": ["integer", "null"], "minimum": 1, "maximum": 72,
                                          "description": "Optional. Drafts nobody reviewed go out after this many hours. null keeps them waiting" },
+                "monthly_cap_micros": { "type": ["integer", "null"], "minimum": 1000000, "maximum": 1_000_000_000_000_i64,
+                                        "description": "Optional. Email spend a month in micro-dollars. null for no cap" },
             }),
             &["project_id"],
             control,
+        ),
+        tool(
+            "get_monthly_cap",
+            "Get monthly cap",
+            "The project's cap on email spend a calendar month (UTC), what its sent emails cost since the 1st, and whether first emails \
+             and follow-ups are waiting for next month because it was reached. Replies always go out.",
+            json!({ "project_id": project }),
+            &["project_id"],
+            read.clone(),
         ),
         tool(
             "list_hot_leads",
@@ -1794,7 +1808,7 @@ mod tests {
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",
-                     "list_hot_leads", "get_inbox_changes", "find_companies_by_domains",
+                     "list_hot_leads", "get_inbox_changes", "find_companies_by_domains", "get_monthly_cap",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",

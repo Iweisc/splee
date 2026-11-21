@@ -38,7 +38,7 @@ pub fn month_start(now: Ts) -> Ts {
     Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0).single().expect("the first of a month at midnight UTC exists")
 }
 
-fn next_month(now: Ts) -> Ts {
+pub fn next_month(now: Ts) -> Ts {
     let (year, month) = if now.month() == 12 { (now.year() + 1, 1) } else { (now.year(), now.month() + 1) };
     Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0).single().expect("the first of a month at midnight UTC exists")
 }

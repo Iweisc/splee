@@ -54,6 +54,7 @@ use crate::lookalikes::{self, Lookalikes};
 use crate::models::{
     AgentRun, DedupList, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, Suppression, SuppressionList, Ts,
 };
+use crate::monthly_cap::{self, Cap};
 use crate::ownership;
 use crate::state::AppState;
 
@@ -101,6 +102,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/projects/{id}/email-events", get(email_events))
         .route("/v1/projects/{id}/stats", get(project_stats))
         .route("/v1/projects/{id}/analytics", get(project_analytics))
+        .route("/v1/projects/{id}/monthly-cap", get(project_monthly_cap))
         .route("/v1/suppressions", get(list_suppressions).post(add_suppressions))
         .route("/v1/suppression-lists", get(list_suppression_lists))
         .route("/v1/suppression-lists/people", post(add_people_to_list))
@@ -625,6 +627,8 @@ pub(super) struct ProjectControls {
     autopilot_auto_send: bool,
     /// Hours a draft waits for review before it goes out on its own, or null when drafts wait for a person.
     review_window_hours: Option<i32>,
+    /// Email spend a calendar month (UTC) may reach before first emails and follow-ups wait for the 1st, or null for no cap.
+    monthly_cap_micros: Option<i64>,
 }
 
 impl From<ProjectSettings> for ProjectControls {
@@ -643,8 +647,15 @@ impl From<ProjectSettings> for ProjectControls {
             autopilot_lead_cap: s.autopilot_lead_cap,
             autopilot_auto_send: s.autopilot_auto_send,
             review_window_hours: s.review_window_hours,
+            monthly_cap_micros: s.monthly_cap_micros,
         }
     }
+}
+
+/// The cap PATCH /v1/projects/{id} sets as monthly_cap_micros, and what the project's emails cost since the 1st.
+pub(super) async fn project_monthly_cap(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Cap>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    Ok(Json(monthly_cap::status(&state.db, id, chrono::Utc::now()).await?))
 }
 
 /// The project's sending controls, with the settings page's checks, and its Start and Pause sending buttons as `sending`.
@@ -2384,6 +2395,15 @@ mod tests {
         assert_eq!((controls["sending"].clone(), controls["review_window_hours"].clone()), (json!(false), Value::Null));
         let paused: bool = sqlx::query_scalar("select paused from project_settings where project_id = $1").bind(a).fetch_one(&db).await.unwrap();
         assert!(paused);
+
+        // The monthly cap is set with the controls and read with what the month's emails cost.
+        assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": 500_000 })).await.0, 400, "under $1");
+        assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": 2_000_000 })).await.1["monthly_cap_micros"], 2_000_000);
+        let cap = format!("{project}/monthly-cap");
+        let want = json!({ "project_id": a, "monthly_cap_micros": 2_000_000, "spent_this_month_micros": 0, "reached": false, "resumes_at": null });
+        assert_eq!(api.get(&cap).await, (200, want));
+        assert_eq!(api.get(&format!("/v1/projects/{b}/monthly-cap")).await.0, 404);
+        assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": null })).await.1["monthly_cap_micros"], Value::Null);
 
         // The campaign PATCH refuses fields it doesn't take too, rather than ignoring them.
         let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "name": "Renamed" })).await;

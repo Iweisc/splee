@@ -251,6 +251,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["timezone, send_days, send_start_hour, send_end_hour", "the send window, days 1 (Monday) to 7 (Sunday)"],
         ["autopilot, autopilot_budget_micros, autopilot_lead_cap, autopilot_auto_send", "autopilot on or off, its monthly Claude budget and new-lead cap, and whether its emails skip approval"],
         ["review_window_hours", "1 to 72, or null so drafts wait for a person"],
+        ["monthly_cap_micros", "$1 to $1,000,000 of email spend a month, or null for no cap"],
       ],
       body: `{ "daily_email_limit": 80, "autopilot": true, "autopilot_budget_micros": 50000000 }`,
       response: `{
@@ -266,7 +267,21 @@ function endpoints(projectId: string): Endpoint[] {
   "autopilot_budget_micros": 50000000,
   "autopilot_lead_cap": 500,
   "autopilot_auto_send": false,
-  "review_window_hours": null
+  "review_window_hours": null,
+  "monthly_cap_micros": null
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/monthly-cap`,
+      summary:
+        "The monthly cap and what the project's sent emails cost since the 1st (UTC), at each mailbox's price per email. Once spend reaches the cap, first emails and follow-ups wait until resumes_at, the 1st of next month, or a higher cap. Replies to leads still go out.",
+      response: `{
+  "project_id": "${projectId}",
+  "monthly_cap_micros": 200000000,
+  "spent_this_month_micros": 200450000,
+  "reached": true,
+  "resumes_at": "2026-12-01T00:00:00Z"
 }`,
     },
     {
