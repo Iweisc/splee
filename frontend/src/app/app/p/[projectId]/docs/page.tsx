@@ -1,13 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { useParams } from "next/navigation";
-import { KeyRound } from "lucide-react";
+import { KeyRound, SearchX } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
+import { SearchField } from "@/components/app/work/search-field";
 import { MicroLabel } from "@/components/app/work/states";
 import { LinkButton } from "@/components/ui/button";
-import { Badge, type BadgeTone } from "@/components/ui/misc";
+import { Badge, type BadgeTone, Card, EmptyState } from "@/components/ui/misc";
 import { useOrigin } from "@/hooks/use-origin";
 
 interface Endpoint {
@@ -1931,9 +1933,84 @@ function EndpointSection({ e, base }: { e: Endpoint; base: string }) {
   );
 }
 
+/** How to call the API, above the endpoints. */
+function Guides({ base }: { base: string }) {
+  return (
+    <>
+      <Section title="Authentication" description="Send an API key from the API keys page as a Bearer token. Keys belong to the organization and see all of its projects.">
+        <div className="space-y-3 text-sm">
+          <div>
+            <MicroLabel>Base URL</MicroLabel>
+            <code className="mt-1 block font-mono">{base}</code>
+          </div>
+          <CodeBlock label="Header" code={"Authorization: Bearer splee_…"} />
+          <p className="text-muted-foreground">
+            Requests and responses are JSON. Errors return a status code and <code className="font-mono">{`{ "error": "message" }`}</code>. Paginated lists
+            return <code className="font-mono">{`{ "items": [...], "total": n }`}</code>.
+          </p>
+        </div>
+      </Section>
+
+      <Section
+        title="Retries"
+        description="Send an Idempotency-Key with a POST, PATCH or DELETE and retrying it after a timeout is safe: Splee runs it once and answers every repeat with the first response for 24 hours."
+      >
+        <div className="space-y-3 text-sm">
+          <CodeBlock label="Header" code={"Idempotency-Key: 4f9c2a7e-new-campaign"} />
+          <p className="text-muted-foreground">
+            Use a new key, up to 255 characters, for each new request. A replayed response carries{" "}
+            <code className="font-mono">Idempotent-Replayed: true</code>. The same key with a different method, path or body is 422, and a repeat
+            while the first request still runs is 409. Server errors aren&apos;t kept, so a retry after a 5xx runs again.
+          </p>
+        </div>
+      </Section>
+
+      <Section
+        title="Rate limits"
+        description="Each organization gets 10,000 requests an hour and 150 at once, across the API and the MCP server."
+      >
+        <p className="text-sm text-muted-foreground">
+          Every response carries <code className="font-mono">RateLimit-Limit</code>, <code className="font-mono">RateLimit-Remaining</code> and{" "}
+          <code className="font-mono">RateLimit-Reset</code>, the seconds until the hour starts again. Past either limit the answer is 429 with{" "}
+          <code className="font-mono">Retry-After</code> in seconds.
+        </p>
+      </Section>
+    </>
+  );
+}
+
+function HooksIntro() {
+  return (
+    <Section
+      title="Subscriptions for Zapier, Make and n8n"
+      description="Subscribe a URL to a lead event and Splee posts each one to it as it happens, with the same JSON and signature as the webhooks on the Integrations page. A post that gets 410 Gone turns the subscription off, and revoking the key stops all of its subscriptions."
+    >
+      <MicroLabel>Events</MicroLabel>
+      <ul className="mt-2 space-y-1 text-sm">
+        {HOOK_EVENTS.map(([event, description]) => (
+          <li key={event}>
+            <code className="font-mono">{event}</code> <span className="text-muted-foreground">{description}</span>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+/** Whether the endpoint's method, path and summary hold every word of the search, in any order. */
+function matches(e: Endpoint, words: string[]) {
+  const text = `${e.method} ${e.path} ${e.summary}`.toLowerCase();
+  return words.every((w) => text.includes(w));
+}
+
 export default function DocsPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const base = `${useOrigin()}/api/v1`;
+  const [query, setQuery] = useState("");
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const finding = words.length > 0;
+  const found = endpoints(projectId).filter((e) => matches(e, words));
+  const foundHooks = hookEndpoints(projectId).filter((e) => matches(e, words));
 
   return (
     <>
@@ -1948,63 +2025,21 @@ export default function DocsPage() {
       />
       <PageBody>
         <SettingsColumn>
-          <Section title="Authentication" description="Send an API key from the API keys page as a Bearer token. Keys belong to the organization and see all of its projects.">
-            <div className="space-y-3 text-sm">
-              <div>
-                <MicroLabel>Base URL</MicroLabel>
-                <code className="mt-1 block font-mono">{base}</code>
-              </div>
-              <CodeBlock label="Header" code={"Authorization: Bearer splee_…"} />
-              <p className="text-muted-foreground">
-                Requests and responses are JSON. Errors return a status code and <code className="font-mono">{`{ "error": "message" }`}</code>. Paginated lists
-                return <code className="font-mono">{`{ "items": [...], "total": n }`}</code>.
-              </p>
-            </div>
-          </Section>
-
-          <Section
-            title="Retries"
-            description="Send an Idempotency-Key with a POST, PATCH or DELETE and retrying it after a timeout is safe: Splee runs it once and answers every repeat with the first response for 24 hours."
-          >
-            <div className="space-y-3 text-sm">
-              <CodeBlock label="Header" code={"Idempotency-Key: 4f9c2a7e-new-campaign"} />
-              <p className="text-muted-foreground">
-                Use a new key, up to 255 characters, for each new request. A replayed response carries{" "}
-                <code className="font-mono">Idempotent-Replayed: true</code>. The same key with a different method, path or body is 422, and a repeat
-                while the first request still runs is 409. Server errors aren&apos;t kept, so a retry after a 5xx runs again.
-              </p>
-            </div>
-          </Section>
-
-          <Section
-            title="Rate limits"
-            description="Each organization gets 10,000 requests an hour and 150 at once, across the API and the MCP server."
-          >
-            <p className="text-sm text-muted-foreground">
-              Every response carries <code className="font-mono">RateLimit-Limit</code>, <code className="font-mono">RateLimit-Remaining</code> and{" "}
-              <code className="font-mono">RateLimit-Reset</code>, the seconds until the hour starts again. Past either limit the answer is 429 with{" "}
-              <code className="font-mono">Retry-After</code> in seconds.
-            </p>
-          </Section>
-
-          {endpoints(projectId).map((e) => (
+          <SearchField value={query} onChange={setQuery} placeholder="Find an endpoint, like deals or reply" label="Find an endpoint" />
+          {/* While finding, only the matching endpoints show, so the guides don't push the results down. */}
+          {finding && found.length + foundHooks.length === 0 && (
+            <Card>
+              <EmptyState icon={<SearchX className="size-5" />} title="No endpoint matches">
+                Try one word from a path, like leads or campaigns.
+              </EmptyState>
+            </Card>
+          )}
+          {!finding && <Guides base={base} />}
+          {found.map((e) => (
             <EndpointSection key={e.method + e.path} e={e} base={base} />
           ))}
-
-          <Section
-            title="Subscriptions for Zapier, Make and n8n"
-            description="Subscribe a URL to a lead event and Splee posts each one to it as it happens, with the same JSON and signature as the webhooks on the Integrations page. A post that gets 410 Gone turns the subscription off, and revoking the key stops all of its subscriptions."
-          >
-            <MicroLabel>Events</MicroLabel>
-            <ul className="mt-2 space-y-1 text-sm">
-              {HOOK_EVENTS.map(([event, description]) => (
-                <li key={event}>
-                  <code className="font-mono">{event}</code> <span className="text-muted-foreground">{description}</span>
-                </li>
-              ))}
-            </ul>
-          </Section>
-          {hookEndpoints(projectId).map((e) => (
+          {!finding && <HooksIntro />}
+          {foundHooks.map((e) => (
             <EndpointSection key={e.method + e.path} e={e} base={base} />
           ))}
         </SettingsColumn>
