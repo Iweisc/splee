@@ -363,8 +363,8 @@ pub(crate) async fn finders(db: &PgPool, secret: &str, project_id: Uuid) -> anyh
     Ok(finders)
 }
 
-pub(crate) enum Asked {
-    Answer(Search),
+pub(crate) enum Asked<T = Search> {
+    Answer(T),
     /// Out of credits or past its rate limit, which is the finder's problem rather than the lead's.
     Paused(String),
     /// Paused by another search since this one loaded its finders, so it wasn't called.
@@ -372,10 +372,18 @@ pub(crate) enum Asked {
     Failed(anyhow::Error),
 }
 
-/// Asks one finder and shows how it went on the integrations page. A finder that says it's out of credits or past its rate
-/// limit is paused on its row, so every search skips it until then. The pause is read again right before the call, since
-/// searches running side by side load their finders before another one's call pauses it.
+/// Asks one finder for a person's address at `domain`.
 pub(crate) async fn ask(db: &PgPool, project_id: Uuid, finder: &Service<Finder>, person: &Person<'_>, domain: &str, phones: bool) -> Asked {
+    ask_with(db, project_id, finder, |service, key| service.find(key, person, domain, phones)).await
+}
+
+/// Makes one finder `call` with its key and shows how it went on the integrations page. A finder that says it's out of
+/// credits or past its rate limit is paused on its row, so every search skips it until then. The pause is read again right
+/// before the call, since searches running side by side load their finders before another one's call pauses it.
+pub(crate) async fn ask_with<'a, T, F>(db: &PgPool, project_id: Uuid, finder: &'a Service<Finder>, call: impl FnOnce(Finder, &'a str) -> F) -> Asked<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
     let Service { service, key, enc, alert } = finder;
     let label = service.label();
     if matches!(alert, Alert::Finder) {
@@ -387,12 +395,12 @@ pub(crate) async fn ask(db: &PgPool, project_id: Uuid, finder: &Service<Finder>,
                 .await
                 .map(Option::flatten);
         match paused {
-            Ok(Some(true)) => return Asked::Skipped(format!("{label}: it's out of credits or past its rate limit, so it's skipped for now")),
+            Ok(Some(true)) => return Asked::Skipped(skipped(label)),
             Ok(_) => {}
             Err(e) => return Asked::Failed(e.into()),
         }
     }
-    let result = service.find(key, person, domain, phones).await;
+    let result = call(*service, key).await;
     // A Hunter key under Email verification shows only its failures there, like the sender's lookup.
     let shown = result.as_ref().map(|_| ()).map_err(|e| anyhow::anyhow!("{e:#}"));
     if matches!(alert, Alert::Finder) || shown.is_err() {
@@ -413,6 +421,11 @@ pub(crate) async fn ask(db: &PgPool, project_id: Uuid, finder: &Service<Finder>,
         tracing::warn!(error = %e, "couldn't pause the email finder");
     }
     Asked::Paused(format!("{label}: {e:#}"))
+}
+
+/// Why a paused finder wasn't asked.
+pub(crate) fn skipped(label: &str) -> String {
+    format!("{label}: it's out of credits or past its rate limit, so it's skipped for now")
 }
 
 /// Never shortens a pause, so a rate limit answered by a search running alongside can't cut an hour without credits short.
@@ -642,7 +655,7 @@ impl<'a> Run<'a> {
 }
 
 /// "A", "A and B", or "A, B and C".
-fn and_list(mut names: Vec<&str>) -> String {
+pub(crate) fn and_list(mut names: Vec<&str>) -> String {
     match names.pop() {
         Some(last) if !names.is_empty() => format!("{} and {last}", names.join(", ")),
         Some(last) => last.to_string(),
@@ -849,20 +862,23 @@ mod tests {
     }
 
     async fn pdl(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Response {
-        match fake.ask("peopledatalabs", &q["company"], false) {
+        // A phone lookup has only the profile.
+        match fake.ask("peopledatalabs", q.get("company").or_else(|| q.get("profile")).unwrap(), false) {
             Err("broke") => reply(402, json!({"status": 402, "error": {"type": "payment_required", "message": "You have hit your account maximum"}})),
             // People Data Labs gives no Retry-After, only when the window resets.
             Err(_) => (StatusCode::TOO_MANY_REQUESTS, [("x-ratelimit-reset", "2026-11-12 10:00:00")], Json(json!({"status": 429}))).into_response(),
-            Ok(Found { email: None, .. }) => reply(404, json!({"status": 404, "error": {"type": "not_found", "message": "No records were found matching your request"}})),
+            Ok(Found { email: None, mobile: None, .. }) => {
+                reply(404, json!({"status": 404, "error": {"type": "not_found", "message": "No records were found matching your request"}}))
+            }
             Ok(p) => Json(json!({"status": 200, "likelihood": 8, "data": {"work_email": p.email, "mobile_phone": p.mobile}})).into_response(),
         }
     }
 
     async fn rocketreach(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Response {
-        match fake.ask("rocketreach", &q["current_employer"], false) {
+        match fake.ask("rocketreach", q.get("current_employer").or_else(|| q.get("linkedin_url")).unwrap(), false) {
             Err("broke") => reply(403, json!({"detail": "You have no lookup credits remaining."})),
             Err(_) => retry_in_two_minutes(),
-            Ok(Found { email: None, .. }) => reply(404, json!({"detail": "Not found."})),
+            Ok(Found { email: None, mobile: None, .. }) => reply(404, json!({"detail": "Not found."})),
             // Still searching, which its status call finishes.
             Ok(_) => Json(json!({"id": 7, "status": "searching", "emails": []})).into_response(),
         }
@@ -1458,6 +1474,59 @@ mod tests {
         let ola = find(&s, &url, &reload(&db, &ola).await).await;
         assert_eq!((ola.phone.as_str(), ola.phone_source.as_str()), ("+447700900123", ""));
         assert_eq!(fake.calls(), ["snov ola.io"]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_mobile_is_found_from_a_linkedin_profile_alone(db: PgPool) {
+        let (url, fake) = serve().await;
+        // Snov.io has no mobiles, so only People Data Labs and RocketReach are asked, in the project's order.
+        let s = seed(&db, "snov,peopledatalabs,rocketreach", "").await;
+        sqlx::query("update projects set company = jsonb_build_object('country_code', 'US') where id = $1").bind(s.project).execute(&db).await.unwrap();
+        let profile = |slug: &str| format!("https://www.linkedin.com/in/{slug}");
+        let mobile = |number: &str| Found { mobile: Some(number.to_string()), ..Found::default() };
+        {
+            let mut book = fake.book();
+            book.people.insert(format!("peopledatalabs {}", profile("sam-lee")), mobile("415.555.0134"));
+            book.people.insert(format!("peopledatalabs {}", profile("kim-ek")), mobile("+1 415 555 0199"));
+            book.people.insert(format!("rocketreach {}", profile("kim-ek")), mobile("+1 202 555 0177"));
+        }
+        let find = |slug: &str| {
+            let query = crate::email_lookups::PhoneQuery { linkedin_url: profile(slug), email: None };
+            let (state, url) = (s.state.clone(), url.clone());
+            async move { TEST_API.scope(url, crate::email_lookups::find_phone(&state, s.org, s.project, &query)).await }
+        };
+        let found = |f: &crate::email_lookups::PhoneFound| (f.status, f.phone.clone().unwrap_or_default(), f.source.clone(), f.note.clone());
+
+        // People Data Labs' local number is read as the project's country's, and RocketReach isn't asked once there's one.
+        let sam = find("sam-lee").await;
+        assert_eq!(found(&sam), ("found", "+14155550134".into(), "People Data Labs".into(), String::new()));
+        assert_eq!(fake.calls(), [format!("peopledatalabs {}", profile("sam-lee"))]);
+
+        // A number on the do-not-contact list is passed over for the next finder's mobile, and when every one is listed none is given.
+        crate::routes::suppressions::insert(&db, s.org, ["+1 415 555 0199"]).await.unwrap();
+        assert_eq!(found(&find("kim-ek").await), ("found", "+12025550177".into(), "RocketReach".into(), String::new()));
+        assert_eq!(fake.calls(), [format!("peopledatalabs {}", profile("kim-ek")), format!("rocketreach {}", profile("kim-ek"))]);
+        crate::routes::suppressions::insert(&db, s.org, ["+1 202 555 0177"]).await.unwrap();
+        let kim = found(&find("kim-ek").await);
+        assert_eq!(kim, ("suppressed", String::new(), "People Data Labs".into(), "+14155550199 is on the do-not-contact list.".into()));
+        fake.calls();
+
+        // Nobody has one: the note names who was asked.
+        let ola = found(&find("ola-berg").await);
+        assert_eq!(ola, ("not_found", String::new(), String::new(), "People Data Labs and RocketReach had no mobile for this profile.".into()));
+
+        // A finder out of credits is paused and named, and the next search doesn't ask it at all.
+        fake.calls();
+        fake.book().broke.push("peopledatalabs");
+        let sam = find("sam-lee").await;
+        assert_eq!((sam.status, sam.source.as_str()), ("not_found", ""), "{sam:?}");
+        assert!(sam.note.starts_with("RocketReach had no mobile for this profile. Skipped People Data Labs: "), "{sam:?}");
+        assert_eq!(fake.calls(), [format!("peopledatalabs {}", profile("sam-lee")), format!("rocketreach {}", profile("sam-lee"))]);
+        let sam = find("sam-lee").await;
+        assert_eq!(fake.calls(), [format!("rocketreach {}", profile("sam-lee"))]);
+        let skipped = "Skipped People Data Labs: it's out of credits or past its rate limit, so it's skipped for now.";
+        assert_eq!(sam.note, format!("RocketReach had no mobile for this profile. {skipped}"));
     }
 
     #[sqlx::test]
