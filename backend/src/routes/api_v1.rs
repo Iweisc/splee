@@ -94,6 +94,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/leads/{id}/assign", post(assign_lead))
         .route("/v1/leads/{id}/thread", get(lead_thread))
         .route("/v1/leads/{id}/reply", post(reply_to_lead))
+        .route("/v1/erased-leads", get(erased_leads))
         .route("/v1/leads/{id}/mark-replied", post(mark_replied))
         .route("/v1/attachments", post(upload_attachment).layer(DefaultBodyLimit::max(attachments::UPLOAD_BODY_LIMIT)))
         .route("/v1/attachments/{id}", get(download_attachment))
@@ -1067,9 +1068,25 @@ pub(super) async fn hot_leads(
 pub(super) struct ChangesQuery {
     /// next_cursor from the last call.
     cursor: Option<String>,
-    /// On the first call, only replies after this. Without either, from the project's first reply.
+    /// On the first call, only changes after this. Without either, from the first one.
     since: Option<Ts>,
     limit: Option<i64>,
+}
+
+impl ChangesQuery {
+    /// The (time, id) the page starts after, None for the first.
+    fn after(&self) -> AppResult<Option<(Ts, Uuid)>> {
+        Ok(match (self.cursor.as_deref().filter(|c| !c.is_empty()), self.since) {
+            (Some(c), _) => Some(parse_cursor(c)?),
+            // The largest id, so a change at exactly `since` counts as before it, like the other since filters.
+            (None, Some(since)) => Some((since, Uuid::from_u128(u128::MAX))),
+            (None, None) => None,
+        })
+    }
+
+    fn limit(&self) -> i64 {
+        self.limit.unwrap_or(100).clamp(1, MAX_CHANGES)
+    }
 }
 
 /// A reply that came in, by email or to a text.
@@ -1091,20 +1108,30 @@ pub(super) struct InboundReply {
 }
 
 #[derive(Serialize)]
-pub(super) struct InboxChanges {
+pub(super) struct Changes<T> {
     /// Oldest first.
-    items: Vec<InboundReply>,
-    /// Pass it as cursor next time. Null only when there's been no reply yet and no cursor or since to keep.
+    items: Vec<T>,
+    /// Pass it as cursor next time. Null only when there's been no change yet and no cursor or since to keep.
     next_cursor: Option<String>,
     /// More are waiting now, so call again straight away.
     has_more: bool,
 }
 
-/// Replies are read this long after they arrive, so one whose insert started first but committed last is never skipped.
+impl<T> Changes<T> {
+    /// `items` were fetched with limit + 1, so one more than `limit` says there are more. `at` is the (time, id) they're ordered by.
+    fn page(mut items: Vec<T>, q: &ChangesQuery, at: impl Fn(&T) -> (Ts, Uuid)) -> AppResult<Self> {
+        let has_more = items.len() as i64 > q.limit();
+        items.truncate(q.limit() as usize);
+        let next = items.last().map(at).or(q.after()?);
+        Ok(Self { items, next_cursor: next.map(|(at, id)| cursor(at, id)), has_more })
+    }
+}
+
+/// Changes are read this long after they happen, so one whose insert started first but committed last is never skipped.
 const SETTLE: &str = "5 seconds";
 const MAX_CHANGES: i64 = 500;
 
-/// A place in the project's replies, after (received_at, id). Opaque to clients.
+/// A place in a list of changes, after (time, id). Opaque to clients.
 fn cursor(at: Ts, id: Uuid) -> String {
     format!("{}_{id}", at.timestamp_micros())
 }
@@ -1121,16 +1148,10 @@ pub(super) async fn inbox_changes(
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<ChangesQuery>,
-) -> AppResult<Json<InboxChanges>> {
+) -> AppResult<Json<Changes<InboundReply>>> {
     check_project(&state.db, id, auth.org_id).await?;
-    let after = match (q.cursor.as_deref().filter(|c| !c.is_empty()), q.since) {
-        (Some(c), _) => Some(parse_cursor(c)?),
-        // The largest id, so a reply at exactly `since` counts as before it, like the other since filters.
-        (None, Some(since)) => Some((since, Uuid::from_u128(u128::MAX))),
-        (None, None) => None,
-    };
-    let limit = q.limit.unwrap_or(100).clamp(1, MAX_CHANGES);
-    let mut items = sqlx::query_as::<_, InboundReply>(&format!(
+    let after = q.after()?;
+    let items = sqlx::query_as::<_, InboundReply>(&format!(
         "select e.id, e.lead_id, e.segment_id as campaign_id, l.full_name as lead_name, l.email::text as lead_email, l.company_name, e.channel,
                 e.from_email::text as from_email, e.subject, e.body, e.classification, e.created_at as received_at
          from email_messages e join leads l on l.id = e.lead_id
@@ -1141,13 +1162,55 @@ pub(super) async fn inbox_changes(
     .bind(id)
     .bind(after.map(|(at, _)| at))
     .bind(after.map(|(_, id)| id))
-    .bind(limit + 1)
+    .bind(q.limit() + 1)
     .fetch_all(&state.db)
     .await?;
-    let has_more = items.len() as i64 > limit;
-    items.truncate(limit as usize);
-    let next = items.last().map(|m| (m.received_at, m.id)).or(after);
-    Ok(Json(InboxChanges { items, next_cursor: next.map(|(at, id)| cursor(at, id)), has_more }))
+    Ok(Json(Changes::page(items, &q, |m| (m.received_at, m.id))?))
+}
+
+/// A lead someone deleted or forgot, by the ids an integration got it with. Its name and address are already gone.
+#[derive(Serialize, FromRow)]
+pub(super) struct ErasedLead {
+    lead_id: Uuid,
+    project_id: Uuid,
+    campaign_id: Option<Uuid>,
+    /// The app's Forget rather than Delete, which also put the address on the do-not-contact list.
+    forgotten: bool,
+    erased_at: Ts,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ErasedQuery {
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    project_id: Option<Uuid>,
+}
+
+/// The leads erased since the cursor in the organization's projects, or in one, oldest first and each exactly once, so a CRM or a
+/// Zap can delete its copy.
+pub(super) async fn erased_leads(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(p): Query<ErasedQuery>,
+    Query(q): Query<ChangesQuery>,
+) -> AppResult<Json<Changes<ErasedLead>>> {
+    if let Some(project) = p.project_id {
+        check_project(&state.db, project, auth.org_id).await?;
+    }
+    let after = q.after()?;
+    let items = sqlx::query_as::<_, ErasedLead>(&format!(
+        "select lead_id, project_id, campaign_id, forgotten, erased_at from erased_leads
+         where org_id = $1 and ($2::uuid is null or project_id = $2) and erased_at <= now() - interval '{SETTLE}'
+           and ($3::timestamptz is null or (erased_at, lead_id) > ($3, $4))
+         order by erased_at, lead_id limit $5"
+    ))
+    .bind(auth.org_id)
+    .bind(p.project_id)
+    .bind(after.map(|(at, _)| at))
+    .bind(after.map(|(_, id)| id))
+    .bind(q.limit() + 1)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(Changes::page(items, &q, |e| (e.erased_at, e.lead_id))?))
 }
 
 /// The polling twin of the email_sent webhook: what Splee sent, oldest first, for logging outreach in a CRM.
@@ -2998,6 +3061,53 @@ mod tests {
         assert_eq!(api.patch(&format!("/v1/projects/{b}/my-copy"), json!({ "body": "Hi" })).await.0, 404);
         let theirs: String = sqlx::query_scalar("select my_copy_source from segments where id = $1").bind(other).fetch_one(&db).await.unwrap();
         assert_eq!(theirs, "project");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn erased_leads_come_once_each_oldest_first_for_the_keys_organization(db: PgPool) {
+        async fn erased(db: &PgPool, project: Uuid, ago: &str) -> Uuid {
+            sqlx::query_scalar(
+                "insert into erased_leads (lead_id, org_id, project_id, forgotten, erased_at)
+                 select gen_random_uuid(), org_id, id, false, now() - $2::interval from projects where id = $1 returning lead_id",
+            )
+            .bind(project)
+            .bind(ago)
+            .fetch_one(db)
+            .await
+            .unwrap()
+        }
+        fn ids(page: &Value) -> Vec<Uuid> {
+            page["items"].as_array().unwrap().iter().map(|e| e["lead_id"].as_str().unwrap().parse().unwrap()).collect()
+        }
+        let [a, b] = seed(&db).await;
+        let other: Uuid = sqlx::query_scalar("insert into projects (org_id, name) select org_id, 'Other' from projects where id = $1 returning id")
+            .bind(a)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let (first, second, third) = (erased(&db, a, "3 minutes").await, erased(&db, other, "2 minutes").await, erased(&db, a, "1 minute").await);
+        erased(&db, a, "-30 seconds").await;
+        erased(&db, b, "1 minute").await;
+        let api = Api::start(&db, LIMITS).await;
+
+        // The organization's projects, a page at a time. One erased this moment waits a few seconds, and B's never show.
+        let (status, page) = api.get("/v1/erased-leads?limit=2").await;
+        assert_eq!((status, ids(&page), page["has_more"].clone()), (200, vec![first, second], json!(true)), "{page}");
+        let (_, page) = api.get(&format!("/v1/erased-leads?limit=2&cursor={}", page["next_cursor"].as_str().unwrap())).await;
+        assert_eq!((ids(&page), page["has_more"].clone()), (vec![third], json!(false)));
+        let cursor = page["next_cursor"].as_str().unwrap().to_string();
+        let (_, page) = api.get(&format!("/v1/erased-leads?cursor={cursor}")).await;
+        assert_eq!((ids(&page), page["next_cursor"].as_str()), (vec![], Some(cursor.as_str())), "an empty page keeps the cursor");
+
+        let (_, page) = api.get(&format!("/v1/erased-leads?project_id={a}")).await;
+        assert_eq!(ids(&page), [first, third]);
+        let since = page["items"][0]["erased_at"].as_str().unwrap().to_string();
+        let (_, page) = api.get(&format!("/v1/erased-leads?since={}", since.replace('+', "%2B"))).await;
+        assert_eq!(ids(&page), [second, third], "since leaves out one erased at exactly that time");
+        assert_eq!(api.get(&format!("/v1/erased-leads?project_id={b}")).await.0, 404);
+        assert_eq!(api.get("/v1/erased-leads?cursor=nope").await.0, 400);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

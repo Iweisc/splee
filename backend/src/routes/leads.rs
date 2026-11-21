@@ -792,8 +792,9 @@ async fn email_progress(State(state): State<AppState>, auth: Auth, Path(id): Pat
     Ok(Json(json!({ "queued": queued, "room": room, "hourly": waterfall::HOURLY })))
 }
 
-/// Deletes leads with their emails and the webhook log entries that carry their details. With `forget`, their
-/// addresses go on the do-not-contact list first, so no later import or search brings them back.
+/// Deletes leads with their emails and the webhook log entries that carry their details, and keeps their ids in erased_leads for
+/// GET /v1/erased-leads. With `forget`, their addresses go on the do-not-contact list first, so no later import or search brings
+/// them back.
 async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppResult<()> {
     if forget {
         suppressions::insert(db, org_id, leads.iter().filter_map(|l| l.email.as_deref())).await?;
@@ -802,6 +803,15 @@ async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppRe
     let ids_text: Vec<String> = ids.iter().map(Uuid::to_string).collect();
     let projects: Vec<Uuid> = leads.iter().map(|l| l.project_id).collect();
     let mut tx = db.begin().await?;
+    sqlx::query(
+        "insert into erased_leads (lead_id, org_id, project_id, campaign_id, forgotten)
+         select id, $2, project_id, segment_id, $3 from leads where id = any($1) on conflict do nothing",
+    )
+    .bind(&ids)
+    .bind(org_id)
+    .bind(forget)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("delete from webhook_deliveries where project_id = any($1) and payload->'lead'->>'id' = any($2)")
         .bind(&projects)
         .bind(&ids_text)
@@ -846,5 +856,9 @@ mod tests {
         let suppressed: Vec<String> = sqlx::query_scalar("select value::text from suppressions where org_id = $1").bind(org).fetch_all(&db).await.unwrap();
         assert_eq!((leads, deliveries), (0, 0));
         assert_eq!(suppressed, ["sarah@northwind.example"]);
+        // Only their ids stay, for GET /v1/erased-leads.
+        let erased: Vec<(Uuid, Uuid, bool)> =
+            sqlx::query_as("select lead_id, project_id, forgotten from erased_leads order by forgotten").fetch_all(&db).await.unwrap();
+        assert_eq!(erased, [(marcus.id, project, false), (sarah.id, project, true)]);
     }
 }
