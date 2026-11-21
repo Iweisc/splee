@@ -27,6 +27,17 @@ pub struct Identity {
     pub created_at: Ts,
 }
 
+/// A passkey the user signs in with (routes/passkeys.rs).
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Passkey {
+    pub id: Uuid,
+    pub name: String,
+    /// Adding it checked a PIN, fingerprint or face.
+    pub user_verified: bool,
+    pub created_at: Ts,
+    pub last_used_at: Option<Ts>,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Organization {
     pub id: Uuid,

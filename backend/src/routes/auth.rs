@@ -301,7 +301,7 @@ const LOGIN_WINDOW: &str = "15 minutes";
 /// What a sign-in answers: the session's Me, or with two-factor on, a token for POST /auth/login/code.
 #[derive(Serialize)]
 #[serde(untagged)]
-enum SignIn {
+pub(super) enum SignIn {
     Done(Box<Me>),
     Code { two_factor_token: String },
 }
@@ -309,7 +309,7 @@ enum SignIn {
 /// Counts an attempt to sign in as `email` and refuses it past the limit. Recorded before the password or code is checked,
 /// under a per-email lock, so a burst of parallel guesses can't slip past the limit. A successful sign-in clears the
 /// email's rows, so only failures accumulate.
-async fn count_attempt(db: &PgPool, email: &str) -> AppResult<()> {
+pub(super) async fn count_attempt(db: &PgPool, email: &str) -> AppResult<()> {
     sqlx::query(&format!("delete from login_failures where created_at < now() - interval '{LOGIN_WINDOW}'")).execute(db).await?;
     let mut tx = db.begin().await?;
     sqlx::query("select pg_advisory_xact_lock(hashtext('login:' || lower($1)))").bind(email).execute(&mut *tx).await?;
@@ -358,13 +358,13 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
         tx.commit().await?;
         return Ok((jar, Json(SignIn::Code { two_factor_token })));
     }
-    sign_in(&state, jar, tx, user_id, email).await
+    sign_in(&state, jar, tx, user_id, email, json!({})).await
 }
 
 /// Locks the user's row until `tx` ends, so a password reset either lands first, and this sign-in then sees the new
 /// password or its pending login gone, or waits for it and signs it out with the rest. Checking the password before the
 /// lock isn't enough: a reset could land during the slow hash check. False when the password is no longer `hash`.
-async fn hold_user(conn: &mut PgConnection, user_id: Uuid, hash: Option<&str>) -> sqlx::Result<bool> {
+pub(super) async fn hold_user(conn: &mut PgConnection, user_id: Uuid, hash: Option<&str>) -> sqlx::Result<bool> {
     let held: Option<i32> = sqlx::query_scalar("select 1 from users where id = $1 and ($2::text is null or password_hash = $2) for share")
         .bind(user_id)
         .bind(hash)
@@ -394,18 +394,19 @@ async fn login_code(State(state): State<AppState>, jar: CookieJar, Json(body): J
     if !two_factor::finish_login(&mut *tx, &body.two_factor_token).await? {
         return Err(expired());
     }
-    sign_in(&state, jar, tx, user_id, &email).await
+    sign_in(&state, jar, tx, user_id, &email, json!({})).await
 }
 
-/// Starts the session inside `tx`, which holds the user's row (see hold_user).
-async fn sign_in(
+/// Starts the session inside `tx`, which holds the user's row (see hold_user), and records the sign-in with `details`.
+pub(super) async fn sign_in(
     state: &AppState,
     jar: CookieJar,
     mut tx: Transaction<'_, Postgres>,
     user_id: Uuid,
     email: &str,
+    details: Value,
 ) -> AppResult<(CookieJar, Json<SignIn>)> {
-    let (cookie, org_id) = start_session(state, &mut *tx, user_id, email, json!({})).await?;
+    let (cookie, org_id) = start_session(state, &mut *tx, user_id, email, details).await?;
     tx.commit().await?;
     Ok((jar.add(cookie), Json(SignIn::Done(Box::new(me(state, user_id, org_id).await?)))))
 }
@@ -760,14 +761,14 @@ async fn two_factor_enable(State(state): State<AppState>, auth: Auth, Json(body)
 }
 
 #[derive(Deserialize)]
-struct ProofBody {
+pub(super) struct ProofBody {
     /// The member's password, a code from their app or a backup code.
-    proof: String,
+    pub(super) proof: String,
 }
 
-/// Turning two-factor off or making new backup codes takes the password or a code, so a session left open on someone
+/// Turning two-factor off, making new backup codes and adding or removing a passkey take the password or a code, so a session left open on someone
 /// else's computer isn't enough. Each try counts as a sign-in attempt, so this can't be used to guess either.
-async fn check_proof(state: &AppState, auth: &Auth, proof: &str) -> AppResult<()> {
+pub(super) async fn check_proof(state: &AppState, auth: &Auth, proof: &str) -> AppResult<()> {
     let (email, hash): (String, String) = sqlx::query_as("select email::text, password_hash from users where id = $1")
         .bind(auth.user_id)
         .fetch_one(&state.db)
@@ -802,7 +803,7 @@ async fn new_backup_codes(State(state): State<AppState>, auth: Auth, Json(body):
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use sqlx::PgPool;
@@ -812,9 +813,9 @@ mod tests {
     use crate::crypto::decrypt;
     use crate::two_factor::{code_at, current_step};
 
-    type Answer = AppResult<(CookieJar, Json<SignIn>)>;
+    pub(in crate::routes) type Answer = AppResult<(CookieJar, Json<SignIn>)>;
 
-    fn state(db: PgPool) -> AppState {
+    pub(in crate::routes) fn state(db: PgPool) -> AppState {
         let cfg = Config {
             database_url: String::new(),
             app_secret: "test-secret".into(),
@@ -861,7 +862,7 @@ mod tests {
     }
 
     /// Ana, the owner of Acme, signed in as `auth`, with the password "correct horse".
-    async fn ana(db: PgPool) -> (AppState, Auth) {
+    pub(in crate::routes) async fn ana(db: PgPool) -> (AppState, Auth) {
         let state = state(db);
         let user_id: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('ana@acme.test', $1) returning id")
             .bind(hash_password("correct horse").unwrap())
@@ -877,35 +878,35 @@ mod tests {
         login(State(state.clone()), CookieJar::new(), Json(LoginBody { email: "ana@acme.test".into(), password: password.into() })).await
     }
 
-    async fn code(state: &AppState, token: &str, code: &str) -> Answer {
+    pub(in crate::routes) async fn code(state: &AppState, token: &str, code: &str) -> Answer {
         let body = LoginCodeBody { two_factor_token: token.into(), code: code.into() };
         login_code(State(state.clone()), CookieJar::new(), Json(body)).await
     }
 
-    fn token(answer: Answer) -> String {
+    pub(in crate::routes) fn token(answer: Answer) -> String {
         match answer {
             Ok((_, Json(SignIn::Code { two_factor_token }))) => two_factor_token,
             _ => panic!("expected to be asked for a code"),
         }
     }
 
-    fn signed_in(answer: &Answer) -> bool {
+    pub(in crate::routes) fn signed_in(answer: &Answer) -> bool {
         matches!(answer, Ok((jar, Json(SignIn::Done(_)))) if jar.get(SESSION_COOKIE).is_some())
     }
 
-    fn refused(answer: &Answer) -> bool {
+    pub(in crate::routes) fn refused(answer: &Answer) -> bool {
         matches!(answer, Err(AppError::BadRequest(_)))
     }
 
     /// Ana's app's code for `step`, and the step a code was last taken for.
-    async fn app_code(state: &AppState, auth: &Auth, step: i64) -> String {
+    pub(in crate::routes) async fn app_code(state: &AppState, auth: &Auth, step: i64) -> String {
         let secret_enc: String =
             sqlx::query_scalar("select secret_enc from two_factor where user_id = $1").bind(auth.user_id).fetch_one(&state.db).await.unwrap();
         let key = hex::decode(decrypt(&state.cfg.app_secret, &secret_enc).unwrap()).unwrap();
         format!("{:06}", code_at(&key, step))
     }
 
-    async fn last_step(state: &AppState, auth: &Auth) -> i64 {
+    pub(in crate::routes) async fn last_step(state: &AppState, auth: &Auth) -> i64 {
         sqlx::query_scalar("select last_step from two_factor where user_id = $1").bind(auth.user_id).fetch_one(&state.db).await.unwrap()
     }
 
@@ -918,7 +919,7 @@ mod tests {
         (0..4).map(|n| format!("{n:06}")).find(|c| !live.contains(c)).unwrap()
     }
 
-    async fn turn_on(state: &AppState, auth: &Auth) -> Vec<String> {
+    pub(in crate::routes) async fn turn_on(state: &AppState, auth: &Auth) -> Vec<String> {
         let Json(setup) = two_factor_setup(State(state.clone()), auth.clone()).await.unwrap();
         assert!(setup.uri.starts_with(&format!("otpauth://totp/Splee:ana@acme.test?secret={}&issuer=Splee", setup.secret)));
         assert!(setup.qr.starts_with("data:image/svg+xml;base64,"));
