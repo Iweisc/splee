@@ -842,6 +842,8 @@ export interface Segment {
   lead_pages: boolean;
   /** What it writes in: English by default, one fixed language, or "lead" for each lead's own. */
   language: CampaignLanguage;
+  /** When it was archived. An archived campaign is paused, and lists that add leads to a campaign leave it out. */
+  archived_at: Ts | null;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */

@@ -42,7 +42,7 @@ function span(from: string, to: string) {
 export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/analytics">) {
   const { projectId } = use(params);
   const { data: detail } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
-  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments?archived=true`, fetcher);
   const { data: mailboxList } = useSWR<Mailbox[]>("/mailboxes", fetcher);
   const [range, setRange] = useState<Range>({ days: 30 });
   const [segmentId, setSegmentId] = useState("");

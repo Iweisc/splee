@@ -504,6 +504,9 @@ pub struct Segment {
     /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
     #[sqlx(default)]
     pub language: String,
+    /// When it was archived. An archived campaign stays paused and out of the lists that add leads or send.
+    #[sqlx(default)]
+    pub archived_at: Option<Ts>,
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.

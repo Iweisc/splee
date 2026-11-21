@@ -63,7 +63,9 @@ async fn projects(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<
         .await?;
     let ids: Vec<Uuid> = projects.iter().map(|(id, _)| *id).collect();
     let mut campaigns: Vec<CampaignChoice> =
-        sqlx::query_as("select id, project_id, name, status from segments where project_id = any($1) order by position, created_at")
+        sqlx::query_as(
+            "select id, project_id, name, status from segments where project_id = any($1) and archived_at is null order by position, created_at",
+        )
             .bind(&ids)
             .fetch_all(&state.db)
             .await?;

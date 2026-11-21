@@ -319,12 +319,12 @@ async fn import(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
 
 pub(super) async fn check_segment(state: &AppState, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<()> {
     if let Some(segment_id) = segment_id {
-        sqlx::query("select 1 from segments where id = $1 and project_id = $2")
+        sqlx::query("select 1 from segments where id = $1 and project_id = $2 and archived_at is null")
             .bind(segment_id)
             .bind(project_id)
             .fetch_optional(&state.db)
             .await?
-            .ok_or_else(|| AppError::BadRequest("That campaign isn't part of this project".into()))?;
+            .ok_or_else(|| AppError::BadRequest("That campaign isn't part of this project, or it's archived".into()))?;
     }
     Ok(())
 }

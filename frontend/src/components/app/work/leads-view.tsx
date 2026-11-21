@@ -58,7 +58,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
   const query = useDebounced(q);
   const [owner, setOwner] = useOwnerFilter("leads");
 
-  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  // Archived campaigns still filter the list, since their leads stay. Moving leads into one isn't offered.
+  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments?archived=true`, fetcher);
   const filters = { segment_id: segmentId ?? segment, status, q: query, email, min_score: minScore, language, sort, owner: owner === "everyone" ? "" : owner };
   const key = `/projects/${projectId}/leads${qs({ ...filters, page, per_page: PER_PAGE })}`;
   const { data, error, mutate } = useSWR<Paginated<LeadRow>>(key, fetcher, { keepPreviousData: true });
@@ -134,7 +135,7 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
         <PickedBar
           projectId={projectId}
           ids={[...picked]}
-          segments={segments ?? []}
+          segments={segments?.filter((s) => !s.archived_at) ?? []}
           onDone={() => {
             setPicked(new Set());
             return mutate();

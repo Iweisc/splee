@@ -44,8 +44,8 @@ const CACHE_MS: u64 = 3_600_000;
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
-stop_campaign and approve_campaign run it, and update_project_controls sets the project's sending, limits, schedule, autopilot \
-and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
+stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and unarchive_campaign brings it back, \
+and update_project_controls sets the project's sending, limits, schedule, autopilot and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
 customers. download_companies hands over a search's companies as CSV, with a link to the whole file. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
@@ -323,7 +323,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
     let a = &args;
     Some(match name {
         "list_projects" => async { Ok(pick(value(v1::list_projects(st(), auth).await?)?, PROJECT_FIELDS)) }.await,
-        "list_campaigns" => async { value(v1::list_campaigns(st(), auth, id(a, "project_id")?).await?) }.await,
+        "list_campaigns" => async { value(v1::list_campaigns(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "create_campaign" => async {
             let created = value(v1::create_campaign(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?)?;
             Ok(json!({ "campaign_id": created["campaign_id"], "run_id": created["run_id"], "next": RUN_NEXT }))
@@ -437,6 +437,8 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "start_campaign" => async { value(v1::start_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "stop_campaign" => async { value(v1::stop_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "approve_campaign" => async { value(v1::approve_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "archive_campaign" => async { value(v1::archive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "unarchive_campaign" => async { value(v1::unarchive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "update_project_controls" => async {
             // The rest of the arguments are the PATCH body, which refuses fields it doesn't know.
             let mut body = a.clone();
@@ -628,8 +630,12 @@ fn tools() -> Vec<Value> {
             "List campaigns",
             "A project's campaigns with their funnel: companies, leads, emails sent, leads contacted, replies, bounces, hot leads and \
              spend in micro-dollars. A campaign that A/B tests its email angle has ab_test: each variant's instructions and results, \
-             whether a winner is clear yet in note, and the winner auto-pick kept, if any.",
-            json!({ "project_id": project }),
+             whether a winner is clear yet in note, and the winner auto-pick kept, if any. Archived campaigns are left out unless \
+             archived is true, and have archived_at set.",
+            json!({
+                "project_id": project,
+                "archived": { "type": "boolean", "description": "Optional. True to list archived campaigns too" },
+            }),
             &["project_id"],
             read.clone(),
         ),
@@ -1189,6 +1195,23 @@ fn tools() -> Vec<Value> {
             control.clone(),
         ),
         tool(
+            "archive_campaign",
+            "Archive campaign",
+            "Puts away a campaign you're done with: it stops sending like stop_campaign and drops out of list_campaigns. Its leads, \
+             emails and stats stay, and replies still come in. Archiving an archived campaign changes nothing. Returns the campaign.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
+            "unarchive_campaign",
+            "Unarchive campaign",
+            "Brings an archived campaign back to list_campaigns, paused. It only sends once start_campaign starts it. Returns the campaign.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
             "update_project_controls",
             "Update project controls",
             "Changes a project's sending controls and returns them all. Pass only what changes, or nothing to read them. sending \
@@ -1565,7 +1588,8 @@ mod tests {
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
-                     "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes",
+                     "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",
+                     "list_hot_leads", "get_inbox_changes",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows"] {
@@ -2367,6 +2391,21 @@ mod tests {
             .unwrap();
         assert_eq!(audited, 2, "the audit log names the key");
 
+        // Archiving takes it off list_campaigns until it's unarchived, which leaves it paused.
+        let srv = &server;
+        let listed = move |archived: bool| async move {
+            let (_, text) = srv.call(KEY, "list_campaigns", json!({ "project_id": project, "archived": archived })).await;
+            serde_json::from_str::<Value>(&text).unwrap().as_array().unwrap().iter().map(|c| c["id"].clone()).collect::<Vec<_>>()
+        };
+        for _ in 0..2 {
+            let (is_error, text) = server.call(KEY, "archive_campaign", json!({ "campaign_id": segment })).await;
+            assert!(!is_error && parsed(&text)["archived_at"].is_string(), "{text}");
+        }
+        assert_eq!((listed(false).await, listed(true).await), (vec![], vec![json!(segment)]));
+        let (is_error, text) = server.call(KEY, "unarchive_campaign", json!({ "campaign_id": segment })).await;
+        assert!(!is_error && parsed(&text)["archived_at"].is_null() && parsed(&text)["status"] == "paused", "{text}");
+        assert_eq!(listed(false).await, vec![json!(segment)]);
+
         let (is_error, text) = server.call(KEY, "update_project_controls", json!({ "project_id": project, "daily_email_limit": 70, "review_window_hours": 12 })).await;
         assert!(!is_error && parsed(&text)["daily_email_limit"] == 70 && parsed(&text)["review_window_hours"] == 12, "{text}");
         let (is_error, text) = server.call(KEY, "update_project_controls", json!({ "project_id": project, "budget": 5 })).await;
@@ -2388,6 +2427,8 @@ mod tests {
             ("start_campaign", json!({ "campaign_id": other_segment })),
             ("stop_campaign", json!({ "campaign_id": other_segment })),
             ("approve_campaign", json!({ "campaign_id": other_segment })),
+            ("archive_campaign", json!({ "campaign_id": other_segment })),
+            ("unarchive_campaign", json!({ "campaign_id": other_segment })),
             ("update_project_controls", json!({ "project_id": other_project, "daily_email_limit": 70 })),
             ("get_inbox_changes", json!({ "project_id": other_project })),
             ("list_hot_leads", json!({ "project_id": other_project })),

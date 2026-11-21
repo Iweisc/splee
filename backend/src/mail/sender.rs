@@ -119,7 +119,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
          (select e.* from email_messages e left join segments s on s.id = e.segment_id
           where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
             and (e.scheduled_for is null or e.scheduled_for <= now()) and e.kind in ('initial', 'follow_up')
-            and s.status is distinct from 'paused'
+            and s.status is distinct from 'paused' and s.archived_at is null
             -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
             and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
                             and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
@@ -702,7 +702,7 @@ pub(crate) async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> 
          join {LAST_STEP} on true
          left join segment_steps own on own.segment_id = l.segment_id and own.position = last.step + 1
          where p.org_id is not null and not ps.paused and l.status = 'contacted'
-           and coalesce(s.status, 'working') <> 'paused'
+           and coalesce(s.status, 'working') <> 'paused' and s.archived_at is null
            and (own.segment_id is not null
                 or (not exists (select 1 from segment_steps x where x.segment_id = l.segment_id)
                     and jsonb_typeof(ps.follow_ups) = 'array' and jsonb_array_length(ps.follow_ups) > last.step

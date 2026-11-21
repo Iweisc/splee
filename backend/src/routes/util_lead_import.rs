@@ -121,7 +121,7 @@ pub async fn insert<'c>(
     }
     let project_country: Option<String> =
         sqlx::query_scalar("select company ->> 'country_code' from projects where id = $1").bind(project_id).fetch_one(&mut *tx).await?;
-    let segments: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>("select id from segments where project_id = $1")
+    let segments: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>("select id from segments where project_id = $1 and archived_at is null")
         .bind(project_id)
         .fetch_all(&mut *tx)
         .await?
@@ -138,7 +138,7 @@ pub async fn insert<'c>(
             None if linkedin && lead.email.trim().is_empty() => match &profile {
                 None => Err("Missing LinkedIn profile".to_string()),
                 Some(_) if company_domain.as_ref().is_some_and(|d| suppressed.contains(d)) => Err("On the do-not-contact list".to_string()),
-                Some(_) if lead.segment_id.is_some_and(|s| !segments.contains(&s)) => Err("Unknown segment".to_string()),
+                Some(_) if lead.segment_id.is_some_and(|s| !segments.contains(&s)) => Err("Unknown or archived campaign".to_string()),
                 Some(p) if !profiles.insert(p.clone()) => Err("Already a lead".to_string()),
                 Some(_) => Ok(None),
             },
@@ -149,7 +149,7 @@ pub async fn insert<'c>(
                 if suppressed.contains(&email) || suppressed.contains(domain) {
                     Err(format!("Suppressed: {email}"))
                 } else if lead.segment_id.is_some_and(|s| !segments.contains(&s)) {
-                    Err("Unknown segment".to_string())
+                    Err("Unknown or archived campaign".to_string())
                 } else if !seen.insert(email.clone()) || (linkedin && profile.as_ref().is_some_and(|p| !profiles.insert(p.clone()))) {
                     Err(format!("Duplicate: {email}"))
                 } else {

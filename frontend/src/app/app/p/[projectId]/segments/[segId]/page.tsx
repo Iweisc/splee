@@ -16,7 +16,7 @@ import { ImportedSequence } from "@/components/app/work/imported-sequence";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
-import { SegmentToggle } from "@/components/app/work/segment-toggle";
+import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LeadPagesCard } from "@/components/app/work/lead-page";
@@ -92,14 +92,27 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
             <Button variant="ghost" size="icon" className="size-10" onClick={remove} aria-label="Delete campaign">
               <Trash2 className="size-4" />
             </Button>
-            <SegmentToggle segment={segment} size="md" />
+            {segment.archived_at ? (
+              <ArchiveToggle segment={segment} size="md" />
+            ) : (
+              <>
+                <ArchiveToggle segment={segment} />
+                <SegmentToggle segment={segment} size="md" />
+              </>
+            )}
           </>
         }
       />
       <PageBody className="flex flex-col gap-4">
         {run && <RunProgress key={run.id} run={run} />}
         {segment.sent > 0 && <Results segment={segment} />}
-        <Pipeline segment={segment} busy={!!run} />
+        {segment.archived_at ? (
+          <Card className="p-4 text-sm text-pretty text-muted-foreground">
+            Archived and paused. Its leads, emails and results stay here. Unarchive it to find people, write emails or send again.
+          </Card>
+        ) : (
+          <Pipeline segment={segment} busy={!!run} />
+        )}
         {segment.replies > 0 && <InsightsCard segment={segment} />}
         <Tabs
           value={tab}

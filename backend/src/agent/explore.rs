@@ -438,7 +438,7 @@ async fn segments(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<()> {
 
 /// The campaign the pipeline works on in steps 4-6.
 pub async fn top_segment(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<Segment> {
-    sqlx::query_as::<_, Segment>("select * from segments where project_id = $1 order by fit_score desc, position limit 1")
+    sqlx::query_as::<_, Segment>("select * from segments where project_id = $1 and archived_at is null order by fit_score desc, position limit 1")
         .bind(project_id)
         .fetch_optional(ctx.db())
         .await?

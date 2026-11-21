@@ -4,8 +4,8 @@
 //! Actions: user.signed_in, user.sign_in_failed, user.password_changed, user.password_reset, user.identity_linked, user.identity_unlinked,
 //! user.two_factor_enabled, user.two_factor_disabled, user.backup_codes_created, user.passkey_added, user.passkey_removed, member.invited,
 //! member.joined, member.removed, member.role_changed, api_key.created, api_key.revoked, mailbox.connected, mailbox.removed, integration.connected, integration.disconnected,
-//! sending_domain.ordered, sending_domain.removed, campaign.launched, campaign.paused, project.started, project.paused,
-//! export.saved, export.removed and org.renamed. The frontend names each in app/audit/page.tsx.
+//! sending_domain.ordered, sending_domain.removed, campaign.launched, campaign.paused, campaign.archived, campaign.unarchived, project.started,
+//! project.paused, export.saved, export.removed and org.renamed. The frontend names each in app/audit/page.tsx.
 
 use std::net::{IpAddr, SocketAddr};
 

@@ -24,7 +24,7 @@ use super::outreach;
 use super::projects;
 use super::research;
 use super::runs;
-use super::segments::{self, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
+use super::segments::{self, Archived, ArchivedQuery, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
 use super::settings;
 use super::sheets::{self, ImportedNow};
 use super::stats::{self, Totals};
@@ -62,6 +62,8 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/campaigns/{id}/start", post(start_campaign))
         .route("/v1/campaigns/{id}/stop", post(stop_campaign))
         .route("/v1/campaigns/{id}/approve", post(approve_campaign))
+        .route("/v1/campaigns/{id}/archive", post(archive_campaign))
+        .route("/v1/campaigns/{id}/unarchive", post(unarchive_campaign))
         .route("/v1/hot-leads", get(hot_leads))
         .route("/v1/projects/{id}/inbox/changes", get(inbox_changes))
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
@@ -200,6 +202,8 @@ pub(super) struct Campaign {
     hot: i64,
     spend_micros: i64,
     created_at: Ts,
+    /// When it was archived, or null. An archived campaign is paused and only listed with ?archived=true.
+    archived_at: Option<Ts>,
     /// The campaign's A/B test of email angles, with results per variant. Null when it has no variants.
     ab_test: Option<AbTest>,
 }
@@ -222,14 +226,21 @@ impl From<SegmentWithStats> for Campaign {
             hot,
             spend_micros,
             created_at: segment.created_at,
+            archived_at: segment.archived_at,
             ab_test: None,
         }
     }
 }
 
-pub(super) async fn list_campaigns(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<Campaign>>> {
+/// Archived campaigns only come with ?archived=true.
+pub(super) async fn list_campaigns(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ArchivedQuery>,
+) -> AppResult<Json<Vec<Campaign>>> {
     check_project(&state.db, id, auth.org_id).await?;
-    let rows = segments::with_stats(&state.db, id, None).await?;
+    let rows = segments::with_stats(&state.db, id, None, q.into()).await?;
     let mut tests = ab_test::load(&state.db, &rows.iter().map(|r| &r.segment).collect::<Vec<_>>()).await?;
     let campaigns = rows.into_iter().map(|r| {
         let ab_test = tests.remove(&r.segment.id);
@@ -359,8 +370,7 @@ pub(super) async fn update_campaign(
     let language = body.language.trim();
     segments::check_language(language)?;
     sqlx::query("update segments set language = $2 where id = $1").bind(segment.id).bind(language).execute(&state.db).await?;
-    let row = segments::with_stats(&state.db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)?;
-    Ok(Json(Campaign::from(row)))
+    Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &segment).await?)))
 }
 
 /// A campaign as its page shows it, with the project's schedule and follow-ups it sends on.
@@ -414,7 +424,7 @@ struct ReadOnly {
 
 pub(super) async fn get_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<CampaignDetail>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let row = segments::with_stats(&state.db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)?;
+    let row = segments::one_with_stats(&state.db, &segment).await?;
     let ab_test = ab_test::load(&state.db, &[&segment]).await?.remove(&segment.id);
     let settings = settings::load_or_create(&state.db, segment.project_id).await?;
     let imported = outreach::steps_of(&state.db, segment.id).await?;
@@ -497,6 +507,20 @@ pub(super) async fn stop_campaign(State(state): State<AppState>, auth: ApiKeyAut
         segments::hold(&state.db, &auth, &segment).await?;
     }
     Ok(accepted())
+}
+
+/// Pauses the campaign like stop and hides it from list_campaigns. Its leads, emails and stats stay, and replies still come in.
+pub(super) async fn archive_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Campaign>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    segments::archive(&state.db, &auth, &segment).await?;
+    Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &segment).await?)))
+}
+
+/// Lists the campaign again, paused. It sends once it's started.
+pub(super) async fn unarchive_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Campaign>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    segments::unarchive(&state.db, &auth, &segment).await?;
+    Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &segment).await?)))
 }
 
 /// Splee has no review state for a whole campaign. This is the Approve button on each of its first emails and follow-ups
@@ -659,14 +683,7 @@ async fn upsert_lead(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): 
         let error = if body.email.trim().is_empty() { "Send the lead's email".to_string() } else { format!("Invalid email: {}", body.email.trim()) };
         return Err(AppError::BadRequest(error));
     };
-    if let Some(segment_id) = body.segment_id {
-        sqlx::query("select 1 from segments where id = $1 and project_id = $2")
-            .bind(segment_id)
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::BadRequest("That campaign isn't in this project".into()))?;
-    }
+    super::imports::check_segment(&state, id, body.segment_id).await?;
     if let Some(lead) = update_by_email(&state.db, id, &email, &body).await? {
         return Ok(Json(Upserted { created: false, lead }));
     }
@@ -1075,7 +1092,7 @@ async fn project_stats(State(state): State<AppState>, auth: ApiKeyAuth, Path(id)
     check_project(&state.db, id, auth.org_id).await?;
     Ok(Json(ProjectStats {
         totals: stats::totals(&state.db, id).await?,
-        campaigns: segments::with_stats(&state.db, id, None).await?,
+        campaigns: segments::with_stats(&state.db, id, None, Archived::Included).await?,
         steps: stats::steps(&state.db, id).await?,
     }))
 }
@@ -2093,6 +2110,61 @@ mod tests {
         let (_, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
         assert_eq!((detail["imported_from"].as_str(), detail["sequence"][0]["body"].as_str()), (Some("Instantly"), Some("Hi {first_name}")));
         assert_eq!(detail["read_only"][2]["field"], "sequence", "{detail}");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn an_archived_campaign_stops_sending_and_leaves_the_list_until_it_comes_back_paused(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let (segment, email) = campaign(&db, a, "draft").await;
+        let (theirs, _) = campaign(&db, b, "working").await;
+        let api = Api::start(&db, LIMITS).await;
+        let campaigns = format!("/v1/projects/{a}/campaigns");
+        let ids = |body: Value| body.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let email_status = || {
+            let db = db.clone();
+            async move { sqlx::query_scalar::<_, String>("select status from email_messages where id = $1").bind(email).fetch_one(&db).await.unwrap() }
+        };
+        let start = format!("/v1/campaigns/{segment}/start");
+        assert_eq!(api.post(KEYS[0], &start, None, json!({})).await.0, 200);
+        assert_eq!(email_status().await, "approved");
+
+        // Archiving stops it like Stop and takes it off the list. Twice is the same as once.
+        for _ in 0..2 {
+            let (status, _, body) = api.post(KEYS[0], &format!("/v1/campaigns/{segment}/archive"), None, json!({})).await;
+            assert_eq!((status, body["status"].as_str(), body["archived_at"].is_string()), (200, Some("paused"), true), "{body}");
+        }
+        assert_eq!(email_status().await, "draft");
+        assert_eq!(count(&db, "select count(*) from audit_events where action = 'campaign.archived' and actor_key_id is not null").await, 1);
+        assert_eq!(ids(api.get(&campaigns).await.1), Vec::<String>::new());
+        assert_eq!(ids(api.get(&format!("{campaigns}?archived=true")).await.1), [segment.to_string()]);
+        let (status, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
+        assert_eq!((status, detail["leads"].as_i64(), detail["archived_at"].is_string()), (200, Some(1), true), "its leads stay: {detail}");
+        let (status, _, body) = api.post(KEYS[0], &start, None, json!({})).await;
+        assert_eq!(status, 409, "it can't start while archived: {body}");
+        assert_eq!(email_status().await, "draft");
+        let lead = json!({ "email": "new@acme.example", "full_name": "New Lead", "segment_id": segment });
+        let (_, _, added) = api.post(KEYS[0], &format!("/v1/projects/{a}/leads"), None, json!({ "leads": [lead.clone()] })).await;
+        assert_eq!((added["imported"].as_i64(), added["errors"][0]["error"].as_str()), (Some(0), Some("Unknown or archived campaign")), "{added}");
+        assert_eq!(api.post(KEYS[0], &format!("/v1/projects/{a}/leads/upsert"), None, lead).await.0, 400, "no leads go into it");
+
+        // Unarchiving lists it again, paused, so nothing goes out until someone starts it.
+        for _ in 0..2 {
+            let (status, _, body) = api.post(KEYS[0], &format!("/v1/campaigns/{segment}/unarchive"), None, json!({})).await;
+            assert_eq!((status, body["status"].as_str(), body["archived_at"].is_null()), (200, Some("paused"), true), "{body}");
+        }
+        assert_eq!((ids(api.get(&campaigns).await.1), email_status().await), (vec![segment.to_string()], "draft".to_string()));
+        assert_eq!(count(&db, "select count(*) from audit_events where action = 'campaign.unarchived'").await, 1);
+        assert_eq!(api.post(KEYS[0], &start, None, json!({})).await.0, 200);
+        assert_eq!(email_status().await, "approved");
+
+        // Another organization's campaign looks like one that doesn't exist, and keeps sending.
+        for action in ["archive", "unarchive"] {
+            assert_eq!(api.post(KEYS[0], &format!("/v1/campaigns/{theirs}/{action}"), None, json!({})).await.0, 404, "{action}");
+        }
+        let untouched = format!("select count(*) from segments where id = '{theirs}' and status = 'working' and archived_at is null");
+        assert_eq!(count(&db, &untouched).await, 1);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

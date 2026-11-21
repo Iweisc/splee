@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ pub fn router() -> Router<AppState> {
         .route("/segments/{id}/write-emails", post(write_emails))
         .route("/segments/{id}/start", post(start))
         .route("/segments/{id}/pause", post(pause))
+        .route("/segments/{id}/archive", post(archive_route))
+        .route("/segments/{id}/unarchive", post(unarchive_route))
 }
 
 const ICONS: &[&str] = &[
@@ -49,9 +51,9 @@ pub struct SegmentWithStats {
     pub cost_per_hot_micros: Option<i64>,
 }
 
-/// Segments of a project with their funnel numbers. Pass `segment_id` to get just one.
+/// Segments of a project with their funnel numbers. Pass `segment_id` to get just one, archived or not.
 /// Agent runs that research the whole project, like explore, have no segment, so their cost only counts in the project's stats.
-pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>) -> AppResult<Vec<SegmentWithStats>> {
+pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>, archived: Archived) -> AppResult<Vec<SegmentWithStats>> {
     let mut rows = sqlx::query_as::<_, SegmentWithStats>(
         "select s.*,
            (select count(*) from companies c where c.segment_id = s.id) as companies,
@@ -69,11 +71,12 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
            + (select coalesce(sum(e.cost_micros), 0)::bigint from email_messages e
              where e.segment_id = s.id and e.direction = 'outbound' and e.status = 'sent') as spend_micros
          from segments s
-         where s.project_id = $1 and ($2::uuid is null or s.id = $2)
+         where s.project_id = $1 and ($2::uuid is null or s.id = $2) and ($3 or $2::uuid is not null or s.archived_at is null)
          order by s.position, s.created_at",
     )
     .bind(project_id)
     .bind(segment_id)
+    .bind(archived == Archived::Included)
     .fetch_all(db)
     .await?;
     for row in &mut rows {
@@ -82,13 +85,38 @@ pub async fn with_stats(db: &PgPool, project_id: Uuid, segment_id: Option<Uuid>)
     Ok(rows)
 }
 
-async fn one_with_stats(db: &PgPool, segment: &Segment) -> AppResult<SegmentWithStats> {
-    with_stats(db, segment.project_id, Some(segment.id)).await?.pop().ok_or(AppError::NotFound)
+/// Lists that pick a campaign to add leads to leave archived ones out. Stats and history keep them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Archived {
+    Hidden,
+    Included,
 }
 
-async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<SegmentWithStats>>> {
+/// `?archived=true` on a campaign list adds the archived campaigns.
+#[derive(Deserialize)]
+pub(super) struct ArchivedQuery {
+    #[serde(default)]
+    archived: bool,
+}
+
+impl From<ArchivedQuery> for Archived {
+    fn from(q: ArchivedQuery) -> Self {
+        if q.archived { Archived::Included } else { Archived::Hidden }
+    }
+}
+
+pub(super) async fn one_with_stats(db: &PgPool, segment: &Segment) -> AppResult<SegmentWithStats> {
+    with_stats(db, segment.project_id, Some(segment.id), Archived::Included).await?.pop().ok_or(AppError::NotFound)
+}
+
+async fn list(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ArchivedQuery>,
+) -> AppResult<Json<Vec<SegmentWithStats>>> {
     auth.project(&state.db, id).await?;
-    Ok(Json(with_stats(&state.db, id, None).await?))
+    Ok(Json(with_stats(&state.db, id, None, q.into()).await?))
 }
 
 #[derive(Deserialize, Default)]
@@ -213,6 +241,9 @@ async fn update(
 ) -> AppResult<Json<SegmentWithStats>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     body.validate()?;
+    if body.status.is_some() {
+        ensure_not_archived(&segment)?;
+    }
     let segment = sqlx::query_as::<_, Segment>(
         "update segments set
            name = coalesce($2, name),
@@ -362,7 +393,12 @@ pub(super) fn running(segment: &Segment) -> bool {
 /// The campaign's Start button: it sends, and its drafts are approved. POST /v1/campaigns/{id}/start calls it too.
 pub(super) async fn launch(db: &PgPool, who: impl Into<Who>, segment: &Segment) -> AppResult<()> {
     let mut tx = db.begin().await?;
-    sqlx::query("update segments set status = 'working' where id = $1").bind(segment.id).execute(&mut *tx).await?;
+    // Checked in the update, so an archive that lands after the campaign was loaded still wins.
+    let started =
+        sqlx::query("update segments set status = 'working' where id = $1 and archived_at is null").bind(segment.id).execute(&mut *tx).await?;
+    if started.rows_affected() == 0 {
+        return Err(archived_error());
+    }
     // Pausing turned queued follow-ups back into drafts, so starting queues them again for the day they were due.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
         "update email_messages set status = 'approved', approved_via = 'person',
@@ -419,11 +455,62 @@ pub(super) async fn hold(db: &PgPool, who: impl Into<Who>, segment: &Segment) ->
     Ok(())
 }
 
+fn archived_error() -> AppError {
+    AppError::Conflict("This campaign is archived. Unarchive it first.".into())
+}
+
+fn ensure_not_archived(segment: &Segment) -> AppResult<()> {
+    if segment.archived_at.is_some() { Err(archived_error()) } else { Ok(()) }
+}
+
+async fn archive_route(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SegmentWithStats>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    archive(&state.db, &auth, &segment).await?;
+    Ok(Json(one_with_stats(&state.db, &segment).await?))
+}
+
+async fn unarchive_route(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SegmentWithStats>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    unarchive(&state.db, &auth, &segment).await?;
+    Ok(Json(one_with_stats(&state.db, &segment).await?))
+}
+
+/// Pauses the campaign and takes it out of the lists that add leads or send. Its leads, emails and stats stay, and replies
+/// to its emails still reach the inbox. Archiving it again changes nothing. POST /v1/campaigns/{id}/archive calls it too.
+pub(super) async fn archive(db: &PgPool, who: impl Into<Who>, segment: &Segment) -> AppResult<()> {
+    let who = who.into();
+    // Archived before it's held, so a Start in between is refused rather than sending again. The status is the row's as it
+    // is archived, not as it was loaded, since a Start may have landed in between.
+    let status: Option<String> = sqlx::query_scalar("update segments set archived_at = now() where id = $1 and archived_at is null returning status")
+        .bind(segment.id)
+        .fetch_optional(db)
+        .await?;
+    let Some(status) = status else { return Ok(()) };
+    // A draft campaign can hold emails approved one at a time, which the sender would still send, so it's held too.
+    if status != "paused" {
+        hold(db, who, segment).await?;
+    }
+    let target = Target::new("campaign", segment.id, &segment.name);
+    audit::record(db, who, "campaign.archived", target, json!({ "project_id": segment.project_id })).await;
+    Ok(())
+}
+
+/// Brings the campaign back to the lists, paused. It only sends once someone starts it.
+pub(super) async fn unarchive(db: &PgPool, who: impl Into<Who>, segment: &Segment) -> AppResult<()> {
+    let unarchived =
+        sqlx::query("update segments set archived_at = null where id = $1 and archived_at is not null").bind(segment.id).execute(db).await?;
+    if unarchived.rows_affected() > 0 {
+        let target = Target::new("campaign", segment.id, &segment.name);
+        audit::record(db, who, "campaign.unarchived", target, json!({ "project_id": segment.project_id })).await;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::PgPool;
 
-    use super::with_stats;
+    use super::{Archived, with_stats};
     use crate::routes::stats::tests::seed_costs;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -431,7 +518,7 @@ mod tests {
     #[ignore = "needs Postgres"]
     async fn campaign_spend_counts_its_own_runs_and_emails(db: PgPool) {
         let seeded = seed_costs(&db).await;
-        let rows = with_stats(&db, seeded.project, None).await.unwrap();
+        let rows = with_stats(&db, seeded.project, None, Archived::Hidden).await.unwrap();
         let row = |id| rows.iter().find(|r| r.segment.id == id).unwrap();
 
         let cheap = row(seeded.cheap);
@@ -444,7 +531,7 @@ mod tests {
         assert_eq!((cheap.bounced, pricey.bounced), (0, 0));
 
         sqlx::query("update leads set status = 'bounced' where segment_id = $1").bind(seeded.pricey).execute(&db).await.unwrap();
-        let rows = with_stats(&db, seeded.project, Some(seeded.pricey)).await.unwrap();
+        let rows = with_stats(&db, seeded.project, Some(seeded.pricey), Archived::Hidden).await.unwrap();
         assert_eq!(rows[0].bounced, 1);
     }
 }

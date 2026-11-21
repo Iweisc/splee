@@ -19,6 +19,7 @@ use crate::routes::util_lead_import::{self, NewLead};
 pub const MAX_LEADS: usize = 30_000;
 const FAILED: &str = "Splee couldn't import these leads. Send them again with a new Idempotency-Key";
 const CAMPAIGN_DELETED: &str = "The campaign was deleted before its leads were imported";
+const CAMPAIGN_ARCHIVED: &str = "The campaign was archived before its leads were imported";
 const SKIPPED: &str = "skipped";
 const DEDUPED: &str = "deduped";
 
@@ -169,18 +170,26 @@ impl Known {
 }
 
 async fn run(tx: &mut PgConnection, task: &Pending) -> AppResult<()> {
-    // Shared, so the campaign can't be deleted while its leads go in.
+    // Shared, so the campaign can't be deleted or archived while its leads go in.
     let segment = match task.segment_id {
-        Some(id) => sqlx::query_scalar::<_, Uuid>("select id from segments where id = $1 for share").bind(id).fetch_optional(&mut *tx).await?,
+        Some(id) => {
+            sqlx::query_as::<_, (Uuid, bool)>("select id, archived_at is not null from segments where id = $1 for share")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
         None => None,
     };
-    let Some(segment) = segment else {
-        sqlx::query("update campaign_imports set status = 'failed', error = $2, completed_at = now() where id = $1")
-            .bind(task.id)
-            .bind(CAMPAIGN_DELETED)
-            .execute(&mut *tx)
-            .await?;
-        return Ok(());
+    let segment = match segment {
+        Some((id, false)) => id,
+        found => {
+            sqlx::query("update campaign_imports set status = 'failed', error = $2, completed_at = now() where id = $1")
+                .bind(task.id)
+                .bind(if found.is_some() { CAMPAIGN_ARCHIVED } else { CAMPAIGN_DELETED })
+                .execute(&mut *tx)
+                .await?;
+            return Ok(());
+        }
     };
     let submitted = sqlx::query_as::<_, Submitted>(
         "select row_index, email, first_name, last_name, company_domain, job_title, linkedin_url from campaign_import_rows

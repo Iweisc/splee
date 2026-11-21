@@ -1,6 +1,6 @@
 //! The review window (migration 0179): with `project_settings.review_window_hours` set, a draft nobody reviewed in that time is
 //! approved on its own and goes through the sender like any approved email, so the send window, daily limits, suppressions and
-//! warmup still apply. It covers first emails and follow-ups in a sending campaign of an unpaused project. A draft someone edited
+//! warmup still apply. It covers first emails and follow-ups in a sending, unarchived campaign of an unpaused project. A draft someone edited
 //! keeps waiting, and so do auto-replies and meeting follow-ups, which answer a person.
 
 use std::sync::LazyLock;
@@ -10,7 +10,8 @@ use sqlx::PgPool;
 /// The drafts the window covers, over `email_messages e`, `project_settings ps` and `segments s`. The Emails page and the Slack
 /// digest say when each one sends with SENDS_AT, so this is the one place that decides it.
 const COVERED: &str = "e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status = 'draft' and e.edited_at is null
-       and ps.review_window_hours is not null and not ps.paused and s.status in ('working', 'scaling')";
+       and ps.review_window_hours is not null and not ps.paused and s.status in ('working', 'scaling')
+       and s.archived_at is null";
 
 /// When a draft sends on its own, or null when it waits for a person. A time in the past means the sender's next tick.
 pub static SENDS_AT: LazyLock<String> =
