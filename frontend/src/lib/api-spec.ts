@@ -169,9 +169,10 @@ export function openapi(origin: string) {
   };
 }
 
-/** One endpoint as a line of llms.txt, with its fields and body under it. */
+/** One endpoint as a line of llms.txt, with its example query, since some are required, and its fields and body under it. */
 function entry(e: Endpoint) {
-  const lines = [`- \`${e.method} ${template(e.path)}\`: ${e.summary}`];
+  const query = e.path.split("?")[1];
+  const lines = [`- \`${e.method} ${template(e.path)}${query ? `?${query}` : ""}\`: ${e.summary}`];
   for (const [names, description] of e.params ?? []) lines.push(`  - \`${names}\`: ${description}`);
   if (e.body) lines.push(`  - Body: \`${e.body.replace(/\s*\n\s*/g, " ")}\``);
   if (e.form) lines.push(`  - Multipart form: \`${e.form}\``);
