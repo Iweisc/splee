@@ -5,14 +5,14 @@
 //! API v1 handler for that organization.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use axum::body::{Bytes, to_bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::Url;
@@ -25,6 +25,7 @@ use super::api_v1 as v1;
 use super::oauth;
 use super::util_input::LEAD_STATUSES;
 use crate::auth::{ApiKeyAuth, KeyAuth};
+use crate::company_filters::{Claude, Model};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -42,7 +43,7 @@ const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
-list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
+list_projects, then list_campaigns or create_campaign, search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
@@ -256,9 +257,10 @@ pub(crate) async fn call(state: &AppState, auth: ApiKeyAuth, name: &str, args: V
 }
 
 /// The tools that only read, for Ask Splee. Local business search is left out because it spends the organization's Google
-/// Maps calls, and downloading companies because it spends the organization's downloads.
+/// Maps calls, downloading companies because it spends the organization's downloads, and filling in company filters because
+/// it's a Claude call of its own.
 pub(crate) fn read_tools() -> Vec<Value> {
-    let spends = ["search_local_businesses", "download_companies"];
+    let spends = ["search_local_businesses", "download_companies", "fill_company_filters"];
     tools().into_iter().filter(|t| t["annotations"]["readOnlyHint"] == json!(true) && !spends.iter().any(|s| t["name"] == *s)).collect()
 }
 
@@ -343,6 +345,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "get_campaign_import" => async { value(v1::campaign_import(st(), auth, id(a, "task_id")?).await?) }.await,
         "list_campaign_import_rows" => async { value(v1::campaign_import_rows(st(), auth, id(a, "task_id")?, Query(parse(a)?)).await?) }.await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "fill_company_filters" => async {
+            let model: Arc<dyn Model> = Arc::new(Claude);
+            value(v1::companies_filters(st(), auth, Extension(model), Json(parse(a)?)).await?)
+        }
+        .await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
         "list_company_dedup_lists" => async { value(v1::list_dedup_lists(st(), auth).await?) }.await,
         "create_company_dedup_list" => async { value(v1::add_to_dedup_list(st(), auth, Json(parse(a)?)).await?) }.await,
@@ -755,6 +762,17 @@ fn tools() -> Vec<Value> {
                 "include_hidden": { "type": "boolean", "description": "Optional. True to show the companies on dedup lists too" },
             })),
             &[],
+            read.clone(),
+        ),
+        tool(
+            "fill_company_filters",
+            "Fill in company search filters",
+            "Turns a description like \"dental clinics in Leeds that list an email and use Shopify\" into search_companies filters: \
+             q, country, city, category, has_email, has_phone and tech, using only categories and countries the database has and \
+             tools Splee detects. note says what it couldn't turn into a filter, like company size. Pass filters to search_companies \
+             as they are. 30 an hour per organization.",
+            json!({ "query": { "type": "string", "description": "What companies to find, in a sentence, up to 500 characters" } }),
+            &["query"],
             read.clone(),
         ),
         tool(
@@ -1753,7 +1771,7 @@ mod tests {
                      "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",
                      "list_hot_leads", "get_inbox_changes",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
-                     "get_email_batch", "download_companies", "import_campaign", "get_campaign_import",
+                     "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",
                      "get_project_my_copy", "update_project_my_copy", "list_company_dedup_lists", "create_company_dedup_list",
                      "get_company_dedup_list", "set_company_dedup_list_projects", "delete_company_dedup_list"] {

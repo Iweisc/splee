@@ -129,7 +129,7 @@ async fn run(db: &PgPool, catalog: &str, id: Uuid, country: &str) -> anyhow::Res
             save(db, id, progress, Some(Err(format!("{e:#}")))).await?;
         }
     }
-    directory::forget_countries();
+    directory::forget_lists();
     Ok(())
 }
 
