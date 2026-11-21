@@ -311,6 +311,7 @@ mod tests {
 
         sqlx::query("update deals set status = 'lost' where id = $1").bind(t.deal).execute(&db).await.unwrap();
         assert!(deal_rooms::public(&db, "https://app.example", &room.token).await.unwrap().is_none(), "gone once the deal is lost");
-        assert_eq!(deal_rooms::for_deal(&db, "https://app.example", t.deal).await.unwrap().unwrap().views, 2);
+        deal_rooms::record_view(&db, "https://app.example", &room.token).await.unwrap();
+        assert_eq!(deal_rooms::for_deal(&db, "https://app.example", t.deal).await.unwrap().unwrap().views, 2, "a lost deal's page counts no views");
     }
 }

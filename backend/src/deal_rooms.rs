@@ -236,11 +236,11 @@ async fn about(db: &PgPool, public_url: &str, room_id: Uuid) -> sqlx::Result<(Uu
     Ok((project_id, format!("{}/app/pipeline?deal={deal_id}", public_url.trim_end_matches('/')), who))
 }
 
-/// Counts a look at the page and tells the project's chats about the first one.
+/// Counts a look at the page and tells the project's chats about the first one. A lost deal's page is gone, so it counts nothing.
 pub async fn record_view(db: &PgPool, public_url: &str, token: &str) -> sqlx::Result<()> {
     let seen: Option<(Uuid, bool)> = sqlx::query_as(
-        "update deal_rooms set views = views + 1, first_viewed_at = coalesce(first_viewed_at, now()), last_viewed_at = now()
-         where token = $1 and room is not null returning id, views = 1",
+        "update deal_rooms r set views = views + 1, first_viewed_at = coalesce(first_viewed_at, now()), last_viewed_at = now()
+         from deals d where d.id = r.deal_id and r.token = $1 and r.room is not null and d.status <> 'lost' returning r.id, r.views = 1",
     )
     .bind(token)
     .fetch_optional(db)
