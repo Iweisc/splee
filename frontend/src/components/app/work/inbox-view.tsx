@@ -22,6 +22,7 @@ import type {
   Paginated,
   ProjectSummary,
   SavedReply,
+  SegmentWithStats,
   TextMessage,
   ThreadMessage,
 } from "@/lib/types";
@@ -44,6 +45,7 @@ type Filter = "all" | "hot" | "needs_reply" | "auto_replied" | "other";
 export function InboxView({ projectId, initialLead }: { projectId?: string; initialLead?: string }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [project, setProject] = useState("");
+  const [campaign, setCampaign] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [selectedLead, setSelectedLead] = useState<string | null>(initialLead ?? null);
@@ -51,8 +53,11 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const [owner, setOwner] = useOwnerFilter("inbox");
 
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
+  // Archived campaigns too, since their leads can still reply.
+  const { data: campaigns } = useSWR<SegmentWithStats[]>(projectId ? `/projects/${projectId}/segments?archived=true` : null, fetcher);
   const ownerParam = owner === "everyone" ? "" : owner;
-  const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, owner: ownerParam, page, per_page: PER_PAGE })}`;
+  const params = { project_id: projectId ?? project, segment_id: campaign, filter, q: query, owner: ownerParam, page, per_page: PER_PAGE };
+  const key = `/inbox${qs(params)}`;
   const { data, error, isLoading, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
   useLastPageGuard(data?.total, page, setPage);
   // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
@@ -68,6 +73,11 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   };
   const pickOwner = (o: OwnerFilter) => {
     setOwner(o);
+    setPage(1);
+    setSelectedLead(null);
+  };
+  const pickCampaign = (id: string) => {
+    setCampaign(id);
     setPage(1);
     setSelectedLead(null);
   };
@@ -130,6 +140,17 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
               </Select>
             )}
           </div>
+          {/* A row of its own, since campaign names run long and a select can't end one with an ellipsis. */}
+          {projectId && (
+            <Select value={campaign} onChange={(e) => pickCampaign(e.target.value)} className="h-9" aria-label="Campaign">
+              <option value="">All campaigns</option>
+              {campaigns?.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {error ? (
@@ -150,12 +171,23 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
                 }
               />
             ) : owner !== "everyone" ? (
+              // Before the campaign's, since "No replies in this campaign" would be wrong while teammates' leads are hidden.
               <EmptyState
                 icon={<Inbox className="size-5" />}
                 title={owner === "mine" ? "No replies from your leads" : "No replies from unassigned leads"}
                 action={
                   <Button variant="outline" size="sm" onClick={() => pickOwner("everyone")}>
                     Show everyone&apos;s
+                  </Button>
+                }
+              />
+            ) : campaign ? (
+              <EmptyState
+                icon={<Inbox className="size-5" />}
+                title="No replies in this campaign"
+                action={
+                  <Button variant="outline" size="sm" onClick={() => pickCampaign("")}>
+                    Show all campaigns
                   </Button>
                 }
               />
