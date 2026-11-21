@@ -700,7 +700,7 @@ function endpoints(projectId: string): Endpoint[] {
         ["dry_run", "optional, count without queueing"],
       ],
       body: `{ "dry_run": true }`,
-      response: `{ "companies": 120, "answers": 120, "more": 0, "runs": 12, "cost_per_company_micros": 21000 }`,
+      response: `{ "companies": 120, "answers": 120, "more": 0, "runs": 0, "cost_per_company_micros": 21000 }`,
     },
     {
       method: "GET",
@@ -1343,7 +1343,7 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
-      path: `/projects/${projectId}/calls?status=open`,
+      path: `/projects/${projectId}/calls?status=done`,
       summary:
         "Calls to make, overdue first, then the ones made in the last 14 days, newest first, like the Calls page, for a dialer or CRM to work from. bucket is overdue, today or done. local_time is the time where the lead is, and outside_hours says why now is outside their calling hours, or null.",
       params: [
