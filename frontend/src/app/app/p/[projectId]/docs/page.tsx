@@ -16,6 +16,8 @@ interface Endpoint {
   summary: string;
   params?: [name: string, description: string][];
   body?: string;
+  /** A multipart form field, for an upload. */
+  form?: string;
   response: string;
 }
 
@@ -926,6 +928,91 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: "/leads/c42e…/thread",
+      summary:
+        "The lead's emails in both directions, oldest first, like the inbox's thread. reply_cc is who a reply copies in when you don't name anyone: everyone the lead copied on their last message, minus your own mailboxes and the do-not-contact list. Download a file with GET /attachments/{id}.",
+      response: `{
+  "lead_id": "c42e…",
+  "messages": [
+    {
+      "id": "71aa…",
+      "direction": "inbound",
+      "kind": "inbound",
+      "channel": "email",
+      "status": "received",
+      "subject": "Re: Northwind Studio x Acme",
+      "body": "Sounds interesting, can you send times for next week?",
+      "from_email": "sarah@northwind.studio",
+      "to_email": "alex@acme.com",
+      "cc_emails": [],
+      "classification": "hot",
+      "attachments": [],
+      "sent_at": null,
+      "created_at": "2026-11-04T10:12:00Z"
+    }
+  ],
+  "reply_cc": []
+}`,
+    },
+    {
+      method: "POST",
+      path: "/leads/c42e…/reply",
+      summary:
+        "Answer the lead's last message, like Send in the inbox. The reply goes out from the mailbox they wrote to on its next pass, in the same thread, and an agent reply still waiting for approval is cancelled. 400 for a lead who hasn't replied yet.",
+      params: [
+        ["body_text", "the reply"],
+        ["cc_emails", "optional, the whole list to copy in. Without it, reply_all decides"],
+        ["reply_all", "optional, default true: copy in everyone the lead copied in last, as reply_cc shows"],
+        ["attachment_ids", "optional ids from POST /attachments, up to 10"],
+      ],
+      body: `{ "body_text": "Happy to. Does Tuesday at 10 or Wednesday at 2 work?" }`,
+      response: `{
+  "id": "e6f6…",
+  "direction": "outbound",
+  "kind": "manual_reply",
+  "channel": "email",
+  "status": "scheduled",
+  "subject": "Re: Northwind Studio x Acme",
+  "body": "Happy to. Does Tuesday at 10 or Wednesday at 2 work?",
+  "to_email": "sarah@northwind.studio",
+  "cc_emails": [],
+  "attachments": [],
+  "…": "…"
+}`,
+    },
+    {
+      method: "POST",
+      path: "/attachments",
+      summary:
+        "Upload a file for a reply as a multipart form with the file in its file field, then pass its id in the reply's attachment_ids. Up to 25 MB. A file no reply takes is deleted after a day, and 429 means 100 are already waiting.",
+      form: "file=@pricing.pdf",
+      response: `{
+  "id": "56b4…",
+  "message_id": null,
+  "filename": "pricing.pdf",
+  "content_type": "application/pdf",
+  "size_bytes": 48211,
+  "inline": false,
+  "stored": true,
+  "created_at": "2026-11-04T10:20:00Z"
+}`,
+    },
+    {
+      method: "GET",
+      path: "/attachments/56b4…",
+      summary: "Download a file from a thread or one you uploaded, as the file itself with its name in Content-Disposition.",
+      response: "The file's bytes",
+    },
+    {
+      method: "POST",
+      path: "/leads/c42e…/assign",
+      summary: "Give a lead to someone on your team, or take it back with null. Assignment rules never move it afterwards. Returns the lead like GET.",
+      params: [["owner", "a team member's user id or email, or null for nobody"]],
+      body: `{ "owner": "maya@acme.com" }`,
+      response: `{ "id": "c42e…", "owner_id": "44c7…", "owner_name": "Maya Patel", "owner_email": "maya@acme.com", "…": "…" }`,
+    },
+    {
+      method: "GET",
       path: "/suppressions?since=2026-11-01T00:00:00Z&page=1",
       summary:
         "Your organization's do-not-contact list, oldest first, to copy unsubscribes and bounces into your CRM or other sending tools. reason is manual, customer, unsubscribe or bounce. Read every page, then next time pass the last created_at you saw as since.",
@@ -1294,6 +1381,80 @@ function endpoints(projectId: string): Endpoint[] {
   "channels": [{ "channel": "email", "sent": 410, "leads": 230, "replies": 17, "reply_rate": 0.074 }]
 }`,
     },
+    {
+      method: "GET",
+      path: "/deal-stages",
+      summary: "Your pipeline's stages in board order, with how many deals each holds. kind is open, won or lost, and auto is hot or booked for the stages a hot reply and a booked meeting move a deal to.",
+      response: `[
+  { "id": "8115…", "name": "Interested", "kind": "open", "position": 0, "probability": 10, "auto": "hot", "deals": 4 },
+  { "id": "e19a…", "name": "Proposal", "kind": "open", "position": 2, "probability": 50, "auto": null, "deals": 2 },
+  { "id": "acee…", "name": "Won", "kind": "won", "position": 4, "probability": 100, "auto": null, "deals": 1 }
+]`,
+    },
+    {
+      method: "GET",
+      path: `/deals?project_id=${projectId}&status=open`,
+      summary: "Your organization's deals, the latest first, like the Pipeline page. status is open, won or lost. value is in the deal's currency.",
+      params: [
+        ["project_id", "optional, all projects without it"],
+        ["status", "optional open, won or lost"],
+        ["stage_id, owner_id, lead_id", "optional, one stage's, one teammate's or one lead's deals"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "5405…",
+      "project_id": "${projectId}",
+      "lead_id": "c42e…",
+      "lead_name": "Sarah Chen",
+      "lead_email": "sarah@northwind.studio",
+      "company_name": "Northwind Studio",
+      "stage_id": "e19a…",
+      "stage": "Proposal",
+      "status": "open",
+      "value": 4800.0,
+      "currency": "USD",
+      "close_date": "2026-12-15",
+      "owner_id": null,
+      "notes": "Two sites, wants a call",
+      "source": "api",
+      "stage_changed_at": "2026-11-05T09:00:00Z",
+      "closed_at": null,
+      "created_at": "2026-11-04T10:30:00Z",
+      "…": "…"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "POST",
+      path: "/deals",
+      summary:
+        "Open a deal for a lead, in the stage hot replies open deals in (auto hot on GET /deal-stages) unless you name one. A lead has one open deal at a time, so a second is 409. Returns the deal like the list.",
+      params: [
+        ["lead_id", "the lead"],
+        ["stage_id or stage", "optional, a stage's id or its name"],
+        ["value, currency", "optional amount and ISO currency code"],
+        ["close_date", "optional YYYY-MM-DD"],
+        ["owner_id, notes", "optional"],
+      ],
+      body: `{ "lead_id": "c42e…", "stage": "Interested", "value": 4800, "currency": "USD", "close_date": "2026-12-15" }`,
+      response: `{ "id": "5405…", "stage": "Interested", "status": "open", "value": 4800.0, "…": "…" }`,
+    },
+    {
+      method: "POST",
+      path: "/deals/5405…/move",
+      summary: "Move a deal to another stage, by id or by name. Moving it to Won closes it as won with value as its final amount, and to Lost with lost_reason.",
+      params: [
+        ["stage_id or stage", "the stage's id or its name"],
+        ["value", "optional final amount, for a won stage"],
+        ["lost_reason", "optional, for a lost stage"],
+      ],
+      body: `{ "stage": "Won", "value": 5200 }`,
+      response: `{ "id": "5405…", "stage": "Won", "status": "won", "value": 5200.0, "closed_at": "2026-11-20T15:00:00Z", "…": "…" }`,
+    },
   ];
 }
 
@@ -1385,6 +1546,7 @@ function EndpointSection({ e, base }: { e: Endpoint; base: string }) {
     `curl${e.method === "GET" ? "" : ` -X ${e.method}`} "${base}${e.path}"`,
     `  -H "Authorization: Bearer $SPLEE_API_KEY"`,
     ...(e.body ? [`  -H "Content-Type: application/json"`, `  -d '${e.body}'`] : []),
+    ...(e.form ? [`  -F "${e.form}"`] : []),
   ].join(" \\\n");
   return (
     <Section
