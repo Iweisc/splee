@@ -43,7 +43,7 @@ export default function AutopilotPage() {
           <Section
             title="Run on autopilot"
             description="Every 10 minutes it checks your sending campaigns. When one has less than 3 days of emails written, it finds companies, then the people at them, then writes their emails, one run at a time. Campaigns that get poor results pause themselves."
-            actions={<Switch checked={s.autopilot} onChange={(autopilot) => update({ autopilot })} label="Run on autopilot" />}
+            toggle={<Switch checked={s.autopilot} onChange={(autopilot) => update({ autopilot })} label="Run on autopilot" />}
           />
 
           <Section
@@ -90,73 +90,73 @@ export default function AutopilotPage() {
           <Section
             title="Nudge quiet deals"
             description="When an open deal goes 14 days without an email either way, a call or a stage change, the agent reads the conversation and drafts a short email in the thread with a reason to answer now, like their company's news or a page of yours they read. It waits on the Emails page for your approval, and your chats hear about it. Each quiet stretch gets one nudge."
-            actions={<Switch checked={s.nudge_quiet_deals} onChange={(nudge_quiet_deals) => update({ nudge_quiet_deals })} label="Nudge quiet deals" />}
+            toggle={<Switch checked={s.nudge_quiet_deals} onChange={(nudge_quiet_deals) => update({ nudge_quiet_deals })} label="Nudge quiet deals" />}
           />
 
           <Section
             title="Rate deal health"
             description="The agent reads each open deal's conversation, close plan and proposal, and rates it on track, at risk or stalled, with how likely it is to close, why, and the next step. It shows on the pipeline and weights the forecast. A deal is rated again when it changes, or every 3 days."
-            actions={<Switch checked={s.deal_health} onChange={(deal_health) => update({ deal_health })} label="Rate deal health" />}
+            toggle={<Switch checked={s.deal_health} onChange={(deal_health) => update({ deal_health })} label="Rate deal health" />}
           />
 
           <Section
             title="Qualify deals"
             description="The agent checks each open deal against MEDDICC: the metrics, economic buyer, decision criteria and process, paper process, pain, champion and competition. Each counts only when the buyer said or showed it, and every gap gets a question to ask. Meeting briefs ask those questions first. A deal is checked again after something happens in it."
-            actions={<Switch checked={s.qualify_deals} onChange={(qualify_deals) => update({ qualify_deals })} label="Qualify deals" />}
+            toggle={<Switch checked={s.qualify_deals} onChange={(qualify_deals) => update({ qualify_deals })} label="Qualify deals" />}
           />
 
           <Section
             title="Forecast the pipeline"
             description="Every Monday morning the agent sorts the project's open deals into what will close this month, what could and what won't, from their health, qualification, close plan and proposal. It picks the deals to work on this week and the ones slipping, shows it on the Pipeline page's Forecast tab and posts it to your chats."
-            actions={<Switch checked={s.pipeline_forecast} onChange={(pipeline_forecast) => update({ pipeline_forecast })} label="Forecast the pipeline" />}
+            toggle={<Switch checked={s.pipeline_forecast} onChange={(pipeline_forecast) => update({ pipeline_forecast })} label="Forecast the pipeline" />}
           />
 
           <Section
             title="Coach calls"
             description="After a sales meeting or a phone call is summarized, the agent scores it from 1 to 10 and says what went well and what to change, with the words said and what to say instead. It counts how much your side talked and how many questions it asked. The Coaching page shows it by rep."
-            actions={<Switch checked={s.coach_calls} onChange={(coach_calls) => update({ coach_calls })} label="Coach calls" />}
+            toggle={<Switch checked={s.coach_calls} onChange={(coach_calls) => update({ coach_calls })} label="Coach calls" />}
           />
 
           <Section
             title="Prep calls"
             description="Before a call comes due, the agent writes its talk track from what Splee knows about the lead: an opener tied to something they did, questions to ask, the objections they're likely to raise with answers, a voicemail and one reminder from the caller's coaching. It shows on the Calls page and beside the dialer."
-            actions={<Switch checked={s.prep_calls} onChange={(prep_calls) => update({ prep_calls })} label="Prep calls" />}
+            toggle={<Switch checked={s.prep_calls} onChange={(prep_calls) => update({ prep_calls })} label="Prep calls" />}
           />
 
           <Section
             title="Win back lost deals"
             description="When a deal is lost, the agent reads why and picks the day to try again, like a month before the contract they chose renews. On that day, or sooner if they come back to your website, it drafts an email in the thread for your approval. The Pipeline page's Win-back tab lists them."
-            actions={<Switch checked={s.win_back_lost_deals} onChange={(win_back_lost_deals) => update({ win_back_lost_deals })} label="Win back lost deals" />}
+            toggle={<Switch checked={s.win_back_lost_deals} onChange={(win_back_lost_deals) => update({ win_back_lost_deals })} label="Win back lost deals" />}
           />
 
           <Section
             title="Write battlecards"
             description="When a deal is won or lost against a competitor, the agent reads their website, your deals against them and what buyers said about them, and writes how to sell against them. A newer deal rewrites it after a week. The Competitors page and the window of a deal that mentions them show it."
-            actions={<Switch checked={s.write_battlecards} onChange={(write_battlecards) => update({ write_battlecards })} label="Write battlecards" />}
+            toggle={<Switch checked={s.write_battlecards} onChange={(write_battlecards) => update({ write_battlecards })} label="Write battlecards" />}
           />
 
           <Section
             title="Grow customers"
             description="A month after a deal is won, the agent watches the customer's company. When there's news, new job openings or someone there reads your pricing, it decides whether there's room to sell more and drafts the email to the person who bought, for your approval. The Customers page's Expansion tab lists them."
-            actions={<Switch checked={s.grow_accounts} onChange={(grow_accounts) => update({ grow_accounts })} label="Grow customers" />}
+            toggle={<Switch checked={s.grow_accounts} onChange={(grow_accounts) => update({ grow_accounts })} label="Grow customers" />}
           />
 
           <Section
             title="Ask for referrals"
             description="Six weeks after a deal is won, the agent reads whether the customer is happy. If they are, it drafts an email asking whether they know someone at a few companies like theirs, with a page of their own to forward. Whoever leaves their details there becomes a lead credited to them. The Customers page's Referrals tab lists them."
-            actions={<Switch checked={s.ask_for_referrals} onChange={(ask_for_referrals) => update({ ask_for_referrals })} label="Ask for referrals" />}
+            toggle={<Switch checked={s.ask_for_referrals} onChange={(ask_for_referrals) => update({ ask_for_referrals })} label="Ask for referrals" />}
           />
 
           <Section
             title="Catch customers about to leave"
             description="The agent watches every customer for warning signs: the person who bought leaving the company, a refund, payments that stop coming, or a reply that reads as unhappy. It says how likely they are to leave and what to do, and drafts an email in the thread when one would help. High risks go to your chats. The Customers page's At risk tab lists them."
-            actions={<Switch checked={s.watch_churn} onChange={(watch_churn) => update({ watch_churn })} label="Catch customers about to leave" />}
+            toggle={<Switch checked={s.watch_churn} onChange={(watch_churn) => update({ watch_churn })} label="Catch customers about to leave" />}
           />
 
           <Section
             title="Prep renewals"
             description="A customer renews a year after you won them, or on the date you set in their deal. 90 days before, the agent reads the account and writes how likely they are to renew, the steps to a signed renewal and an email that opens the conversation, for your approval. The Customers page's Renewals tab lists them."
-            actions={<Switch checked={s.prep_renewals} onChange={(prep_renewals) => update({ prep_renewals })} label="Prep renewals" />}
+            toggle={<Switch checked={s.prep_renewals} onChange={(prep_renewals) => update({ prep_renewals })} label="Prep renewals" />}
           />
 
           <Section title="Approval" description="Follow-ups in a sending campaign go out on their own either way.">
@@ -172,7 +172,7 @@ export default function AutopilotPage() {
           <Section
             title="Send drafts nobody reviews"
             description="A first email or follow-up waiting in a sending campaign goes out on its own once the hours below pass, within your schedule and daily limit. Edit a draft and it waits for you. Auto-replies and meeting follow-ups always wait."
-            actions={
+            toggle={
               <Switch
                 checked={s.review_window_hours !== null}
                 onChange={(on) => update({ review_window_hours: on ? REVIEW_WINDOW_HOURS.start : null })}

@@ -12,27 +12,32 @@ export function SettingsColumn({ className, ...props }: React.HTMLAttributes<HTM
   return <div className={cn("mx-auto flex max-w-3xl flex-col gap-5", className)} {...props} />;
 }
 
-/** A settings card: title, one line on what it changes, then the controls. */
+/** A settings card: title, one line on what it changes, then the controls. `toggle` is the switch that turns the card on. */
 export function Section({
   title,
   description,
+  toggle,
   actions,
   children,
   className,
 }: {
   title: React.ReactNode;
   description?: React.ReactNode;
+  toggle?: React.ReactNode;
   actions?: React.ReactNode;
   children?: React.ReactNode;
   className?: string;
 }) {
   return (
     <Card className={cn("p-6", className)}>
-      {/* Actions wrap under the description when both don't fit. A switch stays beside the title,
-          but a button no longer squeezes the description into a narrow column on phones. */}
+      {/* Actions wrap under the description when both don't fit, so a button never squeezes it into a narrow column on phones.
+          A toggle sits beside the title alone, so the description runs the card's full width under both. */}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1 basis-56">
-          <h2 className="font-semibold">{title}</h2>
+          <div className="flex items-start justify-between gap-4">
+            <h2 className="font-semibold">{title}</h2>
+            {toggle}
+          </div>
           {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}

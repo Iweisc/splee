@@ -46,7 +46,7 @@ function Away() {
     <Section
       title="Away"
       description="While you're away, round robin skips you and new leads go to the rest of the team. Leads you already own stay yours."
-      actions={<Switch checked={me.away} onChange={set} label="Away" />}
+      toggle={<Switch checked={me.away} onChange={set} label="Away" />}
     />
   );
 }

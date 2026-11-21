@@ -20,7 +20,7 @@ export default function ChannelsPage() {
               </span>
             }
             description="Personal cold emails and follow-ups, sent from your own mailboxes and paid per sent email."
-            actions={<Switch checked disabled onChange={() => {}} label="Email is always on" />}
+            toggle={<Switch checked disabled onChange={() => {}} label="Email is always on" />}
           >
             <Link href="/app/domains" className="inline-flex items-center gap-1 text-sm font-medium hover:underline">
               Manage mailboxes <ArrowRight className="size-3.5" />
@@ -34,7 +34,7 @@ export default function ChannelsPage() {
               </span>
             }
             description="When a lead with a LinkedIn profile gets their first email, the agent writes them a connection note and two follow-up messages. You send these from your own profile, or connect Unipile in Integrations and Splee sends them for you."
-            actions={
+            toggle={
               <Switch
                 checked={s.channels.linkedin}
                 onChange={(linkedin) => update({ channels: { ...s.channels, linkedin } })}

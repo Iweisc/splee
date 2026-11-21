@@ -84,7 +84,7 @@ export default function WebsiteChatPage({ params }: PageProps<"/app/p/[projectId
               <Section
                 title="Chat on your site"
                 description={s.enabled ? "Visitors on your domains see the chat button." : "Off. The script draws nothing until you turn it on."}
-                actions={<Switch checked={s.enabled} onChange={(enabled) => update({ enabled })} label="Chat on your site" />}
+                toggle={<Switch checked={s.enabled} onChange={(enabled) => update({ enabled })} label="Chat on your site" />}
               >
                 <div className="flex flex-col gap-4">
                   <CodeBlock code={`<script async src="${origin}/api/c/${data.site.site_key}.js"></script>`} label="Add to every page" wrap />

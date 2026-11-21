@@ -53,7 +53,7 @@ export default function NotificationsPage() {
                 key={p.key}
                 title={p.title}
                 description={p.description}
-                actions={<Switch checked={data[p.key]} onChange={(v) => toggle(p.key, v)} label={p.title} />}
+                toggle={<Switch checked={data[p.key]} onChange={(v) => toggle(p.key, v)} label={p.title} />}
               />
             ))
           )}
