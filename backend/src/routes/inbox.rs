@@ -40,6 +40,9 @@ pub(crate) const MAX_CC: usize = 20;
 #[derive(Deserialize)]
 pub(super) struct ListQuery {
     pub project_id: Option<Uuid>,
+    /// Only the threads of this campaign's leads.
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    pub segment_id: Option<Uuid>,
     pub filter: Option<String>,
     pub q: Option<String>,
     /// Mine, unassigned, mine_or_unassigned or a member's id. See ownership::OwnerFilter.
@@ -65,7 +68,8 @@ struct ThreadRef {
 }
 
 // One thread per lead with at least one inbound message. Drafts and cancelled emails never count as the
-// last message, so a pending auto-reply doesn't hide that the lead is waiting for an answer. $5 and $6 are an OwnerFilter.
+// last message, so a pending auto-reply doesn't hide that the lead is waiting for an answer. $5 and $6 are an OwnerFilter, $7 a
+// campaign.
 fn threads() -> String {
     format!("with t as (
        select l.id as lead_id, l.status as lead_status, l.remind_at, p.name as project_name,
@@ -87,7 +91,7 @@ fn threads() -> String {
          where i.lead_id = l.id and i.direction = 'inbound'
          order by i.created_at desc limit 1
        ) reply
-       where p.org_id = $1 and ($2::uuid is null or l.project_id = $2)
+       where p.org_id = $1 and ($2::uuid is null or l.project_id = $2) and ($7::uuid is null or l.segment_id = $7)
          -- The reply join above already drops leads without one. This lets Postgres start from the few leads that
          -- replied instead of looking up the last message of every lead in the org: 490 ms to 30 ms at 50k leads.
          and l.id in (select i.lead_id from email_messages i where i.direction = 'inbound')
@@ -123,6 +127,7 @@ pub(crate) async fn needs_reply_count(db: &sqlx::PgPool, org_id: Uuid, project_i
         .bind(None::<String>)
         .bind(OwnerFilter::Everyone.mode())
         .bind(None::<Uuid>)
+        .bind(None::<Uuid>)
         .fetch_one(db)
         .await
 }
@@ -151,15 +156,17 @@ pub(super) async fn page_of(db: &sqlx::PgPool, org_id: Uuid, me: Option<Uuid>, q
         .bind(&like)
         .bind(owner.mode())
         .bind(owner.user())
+        .bind(q.segment_id)
         .fetch_one(db)
         .await?;
-    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{} order by last_at desc limit $7 offset $8", threads()))
+    let refs = sqlx::query_as::<_, ThreadRef>(&format!("{} order by last_at desc limit $8 offset $9", threads()))
         .bind(org_id)
         .bind(q.project_id)
         .bind(&filter)
         .bind(&like)
         .bind(owner.mode())
         .bind(owner.user())
+        .bind(q.segment_id)
         .bind(page.limit())
         .bind(page.offset())
         .fetch_all(db)
@@ -749,6 +756,7 @@ mod tests {
                     .bind(filter)
                     .bind(super::util_input::like_pattern(q))
                     .bind("everyone")
+                    .bind(None::<Uuid>)
                     .bind(None::<Uuid>)
                     .fetch_all(&db)
                     .await

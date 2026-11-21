@@ -114,7 +114,13 @@ async fn today(State(state): State<AppState>, auth: Auth, Query(q): Query<TodayQ
         db,
         auth.org_id,
         Some(auth.user_id),
-        inbox::ListQuery { project_id: None, filter: Some("needs_reply".into()), q: None, owner: q.owner.clone().or(Some("mine_or_unassigned".into())) },
+        inbox::ListQuery {
+            project_id: None,
+            segment_id: None,
+            filter: Some("needs_reply".into()),
+            q: None,
+            owner: q.owner.clone().or(Some("mine_or_unassigned".into())),
+        },
         &PageQuery { page: Some(1), per_page: Some(SHOWN) },
     )
     .await?;

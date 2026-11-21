@@ -486,7 +486,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "get_monthly_cap" => async { value(v1::project_monthly_cap(st(), auth, id(a, "project_id")?).await?) }.await,
         "update_campaign" => async { value(v1::update_campaign(st(), auth, id(a, "segment_id")?, Json(patch_body(a, "segment_id"))).await?) }.await,
         "list_hot_leads" => async { value(v1::hot_leads(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
-        "get_inbox_changes" => async { value(v1::inbox_changes(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
+        "get_inbox_changes" => async { value(v1::inbox_changes(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "list_erased_leads" => async { value(v1::erased_leads(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "assign_lead" => async {
             let detail = value(v1::assign_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?;
@@ -1273,6 +1273,7 @@ fn tools() -> Vec<Value> {
              300 characters.",
             page_props(json!({
                 "project_id": id_prop("Optional. Only this project"),
+                "campaign_id": id_prop("Optional. Only this campaign's leads"),
                 "filter": { "type": "string", "enum": ["all", "needs_reply", "hot", "auto_replied", "other"], "description": "all by default" },
                 "q": { "type": "string", "description": "Optional. Matches the lead's name, email or company" },
                 "owner": owner_prop(),
@@ -1589,6 +1590,7 @@ fn tools() -> Vec<Value> {
              seconds after it arrives, and classification is null until the classifier has read it.",
             json!({
                 "project_id": project,
+                "campaign_id": id_prop("Optional. Only this campaign's replies"),
                 "cursor": { "type": "string", "description": "Optional. next_cursor from the last call" },
                 "since": { "type": "string", "format": "date-time", "description": "Optional. On the first call, only replies after this" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Optional. At most this many, 100 by default" },
@@ -2853,5 +2855,41 @@ mod tests {
         let page: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((&page["total"], &page["items"][0]["project_id"], &page["items"][0]["status"]), (&json!(1), &json!(project), &json!("pending")));
         assert!(server.call(KEY, "list_tasks", json!({ "status": "done" })).await.0);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn replies_and_new_replies_filter_by_campaign_id(db: PgPool) {
+        let [(project, segment), _] = seed(&db).await;
+        sqlx::query(
+            "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Ana', 'ana@smile.example') returning id)
+             insert into email_messages (project_id, lead_id, segment_id, direction, kind, status, created_at)
+             select $1, l.id, $2, 'inbound', 'inbound', 'received', now() - interval '1 minute' from l",
+        )
+        .bind(project)
+        .bind(segment)
+        .execute(&db)
+        .await
+        .unwrap();
+        let server = Server::start(db).await;
+        let other = Uuid::new_v4();
+        for (tool, args, field) in [
+            ("list_replies", json!({}), "total"),
+            ("get_inbox_changes", json!({ "project_id": project }), "items"),
+        ] {
+            let count = |campaign: Uuid| {
+                let mut args = args.clone();
+                args["campaign_id"] = json!(campaign);
+                let server = &server;
+                async move {
+                    let (error, text) = server.call(KEY, tool, args).await;
+                    assert!(!error, "{tool}: {text}");
+                    let body: Value = serde_json::from_str(&text).unwrap();
+                    if field == "total" { body["total"].as_i64().unwrap() } else { body["items"].as_array().unwrap().len() as i64 }
+                }
+            };
+            assert_eq!((count(segment).await, count(other).await), (1, 0), "{tool}");
+        }
     }
 }

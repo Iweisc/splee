@@ -1178,11 +1178,19 @@ fn parse_cursor(cursor: &str) -> AppResult<(Ts, Uuid)> {
 
 /// New replies since the cursor, oldest first, each exactly once: they're ordered by when they arrived and then by id, and the
 /// cursor is the last one returned.
+#[derive(Deserialize)]
+pub(super) struct CampaignFilter {
+    /// Only this campaign's.
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    segment_id: Option<Uuid>,
+}
+
 pub(super) async fn inbox_changes(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<ChangesQuery>,
+    Query(campaign): Query<CampaignFilter>,
 ) -> AppResult<Json<Changes<InboundReply>>> {
     check_project(&state.db, id, auth.org_id).await?;
     let after = q.after()?;
@@ -1191,13 +1199,14 @@ pub(super) async fn inbox_changes(
                 e.from_email::text as from_email, e.subject, e.body, e.classification, e.created_at as received_at
          from email_messages e join leads l on l.id = e.lead_id
          where e.project_id = $1 and e.direction = 'inbound' and e.created_at <= now() - interval '{SETTLE}'
-           and ($2::timestamptz is null or (e.created_at, e.id) > ($2, $3))
+           and ($2::timestamptz is null or (e.created_at, e.id) > ($2, $3)) and ($5::uuid is null or e.segment_id = $5)
          order by e.created_at, e.id limit $4"
     ))
     .bind(id)
     .bind(after.map(|(at, _)| at))
     .bind(after.map(|(_, id)| id))
     .bind(q.limit() + 1)
+    .bind(campaign.segment_id)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(Changes::page(items, &q, |m| (m.received_at, m.id))?))
@@ -1883,6 +1892,8 @@ async fn set_email_status(state: &AppState, auth: ApiKeyAuth, id: Uuid, status: 
 pub(super) struct Thread {
     lead_id: Uuid,
     project_id: Uuid,
+    /// The lead's campaign.
+    campaign_id: Option<Uuid>,
     project_name: String,
     lead_name: String,
     lead_email: Option<String>,
@@ -1912,6 +1923,7 @@ impl From<InboxThread> for Thread {
         Self {
             lead_id: lead.id,
             project_id: lead.project_id,
+            campaign_id: lead.segment_id,
             project_name: t.project_name,
             lead_name: lead.full_name,
             lead_email: lead.email,
@@ -3065,6 +3077,40 @@ mod tests {
         assert_eq!(ids, [expected[2].as_str(), expected[3].as_str(), fresh.to_string().as_str()]);
         assert_eq!(api.get(&format!("{changes}?cursor=nope")).await.0, 400);
         assert_eq!(api.get(&format!("/v1/projects/{b}/inbox/changes")).await.0, 404);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_inbox_and_its_changes_filter_by_campaign(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let mut campaigns = vec![];
+        for (name, ago) in [("anna", "50 minutes"), ("bo", "40 minutes")] {
+            let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, $2) returning id")
+                .bind(a)
+                .bind(name)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            let lead = reply(&db, a, name, "question", ago).await;
+            sqlx::query("update leads set segment_id = $2 where id = $1").bind(lead).bind(segment).execute(&db).await.unwrap();
+            sqlx::query("update email_messages set segment_id = $2 where lead_id = $1").bind(lead).bind(segment).execute(&db).await.unwrap();
+            campaigns.push((segment, lead));
+        }
+        reply(&db, a, "cy", "question", "30 minutes").await;
+        let api = Api::start(&db, LIMITS).await;
+        let [(anna_campaign, anna), (bo_campaign, bo)] = [campaigns[0], campaigns[1]];
+
+        let (status, page) = api.get(&format!("/v1/inbox?segment_id={anna_campaign}")).await;
+        assert_eq!(status, 200, "{page}");
+        let first = (&page["total"], &page["items"][0]["lead_id"], &page["items"][0]["campaign_id"]);
+        assert_eq!(first, (&json!(1), &json!(anna), &json!(anna_campaign)));
+        assert_eq!(api.get("/v1/inbox?segment_id=").await.1["total"], 3);
+
+        let (_, changes) = api.get(&format!("/v1/projects/{a}/inbox/changes?segment_id={bo_campaign}")).await;
+        let leads: Vec<&Value> = changes["items"].as_array().unwrap().iter().map(|m| &m["lead_id"]).collect();
+        assert_eq!((leads, &changes["items"][0]["campaign_id"]), (vec![&json!(bo)], &json!(bo_campaign)), "{changes}");
+        assert_eq!(api.get(&format!("/v1/projects/{a}/inbox/changes")).await.1["items"].as_array().unwrap().len(), 3);
     }
 
     fn import_lead(email: &str, title: &str) -> Value {
