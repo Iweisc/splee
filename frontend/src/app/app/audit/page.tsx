@@ -21,6 +21,8 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
       "user.signed_in": "Signed in",
       "user.sign_in_failed": "Failed to sign in",
       "user.password_changed": "Changed password",
+      "user.identity_linked": "Connected a sign-in",
+      "user.identity_unlinked": "Removed a sign-in",
       "user.two_factor_enabled": "Turned on 2FA",
       "user.two_factor_disabled": "Turned off 2FA",
       "user.backup_codes_created": "Made backup codes",
@@ -70,6 +72,7 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
 const LABELS: Record<string, string> = Object.assign({}, ...ACTIONS.map((g) => g.actions));
 const ROLES: Record<Role, string> = { owner: "Owner", admin: "Admin", member: "Member" };
 const MAILBOX_SIGN_IN: Record<string, string> = { google: "Google sign-in", microsoft: "Microsoft sign-in", smtp: "Password" };
+const SSO: Record<string, string> = { google: "Google", microsoft: "Microsoft" };
 
 function role(value: unknown): string {
   return ROLES[value as Role] ?? String(value ?? "");
@@ -80,7 +83,15 @@ function note(e: AuditEvent): string | null {
   const d = e.details;
   switch (e.action) {
     case "user.sign_in_failed":
+      if (typeof d.reason === "string" && SSO[d.reason]) return `${SSO[d.reason]} didn't confirm the email`;
       return d.reason === "code" ? "Wrong code" : "Wrong password";
+    case "user.signed_in":
+      return typeof d.method === "string" && SSO[d.method] ? `With ${SSO[d.method]}` : null;
+    case "user.password_changed":
+      return d.first ? "Set a first password" : null;
+    case "user.identity_linked":
+    case "user.identity_unlinked":
+      return SSO[String(d.provider)] ?? null;
     case "member.role_changed":
       return `${role(d.from)} to ${role(d.to)}`;
     case "member.invited":

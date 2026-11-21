@@ -17,6 +17,10 @@ use crate::state::AppState;
 pub const SESSION_COOKIE: &str = "splee_session";
 const SESSION_DAYS: i64 = 30;
 
+/// The password_hash of a user who signed up with Google or Microsoft and hasn't set a password. It isn't a hash, so no
+/// password matches it.
+pub const NO_PASSWORD: &str = "!none";
+
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()

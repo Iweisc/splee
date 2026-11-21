@@ -16,6 +16,7 @@ export default async function SignupPage({ searchParams }: PageProps<"/signup">)
       claim={claim && token ? { project_id: claim, token } : null}
       inviteToken={one(sp.invite)}
       inviteEmail={one(sp.email)}
+      ssoError={one(sp.sso_error)}
     />
   );
 }

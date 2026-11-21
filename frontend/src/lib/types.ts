@@ -61,6 +61,25 @@ export interface Member {
 /** What /auth/login and /auth/login/code answer. With two-factor on, a right password gets a token to send with the code. */
 export type SignIn = Me | { two_factor_token: string };
 
+/** The providers this Splee has an app for, from GET /auth/sso. */
+export type SsoProvider = "google" | "microsoft";
+
+/** A Google or Microsoft account the user signs in with. */
+export interface Identity {
+  id: UUID;
+  provider: SsoProvider;
+  /** The address the provider gave when it was connected. */
+  email: string;
+  created_at: Ts;
+}
+
+/** GET /auth/sign-in-methods. `password` is false for an account made by signing in with Google or Microsoft. */
+export interface SignInMethods {
+  password: boolean;
+  identities: Identity[];
+  providers: SsoProvider[];
+}
+
 export interface TwoFactorStatus {
   enabled: boolean;
   backup_codes_left: number;

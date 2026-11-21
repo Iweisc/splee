@@ -2,21 +2,30 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
+import { SsoButtons } from "@/components/sso";
 import { useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { SignIn } from "@/lib/types";
 
-export function SigninForm({ next }: { next: string | null }) {
+const noSubscription = () => () => {};
+// Signing in with Google or Microsoft comes back with #two_factor_token=… when two-factor is on. A fragment never reaches
+// a server or a Referer header, unlike a query.
+const tokenInHash = () => new URLSearchParams(window.location.hash.slice(1)).get("two_factor_token");
+
+export function SigninForm({ next, ssoError }: { next: string | null; ssoError: string | null }) {
   const router = useRouter();
   const { mutate } = useMe();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // Set once the password is right for an account with two-factor on. The form then asks for the code.
-  const [token, setToken] = useState<string | null>(null);
+  const [typedToken, setToken] = useState<string | null>(null);
+  const [startedOver, setStartedOver] = useState(false);
+  const hashToken = useSyncExternalStore(noSubscription, tokenInHash, () => null);
+  const token = typedToken ?? (startedOver ? null : hashToken);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -43,6 +52,8 @@ export function SigninForm({ next }: { next: string | null }) {
   };
 
   const startOver = () => {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setStartedOver(true);
     setToken(null);
     setCode("");
     setPassword("");
@@ -75,6 +86,8 @@ export function SigninForm({ next }: { next: string | null }) {
     <Card className="w-full max-w-[400px] p-8">
       <h1 className="text-2xl font-medium tracking-tight">Sign in</h1>
       <p className="mt-1 text-sm text-muted-foreground">Welcome back.</p>
+      {ssoError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger">{ssoError}</p>}
+      <SsoButtons params={{ next }} />
       <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
         <Field label="Email">
           <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
