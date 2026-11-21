@@ -48,16 +48,26 @@ pub(crate) struct SearchQuery {
     pub has_phone: bool,
     /// A tool's name or a category's key from the tech catalogue.
     pub tech: Option<String>,
+    /// The project searching, whose dedup lists apply as well as the organization's lists for every project.
+    pub project_id: Option<Uuid>,
+    /// Shows the companies on those lists too.
+    #[serde(default)]
+    pub include_hidden: bool,
 }
 
 impl SearchQuery {
-    /// A 400 for a country that isn't two letters or a tool Splee can't detect.
-    pub(crate) fn search(&self) -> AppResult<Search> {
+    /// A 400 for a country that isn't two letters or a tool Splee can't detect. `org_id` is whose dedup lists hide companies,
+    /// None to only check the filters.
+    pub(crate) fn search(&self, org_id: Option<Uuid>) -> AppResult<Search> {
         let mut search = Search::new(self.q.as_deref(), self.country.as_deref(), self.city.as_deref(), self.category.as_deref(), self.has_email, self.has_phone)
             .map_err(AppError::BadRequest)?;
         if let Some(filter) = self.tech.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
             let names = fingerprints::named(filter).ok_or_else(|| AppError::BadRequest(format!("Splee can't detect {filter} yet. Pass a tool's name or a category.")))?;
             search.tech = Some(names.into_iter().map(String::from).collect());
+        }
+        if !self.include_hidden {
+            search.hide_org = org_id;
+            search.hide_project = self.project_id;
         }
         Ok(search)
     }
@@ -72,12 +82,12 @@ pub(super) struct Page {
 }
 
 /// Companies whose name or category has words starting with each word in `q` and the filters, the most reliable listings first.
-async fn search(State(state): State<AppState>, _auth: Auth, Query(q): Query<SearchQuery>, Query(page): Query<PageQuery>) -> AppResult<Json<Page>> {
-    Ok(Json(page_of(&state.db, &q, &page).await?))
+async fn search(State(state): State<AppState>, auth: Auth, Query(q): Query<SearchQuery>, Query(page): Query<PageQuery>) -> AppResult<Json<Page>> {
+    Ok(Json(page_of(&state.db, auth.org_id, &q, &page).await?))
 }
 
-pub(super) async fn page_of(db: &PgPool, q: &SearchQuery, page: &PageQuery) -> AppResult<Page> {
-    let search = q.search()?;
+pub(super) async fn page_of(db: &PgPool, org_id: Uuid, q: &SearchQuery, page: &PageQuery) -> AppResult<Page> {
+    let search = q.search(Some(org_id))?;
     let total = directory::count(db, &search, COUNT_CAP).await?;
     let items = directory::search(db, &search, page.limit(), page.offset()).await?;
     Ok(Page { items, total: total.min(COUNT_CAP), capped: total > COUNT_CAP })

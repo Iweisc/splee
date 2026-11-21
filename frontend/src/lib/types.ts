@@ -2205,6 +2205,17 @@ export interface SuppressionList {
 }
 
 /** A CSV column the list upload could read, with how many of its cells are emails or domains. */
+/** Domains the company database search leaves out. It never stops an email. */
+export interface DedupList {
+  id: UUID;
+  name: string;
+  /** null covers every project. */
+  project_ids: UUID[] | null;
+  created_by: UUID | null;
+  created_at: Ts;
+  size: number;
+}
+
 export interface SuppressionListColumn {
   header: string;
   kind: SuppressionList["kind"] | null;

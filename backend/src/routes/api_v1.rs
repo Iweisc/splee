@@ -12,6 +12,7 @@ use uuid::Uuid;
 use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::attachments;
 use super::calls::{self, CallRow, LogBody};
+use super::dedup_lists::{self, Contents, OffsetQuery as DedupPage};
 use super::directory::{self, Added, SearchQuery};
 use super::directory_export::{self, ExportQuery};
 use super::saved_searches::{self, NewMatches, NewSearch, SearchRow};
@@ -47,7 +48,9 @@ use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::lookalikes::{self, Lookalikes};
-use crate::models::{AgentRun, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, Suppression, SuppressionList, Ts};
+use crate::models::{
+    AgentRun, DedupList, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, Suppression, SuppressionList, Ts,
+};
 use crate::ownership;
 use crate::state::AppState;
 
@@ -95,6 +98,8 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/suppression-lists/companies", post(add_companies_to_list))
         .route("/v1/suppression-lists/{id}", patch(rescope_suppression_list).delete(delete_suppression_list))
         .route("/v1/suppression-lists/{id}/entries", get(suppression_list_entries))
+        .route("/v1/dedup/companies", get(list_dedup_lists).post(add_to_dedup_list))
+        .route("/v1/dedup/companies/{id}", get(get_dedup_list).patch(rescope_dedup_list).delete(delete_dedup_list))
         .route("/v1/companies", get(search_companies))
         .route("/v1/companies/export", get(export_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
@@ -1264,13 +1269,60 @@ async fn suppression_list_entries(
     Ok(Json(lists::entries_page(&state.db, auth.org_id, id, limit, offset).await?))
 }
 
+pub(super) async fn list_dedup_lists(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<DedupList>>> {
+    Ok(Json(dedup_lists::all(&state.db, auth.org_id).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct DedupBody {
+    name: String,
+    domains: Vec<String>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    project_ids: Option<Option<Vec<Uuid>>>,
+}
+
+/// Adds domains to the named list, making it when the org has none by that name. Searches in the projects it covers leave
+/// those companies out. Sending is never affected.
+pub(super) async fn add_to_dedup_list(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Json(body): Json<DedupBody>,
+) -> AppResult<Json<dedup_lists::Added>> {
+    check_list_size(body.domains.len())?;
+    let domains = body.domains.iter().map(String::as_str);
+    Ok(Json(dedup_lists::add_by_name(&state.db, auth.org_id, &body.name, body.project_ids, domains).await?))
+}
+
+pub(super) async fn get_dedup_list(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<DedupPage>,
+) -> AppResult<Json<Contents>> {
+    Ok(Json(dedup_lists::contents(&state.db, auth.org_id, id, &q).await?))
+}
+
+pub(super) async fn rescope_dedup_list(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ScopeBody>,
+) -> AppResult<Json<DedupList>> {
+    Ok(Json(dedup_lists::set_scope(&state.db, auth.org_id, id, body.into_scope()?).await?))
+}
+
+pub(super) async fn delete_dedup_list(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    dedup_lists::delete(&state.db, auth.org_id, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 pub(super) async fn search_companies(
     State(state): State<AppState>,
-    _auth: ApiKeyAuth,
+    auth: ApiKeyAuth,
     Query(q): Query<SearchQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Json<directory::Page>> {
-    Ok(Json(directory::page_of(&state.db, &q, &page).await?))
+    Ok(Json(directory::page_of(&state.db, auth.org_id, &q, &page).await?))
 }
 
 /// The search as a file, up to 50,000 rows a page. See routes/directory_export.rs.

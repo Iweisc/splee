@@ -73,15 +73,15 @@ struct Count {
 }
 
 /// What Download CSV would take, for its label, since the search's own count stops at 10,000. Free, as it sends no rows.
-async fn count(State(state): State<AppState>, _auth: Auth, Query(q): Query<SearchQuery>) -> AppResult<Json<Count>> {
-    let found = directory::count_from(&state.db, &q.search()?, 0, MAX_ROWS).await?;
+async fn count(State(state): State<AppState>, auth: Auth, Query(q): Query<SearchQuery>) -> AppResult<Json<Count>> {
+    let found = directory::count_from(&state.db, &q.search(Some(auth.org_id))?, 0, MAX_ROWS).await?;
     Ok(Json(Count { rows: found.min(MAX_ROWS), capped: found > MAX_ROWS }))
 }
 
 /// The search's rows as a file, in its order. Splee-Rows says how many, and Splee-Capped says more matched than this page holds.
 /// Over the organization's downloads this hour it's a 429 with Retry-After.
 pub(super) async fn export(state: &AppState, who: Who, q: &SearchQuery, x: &ExportQuery) -> AppResult<Response> {
-    let mut search = q.search()?;
+    let mut search = q.search(Some(who.org_id()))?;
     search.domains = x.domains.as_deref().map(selected).transpose()?;
     let per_page = x.per_page.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
     let page = x.page.unwrap_or(1).max(1);
@@ -391,7 +391,10 @@ mod tests {
         let by_key = events.iter().find(|e| e.2.is_some()).unwrap();
         assert_eq!((by_key.0, by_key.1), (acme, None));
         assert_eq!(by_key.3, json!({
-            "filters": { "q": "dental", "country": null, "city": null, "category": null, "has_email": true, "has_phone": false, "tech": null },
+            "filters": {
+                "q": "dental", "country": null, "city": null, "category": null, "has_email": true, "has_phone": false, "tech": null,
+                "project_id": null, "include_hidden": false,
+            },
             "selected": null, "format": "csv", "page": 1, "rows": 3, "capped": false,
         }));
         let ticked = events.iter().find(|e| e.0 == acme && e.1.is_some()).unwrap();

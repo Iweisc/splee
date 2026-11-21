@@ -11,6 +11,7 @@ import {
   CircleUser,
   ClipboardList,
   DatabaseBackup,
+  EyeOff,
   FileText,
   GraduationCap,
   Globe,
@@ -99,6 +100,7 @@ export const orgNav: { label: string; href: string; icon: LucideIcon; admin?: bo
   { label: "Deliverability", href: "/app/deliverability", icon: ShieldCheck },
   { label: "Booking pages", href: "/app/booking-pages", icon: CalendarCheck },
   { label: "Do-not-contact", href: "/app/dedup", icon: ShieldBan }, // D2
+  { label: "Hidden companies", href: "/app/hidden-companies", icon: EyeOff },
   { label: "Team", href: "/app/organization", icon: Users }, // D2
   { label: "Notifications", href: "/app/notifications", icon: Bell }, // D2
   { label: "API keys", href: "/app/api-keys", icon: KeyRound }, // D2
