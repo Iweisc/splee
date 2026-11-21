@@ -59,6 +59,8 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
       "sending_domain.removed": "Removed a domain",
       "campaign.launched": "Launched a campaign",
       "campaign.paused": "Paused a campaign",
+      "campaign.archived": "Archived a campaign",
+      "campaign.unarchived": "Unarchived a campaign",
       "project.started": "Started sending",
       "project.paused": "Paused sending",
     },

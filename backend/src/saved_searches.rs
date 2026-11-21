@@ -83,10 +83,11 @@ pub async fn check(db: &PgPool, search: &SavedSearch) -> AppResult<Option<Found>
 }
 
 /// Adds the most reliable ADD_CAP of the companies found at `at` to the campaign, through the Companies page's add, so
-/// companies the project has and do-not-contact ones are skipped. None when the campaign isn't in the project anymore.
+/// companies the project has and do-not-contact ones are skipped. None when the campaign isn't in the project anymore or is archived.
 async fn add_new(db: &PgPool, search: &SavedSearch, segment_id: Uuid, at: Ts) -> AppResult<Option<(String, u64)>> {
     let campaign: Option<(Option<Uuid>, String)> =
-        sqlx::query_as("select p.org_id, s.name from segments s join projects p on p.id = s.project_id where s.id = $1 and s.project_id = $2")
+        sqlx::query_as("select p.org_id, s.name from segments s join projects p on p.id = s.project_id
+             where s.id = $1 and s.project_id = $2 and s.archived_at is null")
             .bind(segment_id)
             .bind(search.project_id)
             .fetch_optional(db)

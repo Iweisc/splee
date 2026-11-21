@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(error(api.post(KEY_A, &upsert, json!({"full_name": "No Email"})).await), (400, "Send the lead's email".into()));
         assert_eq!(error(api.post(KEY_A, &upsert, json!({"email": "not-an-email"})).await), (400, "Invalid email: not-an-email".into()));
         let foreign = json!({"email": "x@y.example", "segment_id": b.segment});
-        assert_eq!(error(api.post(KEY_A, &upsert, foreign).await), (400, "That campaign isn't in this project".into()));
+        assert_eq!(error(api.post(KEY_A, &upsert, foreign).await), (400, "That campaign isn't part of this project, or it's archived".into()));
         assert_eq!(api.post(KEY_A, &format!("/v1/projects/{}/leads/upsert", b.project), json!({"email": "x@y.example"})).await.0, 404);
 
         // Do not contact, then adding that address is refused.

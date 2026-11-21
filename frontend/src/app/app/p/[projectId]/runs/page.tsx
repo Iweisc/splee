@@ -71,7 +71,7 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
   const { data: runs, error, mutate } = useSWR<AgentRun[]>(`/projects/${projectId}/runs`, fetcher, {
     refreshInterval: (latest) => (latest?.some((r) => r.status === "queued" || r.status === "running") ? 5000 : 0),
   });
-  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments?archived=true`, fetcher);
   const segmentName = (run: AgentRun) => segments?.find((s) => s.id === run.input.segment_id)?.name;
   // Runs already queued again, so a second click doesn't queue a duplicate.
   const [retried, setRetried] = useState<string[]>([]);

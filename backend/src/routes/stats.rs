@@ -222,7 +222,7 @@ async fn project_stats(
 
     let daily = daily(&state.db, id, days).await?;
 
-    Ok(Json(ProjectStats { totals, daily, segments: segments::with_stats(&state.db, id, None).await? }))
+    Ok(Json(ProjectStats { totals, daily, segments: segments::with_stats(&state.db, id, None, segments::Archived::Included).await? }))
 }
 
 async fn public_stats(State(state): State<AppState>) -> AppResult<Json<Value>> {

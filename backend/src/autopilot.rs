@@ -174,7 +174,7 @@ async fn campaigns(db: &PgPool, project_id: Uuid, now: Ts) -> sqlx::Result<Vec<C
            exists (select 1 from agent_runs r where r.project_id = s.project_id and r.status = 'failed' and r.input ? 'autopilot'
                    and r.input->>'segment_id' = s.id::text and r.finished_at > $2 - make_interval(hours => $3)) as failed_lately
          from segments s
-         where s.project_id = $1 and s.status in ('working', 'scaling')
+         where s.project_id = $1 and s.status in ('working', 'scaling') and s.archived_at is null
          order by s.status = 'scaling' desc, s.position, s.created_at",
     )
     .bind(project_id)
@@ -344,7 +344,8 @@ pub async fn status(db: &PgPool, project_id: Uuid) -> sqlx::Result<Status> {
     let month = month_start(Utc::now());
     let awaiting_approval: i64 = sqlx::query_scalar(
         "select count(*) from email_messages e join segments s on s.id = e.segment_id
-         where e.project_id = $1 and e.kind = 'initial' and e.status = 'draft' and s.status in ('working', 'scaling')",
+         where e.project_id = $1 and e.kind = 'initial' and e.status = 'draft' and s.status in ('working', 'scaling')
+           and s.archived_at is null",
     )
     .bind(project_id)
     .fetch_one(db)
@@ -706,5 +707,19 @@ pub(crate) mod tests {
         run(&db, s.project, kind::FIND_PEOPLE, "failed", 50.0, now).await;
         run(&db, s.project, kind::FIND_PEOPLE, "succeeded", 0.0, now).await;
         assert_eq!(estimate_cost(&db, s.project, kind::FIND_PEOPLE).await.unwrap(), 2_000_000);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn it_leaves_archived_campaigns_alone(db: PgPool) {
+        let s = seed(&db).await;
+        let now = Utc::now();
+        // Set by hand so the campaign still says working: being archived is enough to keep autopilot off it.
+        sqlx::query("update segments set archived_at = now() where id = $1").bind(s.campaign).execute(&db).await.unwrap();
+        assert_eq!(check(&s.state, s.project, now).await.unwrap(), None);
+        assert_eq!(note_of(&db, s.project).await, "No campaign is sending. Start one and autopilot keeps it stocked.");
+        let runs: i64 = sqlx::query_scalar("select count(*) from agent_runs").fetch_one(&db).await.unwrap();
+        assert_eq!(runs, 0);
     }
 }

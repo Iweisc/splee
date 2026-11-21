@@ -78,7 +78,8 @@ function endpoints(projectId: string): Endpoint[] {
       method: "GET",
       path: `/projects/${projectId}/campaigns`,
       summary:
-        "Campaigns of a project with their funnel. spend_micros is in micro-dollars (1,000,000 = $1). language is what the campaign writes in: lead for each lead's own, the default, or a language code like en or de.",
+        "Campaigns of a project with their funnel. spend_micros is in micro-dollars (1,000,000 = $1). language is what the campaign writes in: lead for each lead's own, the default, or a language code like en or de. Archived campaigns are left out unless you ask for them.",
+      params: [["archived", "true to list archived campaigns too. archived_at says when each was archived, null for the rest."]],
       response: `[
   {
     "id": "5d0a…",
@@ -94,7 +95,8 @@ function endpoints(projectId: string): Endpoint[] {
     "bounced": 1,
     "hot": 2,
     "spend_micros": 4210000,
-    "created_at": "2026-11-01T12:05:00Z"
+    "created_at": "2026-11-01T12:05:00Z",
+    "archived_at": null
   }
 ]`,
     },
@@ -158,6 +160,19 @@ function endpoints(projectId: string): Endpoint[] {
       summary:
         "Splee has no review step for a whole campaign, so this approves each of its first emails and follow-ups waiting as drafts, like Approve on each one. A paused campaign holds them until it starts.",
       response: `{ "accepted": true, "approved": 12 }`,
+    },
+    {
+      method: "POST",
+      path: "/campaigns/5d0a…/archive",
+      summary:
+        "Put away a campaign you're done with. It stops like /stop and leaves the campaign list, autopilot and the review window. Its leads, emails and results stay, and replies still come in. A repeat changes nothing. Returns the campaign like the list above.",
+      response: `{ "id": "5d0a…", "status": "paused", "archived_at": "2026-11-21T09:30:00Z", "…": "…" }`,
+    },
+    {
+      method: "POST",
+      path: "/campaigns/5d0a…/unarchive",
+      summary: "Bring an archived campaign back to the list, paused. It sends again once you start it. A repeat changes nothing.",
+      response: `{ "id": "5d0a…", "status": "paused", "archived_at": null, "…": "…" }`,
     },
     {
       method: "PATCH",

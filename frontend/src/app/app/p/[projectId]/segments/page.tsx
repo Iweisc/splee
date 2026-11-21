@@ -1,22 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { use } from "react";
-import { Layers, Plus } from "lucide-react";
+import { use, useState } from "react";
+import { ChevronDown, Layers, Plus } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { SegmentToggle } from "@/components/app/work/segment-toggle";
+import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
 import { LoadError, MicroLabel } from "@/components/app/work/states";
 import { FitScore, SegmentIcon, SegmentStatusDot } from "@/components/app/work/status";
-import { LinkButton } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import type { SegmentWithStats } from "@/lib/types";
-import { compact, money, num } from "@/lib/utils";
+import { cn, compact, money, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function SegmentsPage({ params }: PageProps<"/app/p/[projectId]/segments">) {
   const { projectId } = use(params);
-  const { data: segments, error, mutate } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments`, fetcher);
+  const { data, error, mutate } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments?archived=true`, fetcher);
+  const [showArchived, setShowArchived] = useState(false);
+  const sorted = data && [...data].sort((a, b) => a.position - b.position);
+  const segments = sorted?.filter((s) => !s.archived_at);
+  const archived = sorted?.filter((s) => s.archived_at) ?? [];
 
   return (
     <>
@@ -40,7 +44,7 @@ export default function SegmentsPage({ params }: PageProps<"/app/p/[projectId]/s
               <Skeleton key={i} className="h-52 rounded-2xl" />
             ))}
           </div>
-        ) : segments.length === 0 ? (
+        ) : segments.length === 0 && archived.length === 0 ? (
           <Card>
             <EmptyState
               icon={<Layers className="size-5" />}
@@ -55,13 +59,44 @@ export default function SegmentsPage({ params }: PageProps<"/app/p/[projectId]/s
             </EmptyState>
           </Card>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {[...segments]
-              .sort((a, b) => a.position - b.position)
-              .map((s) => (
-                <SegmentCard key={s.id} projectId={projectId} segment={s} />
-              ))}
-          </div>
+          <>
+            {segments.length === 0 ? (
+              <Card>
+                <EmptyState
+                  icon={<Layers className="size-5" />}
+                  title="Every campaign is archived"
+                  action={
+                    <LinkButton href={`/app/p/${projectId}/new`} size="sm">
+                      Create a campaign
+                    </LinkButton>
+                  }
+                >
+                  Start a new one, or unarchive one below to send again.
+                </EmptyState>
+              </Card>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {segments.map((s) => (
+                  <SegmentCard key={s.id} projectId={projectId} segment={s} />
+                ))}
+              </div>
+            )}
+            {archived.length > 0 && (
+              <div className="mt-6">
+                <Button variant="ghost" size="sm" onClick={() => setShowArchived(!showArchived)} aria-expanded={showArchived} className="-ml-3">
+                  <ChevronDown className={cn("size-3.5 transition-transform", showArchived && "rotate-180")} />
+                  Archived ({archived.length})
+                </Button>
+                {showArchived && (
+                  <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {archived.map((s) => (
+                      <SegmentCard key={s.id} projectId={projectId} segment={s} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </PageBody>
     </>
@@ -96,9 +131,7 @@ function SegmentCard({ projectId, segment: s }: { projectId: string; segment: Se
         <div className="mt-3 mb-4 flex items-center gap-2">
           <MicroLabel>Fit</MicroLabel>
           <FitScore value={s.fit_score} />
-          <div className="ml-auto">
-            <SegmentToggle segment={s} />
-          </div>
+          <div className="ml-auto">{s.archived_at ? <ArchiveToggle segment={s} /> : <SegmentToggle segment={s} />}</div>
         </div>
         <dl className="mt-auto grid grid-cols-3 gap-x-3 gap-y-2 border-t border-border pt-3 text-sm">
           {stats.map((st) => (
