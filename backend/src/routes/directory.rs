@@ -36,7 +36,7 @@ pub fn router() -> Router<AppState> {
 /// Counting every match of a broad search, like all restaurants in the US, is slow, so the count stops here.
 const COUNT_CAP: i64 = 10_000;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default)]
 pub(crate) struct SearchQuery {
     pub q: Option<String>,
     pub country: Option<String>,

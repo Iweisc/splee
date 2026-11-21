@@ -10,14 +10,23 @@ where
     C: AsRef<str>,
 {
     let invalid = |e: csv::Error| AppError::Internal(e.into());
-    let mut out = csv::Writer::from_writer(Vec::new());
-    out.write_record(header).map_err(invalid)?;
-    for row in rows {
-        out.write_record(row.into_iter().map(|cell| spreadsheet_safe(cell.as_ref()))).map_err(invalid)?;
-    }
-    let body = out.into_inner().map_err(|e| AppError::Internal(e.into_error().into()))?;
+    let mut body = encode([header]).map_err(invalid)?;
+    body.extend(encode(rows).map_err(invalid)?);
     let disposition = format!("attachment; filename=\"{filename}\"");
     Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()), (header::CONTENT_DISPOSITION, disposition)], body).into_response())
+}
+
+/// Rows as CSV lines, every cell through spreadsheet_safe. A streamed download writes each chunk with this.
+pub fn encode<R, C>(rows: impl IntoIterator<Item = R>) -> csv::Result<Vec<u8>>
+where
+    R: IntoIterator<Item = C>,
+    C: AsRef<str>,
+{
+    let mut out = csv::Writer::from_writer(Vec::new());
+    for row in rows {
+        out.write_record(row.into_iter().map(|cell| spreadsheet_safe(cell.as_ref())))?;
+    }
+    out.into_inner().map_err(|e| e.into_error().into())
 }
 
 /// Cells come from the web and from imports. A cell starting with one of these runs as a formula in Excel or Sheets.

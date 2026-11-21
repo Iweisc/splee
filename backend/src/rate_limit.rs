@@ -15,9 +15,11 @@ use crate::error::AppError;
 pub struct Limits {
     pub per_hour: u32,
     pub in_flight: u32,
+    /// What the refusal counts, like "API requests".
+    pub what: &'static str,
 }
 
-pub const LIMITS: Limits = Limits { per_hour: 10_000, in_flight: 150 };
+pub const LIMITS: Limits = Limits { per_hour: 10_000, in_flight: 150, what: "API requests" };
 const WINDOW: Duration = Duration::from_secs(3600);
 
 #[derive(Clone)]
@@ -81,11 +83,11 @@ impl RateLimiter {
         let reset_secs = (WINDOW - now.duration_since(usage.window_start)).as_millis().div_ceil(1000) as u64;
         let quota = |used: u32| Quota { limit: self.limits.per_hour, remaining: self.limits.per_hour.saturating_sub(used), reset_secs };
         if usage.used >= self.limits.per_hour {
-            let message = format!("This organization made {} API requests this hour. Try again in {reset_secs} seconds", self.limits.per_hour);
+            let message = format!("This organization made {} {} this hour. Try again in {reset_secs} seconds", self.limits.per_hour, self.limits.what);
             return Err(Refused { quota: quota(usage.used), retry_after_secs: reset_secs, message });
         }
         if usage.in_flight >= self.limits.in_flight {
-            let message = format!("This organization has {} API requests running. Send the next when one finishes", self.limits.in_flight);
+            let message = format!("This organization has {} {} running. Send the next when one finishes", self.limits.in_flight, self.limits.what);
             return Err(Refused { quota: quota(usage.used), retry_after_secs: 1, message });
         }
         usage.used += 1;
@@ -134,7 +136,7 @@ mod tests {
 
     #[test]
     fn the_hour_and_the_requests_in_flight_are_capped_per_organization() {
-        let limiter = RateLimiter::new(Limits { per_hour: 3, in_flight: 2 });
+        let limiter = RateLimiter::new(Limits { per_hour: 3, in_flight: 2, what: "API requests" });
         let (org, other) = (Uuid::new_v4(), Uuid::new_v4());
 
         let first = limiter.acquire(org).unwrap();
