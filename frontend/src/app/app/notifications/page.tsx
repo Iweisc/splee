@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/form";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { NotificationPrefs } from "@/lib/types";
+import { PushSection } from "./push-section";
 import { SlackSection } from "./slack-section";
 
 type Pref = Exclude<keyof NotificationPrefs, "user_id">;
@@ -39,7 +40,7 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title="Notifications" description={me ? `Emails Splee sends to you at ${me.user.email}.` : undefined} />
+      <PageHeader title="Notifications" description={me ? `Emails Splee sends to you at ${me.user.email}, and push notifications on your devices.` : undefined} />
       <PageBody>
         <SettingsColumn>
           {error ? (
@@ -56,6 +57,7 @@ export default function NotificationsPage() {
               />
             ))
           )}
+          <PushSection />
           <SlackSection />
         </SettingsColumn>
       </PageBody>

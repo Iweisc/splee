@@ -9,6 +9,7 @@ import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
+import { dropPushHere, keepPushFor } from "@/lib/push";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const navRef = useRef<HTMLElement>(null);
   const openRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+
+  // A push subscription someone else made in this browser stops here, before it brings this person their leads.
+  const userId = me?.user.id;
+  useEffect(() => {
+    if (userId) void keepPushFor(userId);
+  }, [userId]);
 
   useEffect(() => {
     if (params.projectId) localStorage.setItem(LAST_PROJECT_KEY, params.projectId);
@@ -98,6 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const projectInbox = projectId ? `/app/p/${projectId}/inbox` : null;
 
   const logout = async () => {
+    await dropPushHere();
     await api("/auth/logout", { method: "POST" });
     router.replace("/signin");
   };

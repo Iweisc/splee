@@ -87,6 +87,18 @@ pub struct NotificationPrefs {
     pub weekly_report: bool,
 }
 
+/// A browser the member turned push notifications on in. The endpoint and keys stay on the server.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct PushDevice {
+    pub id: Uuid,
+    /// Like "Chrome on macOS".
+    pub user_agent: String,
+    pub created_at: Ts,
+    pub last_success_at: Option<Ts>,
+    /// Sends in a row that didn't go through.
+    pub failures: i32,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Project {
     pub id: Uuid,
