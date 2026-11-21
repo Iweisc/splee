@@ -1136,6 +1136,25 @@ function hookEndpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "GET",
+      path: `/hooks?project_id=${projectId}`,
+      summary:
+        "Your organization's subscriptions, oldest first. live is false for one that stopped getting events, because its receiver answered 410 Gone or its API key was revoked. GET /hooks/e81f… returns one.",
+      params: [["project_id", "optional, only the ones this project's events go to, including those for every project"]],
+      response: `[
+  {
+    "id": "e81f…",
+    "project_id": "${projectId}",
+    "event": "hot_lead",
+    "target_url": "https://hooks.zapier.com/hooks/standard/…",
+    "error": null,
+    "disabled_at": null,
+    "live": true,
+    "…": "…"
+  }
+]`,
+    },
+    {
       method: "DELETE",
       path: "/hooks/e81f…",
       summary: "Unsubscribe, when the zap, scenario or workflow is turned off.",

@@ -41,7 +41,7 @@ pub struct Target {
 }
 
 /// Live subscriptions in the project's organization: on, with a key that isn't revoked, and for this project or all of them.
-const LIVE: &str = "s.disabled_at is null and exists (select 1 from api_keys k where k.id = s.api_key_id and k.revoked_at is null)";
+pub const LIVE: &str = "s.disabled_at is null and exists (select 1 from api_keys k where k.id = s.api_key_id and k.revoked_at is null)";
 
 /// The subscriptions a project's event goes to, oldest first.
 pub async fn targets(db: &PgPool, project_id: Uuid, event: &str) -> sqlx::Result<Vec<Target>> {
