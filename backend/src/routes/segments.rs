@@ -12,6 +12,7 @@ use crate::audit::{self, Target, Who};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::Segment;
+use crate::send_state::{self, SendState};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -25,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/segments/{id}/pause", post(pause))
         .route("/segments/{id}/archive", post(archive_route))
         .route("/segments/{id}/unarchive", post(unarchive_route))
+        .route("/segments/{id}/send-state", get(get_send_state))
 }
 
 const ICONS: &[&str] = &[
@@ -231,6 +233,18 @@ pub(super) async fn insert(db: &mut PgConnection, org_id: Uuid, id: Uuid, body: 
 async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SegmentWithStats>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
+}
+
+/// Whether the campaign's emails go out now and, if not, the one thing holding them, for the campaign page and GET
+/// /v1/campaigns/{id}/send-state. See send_state.rs.
+pub(super) async fn send_state_of(db: &PgPool, org_id: Uuid, id: Uuid) -> AppResult<SendState> {
+    let segment: Segment = util_scope::load(db, "segments", id, org_id).await?;
+    let settings = super::settings::load_or_create(db, segment.project_id).await?;
+    send_state::load(db, org_id, &segment, &settings, chrono::Utc::now()).await
+}
+
+async fn get_send_state(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SendState>> {
+    Ok(Json(send_state_of(&state.db, auth.org_id, id).await?))
 }
 
 async fn update(
@@ -508,9 +522,14 @@ pub(super) async fn unarchive(db: &PgPool, who: impl Into<Who>, segment: &Segmen
 
 #[cfg(test)]
 mod tests {
+    use axum::Json;
+    use axum::extract::{Path, State};
     use sqlx::PgPool;
+    use uuid::Uuid;
 
-    use super::{Archived, with_stats};
+    use super::{Archived, get_send_state, with_stats};
+    use crate::auth::Auth;
+    use crate::error::AppError;
     use crate::routes::stats::tests::seed_costs;
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -533,5 +552,28 @@ mod tests {
         sqlx::query("update leads set status = 'bounced' where segment_id = $1").bind(seeded.pricey).execute(&db).await.unwrap();
         let rows = with_stats(&db, seeded.project, Some(seeded.pricey), Archived::Hidden).await.unwrap();
         assert_eq!(rows[0].bounced, 1);
+    }
+
+    // The states themselves are tested through GET /v1/campaigns/{id}/send-state in api_v1.rs, which shares send_state_of.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_campaign_page_reads_its_send_state_only_in_its_organization(db: PgPool) {
+        let org = |name: &str| sqlx::query_scalar::<_, Uuid>("insert into organizations (name) values ($1) returning id").bind(name.to_string()).fetch_one(&db);
+        let (ours, theirs) = (org("Ours").await.unwrap(), org("Theirs").await.unwrap());
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Fieldnote') returning id").bind(ours).fetch_one(&db).await.unwrap();
+        let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status) values ($1, 'Dentists', 'working') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let state = crate::autopilot::tests::state(db.clone());
+        let auth = |org_id| Auth { user_id: Uuid::new_v4(), org_id, role: "member".into(), token_hash: String::new() };
+
+        // A new project starts paused, which holds the campaign before anything else.
+        let Json(read) = get_send_state(State(state.clone()), auth(ours), Path(segment)).await.unwrap();
+        assert_eq!((read.campaign_id, read.state, read.sending_now), (segment, "project_paused", false));
+        let theirs = get_send_state(State(state), auth(theirs), Path(segment)).await;
+        assert!(matches!(theirs, Err(AppError::NotFound)), "another organization's campaign is a 404");
     }
 }

@@ -14,6 +14,7 @@ import { AbTestCard } from "@/components/app/work/ab-test";
 import { MyCopyCard } from "@/components/app/work/my-copy";
 import { AdAudiencesCard } from "@/components/app/work/ad-audiences";
 import { ImportedSequence } from "@/components/app/work/imported-sequence";
+import { SendStateCard } from "@/components/app/work/send-state-card";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
@@ -106,6 +107,10 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
       />
       <PageBody className="flex flex-col gap-4">
         {run && <RunProgress key={run.id} run={run} />}
+        {/* Only while it runs: a paused, unstarted or archived campaign says so in the header and the steps below. */}
+        {!segment.archived_at && (segment.status === "working" || segment.status === "scaling") && (
+          <SendStateCard projectId={projectId} segmentId={segId} />
+        )}
         {segment.sent > 0 && <Results segment={segment} />}
         {segment.archived_at ? (
           <Card className="p-4 text-sm text-pretty text-muted-foreground">

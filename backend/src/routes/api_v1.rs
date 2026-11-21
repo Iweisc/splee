@@ -59,7 +59,7 @@ use crate::models::{
 use crate::monthly_cap::{self, Cap};
 use crate::ownership;
 use crate::porkbun::Availability;
-use crate::send_state::{self, SendState};
+use crate::send_state::SendState;
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
@@ -575,9 +575,7 @@ fn status_reason(segment: &Segment, project_sending: bool, by_optimizer: bool) -
 
 /// Whether the campaign's emails go out now and, if not, the one thing holding them. See send_state.rs.
 pub(super) async fn campaign_send_state(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<SendState>> {
-    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let settings = settings::load_or_create(&state.db, segment.project_id).await?;
-    Ok(Json(send_state::load(&state.db, auth.org_id, &segment, &settings, chrono::Utc::now()).await?))
+    Ok(Json(super::segments::send_state_of(&state.db, auth.org_id, id).await?))
 }
 
 fn accepted() -> Json<Value> {
