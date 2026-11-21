@@ -341,7 +341,18 @@ async fn find_companies(
 #[derive(Deserialize, Default)]
 pub(super) struct FindPeopleBody {
     pub company_ids: Option<Vec<Uuid>>,
+    /// Companies by domain in place of company_ids, added to the campaign when the project hasn't got them.
+    pub domains: Option<Vec<String>>,
+    /// Job titles to look for in place of the campaign's roles.
+    pub titles: Option<Vec<String>>,
+    pub per_company: Option<usize>,
 }
+
+/// Each company is a few searches by the agent, so a run takes a list's worth, not a database's.
+const MAX_DOMAINS: usize = 100;
+const MAX_TITLES: usize = 20;
+/// What the run allows. It reads people from a company's pages and LinkedIn's first page, where more are rarely right.
+const MAX_PER_COMPANY: usize = 5;
 
 async fn find_people(
     State(state): State<AppState>,
@@ -355,9 +366,42 @@ async fn find_people(
 }
 
 pub(super) async fn start_find_people(db: &PgPool, org_id: Uuid, segment: &Segment, body: FindPeopleBody) -> AppResult<Uuid> {
+    let bad = |message: String| Err(AppError::BadRequest(message));
     let mut input = json!({ "segment_id": segment.id });
-    if let Some(ids) = body.company_ids {
-        input["company_ids"] = json!(owned_ids(db, "companies", &ids, segment.project_id).await?);
+    let titles: Vec<&str> = body.titles.iter().flatten().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    if titles.len() > MAX_TITLES || titles.iter().any(|t| t.chars().count() > 100) {
+        return bad(format!("Send up to {MAX_TITLES} titles of up to 100 characters"));
+    }
+    if !titles.is_empty() {
+        input["roles"] = json!(titles.join(", "));
+    }
+    if let Some(n) = body.per_company {
+        if !(1..=MAX_PER_COMPANY).contains(&n) {
+            return bad(format!("per_company is 1 to {MAX_PER_COMPANY}"));
+        }
+        input["max_per_company"] = json!(n);
+    }
+    match (body.company_ids, body.domains) {
+        (Some(_), Some(_)) => return bad("Send company_ids or domains, not both".into()),
+        (Some(ids), None) => input["company_ids"] = json!(owned_ids(db, "companies", &ids, segment.project_id).await?),
+        (None, Some(domains)) => {
+            let mut wanted: Vec<String> = Vec::new();
+            for domain in &domains {
+                let Some(domain) = util_input::domain(domain) else { return bad(format!("{domain} isn't a domain")) };
+                if !wanted.contains(&domain) {
+                    wanted.push(domain);
+                }
+            }
+            if wanted.is_empty() || wanted.len() > MAX_DOMAINS {
+                return bad(format!("Send 1 to {MAX_DOMAINS} domains"));
+            }
+            let ids = crate::directory::companies_at(db, org_id, segment.project_id, segment.id, &wanted).await?;
+            if ids.is_empty() {
+                return bad("Every one of these companies is excluded or on your do-not-contact list".into());
+            }
+            input["company_ids"] = json!(ids);
+        }
+        (None, None) => {}
     }
     enqueue_for(db, org_id, segment, kind::FIND_PEOPLE, input).await
 }

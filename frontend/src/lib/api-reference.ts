@@ -911,8 +911,14 @@ Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk
       method: "POST",
       path: "/segments/5d0a…/find-people",
       summary:
-        "Have the agent find decision makers and their emails at the campaign's new companies, like Find people in the app. Send company_ids to pick some, or no body for all.",
-      body: `{ "company_ids": ["e810…"] }`,
+        "Have the agent find decision makers and their emails at the campaign's new companies, like Find people in the app, or at the companies you pick by id or domain. Domains the project hasn't got are added to the campaign first, from the company database where they're in it. Excluded companies and ones on your do-not-contact list are left out.",
+      params: [
+        ["company_ids", "optional companies of the project to search, or leave both out for the campaign's new ones"],
+        ["domains", "optional, in place of company_ids: up to 100 company domains"],
+        ["titles", "optional, up to 20 job titles to look for in place of the campaign's roles, like Head of Sales"],
+        ["per_company", "optional people to find at each company, 1 to 5, 2 by default"],
+      ],
+      body: `{ "domains": ["smiledental.co.uk"], "titles": ["Practice Manager"], "per_company": 1 }`,
       response: `{ "run_id": "9b4f…" }`,
     },
     {
