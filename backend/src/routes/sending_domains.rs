@@ -89,20 +89,30 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<S
 }
 
 #[derive(Deserialize)]
-struct SuggestQuery {
+pub(super) struct SuggestQuery {
     domain: String,
 }
 
 async fn suggestions(State(state): State<AppState>, auth: Auth, Query(q): Query<SuggestQuery>) -> AppResult<Json<Vec<Availability>>> {
+    Ok(Json(suggest(&state, auth.org_id, &q).await?))
+}
+
+/// Names like getacme.com and acmehq.com for sending cold email apart from the company's own domain, and whether the org's
+/// Porkbun account can buy each.
+pub(super) async fn suggest(state: &AppState, org_id: Uuid, q: &SuggestQuery) -> AppResult<Vec<Availability>> {
     let names = domains::suggestions(&q.domain);
     if names.is_empty() {
         return Err(AppError::BadRequest("Type your company's domain, like acme.com".into()));
     }
-    let pb = porkbun(&state, auth.org_id).await?;
-    let mut found = pb.check(&names).await.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    // Buyable first, each group in the order suggested.
+    availability(state, org_id, &names).await
+}
+
+/// Whether Porkbun sells each name and at what price, buyable first, each group in the order asked.
+pub(super) async fn availability(state: &AppState, org_id: Uuid, names: &[String]) -> AppResult<Vec<Availability>> {
+    let pb = porkbun(state, org_id).await?;
+    let mut found = pb.check(names).await.map_err(|e| AppError::BadRequest(e.to_string()))?;
     found.sort_by_key(|a| a.available != Some(true) || a.premium);
-    Ok(Json(found))
+    Ok(found)
 }
 
 #[derive(Deserialize)]

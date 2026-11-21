@@ -421,6 +421,39 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "GET",
+      path: "/sending-domains/suggestions?domain=acme.com",
+      summary:
+        "Domains to send cold email from apart from your own, like getacme.com or acmehq.co, with whether your Porkbun account can buy each and its first-year price, buyable first. available is null when the registry didn't answer in time. Connect Porkbun on the Domains page first, and buy them there.",
+      response: `[
+  { "domain": "getacme.com", "available": true, "price_micros": 11080000, "renewal_micros": 11080000, "premium": false },
+  { "domain": "acmehq.com", "available": false, "price_micros": 11080000, "renewal_micros": 11080000, "premium": false }
+]`,
+    },
+    {
+      method: "GET",
+      path: "/sending-domains/availability?domains=getacme.com,tryacme.io",
+      summary: "The same check for up to 20 names of your own, separated by commas.",
+      response: `[{ "domain": "getacme.com", "available": true, "price_micros": 11080000, "renewal_micros": 11080000, "premium": false }]`,
+    },
+    {
+      method: "GET",
+      path: "/sending-domains",
+      summary: "The sending domains you bought on the Domains page, with their status, mail provider, DNS and how many mailboxes use each.",
+      response: `[
+  {
+    "id": "a7c1…",
+    "domain": "getacme.com",
+    "status": "registered",
+    "provider": "google",
+    "dns_status": "set",
+    "mailboxes": 2,
+    "warming": 1,
+    "…": "…"
+  }
+]`,
+    },
+    {
       method: "POST",
       path: "/segments/5d0a…/companies",
       summary:
