@@ -99,7 +99,7 @@ export default function DailyLimitPage() {
           <Section
             title="Monthly cap"
             description="The most this project may spend on emails in a calendar month (UTC), at each mailbox's price per email. Once it's reached, first emails and follow-ups wait for the 1st. Replies to leads still go out."
-            actions={
+            toggle={
               <Switch
                 checked={s.monthly_cap_micros !== null}
                 onChange={(on) => update({ monthly_cap_micros: on ? CAP_USD.start * 1_000_000 : null })}
