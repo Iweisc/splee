@@ -747,6 +747,13 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "POST",
+      path: "/leads/c42e…/mark-replied",
+      summary:
+        "Mark a reply as answered when you answered it from your own mail client or it needs no answer, like Done in the inbox. The thread leaves Needs reply until the lead writes again, its reminder is cleared and the agent's reply still waiting for approval is cancelled. The lead's status doesn't change. 409 for a lead who hasn't replied.",
+      response: `{ "lead_id": "c42e…", "answered_through": "2026-11-04T10:12:00Z" }`,
+    },
+    {
       method: "GET",
       path: "/suppressions?since=2026-11-01T00:00:00Z&page=1",
       summary:

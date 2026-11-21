@@ -469,15 +469,34 @@ async fn set_status(
 
 /// For a reply that needs no answer. It stays in the thread and leaves Needs reply until the lead writes again.
 async fn mark_done(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<Uuid>) -> AppResult<Json<Value>> {
-    let lead: Lead = util_scope::load(&state.db, "leads", lead_id, auth.org_id).await?;
-    let mut tx = state.db.begin().await?;
+    mark_replied(&state.db, auth.org_id, lead_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The inbox's Done, and POST /v1/leads/{id}/mark-replied for a reply answered outside Splee. It clears the reminder and cancels
+/// the agent's reply draft still waiting, which would be a second answer. Returns when the latest reply it covers came in, and is
+/// a 409 for a lead who never replied.
+pub(crate) async fn mark_replied(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid) -> AppResult<Ts> {
+    let lead: Lead = util_scope::load(db, "leads", lead_id, org_id).await?;
+    let mut tx = db.begin().await?;
+    // Takes turns with a reply draft being saved, as in send_reply.
+    sqlx::query("select 1 from leads where id = $1 for update").bind(lead.id).execute(&mut *tx).await?;
+    let through: Option<Ts> = sqlx::query_scalar("select max(created_at) from email_messages where lead_id = $1 and direction = 'inbound'")
+        .bind(lead.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let through = through.ok_or_else(|| AppError::Conflict("This lead hasn't replied, so there's nothing to mark".into()))?;
     sqlx::query("update email_messages set handled_at = now() where lead_id = $1 and direction = 'inbound' and handled_at is null")
+        .bind(lead.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("update email_messages set status = 'cancelled' where lead_id = $1 and kind = 'auto_reply' and status = 'draft'")
         .bind(lead.id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("update leads set remind_at = null where id = $1").bind(lead.id).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(through)
 }
 
 #[derive(Deserialize)]
