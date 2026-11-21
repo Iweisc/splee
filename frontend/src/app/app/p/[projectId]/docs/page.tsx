@@ -377,6 +377,20 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "GET",
+      path: "/companies/export?q=dental&country=GB&format=csv",
+      summary:
+        "A company search as a file to take elsewhere, like the Companies page's Download CSV, up to 50,000 rows a page. It takes the same filters as GET /companies. The splee-rows header says how many rows the page holds, and splee-capped is true when there are more on the next page. An organization can download 20 times an hour, 3 at once.",
+      params: [
+        ["filters", "the same as GET /companies"],
+        ["domains", "optional comma-separated domains, only these of the search's companies"],
+        ["format", "optional csv or jsonl, default csv"],
+        ["page, per_page", "1-based page number, and up to 50,000 rows per page, the default"],
+      ],
+      response: `name,domain,website,email,phone,address,city,region,postcode,country,category,confidence,source_id,source_release
+Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk,+44 113 496 0000,12 Park Row,Leeds,England,LS1 5HD,GB,dentist,0.94,…,…`,
+    },
+    {
       method: "POST",
       path: "/dedup/companies",
       summary:
@@ -461,6 +475,51 @@ function endpoints(projectId: string): Endpoint[] {
   ],
   "not_found": ["nowhere.example"]
 }`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/lookalikes`,
+      summary:
+        "Companies in the company database like the project's customers, up to 200, best first, like the Companies page's Like your customers. The seeds are the customers from won deals plus the ones added on that page, and profile shows what they have in common. score is 0 to 100, and reasons says what earned it the most points. database_empty is true until the company database has companies.",
+      params: [["seeds", "optional comma-separated domains to match instead of the saved seeds"]],
+      response: `{
+  "profile": {
+    "seeds": [{ "domain": "northwind.studio", "name": "Northwind Studio", "won": true, "in_database": true, "known": true }],
+    "parts": [
+      { "key": "category", "label": "Industry", "on": true, "known": 4, "values": [{ "value": "dentist", "label": "Dentist", "seeds": 3 }] },
+      { "key": "tech", "label": "Tools they use", "on": false, "known": 0, "values": [] }
+    ]
+  },
+  "results": [
+    {
+      "domain": "smiledental.co.uk",
+      "name": "Smile Dental",
+      "website": "https://smiledental.co.uk",
+      "city": "Leeds",
+      "region": "England",
+      "country_code": "GB",
+      "category": "dentist",
+      "score": 72,
+      "reasons": ["Dentist, like 3 of your 4 customers"]
+    }
+  ],
+  "database_empty": false,
+  "settings": { "added": [], "removed": [], "off": [] }
+}`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/lookalikes`,
+      summary:
+        "Add matches to a campaign, each with its score and reasons as its fit. Name the domains to add, or pass top for the best few. A domain that's no longer among the matches, like one already in the project, is skipped.",
+      params: [
+        ["segment_id", "the campaign"],
+        ["domains", "optional domains from the matches"],
+        ["top", "optional, the best this many when domains is left out, up to 200"],
+        ["seeds", "optional domains to match instead of the saved seeds"],
+      ],
+      body: `{ "segment_id": "5d0a…", "top": 25 }`,
+      response: `{ "added": 24, "skipped": 1 }`,
     },
     {
       method: "GET",
@@ -825,6 +884,42 @@ function endpoints(projectId: string): Endpoint[] {
     }
   ],
   "total": 1
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/sheets`,
+      summary:
+        "The project's Google Sheets tabs, imports first: the ones leads come in from and the ones lead events go to, with how each last went. mapping is an import's {field: column header}, and events the lead events an export writes.",
+      response: `[
+  {
+    "id": "a7c1…",
+    "project_id": "${projectId}",
+    "kind": "import",
+    "spreadsheet_id": "1Bx9…",
+    "spreadsheet_name": "Event leads",
+    "tab": "October",
+    "mapping": { "email": "Email", "full_name": "Name", "company_name": "Company" },
+    "segment_id": "5d0a…",
+    "keep_importing": true,
+    "next_import_at": "2026-11-04T11:00:00Z",
+    "events": [],
+    "last_sync_at": "2026-11-04T10:00:00Z",
+    "rows_added": 212,
+    "error": null,
+    "failed_at": null,
+    "created_at": "2026-10-20T09:00:00Z"
+  }
+]`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/sheets/a7c1…/import`,
+      summary:
+        "Read an import tab now and add its new rows as leads, like Import now on the Integrations page. import is null when the tab had no new rows. 400 for a tab that gets lead events.",
+      response: `{
+  "import": { "id": "f2e4…", "segment_id": "5d0a…", "filename": "Google Sheets: Event leads › October", "total": 14, "imported": 12, "skipped": 2, "errors": [], "…": "…" },
+  "connection": { "id": "a7c1…", "kind": "import", "rows_added": 224, "last_sync_at": "2026-11-04T10:20:00Z", "…": "…" }
 }`,
     },
     {
@@ -1213,6 +1308,17 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: `/projects/${projectId}/email-events?since=2026-11-01T00:00:00Z`,
+      summary:
+        "Every counted open and click, oldest first and up to 500 a call, the polling twin of the email.opened and email.clicked webhooks. Opens and clicks by scanners and link checkers are left out. url is the clicked link, null for an open. Next time pass the last at you saw as since.",
+      params: [["since", "optional RFC 3339 timestamp, returns events after it"]],
+      response: `[
+  { "id": "0c9e…", "event": "email.opened", "email_id": "a19c…", "lead_id": "c42e…", "url": null, "at": "2026-11-04T09:20:00Z" },
+  { "id": "41d7…", "event": "email.clicked", "email_id": "a19c…", "lead_id": "c42e…", "url": "https://acme.com/pricing", "at": "2026-11-04T09:21:00Z" }
+]`,
+    },
+    {
+      method: "GET",
       path: `/projects/${projectId}/stats`,
       summary:
         "Lifetime results and cost of a project and each of its campaigns. Money is in micro-dollars (1,000,000 = $1). AI cost is what Claude Code reports for the agent's runs, and email cost uses each mailbox's cost per email. Runs that research the whole project count only in totals. contacted counts leads sent at least one email and replies counts leads who wrote back, not bounces, so replies over contacted is the reply rate. steps has one entry per email of the sequence that went out, step 0 being the first email: a lead's first reply counts for the last email they got before it.",
@@ -1254,6 +1360,26 @@ function endpoints(projectId: string): Endpoint[] {
     { "step": 2, "sent": 40, "replied": 1 }
   ]
 }`,
+    },
+    {
+      method: "GET",
+      path: "/exports",
+      summary:
+        "Your organization's last 30 data exports to its own storage, newest first, with the files each wrote. trigger is daily or manual, and status is running, done or failed.",
+      response: `[
+  {
+    "id": "6b0d…",
+    "dt": "2026-11-03",
+    "trigger": "daily",
+    "status": "done",
+    "files": [{ "table": "leads", "key": "splee/leads/dt=2026-11-03/part-0000.jsonl.gz", "rows": 4210, "bytes": 391022 }],
+    "rows": 18630,
+    "bytes": 1720311,
+    "error": null,
+    "started_at": "2026-11-04T03:00:00Z",
+    "finished_at": "2026-11-04T03:01:12Z"
+  }
+]`,
     },
     {
       method: "GET",
