@@ -35,8 +35,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Backs `splee reset-password <email>`. There's no reset email, because an org may have no mailbox to send it from,
-/// so whoever runs the server sets a random password and hands it over. Returns None when no user has that email.
+/// Backs `splee reset-password <email>`, for an account whose organizations have no active mailbox to send the "Forgot your
+/// password?" link from: whoever runs the server sets a random password and hands it over. Returns None when no user has that email.
 pub async fn reset_password(db: &PgPool, email: &str) -> anyhow::Result<Option<String>> {
     let password = Uuid::new_v4().simple().to_string();
     let hash = hash_password(&password)?;
@@ -55,7 +55,7 @@ pub async fn reset_password(db: &PgPool, email: &str) -> anyhow::Result<Option<S
 
 /// Creates a session row and returns the cookie to set on the response.
 /// `secure` comes from Config::secure_cookies, so the cookie is HTTPS-only wherever the app is served over HTTPS.
-pub async fn create_session(db: &PgPool, user_id: Uuid, org_id: Uuid, secure: bool) -> AppResult<Cookie<'static>> {
+pub async fn create_session(db: impl sqlx::PgExecutor<'_>, user_id: Uuid, org_id: Uuid, secure: bool) -> AppResult<Cookie<'static>> {
     let token = random_token();
     sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, $4)")
         .bind(sha256_hex(&token))

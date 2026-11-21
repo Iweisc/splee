@@ -1,21 +1,25 @@
+use std::net::SocketAddr;
 use std::sync::LazyLock;
 
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::Cookie;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgConnection, PgPool};
+use sqlx::{FromRow, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use super::demo::client_ip;
 use super::projects;
 use super::util_input;
 use crate::audit::{self, Target, Who};
 use crate::auth::{Auth, NO_PASSWORD, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
-use crate::crypto::sha256_hex;
+use crate::crypto::{random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
+use crate::mail;
 use crate::models::{INVITE_TTL, Organization, User};
 use crate::state::AppState;
 use crate::two_factor;
@@ -28,6 +32,8 @@ pub fn router() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(get_me).patch(update_me))
         .route("/auth/password", post(change_password))
+        .route("/auth/password/forgot", post(forgot_password))
+        .route("/auth/password/reset", post(reset_password))
         .route("/auth/switch-org", post(switch_org))
         .route("/auth/two-factor", get(two_factor_status))
         .route("/auth/two-factor/setup", post(two_factor_setup))
@@ -157,9 +163,7 @@ pub struct ClaimBody {
 
 async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<SignupBody>) -> AppResult<(CookieJar, Json<Me>)> {
     let email = util_input::email(&body.email).ok_or_else(|| AppError::BadRequest("Enter a valid email address".into()))?;
-    if body.password.chars().count() < 8 {
-        return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
-    }
+    check_new_password(&body.password)?;
     may_sign_up(&state, body.invite_token.is_some()).await?;
     let password_hash = hash_password(&body.password)?;
 
@@ -344,12 +348,29 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
         audit::record_account(&state.db, user_id, "user.sign_in_failed", json!({ "reason": "password" })).await;
         return Err(invalid());
     }
+    let mut tx = state.db.begin().await?;
+    if !hold_user(&mut tx, user_id, Some(&hash)).await? {
+        return Err(invalid());
+    }
     // The failures stay counted until the code is right too, or a known password would reset the limit between guesses.
     if two_factor::enabled(&state.db, user_id).await? {
-        let two_factor_token = two_factor::start_login(&state.db, user_id).await?;
+        let two_factor_token = two_factor::start_login(&mut tx, user_id).await?;
+        tx.commit().await?;
         return Ok((jar, Json(SignIn::Code { two_factor_token })));
     }
-    sign_in(&state, jar, user_id, email).await
+    sign_in(&state, jar, tx, user_id, email).await
+}
+
+/// Locks the user's row until `tx` ends, so a password reset either lands first, and this sign-in then sees the new
+/// password or its pending login gone, or waits for it and signs it out with the rest. Checking the password before the
+/// lock isn't enough: a reset could land during the slow hash check. False when the password is no longer `hash`.
+async fn hold_user(conn: &mut PgConnection, user_id: Uuid, hash: Option<&str>) -> sqlx::Result<bool> {
+    let held: Option<i32> = sqlx::query_scalar("select 1 from users where id = $1 and ($2::text is null or password_hash = $2) for share")
+        .bind(user_id)
+        .bind(hash)
+        .fetch_optional(conn)
+        .await?;
+    Ok(held.is_some())
 }
 
 #[derive(Deserialize)]
@@ -368,27 +389,43 @@ async fn login_code(State(state): State<AppState>, jar: CookieJar, Json(body): J
         audit::record_account(&state.db, user_id, "user.sign_in_failed", json!({ "reason": "code" })).await;
         return Err(AppError::BadRequest("That code didn't work. Try the newest one from your app.".into()));
     }
-    if !two_factor::finish_login(&state.db, &body.two_factor_token).await? {
+    let mut tx = state.db.begin().await?;
+    hold_user(&mut tx, user_id, None).await?;
+    if !two_factor::finish_login(&mut *tx, &body.two_factor_token).await? {
         return Err(expired());
     }
-    sign_in(&state, jar, user_id, &email).await
+    sign_in(&state, jar, tx, user_id, &email).await
 }
 
-async fn sign_in(state: &AppState, jar: CookieJar, user_id: Uuid, email: &str) -> AppResult<(CookieJar, Json<SignIn>)> {
-    let (cookie, org_id) = start_session(state, user_id, email, json!({})).await?;
+/// Starts the session inside `tx`, which holds the user's row (see hold_user).
+async fn sign_in(
+    state: &AppState,
+    jar: CookieJar,
+    mut tx: Transaction<'_, Postgres>,
+    user_id: Uuid,
+    email: &str,
+) -> AppResult<(CookieJar, Json<SignIn>)> {
+    let (cookie, org_id) = start_session(state, &mut *tx, user_id, email, json!({})).await?;
+    tx.commit().await?;
     Ok((jar.add(cookie), Json(SignIn::Done(Box::new(me(state, user_id, org_id).await?)))))
 }
 
 /// Clears the email's failed attempts, starts a session in the user's first organization and records the sign-in with
 /// `details`. Returns the session cookie and that organization.
-pub(super) async fn start_session(state: &AppState, user_id: Uuid, email: &str, details: Value) -> AppResult<(Cookie<'static>, Uuid)> {
+pub(super) async fn start_session(
+    state: &AppState,
+    db: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+    email: &str,
+    details: Value,
+) -> AppResult<(Cookie<'static>, Uuid)> {
     clear_attempts(&state.db, email).await?;
     let org_id: Uuid = sqlx::query_scalar("select org_id from memberships where user_id = $1 order by created_at limit 1")
         .bind(user_id)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::Forbidden("Your account isn't part of any organization anymore".into()))?;
-    let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
+    let cookie = create_session(db, user_id, org_id, state.cfg.secure_cookies()).await?;
     audit::record_account(&state.db, user_id, "user.signed_in", details).await;
     Ok((cookie, org_id))
 }
@@ -472,9 +509,7 @@ async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): 
     if hash != NO_PASSWORD && !verify_password(&body.current_password, &hash) {
         return Err(AppError::BadRequest("Your current password is wrong".into()));
     }
-    if body.new_password.chars().count() < 8 {
-        return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
-    }
+    check_new_password(&body.new_password)?;
     let new_hash = hash_password(&body.new_password)?;
     let mut tx = state.db.begin().await?;
     // Matched on the hash that was checked, so a password set elsewhere in the meantime can't be replaced without it.
@@ -490,6 +525,154 @@ async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): 
     sqlx::query("delete from sessions where user_id = $1 and token_hash <> $2").bind(auth.user_id).bind(&auth.token_hash).execute(&mut *tx).await?;
     tx.commit().await?;
     audit::record_account(&state.db, auth.user_id, "user.password_changed", json!({ "first": hash == NO_PASSWORD })).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The rule for every new password: signing up, changing it and resetting it.
+fn check_new_password(password: &str) -> AppResult<()> {
+    if password.chars().count() < 8 {
+        return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
+    }
+    Ok(())
+}
+
+const RESET_MINUTES: i64 = 30;
+const RESETS_PER_EMAIL: i64 = 3;
+const RESETS_PER_IP: i64 = 10;
+
+#[derive(Deserialize)]
+struct ForgotBody {
+    email: String,
+}
+
+/// Always the same answer, after the same work, so it can't tell anyone which emails have accounts or a mailbox to send
+/// from. The link is looked up and sent after the response. Without a mailbox, `splee reset-password` is the way back in.
+async fn forgot_password(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ForgotBody>,
+) -> AppResult<Json<Value>> {
+    let ok = Json(json!({ "ok": true }));
+    let Some(email) = util_input::email(&body.email) else { return Ok(ok) };
+    if reset_request_allowed(&state.db, &email, &client_ip(&headers, peer)).await? {
+        tokio::spawn(async move { email_reset_link(&state, &email).await });
+    }
+    Ok(ok)
+}
+
+/// Counts a request when it's within 3 an hour for the email and 10 for the address. One lock for every request keeps
+/// both counts exact, and this form is used rarely enough for that not to matter.
+async fn reset_request_allowed(db: &PgPool, email: &str, ip: &str) -> AppResult<bool> {
+    sqlx::query("delete from password_reset_requests where created_at < now() - interval '1 hour'").execute(db).await?;
+    let mut tx = db.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext('password_reset_requests'))").execute(&mut *tx).await?;
+    let (for_email, for_ip): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where email = $1::citext), count(*) filter (where ip = $2) from password_reset_requests
+         where created_at > now() - interval '1 hour'",
+    )
+    .bind(email)
+    .bind(ip)
+    .fetch_one(&mut *tx)
+    .await?;
+    let allowed = for_email < RESETS_PER_EMAIL && for_ip < RESETS_PER_IP;
+    if allowed {
+        sqlx::query("insert into password_reset_requests (email, ip) values ($1, $2)").bind(email).bind(ip).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(allowed)
+}
+
+async fn email_reset_link(state: &AppState, email: &str) {
+    let reset = match reset_email(&state.db, &state.cfg.public_url, email).await {
+        Ok(Some(reset)) => reset,
+        Ok(None) => return,
+        Err(e) => return tracing::error!(error = ?e, "could not make a password reset link"),
+    };
+    if let Err(e) = mail::send_system_email(state, reset.org_id, email, "Reset your Splee password", &reset.body).await {
+        tracing::warn!(error = ?e, user_id = %reset.user_id, "password reset email failed");
+    }
+}
+
+struct ResetEmail {
+    user_id: Uuid,
+    org_id: Uuid,
+    body: String,
+}
+
+/// A new reset link for the user with `email`, from the first organization they're in that has an active mailbox. None
+/// when there's no such user or organization, and then no link is made.
+async fn reset_email(db: &PgPool, public_url: &str, email: &str) -> sqlx::Result<Option<ResetEmail>> {
+    let found: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "select u.id, m.org_id from users u join memberships m on m.user_id = u.id
+         where u.email = $1::citext and exists (select 1 from mailboxes b where b.org_id = m.org_id and b.status = 'active')
+         order by m.created_at limit 1",
+    )
+    .bind(email)
+    .fetch_optional(db)
+    .await?;
+    let Some((user_id, org_id)) = found else { return Ok(None) };
+    sqlx::query("delete from password_reset_tokens where expires_at < now() - interval '1 day'").execute(db).await?;
+    let token = random_token();
+    sqlx::query(&format!(
+        "insert into password_reset_tokens (user_id, token_hash, expires_at) values ($1, $2, now() + interval '{RESET_MINUTES} minutes')"
+    ))
+    .bind(user_id)
+    .bind(sha256_hex(&token))
+    .execute(db)
+    .await?;
+    let body = format!(
+        "Someone asked to reset the password of your Splee account, {email}.\n\nChoose a new password: {public_url}/reset-password?token={token}\n\n\
+         The link works once, for the next {RESET_MINUTES} minutes. If you didn't ask for this, ignore this email and your password stays the same.\n"
+    );
+    Ok(Some(ResetEmail { user_id, org_id, body }))
+}
+
+#[derive(Deserialize)]
+struct ResetBody {
+    token: String,
+    password: String,
+}
+
+/// Sets the password from an emailed link and signs the user out everywhere. It doesn't sign them in, so two-factor
+/// still stands between the new password and the account. 409 for a link that's unknown, used or expired.
+async fn reset_password(State(state): State<AppState>, Json(body): Json<ResetBody>) -> AppResult<Json<Value>> {
+    let token_hash = sha256_hex(&body.token);
+    let dead = |why: &str| AppError::Conflict(format!("{why} Request a new one."));
+    let used = || dead("This link was already used.");
+    let found: Option<(Uuid, bool, bool)> =
+        sqlx::query_as("select user_id, used_at is not null, expires_at <= now() from password_reset_tokens where token_hash = $1")
+            .bind(&token_hash)
+            .fetch_optional(&state.db)
+            .await?;
+    let user_id = match found {
+        None => return Err(dead("This link isn't valid.")),
+        Some((_, true, _)) => return Err(used()),
+        Some((_, _, true)) => return Err(dead("This link expired.")),
+        Some((user_id, ..)) => user_id,
+    };
+    check_new_password(&body.password)?;
+    let hash = hash_password(&body.password)?;
+    let mut tx = state.db.begin().await?;
+    // Taken again in the transaction, so two requests with the same link can't both get through.
+    let taken = sqlx::query("update password_reset_tokens set used_at = now() where token_hash = $1 and used_at is null and expires_at > now()")
+        .bind(&token_hash)
+        .execute(&mut *tx)
+        .await?;
+    if taken.rows_affected() == 0 {
+        return Err(used());
+    }
+    sqlx::query("update password_reset_tokens set used_at = now() where user_id = $1 and used_at is null").bind(user_id).execute(&mut *tx).await?;
+    let email: String = sqlx::query_scalar("update users set password_hash = $2 where id = $1 returning email::text")
+        .bind(user_id)
+        .bind(&hash)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query("delete from sessions where user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("delete from pending_logins where user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("delete from login_failures where email = $1::citext").bind(&email).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record_account(&state.db, user_id, "user.password_reset", json!({})).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -831,5 +1014,188 @@ mod tests {
         assert!(signed_in(&password(&state, "correct horse").await));
         let Json(status) = two_factor_status(State(state.clone()), auth.clone()).await.unwrap();
         assert_eq!((status.enabled, status.backup_codes_left), (false, 0));
+    }
+
+    async fn forgot(state: &AppState, email: &str) -> Value {
+        let peer: SocketAddr = "203.0.113.7:4000".parse().unwrap();
+        let Json(answer) = forgot_password(State(state.clone()), ConnectInfo(peer), HeaderMap::new(), Json(ForgotBody { email: email.into() })).await.unwrap();
+        answer
+    }
+
+    async fn reset(state: &AppState, token: &str, password: &str) -> AppResult<Json<Value>> {
+        reset_password(State(state.clone()), Json(ResetBody { token: token.into(), password: password.into() })).await
+    }
+
+    fn dead(answer: &AppResult<Json<Value>>, why: &str) -> bool {
+        matches!(answer, Err(AppError::Conflict(message)) if message.contains(why))
+    }
+
+    /// Its SMTP host can't resolve, so nothing a test starts can reach anyone.
+    async fn add_mailbox(state: &AppState, auth: &Auth, status: &str) {
+        sqlx::query(
+            "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_username, smtp_password_enc, status)
+             values ($1, 'team@acme.test', 'Acme', 'smtp.invalid', '', '', $2)",
+        )
+        .bind(auth.org_id)
+        .bind(status)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+
+    /// The token in a new reset email for Ana, as the forgot route would send it.
+    async fn reset_link(state: &AppState) -> String {
+        let reset = reset_email(&state.db, &state.cfg.public_url, "ana@acme.test").await.unwrap().expect("a reset email");
+        assert!(reset.body.contains("30 minutes") && reset.body.contains("ignore this email"));
+        let link = reset.body.split_whitespace().find(|w| w.starts_with("http://localhost:3424/reset-password?token=")).unwrap();
+        link.rsplit('=').next().unwrap().to_string()
+    }
+
+    async fn allowed(state: &AppState, email: &str, ip: &str) -> bool {
+        reset_request_allowed(&state.db, email, ip).await.unwrap()
+    }
+
+    async fn rows(state: &AppState, table: &str) -> i64 {
+        sqlx::query_scalar(&format!("select count(*) from {table}")).fetch_one(&state.db).await.unwrap()
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn forgetting_an_unknown_email_answers_the_same_and_sends_nothing(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        add_mailbox(&state, &auth, "active").await;
+        let unknown = forgot(&state, "nobody@acme.test").await;
+        assert!(reset_email(&state.db, &state.cfg.public_url, "nobody@acme.test").await.unwrap().is_none());
+        assert_eq!(rows(&state, "password_reset_tokens").await, 0);
+        assert_eq!(unknown, forgot(&state, "ana@acme.test").await);
+        assert_eq!(unknown, json!({ "ok": true }));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn without_an_active_mailbox_no_link_is_made_and_the_answer_is_the_same(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        add_mailbox(&state, &auth, "paused").await;
+        assert_eq!(forgot(&state, "ana@acme.test").await, forgot(&state, "nobody@acme.test").await);
+        assert!(reset_email(&state.db, &state.cfg.public_url, "ana@acme.test").await.unwrap().is_none());
+        assert_eq!(rows(&state, "password_reset_tokens").await, 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reset_link_sets_the_password_once_and_signs_out_everywhere(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        add_mailbox(&state, &auth, "active").await;
+        for token_hash in ["a", "b"] {
+            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
+                .bind(token_hash)
+                .bind(auth.user_id)
+                .bind(auth.org_id)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+        assert!(refused(&password(&state, "wrong horse").await));
+
+        let link = reset_link(&state).await;
+        let stored: Vec<String> = sqlx::query_scalar("select token_hash from password_reset_tokens").fetch_all(&state.db).await.unwrap();
+        assert_eq!(stored, [sha256_hex(&link)], "one token, and only its hash is kept");
+        assert!(matches!(reset(&state, &link, "short").await, Err(AppError::BadRequest(_))), "signup's password rule");
+        let Json(done) = reset(&state, &link, "battery staple").await.unwrap();
+        assert_eq!(done, json!({ "ok": true }));
+        assert_eq!(rows(&state, "sessions").await + rows(&state, "login_failures").await, 0);
+        assert!(dead(&reset(&state, &link, "another staple").await, "already used"));
+        assert!(dead(&reset(&state, "made-up", "another staple").await, "isn't valid"));
+
+        assert!(refused(&password(&state, "correct horse").await));
+        assert!(signed_in(&password(&state, "battery staple").await));
+        let resets: i64 = sqlx::query_scalar("select count(*) from audit_events where action = 'user.password_reset' and actor_user_id = $1")
+            .bind(auth.user_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(resets, 1);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reset_link_dies_after_30_minutes_or_once_another_is_used(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        add_mailbox(&state, &auth, "active").await;
+        let expired = reset_link(&state).await;
+        sqlx::query("update password_reset_tokens set expires_at = now() - interval '1 second'").execute(&state.db).await.unwrap();
+        assert!(dead(&reset(&state, &expired, "battery staple").await, "expired"));
+
+        let (first, second) = (reset_link(&state).await, reset_link(&state).await);
+        assert!(reset(&state, &first, "battery staple").await.is_ok());
+        assert!(dead(&reset(&state, &second, "other staple").await, "already used"));
+        assert!(signed_in(&password(&state, "battery staple").await));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn reset_requests_are_limited_per_email_and_per_address(db: PgPool) {
+        let (state, _) = ana(db).await;
+        let (here, there) = ("203.0.113.7", "198.51.100.2");
+        for _ in 0..3 {
+            assert!(allowed(&state, "ana@acme.test", here).await);
+        }
+        assert!(!allowed(&state, "Ana@Acme.test", there).await, "3 an hour for an email, from anywhere");
+        for n in 0..7 {
+            assert!(allowed(&state, &format!("guess{n}@acme.test"), here).await);
+        }
+        assert!(!allowed(&state, "guess7@acme.test", here).await, "10 an hour from an address");
+        assert!(allowed(&state, "guess7@acme.test", there).await);
+        assert_eq!(forgot(&state, "ana@acme.test").await, json!({ "ok": true }), "a refused request answers the same");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn after_a_reset_two_factor_still_asks_for_a_code(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        turn_on(&state, &auth).await;
+        add_mailbox(&state, &auth, "active").await;
+        let pending = token(password(&state, "correct horse").await);
+        let link = reset_link(&state).await;
+        assert!(reset(&state, &link, "battery staple").await.is_ok());
+        let next = app_code(&state, &auth, last_step(&state, &auth).await + 1).await;
+        assert!(refused(&code(&state, &pending, &next).await), "a sign-in started with the old password is gone");
+        let answer = password(&state, "battery staple").await;
+        assert!(!signed_in(&answer));
+        token(answer);
+    }
+
+    /// A reset that lands while a sign-in is hashing the old password: the sign-in waits for it, then sees the new password
+    /// instead of starting a session the reset already cleared out.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_sign_in_racing_a_reset_does_not_outlive_it(db: PgPool) {
+        let (state, auth) = ana(db).await;
+        let mut reset = state.db.begin().await.unwrap();
+        sqlx::query("update users set password_hash = $2 where id = $1")
+            .bind(auth.user_id)
+            .bind(hash_password("battery staple").unwrap())
+            .execute(&mut *reset)
+            .await
+            .unwrap();
+        sqlx::query("delete from sessions where user_id = $1").bind(auth.user_id).execute(&mut *reset).await.unwrap();
+        let racing = tokio::spawn({
+            let state = state.clone();
+            async move { password(&state, "correct horse").await }
+        });
+        let mut waited = 0;
+        while waited < 100 {
+            let waiting = "select count(*) from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()";
+            let blocked: i64 = sqlx::query_scalar(waiting).fetch_one(&state.db).await.unwrap();
+            if blocked > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            waited += 1;
+        }
+        assert!(waited < 100, "the sign-in should wait on the reset's row lock");
+        reset.commit().await.unwrap();
+        assert!(refused(&racing.await.unwrap()));
+        assert_eq!(rows(&state, "sessions").await, 0);
     }
 }

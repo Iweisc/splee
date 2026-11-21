@@ -142,14 +142,14 @@ pub async fn replace_backup_codes(conn: &mut PgConnection, app_secret: &str, use
 }
 
 /// After a correct password for an account with two-factor on: a token the login page sends back with the code.
-pub async fn start_login(db: &PgPool, user_id: Uuid) -> sqlx::Result<String> {
-    sqlx::query("delete from pending_logins where expires_at < now()").execute(db).await?;
+pub async fn start_login(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<String> {
+    sqlx::query("delete from pending_logins where expires_at < now()").execute(&mut *conn).await?;
     let token = random_token();
     sqlx::query("insert into pending_logins (token_hash, user_id, expires_at) values ($1, $2, $3)")
         .bind(sha256_hex(&token))
         .bind(user_id)
         .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(token)
 }
@@ -166,7 +166,7 @@ pub async fn pending_login(db: &PgPool, token: &str) -> sqlx::Result<Option<(Uui
 }
 
 /// Uses up a pending sign-in. False when another request already did.
-pub async fn finish_login(db: &PgPool, token: &str) -> sqlx::Result<bool> {
+pub async fn finish_login(db: impl sqlx::PgExecutor<'_>, token: &str) -> sqlx::Result<bool> {
     let done = sqlx::query("delete from pending_logins where token_hash = $1 and expires_at > now()").bind(sha256_hex(token)).execute(db).await?;
     Ok(done.rows_affected() == 1)
 }
