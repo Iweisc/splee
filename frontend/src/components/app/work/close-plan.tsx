@@ -153,11 +153,13 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
               {step.detail && !step.done_at && <p className="text-xs text-pretty text-muted-foreground">{step.detail}</p>}
               {step.done_by === "them" && <p className="text-xs text-brand-700">Ticked off by {them}</p>}
             </div>
-            {/* On a phone the date goes under whose step it is, or the title gets a column too narrow for its words. */}
+            {/* On a phone the date goes under whose step it is and a long company name is cut short, or the title gets a column
+                too narrow for its words. */}
             <div className="flex shrink-0 flex-col items-end gap-1 @sm:flex-row @sm:items-start @sm:gap-2.5">
               <span
+                title={step.side === "them" ? them : undefined}
                 className={cn(
-                  "rounded-full px-1.5 text-[11px] leading-[18px] font-medium",
+                  "max-w-28 truncate rounded-full px-1.5 text-[11px] leading-[18px] font-medium @sm:max-w-none",
                   step.side === "them" ? "bg-sky-50 text-sky-700" : "bg-black/5 text-foreground",
                 )}
               >
