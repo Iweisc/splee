@@ -1432,7 +1432,7 @@ function endpoints(projectId: string): Endpoint[] {
       method: "POST",
       path: "/deals",
       summary:
-        "Open a deal for a lead, in its first stage unless you name one. A lead has one open deal at a time, so a second is 409. Returns the deal like the list.",
+        "Open a deal for a lead, in the stage hot replies open deals in (auto hot on GET /deal-stages) unless you name one. A lead has one open deal at a time, so a second is 409. Returns the deal like the list.",
       params: [
         ["lead_id", "the lead"],
         ["stage_id or stage", "optional, a stage's id or its name"],
