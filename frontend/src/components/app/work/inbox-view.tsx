@@ -502,9 +502,10 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* The status buttons drop under the name rather than squeezing it. When they wrap among themselves, each row fills. */}
+      {/* The status buttons drop under the name rather than squeezing it. When they wrap among themselves, each row fills. The
+          basis is the name's 15rem plus the owner menu and bell beside it, so the name keeps its room before they drop. */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-        <div className="flex min-w-0 flex-1 basis-60 items-center gap-3">
+        <div className="flex min-w-0 flex-1 basis-112 items-center gap-3">
           <div className="min-w-0 flex-1">
             <p className="flex items-center gap-2 font-medium">
               {lead.full_name || lead.email} <LeadStatusBadge status={lead.status} />
