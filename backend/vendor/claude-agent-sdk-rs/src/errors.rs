@@ -4,22 +4,25 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Main error type for the Claude Agent SDK
+///
+/// A variant that wraps another error is transparent because the wrapped error already names itself. Printing it
+/// and also returning it as the source made anyhow's `{:#}` show every agent run's failure twice.
 #[derive(Debug, Error)]
 pub enum ClaudeError {
     /// CLI connection error
-    #[error("CLI connection error: {0}")]
+    #[error(transparent)]
     Connection(#[from] ConnectionError),
 
     /// Process error
-    #[error("Process error: {0}")]
+    #[error(transparent)]
     Process(#[from] ProcessError),
 
     /// JSON decode error
-    #[error("JSON decode error: {0}")]
+    #[error(transparent)]
     JsonDecode(#[from] JsonDecodeError),
 
     /// Message parse error
-    #[error("Message parse error: {0}")]
+    #[error(transparent)]
     MessageParse(#[from] MessageParseError),
 
     /// Transport error
@@ -35,15 +38,15 @@ pub enum ClaudeError {
     InvalidConfig(String),
 
     /// CLI not found error
-    #[error("CLI not found: {0}")]
+    #[error(transparent)]
     CliNotFound(#[from] CliNotFoundError),
 
     /// Image validation error
-    #[error("Image validation error: {0}")]
+    #[error(transparent)]
     ImageValidation(#[from] ImageValidationError),
 
     /// IO error
-    #[error("IO error: {0}")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     /// Other errors
@@ -170,3 +173,18 @@ impl ImageValidationError {
 
 /// Result type for the Claude Agent SDK
 pub type Result<T> = std::result::Result<T, ClaudeError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wrapped_error_reads_once_in_a_chain() {
+        let missing = ClaudeError::from(CliNotFoundError::new("Claude Code CLI not found.", None));
+        let e = anyhow::Error::from(missing).context("could not start the Claude CLI");
+        assert_eq!(format!("{e:#}"), "could not start the Claude CLI: CLI not found: Claude Code CLI not found.");
+
+        let exited = ClaudeError::from(ProcessError::new("the CLI exited", Some(1), None));
+        assert_eq!(format!("{:#}", anyhow::Error::from(exited)), "Process error (exit code Some(1)): the CLI exited");
+    }
+}
