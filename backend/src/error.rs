@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -19,6 +19,9 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// A 429 that says in Retry-After how many seconds to wait.
+    #[error("{0}")]
+    RetryAfter(String, u64),
     /// Well-formed but not acceptable, like a project id from another organization. The public API's 422.
     #[error("{0}")]
     Unprocessable(String),
@@ -46,14 +49,19 @@ impl IntoResponse for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::TooManyRequests(_) | AppError::RetryAfter(..) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         };
-        (status, Json(json!({ "error": self.public_message() }))).into_response()
+        let retry_after = if let AppError::RetryAfter(_, secs) = &self { Some(*secs) } else { None };
+        let mut res = (status, Json(json!({ "error": self.public_message() }))).into_response();
+        if let Some(secs) = retry_after {
+            res.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        res
     }
 }
 

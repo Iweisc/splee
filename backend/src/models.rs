@@ -548,7 +548,7 @@ pub struct Company {
     pub scored_at: Option<Ts>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct Lead {
     pub id: Uuid,
     pub project_id: Uuid,

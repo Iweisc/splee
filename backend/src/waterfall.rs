@@ -86,6 +86,32 @@ pub async fn searched_last_hour(db: &PgPool, org_id: Uuid) -> sqlx::Result<i64> 
         .await
 }
 
+/// Counts up to `wanted` searches against the organization's `hourly`, for the worker's rounds and the public API's lookups
+/// alike, and says how many it got. With none left, it's the seconds until the oldest search this hour stops counting.
+pub async fn claim(db: &PgPool, org_id: Uuid, hourly: i64, wanted: i64) -> sqlx::Result<Result<i64, u64>> {
+    // Held only while counting, so two requests side by side can't both take the last search.
+    let mut tx = db.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('email-search-claim:' || $1::text, 0))").bind(org_id).execute(&mut *tx).await?;
+    let used: i64 = sqlx::query_scalar("select count(*) from email_search_attempts where org_id = $1 and at > now() - interval '1 hour'")
+        .bind(org_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let room = (hourly - used).min(wanted);
+    if room <= 0 {
+        let wait: Option<f64> = sqlx::query_scalar(
+            "select extract(epoch from min(at) + interval '1 hour' - now())::float8 from email_search_attempts
+             where org_id = $1 and at > now() - interval '1 hour'",
+        )
+        .bind(org_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        return Ok(Err(wait.map_or(1, |secs| secs.ceil().max(1.0) as u64)));
+    }
+    sqlx::query("insert into email_search_attempts (org_id) select $1 from generate_series(1, $2)").bind(org_id).bind(room as i32).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Ok(room))
+}
+
 async fn search_org(state: &AppState, org_id: Uuid, hourly: i64) -> anyhow::Result<()> {
     // Held for the round, so a second backend on the database skips this organization instead of searching its leads twice.
     let mut lock = state.db.begin().await?;
@@ -97,7 +123,7 @@ async fn search_org(state: &AppState, org_id: Uuid, hourly: i64) -> anyhow::Resu
     if !owned || room <= 0 {
         return Ok(());
     }
-    let leads: Vec<Lead> = sqlx::query_as(&format!(
+    let mut leads: Vec<Lead> = sqlx::query_as(&format!(
         "select l.* from leads l join projects p on p.id = l.project_id where p.org_id = $1 and {WAITING}
          order by l.email_search = 'queued' desc, l.created_at, l.id limit $2"
     ))
@@ -107,11 +133,8 @@ async fn search_org(state: &AppState, org_id: Uuid, hourly: i64) -> anyhow::Resu
     .await?;
     // Counted before any call goes out, so the limit holds even when a search fails partway.
     sqlx::query("delete from email_search_attempts where org_id = $1 and at < now() - interval '1 day'").bind(org_id).execute(&state.db).await?;
-    sqlx::query("insert into email_search_attempts (org_id) select $1 from generate_series(1, $2)")
-        .bind(org_id)
-        .bind(leads.len() as i32)
-        .execute(&state.db)
-        .await?;
+    let Ok(granted) = claim(&state.db, org_id, hourly, leads.len() as i64).await? else { return Ok(()) };
+    leads.truncate(granted as usize);
     let mut done = stream::iter(leads).map(|lead| async move { (lead.id, search_and_save(state, &lead).await) }).buffer_unordered(PARALLEL);
     while let Some((lead, result)) = done.next().await {
         if let Err(e) = result {
@@ -138,7 +161,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn ended(state: &'static str, note: impl Into<String>) -> Outcome {
+    pub(crate) fn ended(state: &'static str, note: impl Into<String>) -> Outcome {
         Outcome { state, source: String::new(), note: note.into(), email: None, lookups: 0, credits: None, phone: None }
     }
 }
@@ -211,6 +234,21 @@ async fn save(db: &PgPool, lead: &Lead, o: &Outcome) -> sqlx::Result<()> {
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// Someone to search for who isn't a lead, like the public API's email lookups. `search` only reads its lead, and this id
+/// matches no row, so an address any lead in the project has still counts as taken.
+pub fn unsaved_lead(project_id: Uuid, first: &str, last: &str, domain: &str, linkedin: &str) -> Lead {
+    Lead {
+        id: Uuid::new_v4(),
+        project_id,
+        full_name: format!("{first} {last}").trim().to_string(),
+        first_name: first.to_string(),
+        last_name: last.to_string(),
+        company_domain: Some(domain.to_string()),
+        linkedin_url: linkedin.to_string(),
+        ..Lead::default()
+    }
 }
 
 /// Runs the waterfall for one lead, and says what it found without saving it.

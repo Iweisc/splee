@@ -37,6 +37,7 @@ use super::util_scope;
 use crate::ab_test::{self, AbTest};
 use crate::auth::{self, ApiKeyAuth, KeyAuth};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
+use crate::email_lookups::{self, Batch, BatchPerson, Found, Person};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
@@ -60,6 +61,9 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/projects/{id}/leads", get(list_leads).post(add_leads))
         .route("/v1/projects/{id}/leads/upsert", post(upsert_lead))
         .route("/v1/projects/{id}/companies", get(list_companies))
+        .route("/v1/projects/{id}/enrich/email", post(find_email))
+        .route("/v1/projects/{id}/enrich/email/batch", post(find_emails))
+        .route("/v1/enrich/email/batch/{id}", get(email_batch))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/leads/{id}/assign", post(assign_lead))
@@ -1639,6 +1643,42 @@ pub(super) async fn add_to_watch_list(
     Ok(Json(jobchanges::add(&state.db, id, body).await?))
 }
 
+/// Finds a person's email with the project's finders and verifier, the way the email waterfall does for a lead, without
+/// adding them as one. Each call counts against the organization's hourly email searches.
+pub(super) async fn find_email(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<Person>) -> AppResult<Json<Found>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let person = body.checked().map_err(AppError::BadRequest)?;
+    email_lookups::check_connected(&state.db, id).await?;
+    email_lookups::claim_one(&state.db, auth.org_id).await?;
+    Ok(Json(email_lookups::find(&state, id, &person).await))
+}
+
+#[derive(Deserialize)]
+pub(super) struct BatchBody {
+    people: Vec<BatchPerson>,
+}
+
+/// Queues up to 500 people for the same search, in the background and within the hourly limit, for GET
+/// /v1/enrich/email/batch/{task_id} to follow.
+pub(super) async fn find_emails(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<BatchBody>) -> AppResult<Json<Value>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    if body.people.is_empty() || body.people.len() > email_lookups::MAX_BATCH {
+        return Err(AppError::BadRequest(format!("Send 1 to {} people", email_lookups::MAX_BATCH)));
+    }
+    let mut people = Vec::with_capacity(body.people.len());
+    for (i, p) in body.people.into_iter().enumerate() {
+        let person = p.person.checked().map_err(|e| AppError::BadRequest(format!("people[{i}]: {e}")))?;
+        people.push(BatchPerson { person, client_ref: p.client_ref });
+    }
+    email_lookups::check_connected(&state.db, id).await?;
+    let task_id = email_lookups::create(&state.db, auth.org_id, id, &people).await?;
+    Ok(Json(json!({ "task_id": task_id, "status": "pending", "total": people.len() })))
+}
+
+pub(super) async fn email_batch(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Batch>> {
+    Ok(Json(email_lookups::load(&state.db, auth.org_id, id).await?))
+}
+
 /// The organization's last 30 data exports, newest first, with the files each wrote. See exports/.
 pub(super) async fn list_exports(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<crate::exports::Run>>> {
     Ok(Json(crate::exports::recent(&state.db, auth.org_id, 30).await?))
@@ -2073,6 +2113,130 @@ mod tests {
         let (_, page) = api.get(&format!("/v1/hot-leads?project_id={a}")).await;
         assert_eq!((page["total"].clone(), page["items"][0]["lead_id"].clone()), (json!(1), json!(anna)), "{page}");
         assert_eq!(api.get(&format!("/v1/hot-leads?project_id={b}")).await.0, 404);
+    }
+
+    /// MillionVerifier as a project's verifier, through a fake that accepts only `valid`.
+    async fn verifier(db: &PgPool, project: Uuid, valid: &'static str) -> reqwest::Url {
+        use std::collections::HashMap;
+
+        use axum::Json;
+        use axum::extract::Query;
+        use axum::routing::get;
+
+        sqlx::query("insert into project_settings (project_id, verifier, verifier_key_enc) values ($1, 'millionverifier', $2)")
+            .bind(project)
+            .bind(crate::crypto::encrypt("", "mv-key"))
+            .execute(db)
+            .await
+            .unwrap();
+        let check = move |Query(q): Query<HashMap<String, String>>| async move {
+            Json(json!({ "result": if q["email"] == valid { "ok" } else { "invalid" }, "error": "" }))
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = reqwest::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move { axum::serve(listener, Router::new().route("/api/v3/", get(check))).await });
+        url
+    }
+
+    async fn spend_the_hour(db: &PgPool, project: Uuid, searches: i32) {
+        sqlx::query("insert into email_search_attempts (org_id) select org_id from projects, generate_series(1, $2) where id = $1")
+            .bind(project)
+            .bind(searches)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn finding_an_email_needs_a_finder_and_room_in_the_hour(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let find = format!("/v1/projects/{a}/enrich/email");
+        let jane = json!({ "first_name": "Jane", "last_name": "Doe", "company_domain": "https://www.acme.example/about" });
+
+        let (status, _, body) = api.post(KEYS[0], &find, None, jane.clone()).await;
+        assert!(status == 409 && body["error"].as_str().unwrap().contains("email finder or verifier"), "{status} {body}");
+        let batch = json!({ "people": [jane.clone()] });
+        assert_eq!(api.post(KEYS[0], &format!("{find}/batch"), None, batch.clone()).await.0, 409);
+        verifier(&db, a, "").await;
+        let (status, _, body) = api.post(KEYS[0], &find, None, json!({ "first_name": " ", "company_domain": "acme.example" })).await;
+        assert!(status == 400 && body["error"].as_str().unwrap().contains("first_name"), "{status} {body}");
+
+        // The leads the waterfall searched this hour count, and the 429 says when the oldest of them stops counting.
+        spend_the_hour(&db, a, 200).await;
+        let (status, headers, body) = api.post(KEYS[0], &find, Some("find-1"), jane.clone()).await;
+        assert!(status == 429 && body["error"].as_str().unwrap().contains("200 email searches"), "{status} {body}");
+        let wait: u64 = header(&headers, "retry-after").unwrap().parse().unwrap();
+        assert!((3590..=3600).contains(&wait), "{wait}");
+        assert_eq!(count(&db, "select count(*) from email_search_attempts").await, 200);
+        // A batch waits for room instead.
+        assert_eq!(api.post(KEYS[0], &format!("{find}/batch"), None, batch.clone()).await.0, 200);
+
+        // Another organization's project and batch look like ones that don't exist.
+        verifier(&db, b, "").await;
+        assert_eq!(api.post(KEYS[0], &format!("/v1/projects/{b}/enrich/email"), None, jane.clone()).await.0, 404);
+        assert_eq!(api.post(KEYS[0], &format!("/v1/projects/{b}/enrich/email/batch"), None, batch.clone()).await.0, 404);
+        let (status, _, theirs) = api.post(KEYS[1], &format!("/v1/projects/{b}/enrich/email/batch"), None, batch).await;
+        assert_eq!(status, 200, "{theirs}");
+        let task = format!("/v1/enrich/email/batch/{}", theirs["task_id"].as_str().unwrap());
+        assert_eq!(api.get(&task).await.0, 404);
+        assert_eq!(api.send(Method::GET, KEYS[1], &task, None, None).await.0, 200);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_batch_of_people_is_searched_in_the_background_within_the_hour(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let fake = verifier(&db, a, "jane.doe@acme.example").await;
+        let state = crate::autopilot::tests::state(db.clone());
+        let tick = || crate::verify::TEST_API.scope(fake.clone(), crate::email_lookups::tick(&state));
+        let batch = format!("/v1/projects/{a}/enrich/email/batch");
+
+        assert_eq!(api.post(KEYS[0], &batch, None, json!({ "people": [] })).await.0, 400);
+        let too_many: Vec<Value> = (0..501).map(|_| json!({ "first_name": "Jane", "company_domain": "acme.example" })).collect();
+        assert_eq!(api.post(KEYS[0], &batch, None, json!({ "people": too_many })).await.0, 400);
+        let one_bad = json!({ "people": [{ "first_name": "Jane", "company_domain": "acme.example" }, { "first_name": "Sam", "company_domain": "nope" }] });
+        let (status, _, body) = api.post(KEYS[0], &batch, None, one_bad).await;
+        assert!(status == 400 && body["error"].as_str().unwrap().starts_with("people[1]"), "{status} {body}");
+
+        let people = json!({ "people": [
+            { "first_name": "Jane", "last_name": "Doe", "company_domain": "acme.example", "client_ref": "crm-1" },
+            { "first_name": "Sam", "last_name": "Lee", "company_domain": "lee.example" },
+        ] });
+        let (status, _, started) = api.post(KEYS[0], &batch, None, people).await;
+        assert_eq!((status, started["status"].as_str(), started["total"].as_i64()), (200, Some("pending"), Some(2)), "{started}");
+        let task = format!("/v1/enrich/email/batch/{}", started["task_id"].as_str().unwrap());
+        let (_, waiting) = api.get(&task).await;
+        assert_eq!((waiting["status"].as_str(), waiting["searched"].as_i64()), (Some("pending"), Some(0)), "{waiting}");
+        assert_eq!((waiting["results"][0]["status"].as_str(), waiting["results"][0]["client_ref"].as_str()), (Some("pending"), Some("crm-1")));
+
+        tick().await.unwrap();
+        let (status, done) = api.get(&task).await;
+        assert_eq!((status, done["status"].as_str(), done["searched"].as_i64()), (200, Some("completed"), Some(2)), "{done}");
+        let jane = &done["results"][0];
+        let found = (jane["status"].as_str(), jane["email"].as_str(), jane["email_status"].as_str());
+        assert_eq!(found, (Some("guessed"), Some("jane.doe@acme.example"), Some("verified")));
+        assert_eq!((jane["source"].as_str(), jane["client_ref"].as_str(), jane["phone"].clone()), (Some("first.last"), Some("crm-1"), Value::Null));
+        let sam = &done["results"][1];
+        assert_eq!((sam["status"].as_str(), sam["email"].clone(), sam["client_ref"].as_str()), (Some("not_found"), Value::Null, Some("")), "{sam}");
+        assert_eq!(count(&db, "select count(*) from email_search_attempts").await, 2);
+        assert_eq!(count(&db, "select count(*) from leads").await, 0, "nobody became a lead");
+
+        // With the hour spent a batch waits, and goes on once there's room.
+        spend_the_hour(&db, a, 198).await;
+        let jane = json!({ "people": [{ "first_name": "Jane", "last_name": "Doe", "company_domain": "acme.example" }] });
+        let (_, _, started) = api.post(KEYS[0], &batch, None, jane).await;
+        let task = format!("/v1/enrich/email/batch/{}", started["task_id"].as_str().unwrap());
+        tick().await.unwrap();
+        assert_eq!(api.get(&task).await.1["status"], "pending");
+        sqlx::query("update email_search_attempts set at = now() - interval '2 hours'").execute(&db).await.unwrap();
+        tick().await.unwrap();
+        let (_, done) = api.get(&task).await;
+        assert_eq!((done["status"].as_str(), done["results"][0]["email"].as_str()), (Some("completed"), Some("jane.doe@acme.example")), "{done}");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
