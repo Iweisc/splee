@@ -24,6 +24,7 @@ mod discord;
 mod discourse;
 mod domains;
 mod directory;
+mod email_lookups;
 mod directory_queue;
 mod error;
 mod events;
@@ -174,6 +175,7 @@ async fn main() -> anyhow::Result<()> {
     agent::team_brief::spawn_worker(state.clone());
     contests::spawn_worker(state.clone());
     waterfall::spawn_worker(state.clone());
+    email_lookups::spawn_worker(state.clone());
     outreach::spawn_worker(state.clone());
     payments::spawn_worker(state.clone());
     meetings::spawn_worker(state.clone());

@@ -274,6 +274,63 @@ function endpoints(projectId: string): Endpoint[] {
       response: `{ "ok": true }`,
     },
     {
+      method: "POST",
+      path: `/projects/${projectId}/enrich/email`,
+      summary:
+        "Find a person's work email from their name and company with the project's email finders and verifier, the way Splee does for a lead without one. They don't become a lead. Each call is one of your organization's 200 email searches an hour, shared with the leads Splee searches, and past that it's a 429 with Retry-After. A project with no finder or verifier connected gets a 409.",
+      params: [
+        ["first_name, company_domain", "required, the domain or the company's website"],
+        ["last_name, linkedin_url", "optional, and some finders match on the profile"],
+      ],
+      body: `{ "first_name": "Sarah", "last_name": "Chen", "company_domain": "northwind.studio" }`,
+      response: `{
+  "status": "found",
+  "email": "sarah@northwind.studio",
+  "email_status": "verified",
+  "source": "Hunter",
+  "note": "Found by Hunter.",
+  "phone": null
+}`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/enrich/email/batch`,
+      summary:
+        "The same search for up to 500 people, in the background and within the hourly limit, so a big batch takes a few hours. status is found, guessed (a common pattern the verifier accepted), catch_all, not_found, suppressed, duplicate (a lead in the project has the address, named in note) or failed. phone is filled only when the project finds phone numbers too.",
+      params: [["people", "first_name, company_domain, and optional last_name, linkedin_url and client_ref, your own id given back with the result"]],
+      body: `{ "people": [{ "first_name": "Sarah", "last_name": "Chen", "company_domain": "northwind.studio", "client_ref": "crm-118" }] }`,
+      response: `{ "task_id": "e7c2…", "status": "pending", "total": 1 }`,
+    },
+    {
+      method: "GET",
+      path: "/enrich/email/batch/e7c2…",
+      summary: "A batch's results in the order you sent them, each pending until searched. Poll until status is completed. Batches are kept for 30 days.",
+      response: `{
+  "task_id": "e7c2…",
+  "project_id": "${projectId}",
+  "status": "completed",
+  "total": 1,
+  "searched": 1,
+  "created_at": "2026-11-21T09:00:00Z",
+  "finished_at": "2026-11-21T09:01:00Z",
+  "results": [
+    {
+      "client_ref": "crm-118",
+      "first_name": "Sarah",
+      "last_name": "Chen",
+      "company_domain": "northwind.studio",
+      "linkedin_url": "",
+      "status": "guessed",
+      "email": "sarah.chen@northwind.studio",
+      "email_status": "verified",
+      "source": "first.last",
+      "note": "Guessed from the first.last@ pattern, verified by MillionVerifier.",
+      "phone": null
+    }
+  ]
+}`,
+    },
+    {
       method: "GET",
       path: `/local-businesses?what=dentists&where=Austin,%20TX&min_rating=4&project_id=${projectId}`,
       summary:

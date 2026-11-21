@@ -46,7 +46,7 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, and update_project_controls sets the project's sending, limits, schedule, autopilot \
 and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
-customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -259,6 +259,7 @@ pub(crate) fn read_tools() -> Vec<Value> {
     tools().into_iter().filter(|t| t["annotations"]["readOnlyHint"] == json!(true) && t["name"] != "search_local_businesses").collect()
 }
 
+const EMAIL_BATCH_NEXT: &str = "This runs in the background, within the organization's 200 email searches an hour. Call get_email_batch with task_id until status is completed.";
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at", "review_window_hours"];
 const LEAD_FIELDS: &[&str] = &[
@@ -328,6 +329,13 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "save_search" => async { value(v1::save_search(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
         "delete_saved_search" => async { value(v1::delete_saved_search(st(), auth, id(a, "search_id")?).await?) }.await,
         "list_new_matches" => async { value(v1::new_matches(st(), auth, id(a, "search_id")?, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "find_email" => async { value(v1::find_email(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?) }.await,
+        "find_emails" => async {
+            let started = value(v1::find_emails(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?)?;
+            Ok(json!({ "task_id": started["task_id"], "total": started["total"], "next": EMAIL_BATCH_NEXT }))
+        }
+        .await,
+        "get_email_batch" => async { value(v1::email_batch(st(), auth, id(a, "task_id")?).await?) }.await,
         "find_lookalikes" => async {
             let mut a = a.clone();
             if let Some(seeds) = a["seeds"].as_array() {
@@ -663,6 +671,60 @@ fn tools() -> Vec<Value> {
                 "since": { "type": "string", "format": "date-time", "description": "Optional. Only companies found at or after this" },
             })),
             &["search_id"],
+            read.clone(),
+        ),
+        tool(
+            "find_email",
+            "Find a person's email",
+            "Finds a person's work email from their name and company domain with the project's email finders and verifier, \
+             like Splee does for a lead without one, and doesn't add them as a lead. status is found, guessed (a common pattern \
+             the verifier accepted), catch_all, not_found, suppressed (on the do-not-contact list), duplicate (a lead in the \
+             project has it, named in note) or failed, and email_status verified, or found when no verifier confirmed it. phone \
+             is filled only when the project finds phone numbers too. Each call is one of the organization's 200 email searches \
+             an hour.",
+            json!({
+                "project_id": project,
+                "first_name": { "type": "string" },
+                "last_name": { "type": "string" },
+                "company_domain": { "type": "string", "description": "The company's domain or website, like acme.com" },
+                "linkedin_url": { "type": "string", "description": "Optional. Their LinkedIn profile, which some finders match on" },
+            }),
+            &["project_id", "first_name", "company_domain"],
+            adds.clone(),
+        ),
+        tool(
+            "find_emails",
+            "Find emails for a list of people",
+            "Queues up to 500 people for find_email's search, in the background and within the organization's 200 email \
+             searches an hour. Returns task_id for get_email_batch.",
+            json!({
+                "project_id": project,
+                "people": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "first_name": { "type": "string" },
+                            "last_name": { "type": "string" },
+                            "company_domain": { "type": "string" },
+                            "linkedin_url": { "type": "string" },
+                            "client_ref": { "type": "string", "description": "Optional. Your own id for the person, given back with their result" },
+                        },
+                        "required": ["first_name", "company_domain"],
+                    },
+                },
+            }),
+            &["project_id", "people"],
+            adds.clone(),
+        ),
+        tool(
+            "get_email_batch",
+            "Get email batch results",
+            "A find_emails batch: status pending or completed, how many of total are searched, and each person's result in the \
+             order sent, pending until searched. Results are kept for 30 days.",
+            json!({ "task_id": id_prop("A task_id from find_emails") }),
+            &["task_id"],
             read.clone(),
         ),
         tool(
@@ -1373,7 +1435,8 @@ mod tests {
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes",
-                     "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches"] {
+                     "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
+                     "get_email_batch"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1391,6 +1454,43 @@ mod tests {
         // The public API's per-organization rate limit covers MCP too.
         let res = server.client.post(&server.url).bearer_auth(KEY).json(&json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" })).send().await.unwrap();
         assert_eq!((res.headers()["ratelimit-limit"].to_str().unwrap(), res.headers().contains_key("ratelimit-remaining")), ("10000", true));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn emails_are_found_by_name_for_the_keys_organization(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        let server = Server::start(db.clone()).await;
+        let jane = json!({ "project_id": project, "first_name": "Jane", "last_name": "Doe", "company_domain": "acme.example" });
+
+        let (is_error, text) = server.call(KEY, "find_email", jane.clone()).await;
+        assert!(is_error && text.contains("email finder or verifier"), "{text}");
+        for p in [project, other_project] {
+            let connect = "insert into project_settings (project_id, verifier, verifier_key_enc) values ($1, 'millionverifier', '')";
+            sqlx::query(connect).bind(p).execute(&db).await.unwrap();
+        }
+        sqlx::query("insert into email_search_attempts (org_id) select org_id from projects, generate_series(1, 200) where id = $1")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let (is_error, text) = server.call(KEY, "find_email", jane.clone()).await;
+        assert!(is_error && text.contains("200 email searches"), "{text}");
+
+        let people = json!([{ "first_name": "Jane", "company_domain": "acme.example", "client_ref": "crm-1" }]);
+        let (is_error, text) = server.call(KEY, "find_emails", json!({ "project_id": project, "people": people })).await;
+        assert!(!is_error, "{text}");
+        let started: Value = serde_json::from_str(&text).unwrap();
+        assert!(started["next"].as_str().unwrap().contains("get_email_batch"), "{started}");
+        let (is_error, text) = server.call(KEY, "get_email_batch", json!({ "task_id": started["task_id"] })).await;
+        let batch: Value = serde_json::from_str(&text).unwrap();
+        assert!(!is_error && batch["status"] == "pending" && batch["results"][0]["client_ref"] == "crm-1", "{text}");
+
+        let (is_error, text) = server.call(KEY, "find_emails", json!({ "project_id": other_project, "people": people })).await;
+        assert!(is_error && text.contains("Not found"), "{text}");
+        let (is_error, _) = server.call(KEY, "get_email_batch", json!({ "task_id": Uuid::new_v4() })).await;
+        assert!(is_error);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
