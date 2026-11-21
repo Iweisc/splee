@@ -51,7 +51,7 @@ unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
 checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
 find_lookalikes and add_lookalikes find companies like the user's \
-customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. suggest_sending_domains and check_sending_domains find domains to send cold email from, which the user buys on the Domains page. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. suggest_sending_domains and check_sending_domains find domains to send cold email from, which the user buys on the Domains page. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done, and list_tasks finds a lost one. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -418,6 +418,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         "find_people" => async { started(value(v1::find_people(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
         "write_emails" => async { started(value(v1::write_emails(st(), auth, id(a, "segment_id")?, Some(Json(parse(a)?))).await?)) }.await,
         "get_run" => async { Ok(pick(value(v1::get_run(st(), auth, id(a, "run_id")?).await?)?, RUN_FIELDS)) }.await,
+        "list_tasks" => async { value(v1::list_tasks(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "list_leads" => async {
             let page = value(v1::list_leads(st(), auth, id(a, "project_id")?, Query(parse(a)?), Query(parse(a)?)).await?)?;
             Ok(pick(page, LEAD_FIELDS))
@@ -1190,6 +1191,20 @@ fn tools() -> Vec<Value> {
             read.clone(),
         ),
         tool(
+            "list_tasks",
+            "List background tasks",
+            "The organization's background work, newest first: agent runs, find_emails batches and import_campaign imports, each \
+             with status pending, completed or failed and the url that follows it. For finding a run_id or task_id again.",
+            page_props(json!({
+                "status": { "type": "string", "enum": ["pending", "completed", "failed"], "description": "Optional" },
+                "type": { "type": "string", "enum": ["run", "email_batch", "campaign_import"], "description": "Optional" },
+                "kind": { "type": "string", "description": "Optional. Only runs of this kind, like find_people or write_emails" },
+                "project_id": id_prop("Optional. Only this project's"),
+            })),
+            &[],
+            read.clone(),
+        ),
+        tool(
             "list_leads",
             "List leads",
             "A project's leads, newest first, or the likeliest buyers first with sort \"score\". Each has a 0-100 score, its fit \
@@ -1927,6 +1942,7 @@ mod tests {
                      "list_erased_leads",
                      "list_sending_domains", "suggest_sending_domains", "check_sending_domains",
                      "get_project", "create_project",
+                     "list_tasks",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",
@@ -2821,5 +2837,21 @@ mod tests {
             assert_eq!(server.call(KEY, tool, args).await, (true, "Not found".into()), "{tool}");
         }
         assert_eq!(status(other_segment).await, "draft");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn list_tasks_filters_the_keys_organizations_runs_by_kind(db: PgPool) {
+        let [(project, _), (other_project, _)] = seed(&db).await;
+        for (project, kind) in [(project, "find_people"), (project, "write_emails"), (other_project, "find_people")] {
+            sqlx::query("insert into agent_runs (project_id, kind) values ($1, $2)").bind(project).bind(kind).execute(&db).await.unwrap();
+        }
+        let server = Server::start(db).await;
+        let (error, text) = server.call(KEY, "list_tasks", json!({ "type": "run", "kind": "find_people", "per_page": 5 })).await;
+        assert!(!error, "{text}");
+        let page: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((&page["total"], &page["items"][0]["project_id"], &page["items"][0]["status"]), (&json!(1), &json!(project), &json!("pending")));
+        assert!(server.call(KEY, "list_tasks", json!({ "status": "done" })).await.0);
     }
 }
