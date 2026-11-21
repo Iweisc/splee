@@ -357,6 +357,8 @@ pub struct ProjectSettings {
     pub autopilot_lead_cap: i32,
     /// Autopilot's emails go out without approval.
     pub autopilot_auto_send: bool,
+    /// Drafts nobody reviewed or edited go out this many hours after they were written, 1 to 72. Null keeps them waiting.
+    pub review_window_hours: Option<i32>,
     /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.
@@ -799,7 +801,9 @@ pub struct EmailMessage {
     pub language: String,
     /// Who else a lead's reply went to, or who ours is copied to. Lowercase addresses.
     #[sqlx(default)]
-    pub cc_emails: Vec<String>,
+    pub cc_emails: Vec<String>,    /// "person" or "review_window" once it was approved, else null. See review_window.rs.
+    #[sqlx(default)]
+    pub approved_via: Option<String>,
 }
 
 /// A file on an email, without its bytes. See mail/attachments.rs.

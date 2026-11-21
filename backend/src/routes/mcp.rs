@@ -256,7 +256,7 @@ pub(crate) fn read_tools() -> Vec<Value> {
 }
 
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
-const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at"];
+const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at", "review_window_hours"];
 const LEAD_FIELDS: &[&str] = &[
     "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
     "score_fit", "score_intent", "score_reasons", "owner_id", "owner_name", "owner_email", "language", "effective_language",

@@ -329,12 +329,15 @@ impl Server {
         recent(&self.db, self.acme, 50).await.unwrap()
     }
 
-    /// Waits for the Export now the API started.
+    /// Waits for the Export now the API started. It looks for the newest manual run rather than the newest run, because the daily
+    /// runs here start at made-up hours of today, which sort after a manual run started now whenever the tests run before them.
     async fn settled(&self) -> Run {
         for _ in 0..200 {
             let runs = self.runs().await;
-            if runs.first().is_some_and(|r| r.status != "running") {
-                return runs[0].clone();
+            if let Some(run) = runs.iter().find(|r| r.trigger == "manual")
+                && run.status != "running"
+            {
+                return run.clone();
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -611,7 +614,10 @@ async fn the_daily_export_writes_every_table_of_the_organization_then_the_manife
         res.json::<Value>().await.unwrap()
     };
     let listed = api(API_KEY).await;
-    assert_eq!(listed.as_array().unwrap().iter().map(|r| r["trigger"].as_str().unwrap()).collect::<Vec<_>>(), ["manual", "daily"]);
+    // Sorted, since the daily run's made-up start can be later than the manual one's real start (see settled).
+    let mut triggers = listed.as_array().unwrap().iter().map(|r| r["trigger"].as_str().unwrap()).collect::<Vec<_>>();
+    triggers.sort();
+    assert_eq!(triggers, ["daily", "manual"]);
     assert!(!listed.to_string().contains(SECRET));
     assert_eq!(api(OTHER_KEY).await, json!([]));
 }

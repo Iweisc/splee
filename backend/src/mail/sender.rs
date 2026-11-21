@@ -70,6 +70,10 @@ pub fn in_window(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, now: Ts) 
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
+    let approved = crate::review_window::approve_due(&state.db).await?;
+    if approved > 0 {
+        tracing::info!(approved, "approved drafts nobody reviewed within the review window");
+    }
     schedule_follow_ups(state).await?;
     let projects = sqlx::query_as::<_, SendingProject>(
         "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused,
