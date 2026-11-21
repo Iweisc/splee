@@ -2,7 +2,7 @@
 //! hook subscriptions for their triggers (rest_hooks.rs). The integrations page lists a project's subscriptions and removes them.
 
 use axum::extract::{Path, Query, State};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get};
 use axum::{Json, Router};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use crate::audit::{self, Target, Who};
 use crate::auth::{Auth, KeyAuth};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
-use crate::rest_hooks::{self, EVENTS, Subscription};
+use crate::rest_hooks::{self, EVENTS, LIVE, Subscription};
 use crate::state::AppState;
 
 /// Plenty for every zap and scenario an organization runs, and it bounds the posts one event makes.
@@ -25,8 +25,8 @@ const MAX_SUBSCRIPTIONS: i64 = 100;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/me", get(me))
-        .route("/v1/hooks", post(subscribe))
-        .route("/v1/hooks/{id}", delete(unsubscribe))
+        .route("/v1/hooks", get(subscriptions).post(subscribe))
+        .route("/v1/hooks/{id}", get(subscription).delete(unsubscribe))
         .route("/v1/hooks/samples/{event}", get(samples))
         .route("/projects/{id}/hook-subscriptions", get(list))
         .route("/hook-subscriptions/{id}", delete(remove))
@@ -99,6 +99,41 @@ async fn subscribe(State(state): State<AppState>, auth: KeyAuth, Json(body): Jso
     Ok(Json(subscription))
 }
 
+/// A subscription as the API shows it. `live` is false once a 410 Gone turned it off or its key was revoked, so events skip it.
+#[derive(Serialize, FromRow)]
+struct Listed {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    subscription: Subscription,
+    live: bool,
+}
+
+/// The organization's subscriptions, oldest first, or with `project_id` the ones that project's events go to.
+async fn subscriptions(State(state): State<AppState>, auth: KeyAuth, Query(q): Query<ProjectQuery>) -> AppResult<Json<Vec<Listed>>> {
+    if let Some(project_id) = q.project_id {
+        check_project(&state.db, project_id, auth.org_id).await?;
+    }
+    let rows = sqlx::query_as::<_, Listed>(&format!(
+        "select s.*, ({LIVE}) as live from hook_subscriptions s
+         where s.org_id = $1 and ($2::uuid is null or s.project_id is null or s.project_id = $2) order by s.created_at, s.id"
+    ))
+    .bind(auth.org_id)
+    .bind(q.project_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+async fn subscription(State(state): State<AppState>, auth: KeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Listed>> {
+    sqlx::query_as::<_, Listed>(&format!("select s.*, ({LIVE}) as live from hook_subscriptions s where s.id = $1 and s.org_id = $2"))
+        .bind(id)
+        .bind(auth.org_id)
+        .fetch_optional(&state.db)
+        .await?
+        .map(Json)
+        .ok_or(AppError::NotFound)
+}
+
 /// Any key of the organization can remove its subscriptions, so a zap still turns off after its key was replaced.
 async fn unsubscribe(State(state): State<AppState>, auth: KeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     delete_in(&state, (&auth).into(), id).await
@@ -118,12 +153,17 @@ async fn delete_in(state: &AppState, who: Who, id: Uuid) -> AppResult<Json<Value
 }
 
 #[derive(Deserialize)]
-struct SampleQuery {
+struct ProjectQuery {
     #[serde(default, deserialize_with = "blank_as_none")]
     project_id: Option<Uuid>,
 }
 
-async fn samples(State(state): State<AppState>, auth: KeyAuth, Path(event): Path<String>, Query(q): Query<SampleQuery>) -> AppResult<Json<Vec<Value>>> {
+async fn samples(
+    State(state): State<AppState>,
+    auth: KeyAuth,
+    Path(event): Path<String>,
+    Query(q): Query<ProjectQuery>,
+) -> AppResult<Json<Vec<Value>>> {
     known_event(&event)?;
     if let Some(project_id) = q.project_id {
         check_project(&state.db, project_id, auth.org_id).await?;
@@ -335,6 +375,21 @@ mod tests {
         assert_eq!(status, 200, "{made}");
         assert_eq!((made["event"].as_str(), made["project_id"].as_str()), (Some("deal.won"), Some(a.project.to_string().as_str())));
         let id = made["id"].as_str().unwrap().to_string();
+
+        // Listing shows the organization's, and with project_id the ones its events go to. One turned off by a 410 isn't live.
+        let gone = api.post(KEY_A, "/v1/hooks", json!({"event": "hot_lead", "target_url": format!("{url}/gone")})).await.1;
+        let gone = Uuid::parse_str(gone["id"].as_str().unwrap()).unwrap();
+        sqlx::query("update hook_subscriptions set disabled_at = now() where id = $1").bind(gone).execute(&db).await.unwrap();
+        let (status, listed) = api.get(KEY_A, &format!("/v1/hooks?project_id={}", a.project)).await;
+        assert_eq!(status, 200, "{listed}");
+        let shown: Vec<(&str, bool)> = listed.as_array().unwrap().iter().map(|h| (h["target_url"].as_str().unwrap(), h["live"] == true)).collect();
+        assert_eq!(shown, [(format!("{url}/every").as_str(), true), (format!("{url}/zap").as_str(), true), (format!("{url}/gone").as_str(), false)]);
+        assert_eq!(api.get(KEY_A, &format!("/v1/hooks?project_id={}", b.project)).await.0, 404);
+        assert_eq!(api.get(KEY_B, "/v1/hooks").await, (200, json!([])));
+        let (status, one) = api.get(KEY_A, &format!("/v1/hooks/{id}")).await;
+        assert_eq!((status, one["event"].as_str(), one["live"].as_bool()), (200, Some("deal.won"), Some(true)));
+        assert_eq!(api.get(KEY_B, &format!("/v1/hooks/{id}")).await.0, 404, "another organization's subscription");
+
         assert_eq!(api.delete(KEY_B, &format!("/v1/hooks/{id}")).await.0, 404, "another organization's subscription");
         assert_eq!(api.delete(KEY_A, &format!("/v1/hooks/{id}")).await, (200, json!({"ok": true})));
         assert_eq!(api.delete(KEY_A, &format!("/v1/hooks/{id}")).await.0, 404);
