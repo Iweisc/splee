@@ -478,6 +478,69 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "POST",
+      path: "/campaigns/import",
+      summary:
+        "Start a new campaign from your own list of up to 30,000 leads. It returns at once and imports in the background. Each lead needs email, first_name, last_name, company_domain and job_title, and one without them is skipped, not refused. Repeats in the list, addresses or domains on your do-not-contact list and people already in the project are deduped, so the campaign holds exactly the rest. instructions becomes the campaign's outreach angle for its first emails, and language works like it does on a campaign. Follow-ups are set per project, so followup_instructions is a 422. The campaign starts as a draft: write its emails with write-emails below, then start it. Send an Idempotency-Key to retry safely.",
+      body: `{
+  "project_id": "${projectId}",
+  "name": "Design studios, March list",
+  "leads": [
+    {
+      "email": "sarah@northwind.studio",
+      "first_name": "Sarah",
+      "last_name": "Chen",
+      "company_domain": "northwind.studio",
+      "job_title": "Founder",
+      "linkedin_url": "https://www.linkedin.com/in/…",
+      "client_ref": "crm-1042"
+    }
+  ],
+  "instructions": "Mention our case study with Figma",
+  "language": "en"
+}`,
+      response: `{ "task_id": "71c3…", "campaign_id": "5d0a…", "status": "pending" }`,
+    },
+    {
+      method: "GET",
+      path: "/campaigns/import/71c3…",
+      summary:
+        "An import's progress. status is pending, then completed with result, or failed with error. Tasks are kept for 30 days.",
+      response: `{
+  "task_id": "71c3…",
+  "status": "completed",
+  "project_id": "${projectId}",
+  "campaign_id": "5d0a…",
+  "result": { "campaign_id": "5d0a…", "imported": 1, "skipped": 0, "deduped": 0 },
+  "error": null,
+  "created_at": "2026-03-02T09:14:00Z",
+  "completed_at": "2026-03-02T09:14:02Z"
+}`,
+    },
+    {
+      method: "GET",
+      path: "/campaigns/import/71c3…/rows?page=1",
+      summary:
+        "What became of each lead you sent, in order, with row its zero-based index. imported has person_id, the new lead's id. skipped has reason missing_email, invalid_email, missing_first_name, missing_last_name, missing_company_domain, invalid_company_domain or missing_job_title. deduped has duplicate_in_request, do_not_contact, already_contacted or already_in_project.",
+      params: [
+        ["page", "1-based page number"],
+        ["per_page", "1 to 200, default 50"],
+      ],
+      response: `{
+  "items": [
+    {
+      "row": 0,
+      "email": "sarah@northwind.studio",
+      "client_ref": "crm-1042",
+      "status": "imported",
+      "reason": null,
+      "person_id": "c42e…"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "POST",
       path: "/segments/5d0a…/write-emails",
       summary:
         "Have the agent write a first email for every lead in a campaign that doesn't have one yet, like Write emails in the app. Add leads with segment_id above, then call this. In a campaign that's sending, the new emails are approved straight away. 409 when every lead already has an email. The body is optional: lead_ids writes for just those leads, and instructions guides this batch.",

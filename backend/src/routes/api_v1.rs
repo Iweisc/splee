@@ -38,6 +38,7 @@ use super::util_scope;
 use crate::ab_test::{self, AbTest};
 use crate::audit::Who;
 use crate::auth::{self, ApiKeyAuth, KeyAuth};
+use crate::campaign_imports::{self, RowOutcome, SubmittedLead};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::email_lookups::{self, Batch, BatchPerson, Found, Person};
 use crate::error::{AppError, AppResult};
@@ -55,6 +56,9 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/projects/{id}", patch(update_project))
         .route("/v1/projects/{id}/campaigns", get(list_campaigns).post(create_campaign))
         .route("/v1/campaigns/{id}", get(get_campaign).patch(update_campaign))
+        .route("/v1/campaigns/import", post(import_campaign).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)))
+        .route("/v1/campaigns/import/{id}", get(campaign_import))
+        .route("/v1/campaigns/import/{id}/rows", get(campaign_import_rows))
         .route("/v1/campaigns/{id}/start", post(start_campaign))
         .route("/v1/campaigns/{id}/stop", post(stop_campaign))
         .route("/v1/campaigns/{id}/approve", post(approve_campaign))
@@ -142,6 +146,8 @@ async fn guard(State(state): State<AppState>, mut req: Request, next: Next) -> R
 }
 
 const MAX_LEADS_PER_REQUEST: usize = 1000;
+/// Room for campaign_imports::MAX_LEADS leads with long fields.
+const IMPORT_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const MAX_MESSAGES: i64 = 500;
 const MAX_SUPPRESSIONS_PER_REQUEST: usize = 1000;
 const MAX_LIST_ENTRIES_PER_REQUEST: usize = 10_000;
@@ -250,8 +256,84 @@ pub(super) async fn create_campaign(
     if body.prompt.trim().is_empty() {
         return Err(AppError::BadRequest("Describe the campaign in prompt, e.g. dental clinics in Leeds".into()));
     }
-    let (segment, run_id) = segments::insert(&state.db, auth.org_id, id, SegmentBody::from_prompt(body.prompt, body.language)).await?;
+    let (segment, run_id) =
+        segments::insert(&mut *state.db.acquire().await?, auth.org_id, id, SegmentBody::from_prompt(body.prompt, body.language)).await?;
     Ok(Json(json!({ "campaign_id": segment.id, "run_id": run_id })))
+}
+
+#[derive(Deserialize)]
+pub(super) struct ImportBody {
+    project_id: Uuid,
+    #[serde(default)]
+    name: String,
+    leads: Vec<SubmittedLead>,
+    instructions: Option<String>,
+    followup_instructions: Option<String>,
+    language: Option<String>,
+}
+
+/// Like explee.com's campaign import: a new campaign holding exactly the leads that can be imported, which runs in the
+/// background (campaign_imports.rs). The campaign is made now, so a bad name or language is a 400 here.
+pub(super) async fn import_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Json(body): Json<ImportBody>) -> AppResult<Json<Value>> {
+    check_project(&state.db, body.project_id, auth.org_id).await?;
+    if body.leads.is_empty() || body.leads.len() > campaign_imports::MAX_LEADS {
+        return Err(AppError::BadRequest(format!("Send 1 to {} leads per import", campaign_imports::MAX_LEADS)));
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Give the campaign a name".into()));
+    }
+    if body.followup_instructions.as_deref().is_some_and(|f| !f.trim().is_empty()) {
+        return Err(AppError::Unprocessable(
+            "A campaign has no follow-up instructions of its own: every campaign in a project sends the project's follow-ups. Leave out \
+             followup_instructions and set them in the project's settings in the app"
+                .into(),
+        ));
+    }
+    // A name like "German" works too, as it does on a lead.
+    let language =
+        body.language.filter(|l| !l.trim().is_empty()).map(|l| crate::language::parse(&l).map_or(l.trim().to_string(), |found| found.code.into()));
+    // The first email's prompt reads the angle as the campaign's outreach angle.
+    let angle = body.instructions.unwrap_or_default().trim().to_string();
+    // Together, so a campaign never exists without the import that fills it.
+    let mut tx = state.db.begin().await?;
+    let (segment, _) = segments::insert(&mut tx, auth.org_id, body.project_id, SegmentBody::imported(name.into(), angle, language)).await?;
+    let task_id = campaign_imports::queue(&mut tx, auth.org_id, body.project_id, segment.id, body.leads).await?;
+    tx.commit().await?;
+    let db = state.db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = campaign_imports::drain(&db).await {
+            tracing::error!(error = ?e, "could not run campaign imports");
+        }
+    });
+    Ok(Json(json!({ "task_id": task_id, "campaign_id": segment.id, "status": "pending" })))
+}
+
+pub(super) async fn campaign_import(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let task = campaign_imports::find(&state.db, auth.org_id, id).await?.ok_or(AppError::NotFound)?;
+    let result = (task.status == "completed")
+        .then(|| json!({ "campaign_id": task.segment_id, "imported": task.imported, "skipped": task.skipped, "deduped": task.deduped }));
+    Ok(Json(json!({
+        "task_id": task.id,
+        "status": task.status,
+        "project_id": task.project_id,
+        "campaign_id": task.segment_id,
+        "result": result,
+        "error": Some(task.error).filter(|e| !e.is_empty()),
+        "created_at": task.created_at,
+        "completed_at": task.completed_at,
+    })))
+}
+
+pub(super) async fn campaign_import_rows(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Path(id): Path<Uuid>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<RowOutcome>>> {
+    let task = campaign_imports::find(&state.db, auth.org_id, id).await?.ok_or(AppError::NotFound)?;
+    let (items, total) = campaign_imports::rows(&state.db, task.id, page.limit(), page.offset()).await?;
+    Ok(Json(Paginated { items, total }))
 }
 
 /// A PATCH body. A field the route doesn't take is a 422, so a typo never reads as a change that happened.
@@ -2313,5 +2395,161 @@ mod tests {
         assert_eq!(ids, [expected[2].as_str(), expected[3].as_str(), fresh.to_string().as_str()]);
         assert_eq!(api.get(&format!("{changes}?cursor=nope")).await.0, 400);
         assert_eq!(api.get(&format!("/v1/projects/{b}/inbox/changes")).await.0, 404);
+    }
+
+    fn import_lead(email: &str, title: &str) -> Value {
+        json!({ "email": email, "first_name": "Ana", "last_name": "Silva", "company_domain": "smile.example", "job_title": title })
+    }
+
+    /// Polls an import until it's no longer pending.
+    async fn finished_import(api: &Api, task: &str) -> Value {
+        for _ in 0..200 {
+            let (status, body) = api.get(&format!("/v1/campaigns/import/{task}")).await;
+            assert_eq!(status, 200, "{body}");
+            if body["status"] != "pending" {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the import never finished");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_lead_list_becomes_a_campaign_of_exactly_the_leads_it_could_import(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        // ana@smile.example is already a lead of another campaign, waiting on a draft.
+        let (dentists, _) = campaign(&db, a, "working").await;
+        sqlx::query(
+            "insert into leads (project_id, segment_id, full_name, email, last_contacted_at) values ($1, $2, 'Raj', 'raj@smile.example', now())",
+        )
+            .bind(a)
+            .bind(dentists)
+            .execute(&db)
+            .await
+            .unwrap();
+        let (status, _, body) = api.post(KEYS[0], "/v1/suppressions", None, json!({ "values": ["blocked@smile.example"] })).await;
+        assert_eq!(status, 200, "{body}");
+
+        let mut first = import_lead("bea@smile.example", "Owner");
+        first["client_ref"] = json!("crm-1");
+        first["linkedin_url"] = json!("https://www.linkedin.com/in/bea");
+        let leads = json!([
+            first,
+            import_lead("caio@smile.example", "Dentist"),
+            import_lead("dora@smile.example", " "),
+            { "email": null, "first_name": "Eli" },
+            import_lead("BEA@smile.example", "Owner"),
+            import_lead("blocked@smile.example", "Owner"),
+            import_lead("raj@smile.example", "Owner"),
+            import_lead("ana@smile.example", "Owner"),
+        ]);
+        let body =
+            json!({ "project_id": a, "name": "Smile clinics", "leads": leads, "instructions": "Mention our Lisbon office", "language": "German" });
+        let (status, _, started) = api.post(KEYS[0], "/v1/campaigns/import", None, body).await;
+        assert_eq!((status, &started["status"]), (200, &json!("pending")), "{started}");
+        let task = started["task_id"].as_str().unwrap();
+        let campaign_id: Uuid = started["campaign_id"].as_str().unwrap().parse().unwrap();
+
+        let done = finished_import(&api, task).await;
+        assert_eq!(done["status"], "completed", "{done}");
+        assert_eq!(done["result"], json!({ "campaign_id": campaign_id, "imported": 2, "skipped": 2, "deduped": 4 }));
+
+        let (status, page) = api.get(&format!("/v1/campaigns/import/{task}/rows?per_page=3&page=1")).await;
+        assert_eq!((status, page["total"].clone(), page["items"].as_array().unwrap().len()), (200, json!(8), 3), "{page}");
+        let (_, page) = api.get(&format!("/v1/campaigns/import/{task}/rows")).await;
+        let outcomes: Vec<(String, String)> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["status"].as_str().unwrap().to_string(), r["reason"].as_str().unwrap_or_default().to_string()))
+            .collect();
+        let expected = [
+            ("imported", ""),
+            ("imported", ""),
+            ("skipped", "missing_job_title"),
+            ("skipped", "missing_email"),
+            ("deduped", "duplicate_in_request"),
+            ("deduped", "do_not_contact"),
+            ("deduped", "already_contacted"),
+            ("deduped", "already_in_project"),
+        ];
+        assert_eq!(outcomes, expected.map(|(s, r)| (s.to_string(), r.to_string())));
+        assert_eq!((page["items"][0]["row"].clone(), page["items"][0]["client_ref"].clone()), (json!(0), json!("crm-1")));
+
+        // The campaign holds those two leads and no others, and they are the people the rows name.
+        let held: Vec<(Uuid, String, String, String)> =
+            sqlx::query_as("select id, email::text, title, linkedin_url from leads where segment_id = $1 order by email")
+                .bind(campaign_id)
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            held.iter().map(|(_, email, title, _)| (email.as_str(), title.as_str())).collect::<Vec<_>>(),
+            [("bea@smile.example", "Owner"), ("caio@smile.example", "Dentist")]
+        );
+        assert_eq!(held[0].3, "https://www.linkedin.com/in/bea");
+        assert_eq!(page["items"][0]["person_id"], json!(held[0].0));
+        assert_eq!(page["items"][1]["person_id"], json!(held[1].0));
+        assert_eq!(page["items"][7]["person_id"], Value::Null);
+        let ana: Uuid = sqlx::query_scalar("select segment_id from leads where email = 'ana@smile.example'").fetch_one(&db).await.unwrap();
+        assert_eq!(ana, dentists, "a lead already in the project keeps its campaign");
+
+        let (_, detail) = api.get(&format!("/v1/campaigns/{campaign_id}")).await;
+        assert_eq!(
+            (&detail["name"], &detail["status"], &detail["angle"], &detail["language"], &detail["leads"]),
+            (&json!("Smile clinics"), &json!("draft"), &json!("Mention our Lisbon office"), &json!("de"), &json!(2)),
+        );
+
+        // After 30 days the task and its rows go, and the campaign and its leads stay.
+        sqlx::query("update campaign_imports set created_at = now() - interval '31 days'").execute(&db).await.unwrap();
+        crate::agent::expire_visitor_data(&db).await.unwrap();
+        assert_eq!(count(&db, "select (select count(*) from campaign_imports) + (select count(*) from campaign_import_rows)").await, 0);
+        assert_eq!(api.get(&format!("/v1/campaigns/import/{task}")).await.0, 404);
+        assert_eq!(api.get(&format!("/v1/campaigns/{campaign_id}")).await.1["leads"], 2);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn campaign_imports_check_their_request_belong_to_one_organization_and_replay_by_key(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let import = |project: Uuid, leads: Value| json!({ "project_id": project, "name": "Smile clinics", "leads": leads });
+        let one = json!([import_lead("bea@smile.example", "Owner")]);
+
+        let (status, headers, first) = api.post(KEYS[0], "/v1/campaigns/import", Some("import-1"), import(a, one.clone())).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed")), (200, None), "{first}");
+        let (status, headers, again) = api.post(KEYS[0], "/v1/campaigns/import", Some("import-1"), import(a, one.clone())).await;
+        assert_eq!((status, header(&headers, "idempotent-replayed"), &again["task_id"]), (200, Some("true"), &first["task_id"]));
+        assert_eq!(count(&db, "select (select count(*) from campaign_imports) + (select count(*) from segments)").await, 2);
+        let task = first["task_id"].as_str().unwrap();
+        assert_eq!(finished_import(&api, task).await["result"]["imported"], 1);
+
+        // Another organization sees none of it and can't import into this project.
+        for path in [format!("/v1/campaigns/import/{task}"), format!("/v1/campaigns/import/{task}/rows")] {
+            assert_eq!(api.send(Method::GET, KEYS[1], &path, None, None).await.0, 404, "{path}");
+        }
+        assert_eq!(api.post(KEYS[1], "/v1/campaigns/import", None, import(a, one.clone())).await.0, 404);
+        assert_eq!(api.post(KEYS[1], "/v1/campaigns/import", None, import(b, one.clone())).await.0, 200);
+
+        // A refused request makes no campaign.
+        let before = count(&db, "select count(*) from segments").await;
+        assert_eq!(api.post(KEYS[0], "/v1/campaigns/import", None, import(a, json!([]))).await.0, 400);
+        let too_many = Value::Array(vec![json!({}); crate::campaign_imports::MAX_LEADS + 1]);
+        assert_eq!(api.post(KEYS[0], "/v1/campaigns/import", None, import(a, too_many)).await.0, 400);
+        let mut unnamed = import(a, one.clone());
+        unnamed["name"] = json!(" ");
+        assert_eq!(api.post(KEYS[0], "/v1/campaigns/import", None, unnamed).await.0, 400);
+        let mut klingon = import(a, one.clone());
+        klingon["language"] = json!("Klingon");
+        assert_eq!(api.post(KEYS[0], "/v1/campaigns/import", None, klingon).await.0, 400);
+        let mut follow_ups = import(a, one.clone());
+        follow_ups["followup_instructions"] = json!("Bump it after 3 days");
+        let (status, _, body) = api.post(KEYS[0], "/v1/campaigns/import", None, follow_ups).await;
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(count(&db, "select count(*) from segments").await, before);
     }
 }

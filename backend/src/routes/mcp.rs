@@ -50,7 +50,8 @@ customers. download_companies hands over a search's companies as CSV, with a lin
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
-search_local_businesses and add_local_businesses use Google Maps once the user connected a key.";
+search_local_businesses and add_local_businesses use Google Maps once the user connected a key. For a lead list the user already has, \
+import_campaign makes a campaign of exactly those leads.";
 
 async fn not_allowed() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
@@ -262,6 +263,8 @@ pub(crate) fn read_tools() -> Vec<Value> {
 
 const EMAIL_BATCH_NEXT: &str = "This runs in the background, within the organization's 200 email searches an hour. Call get_email_batch with task_id until status is completed.";
 const RUN_NEXT: &str = "This runs in the background and takes a few minutes. Call get_run with run_id until status is succeeded, failed or cancelled.";
+const IMPORT_NEXT: &str = "The leads go in in the background, usually within seconds. Call get_campaign_import with task_id until status is \
+completed or failed, then list_campaign_import_rows says what became of each lead.";
 const PROJECT_FIELDS: &[&str] = &["id", "name", "domain", "status", "created_at", "review_window_hours"];
 const LEAD_FIELDS: &[&str] = &[
     "id", "full_name", "title", "email", "company_name", "company_domain", "status", "segment_id", "segment_name", "last_email_status", "score",
@@ -326,6 +329,13 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
             Ok(json!({ "campaign_id": created["campaign_id"], "run_id": created["run_id"], "next": RUN_NEXT }))
         }
         .await,
+        "import_campaign" => async {
+            let started = value(v1::import_campaign(st(), auth, Json(parse(a)?)).await?)?;
+            Ok(json!({ "task_id": started["task_id"], "campaign_id": started["campaign_id"], "next": IMPORT_NEXT }))
+        }
+        .await,
+        "get_campaign_import" => async { value(v1::campaign_import(st(), auth, id(a, "task_id")?).await?) }.await,
+        "list_campaign_import_rows" => async { value(v1::campaign_import_rows(st(), auth, id(a, "task_id")?, Query(parse(a)?)).await?) }.await,
         "search_companies" => async { value(v1::search_companies(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
         "add_companies" => async { value(v1::add_companies(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
         "list_saved_searches" => async { value(v1::list_saved_searches(st(), auth, id(a, "project_id")?).await?) }.await,
@@ -635,6 +645,57 @@ fn tools() -> Vec<Value> {
             }),
             &["project_id", "prompt"],
             adds.clone(),
+        ),
+        tool(
+            "import_campaign",
+            "Import campaign from a lead list",
+            "Makes a new draft campaign holding exactly the leads given, for a list the user already has. Each lead needs email, \
+             first_name, last_name, company_domain and job_title, and one without them is skipped. Leads already in the project, \
+             repeats and do-not-contact entries are deduped. Returns task_id. Then write_emails writes its emails and \
+             start_campaign sends them.",
+            json!({
+                "project_id": project,
+                "name": { "type": "string", "description": "The campaign's name" },
+                "leads": {
+                    "type": "array",
+                    "maxItems": crate::campaign_imports::MAX_LEADS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "email": { "type": "string" },
+                            "first_name": { "type": "string" },
+                            "last_name": { "type": "string" },
+                            "company_domain": { "type": "string" },
+                            "job_title": { "type": "string" },
+                            "linkedin_url": { "type": "string", "description": "Optional" },
+                            "client_ref": { "type": "string", "description": "Optional. The user's own id for the lead, handed back in its row" },
+                        },
+                        "required": ["email", "first_name", "last_name", "company_domain", "job_title"],
+                    },
+                },
+                "instructions": { "type": "string", "description": "Optional. The campaign's outreach angle, which its first emails follow" },
+                "language": { "type": "string", "description": "Optional. lead (the default) for each lead's own language, or a language code like de" },
+            }),
+            &["project_id", "name", "leads"],
+            adds.clone(),
+        ),
+        tool(
+            "get_campaign_import",
+            "Get campaign import status",
+            "An import_campaign task: status pending, completed or failed, and once completed, result with campaign_id and how \
+             many leads were imported, skipped and deduped.",
+            json!({ "task_id": id_prop("A task_id from import_campaign") }),
+            &["task_id"],
+            read.clone(),
+        ),
+        tool(
+            "list_campaign_import_rows",
+            "List campaign import rows",
+            "Each lead an import_campaign task was given, in order: status imported with person_id, the lead's id, or skipped or \
+             deduped with a reason code like missing_job_title, already_contacted or do_not_contact.",
+            page_props(json!({ "task_id": id_prop("A task_id from import_campaign") })),
+            &["task_id"],
+            read.clone(),
         ),
         tool(
             "search_companies",
@@ -1506,7 +1567,8 @@ mod tests {
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
-                     "get_email_batch", "download_companies"] {
+                     "get_email_batch", "download_companies", "import_campaign", "get_campaign_import",
+                     "list_campaign_import_rows"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));

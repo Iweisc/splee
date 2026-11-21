@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{Acquire, Postgres};
 use uuid::Uuid;
 
 use super::util_input;
@@ -83,7 +83,15 @@ struct Columns {
 ///
 /// Leads from LinkedIn (source "linkedin") come without an email. They're told apart by their LinkedIn profile instead, and
 /// skipped when their company's domain is on the do-not-contact list.
-pub async fn insert(db: &PgPool, org_id: Uuid, project_id: Uuid, source: &str, rows: Vec<(usize, NewLead)>) -> AppResult<Outcome> {
+///
+/// `db` is a pool, or a transaction the insert joins, as the campaign import's (campaign_imports.rs) does.
+pub async fn insert<'c>(
+    db: impl Acquire<'c, Database = Postgres>,
+    org_id: Uuid,
+    project_id: Uuid,
+    source: &str,
+    rows: Vec<(usize, NewLead)>,
+) -> AppResult<Outcome> {
     let linkedin = source == "linkedin";
     let mut tx = db.begin().await?;
     // Email-less leads have no unique index to fall back on, so two LinkedIn imports into a project take turns.

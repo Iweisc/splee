@@ -3,7 +3,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::{util_input, util_scope};
@@ -125,6 +125,11 @@ impl SegmentBody {
         Self { prompt: Some(prompt), language, ..Default::default() }
     }
 
+    /// A campaign for a lead list the caller brings (POST /v1/campaigns/import), so no agent fills in its targeting.
+    pub(super) fn imported(name: String, angle: String, language: Option<String>) -> Self {
+        Self { name: Some(name), angle: Some(angle), language, ..Default::default() }
+    }
+
     fn validate(&self) -> AppResult<()> {
         if let Some(icon) = &self.icon {
             util_input::one_of("icon", icon, ICONS)?;
@@ -152,12 +157,12 @@ async fn create(
     Json(body): Json<SegmentBody>,
 ) -> AppResult<Json<Segment>> {
     auth.project(&state.db, id).await?;
-    Ok(Json(insert(&state.db, auth.org_id, id, body).await?.0))
+    Ok(Json(insert(&mut *state.db.acquire().await?, auth.org_id, id, body).await?.0))
 }
 
 /// Creates a campaign in a project the caller already checked. With a prompt, it starts as "New campaign" and a
 /// segment_from_prompt run fills it in, whose id comes back too.
-pub(super) async fn insert(db: &PgPool, org_id: Uuid, id: Uuid, body: SegmentBody) -> AppResult<(Segment, Option<Uuid>)> {
+pub(super) async fn insert(db: &mut PgConnection, org_id: Uuid, id: Uuid, body: SegmentBody) -> AppResult<(Segment, Option<Uuid>)> {
     body.validate()?;
     let prompt = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
     let name = match (prompt, body.name.as_deref()) {
@@ -183,7 +188,7 @@ pub(super) async fn insert(db: &PgPool, org_id: Uuid, id: Uuid, body: SegmentBod
     .bind(body.angle)
     .bind(body.position)
     .bind(body.language)
-    .fetch_one(db)
+    .fetch_one(&mut *db)
     .await?;
     let run_id = match prompt {
         Some(prompt) => Some(
