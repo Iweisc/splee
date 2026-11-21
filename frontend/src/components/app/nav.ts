@@ -19,6 +19,7 @@ import {
   Inbox,
   KeyRound,
   Layers,
+  Lightbulb,
   UserPlus,
   Mail,
   Megaphone,
@@ -66,6 +67,7 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Calls", href: (p) => `/app/p/${p}/calls`, icon: Phone },
       { label: "Coaching", href: (p) => `/app/p/${p}/coaching`, icon: GraduationCap },
       { label: "Playbook", href: (p) => `/app/p/${p}/playbook`, icon: BookMarked },
+      { label: "Feedback", href: (p) => `/app/p/${p}/feedback`, icon: Lightbulb },
       { label: "Social", href: (p) => `/app/p/${p}/social`, icon: Megaphone },
       { label: "Import", href: (p) => `/app/p/${p}/import`, icon: Upload }, // D1
       { label: "Agent runs", href: (p) => `/app/p/${p}/runs`, icon: Bot },

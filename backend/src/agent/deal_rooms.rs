@@ -230,27 +230,13 @@ pub async fn answer(ctx: &Ctx) -> anyhow::Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicI32;
-
     use sqlx::PgPool;
 
     use super::*;
     use crate::deal_rooms;
-    use crate::models::AgentRun;
 
     async fn run_next(db: &PgPool, kind: &str, answer: Value) -> String {
-        let started = sqlx::query_as::<_, AgentRun>(
-            "update agent_runs set status = 'running' where id = (select id from agent_runs where kind = $1 and status = 'queued' limit 1) returning *",
-        )
-        .bind(kind)
-        .fetch_one(db)
-        .await
-        .unwrap();
-        let ctx = Ctx { state: crate::autopilot::tests::state(db.clone()), run: started, step: AtomicI32::new(0) };
-        super::super::fake::answer_with(ctx.run.id, move |_| answer.clone());
-        super::super::dispatch(&ctx).await.unwrap();
-        sqlx::query("update agent_runs set status = 'succeeded' where id = $1").bind(ctx.run.id).execute(db).await.unwrap();
-        super::super::fake::prompts(ctx.run.id).first().cloned().unwrap_or_default()
+        super::super::fake::run_next(db, kind, answer).await.1
     }
 
     #[sqlx::test]

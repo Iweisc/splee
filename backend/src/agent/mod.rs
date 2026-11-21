@@ -19,6 +19,7 @@ mod directory;
 mod places;
 mod discourse;
 pub mod expansions;
+pub mod feedback;
 mod explore;
 mod hashnode;
 pub mod forecast;
@@ -120,6 +121,8 @@ pub mod kind {
     pub const CUSTOMER_STORY: &str = "customer_story";
     pub const DEAL_ROOM: &str = "deal_room";
     pub const ROOM_ANSWER: &str = "room_answer";
+    pub const FEEDBACK_SCAN: &str = "feedback_scan";
+    pub const FEATURE_SHIPPED: &str = "feature_shipped";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -427,6 +430,8 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::CUSTOMER_STORY => stories::run(ctx).await,
         kind::DEAL_ROOM => deal_rooms::write(ctx).await,
         kind::ROOM_ANSWER => deal_rooms::answer(ctx).await,
+        kind::FEEDBACK_SCAN => feedback::scan(ctx).await,
+        kind::FEATURE_SHIPPED => feedback::announce(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }
@@ -461,6 +466,22 @@ pub(crate) mod fake {
 
     pub fn prompts(run: Uuid) -> Vec<String> {
         RUNS.lock().unwrap().get(&run).map(|(_, prompts)| prompts.clone()).unwrap_or_default()
+    }
+
+    /// Runs the oldest queued run of `kind` with every call answered `answer`, and returns its outcome and first prompt.
+    pub async fn run_next(db: &sqlx::PgPool, kind: &str, answer: Value) -> (super::Outcome, String) {
+        let started = sqlx::query_as::<_, crate::models::AgentRun>(
+            "update agent_runs set status = 'running' where id = (select id from agent_runs where kind = $1 and status = 'queued' order by created_at limit 1) returning *",
+        )
+        .bind(kind)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        let ctx = super::Ctx { state: crate::autopilot::tests::state(db.clone()), run: started, step: Default::default() };
+        answer_with(ctx.run.id, move |_| answer.clone());
+        let outcome = super::dispatch(&ctx).await.unwrap();
+        sqlx::query("update agent_runs set status = 'succeeded' where id = $1").bind(ctx.run.id).execute(db).await.unwrap();
+        (outcome, prompts(ctx.run.id).first().cloned().unwrap_or_default())
     }
 }
 

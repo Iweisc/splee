@@ -1680,7 +1680,7 @@ export interface EmailMessage {
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
   /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask";
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask" | "feature_shipped";
   step: number;
   subject: string;
   body: string;
@@ -3456,6 +3456,51 @@ export interface PublicDealRoom {
   proposal: { title: string; url: string; held: boolean; accepted: boolean } | null;
   proof: DealRoomProof[];
   questions: { name: string; question: string; answer: string; answered_at: string | null }[];
+}
+
+/** Where a quote came from: a reply, a meeting transcript, a win/loss review or a deal room question. */
+export type FeedbackSource = "email" | "meeting" | "review" | "room";
+
+export interface FeedbackMention {
+  id: string;
+  lead_id: string;
+  name: string;
+  company: string;
+  source: FeedbackSource;
+  quote: string;
+  said_at: string;
+  deal_id: string | null;
+  deal_status: "open" | "won" | "lost" | null;
+}
+
+/** Something buyers asked the product to do, with the deals of the people who asked in the organization's currency. */
+export interface FeedbackRequest {
+  id: string;
+  title: string;
+  detail: string;
+  status: "open" | "planned" | "shipped" | "declined";
+  shipped_note: string;
+  shipped_at: string | null;
+  created_at: string;
+  people: number;
+  companies: number;
+  open_cents: number;
+  lost_cents: number;
+  won_cents: number;
+  last_said_at: string | null;
+  /** While the agent drafts the emails saying it shipped. */
+  announcing: boolean;
+  drafted: number;
+  sent: number;
+  skipped: number;
+  /** The newest 25. */
+  mentions: FeedbackMention[];
+}
+
+export interface FeedbackView {
+  currency: string;
+  scan: { status: "scanning" | "idle"; scanned_at: string | null };
+  requests: FeedbackRequest[];
 }
 
 /** A case study the agent drafted from a won deal. The sections never name the customer. See backend/src/agent/stories.rs. */
