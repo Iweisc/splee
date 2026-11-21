@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from "react";
+import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
 import { SsoButtons } from "@/components/sso";
 import { useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
+import { getPasskey, passkeyAutofill, passkeyCancelled, passkeysSupported, type PasskeyRequestOptions } from "@/lib/passkeys";
 import type { SignIn } from "@/lib/types";
 
 const noSubscription = () => () => {};
@@ -29,26 +31,86 @@ export function SigninForm({ next, ssoError, passwordReset }: { next: string | n
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const passkeys = useSyncExternalStore(noSubscription, passkeysSupported, () => false);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  // The passkey request behind the email field's autofill, which has to stop before the button can ask for one. Bumping
+  // the round offers it again.
+  const autofill = useRef<AbortController | null>(null);
+  const [autofillRound, setAutofillRound] = useState(0);
+
+  /** False when two-factor still wants its code, which the form then asks for. */
+  const finish = async (res: SignIn) => {
+    if ("two_factor_token" in res) {
+      setToken(res.two_factor_token);
+      return false;
+    }
+    await mutate(res, { revalidate: false });
+    router.replace(next ?? "/app");
+    return true;
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setPasskeyError(null);
     try {
       const res = token
         ? await api<SignIn>("/auth/login/code", { body: { two_factor_token: token, code } })
         : await api<SignIn>("/auth/login", { body: { email, password } });
-      if ("two_factor_token" in res) {
-        setToken(res.two_factor_token);
-        setLoading(false);
-        return;
-      }
-      await mutate(res, { revalidate: false });
-      router.replace(next ?? "/app");
+      if (!(await finish(res))) setLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't sign in.");
       setLoading(false);
     }
+  };
+
+  /** Without `autofillSignal`, the browser opens its own prompt to pick a passkey. True once it's signed in. */
+  const signInWithPasskey = async (autofillSignal?: AbortSignal) => {
+    try {
+      const options = await api<PasskeyRequestOptions>("/auth/passkeys/sign-in/options", { method: "POST", signal: autofillSignal });
+      const body = await getPasskey(options, autofillSignal);
+      setPasskeyError(null);
+      setError(null);
+      setPasskeyLoading(true);
+      if (await finish(await api<SignIn>("/auth/passkeys/sign-in", { body }))) return true;
+    } catch (err) {
+      if (!autofillSignal?.aborted && !passkeyCancelled(err)) {
+        const fromBrowser = err instanceof DOMException || !(err instanceof Error);
+        setPasskeyError(fromBrowser ? "Your browser couldn't use a passkey here. Sign in with your password." : err.message);
+      }
+    }
+    setPasskeyLoading(false);
+    return false;
+  };
+
+  // A failed or cancelled pick ends the browser's request, so another is offered. Only after one that waited for the person,
+  // or an error on every try would loop.
+  const offerInAutofill = useEffectEvent((signal: AbortSignal) => {
+    const started = Date.now();
+    void passkeyAutofill()
+      .then((available) => (available && !signal.aborted ? signInWithPasskey(signal) : null))
+      .then((signedIn) => {
+        if (signedIn === false && !signal.aborted && Date.now() - started > 2000) setAutofillRound((n) => n + 1);
+      });
+  });
+  useEffect(() => {
+    if (token) return;
+    const controller = new AbortController();
+    autofill.current = controller;
+    offerInAutofill(controller.signal);
+    // The request's challenge lasts 5 minutes, so a fresh one replaces it before then.
+    const refresh = setTimeout(() => setAutofillRound((n) => n + 1), 4.5 * 60_000);
+    return () => {
+      controller.abort();
+      clearTimeout(refresh);
+    };
+  }, [token, autofillRound]);
+
+  const passkeyButton = async () => {
+    autofill.current?.abort();
+    if (!(await signInWithPasskey())) setAutofillRound((n) => n + 1);
   };
 
   const startOver = () => {
@@ -90,10 +152,12 @@ export function SigninForm({ next, ssoError, passwordReset }: { next: string | n
         <p className="mt-4 rounded-lg bg-brand-50 px-3 py-2 text-sm text-pretty text-brand-800">Password changed. Sign in with your new password.</p>
       )}
       {ssoError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger">{ssoError}</p>}
+      {passkeyError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-pretty text-danger">{passkeyError}</p>}
       <SsoButtons params={{ next }} />
       <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
         <Field label="Email">
-          <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          {/* "webauthn" lets browsers offer passkeys among the suggestions, see the autofill effect above. */}
+          <Input type="email" autoComplete="username webauthn" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
         <Field label="Password" error={error}>
           <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -101,6 +165,12 @@ export function SigninForm({ next, ssoError, passwordReset }: { next: string | n
         <Button type="submit" loading={loading} className="mt-2">
           Sign in
         </Button>
+        {passkeys && (
+          <Button type="button" variant="outline" loading={passkeyLoading} onClick={() => void passkeyButton()}>
+            <KeyRound className="size-4" aria-hidden />
+            Sign in with a passkey
+          </Button>
+        )}
       </form>
       <p className="mt-4 text-center text-sm">
         <Link href="/forgot-password" className="text-muted-foreground hover:text-foreground hover:underline">

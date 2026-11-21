@@ -79,6 +79,7 @@ pub mod emails;
 pub mod inbox;
 pub mod mailboxes;
 mod mailbox_oauth;
+mod passkeys;
 mod sso;
 mod tumblr;
 mod meta;
@@ -127,6 +128,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .merge(auth::router())
         .merge(sso::router())
+        .merge(passkeys::router())
         .merge(org::router())
         .merge(projects::router())
         .merge(competitors::router())

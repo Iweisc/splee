@@ -80,6 +80,16 @@ export interface SignInMethods {
   providers: SsoProvider[];
 }
 
+/** A passkey the user signs in with, from GET /auth/passkeys. */
+export interface Passkey {
+  id: UUID;
+  name: string;
+  /** Adding it checked a PIN, fingerprint or face. */
+  user_verified: boolean;
+  created_at: Ts;
+  last_used_at: Ts | null;
+}
+
 export interface TwoFactorStatus {
   enabled: boolean;
   backup_codes_left: number;

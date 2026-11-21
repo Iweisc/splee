@@ -84,6 +84,7 @@ mod unipile;
 mod verify;
 mod visitors;
 mod waterfall;
+mod webauthn;
 mod youtube;
 
 use std::sync::Arc;

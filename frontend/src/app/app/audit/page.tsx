@@ -27,6 +27,8 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
       "user.two_factor_enabled": "Turned on 2FA",
       "user.two_factor_disabled": "Turned off 2FA",
       "user.backup_codes_created": "Made backup codes",
+      "user.passkey_added": "Added a passkey",
+      "user.passkey_removed": "Removed a passkey",
     },
   },
   {
@@ -85,14 +87,19 @@ function note(e: AuditEvent): string | null {
   switch (e.action) {
     case "user.sign_in_failed":
       if (typeof d.reason === "string" && SSO[d.reason]) return `${SSO[d.reason]} didn't confirm the email`;
+      if (d.reason === "passkey") return "Passkey refused";
       return d.reason === "code" ? "Wrong code" : "Wrong password";
     case "user.signed_in":
+      if (d.method === "passkey") return "With a passkey";
       return typeof d.method === "string" && SSO[d.method] ? `With ${SSO[d.method]}` : null;
     case "user.password_changed":
       return d.first ? "Set a first password" : null;
     case "user.identity_linked":
     case "user.identity_unlinked":
       return SSO[String(d.provider)] ?? null;
+    case "user.passkey_added":
+    case "user.passkey_removed":
+      return typeof d.name === "string" ? d.name : null;
     case "member.role_changed":
       return `${role(d.from)} to ${role(d.to)}`;
     case "member.invited":

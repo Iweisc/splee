@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import useSWR from "swr";
+import { KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CopyButton, CopyField } from "@/components/app/settings/copy-button";
@@ -14,7 +15,9 @@ import { Field, Input, Switch } from "@/components/ui/form";
 import { Modal } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { Me, SignInMethods, SsoProvider, TwoFactorSetup, TwoFactorStatus } from "@/lib/types";
+import { createPasskey, deviceName, passkeyCancelled, passkeysSupported, type PasskeyCreationOptions } from "@/lib/passkeys";
+import type { Me, Passkey, SignInMethods, SsoProvider, TwoFactorSetup, TwoFactorStatus } from "@/lib/types";
+import { timeAgo } from "@/lib/utils";
 
 export default function AccountPage() {
   const { me } = useMe();
@@ -27,6 +30,7 @@ export default function AccountPage() {
           <SignInMethodsSection />
           <ChangePassword />
           <TwoFactor />
+          <Passkeys />
         </SettingsColumn>
       </PageBody>
     </>
@@ -339,5 +343,161 @@ function BackupCodeList({ codes, onDone }: { codes: string[]; onDone: () => void
         <Button onClick={onDone}>Done</Button>
       </div>
     </div>
+  );
+}
+
+const noSubscription = () => () => {};
+
+type PasskeyDialog = { kind: "add" } | { kind: "rename"; passkey: Passkey } | { kind: "remove"; passkey: Passkey };
+
+const PASSKEY_TITLES: Record<PasskeyDialog["kind"], string> = { add: "Add a passkey", rename: "Rename passkey", remove: "Remove passkey" };
+
+/** Hidden in a browser without WebAuthn, where a passkey can be neither added nor used. */
+function Passkeys() {
+  const supported = useSyncExternalStore(noSubscription, passkeysSupported, () => false);
+  const { data, error, mutate } = useSWR<Passkey[]>(supported ? "/auth/passkeys" : null, fetcher);
+  const { data: methods } = useSWR<SignInMethods>("/auth/sign-in-methods", fetcher);
+  const { data: twoFactor } = useSWR<TwoFactorStatus>("/auth/two-factor", fetcher);
+  const [dialog, setDialog] = useState<PasskeyDialog | null>(null);
+  if (!supported) return null;
+  // Adding one takes the password or a code, which an account made with Google or Microsoft may not have yet.
+  const noProof = methods?.password === false && twoFactor?.enabled === false;
+  const done = (passkeys: Passkey[]) => {
+    void mutate(passkeys, { revalidate: false });
+    setDialog(null);
+  };
+  const content = error ? (
+    <LoadError error={error} what="your passkeys" retry={() => mutate()} />
+  ) : noProof || (data && data.length > 0) ? (
+    <div className="grid gap-4">
+      {data?.map((p) => (
+        <div key={p.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex min-w-0 flex-1 basis-48 items-center gap-3">
+            <KeyRound className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">{p.name}</p>
+              <p className="flex flex-wrap gap-x-3 text-sm text-muted-foreground">
+                <span className="whitespace-nowrap">Added {timeAgo(p.created_at)}</span>
+                <span className="whitespace-nowrap">{p.last_used_at ? `Last used ${timeAgo(p.last_used_at)}` : "Not used yet"}</span>
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "rename", passkey: p })}>
+              Rename
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "remove", passkey: p })}>
+              Remove
+            </Button>
+          </div>
+        </div>
+      ))}
+      {noProof && <p className="text-xs text-pretty text-muted-foreground">Set a password above first. Adding a passkey asks for it.</p>}
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <Section
+        title="Passkeys"
+        description={
+          <span className="block text-pretty">A passkey signs you in with your fingerprint, face or screen lock instead of a password.</span>
+        }
+        actions={
+          <Button onClick={() => setDialog({ kind: "add" })} disabled={noProof}>
+            Add a passkey
+          </Button>
+        }
+      >
+        {content}
+      </Section>
+      <Modal open={!!dialog} onClose={() => setDialog(null)} title={dialog && PASSKEY_TITLES[dialog.kind]}>
+        {dialog?.kind === "add" && <AddPasskey onDone={done} />}
+        {dialog?.kind === "rename" && <RenamePasskey passkey={dialog.passkey} onDone={done} />}
+        {dialog?.kind === "remove" && (
+          <>
+            <p className="mb-4 text-sm text-pretty text-muted-foreground">
+              {dialog.passkey.name} stops signing you in to Splee. To clear it off the device too, delete it in the device&apos;s password settings.
+            </p>
+            <ProofForm
+              submitLabel="Remove"
+              danger
+              onProof={async (proof) => {
+                done(await api<Passkey[]>(`/auth/passkeys/${dialog.passkey.id}`, { method: "DELETE", body: { proof } }));
+                toast.success("Passkey removed");
+              }}
+            />
+          </>
+        )}
+      </Modal>
+    </>
+  );
+}
+
+/** The password or code goes first, so the browser's passkey prompt only opens once it's right. */
+function AddPasskey({ onDone }: { onDone: (passkeys: Passkey[]) => void }) {
+  // Only ever rendered in the browser, once the dialog opens, so navigator is there.
+  const [name, setName] = useState(deviceName);
+  const [proof, setProof] = useState("");
+  const { pending, run } = useAction();
+  const add = async () => {
+    const options = await api<PasskeyCreationOptions>("/auth/passkeys/options", { body: { proof } });
+    const body = await createPasskey(options, name).catch((e: unknown) => {
+      if (!(e instanceof DOMException)) throw e;
+      if (passkeyCancelled(e)) return null;
+      const known = e.name === "InvalidStateError";
+      throw new Error(known ? "This device already has a passkey for your account." : "Your browser couldn't make a passkey. Try again.");
+    });
+    if (!body) return;
+    onDone(await api<Passkey[]>("/auth/passkeys", { body }));
+    toast.success("Passkey added");
+  };
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void run("add", add);
+      }}
+    >
+      <Field label="Name" hint="So you can tell your passkeys apart.">
+        <Input required maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Your password or a code from your app">
+        <Input type="password" autoComplete="current-password" autoFocus required value={proof} onChange={(e) => setProof(e.target.value)} />
+      </Field>
+      <div className="flex justify-end">
+        <Button type="submit" disabled={!proof || !name.trim()} loading={pending === "add"}>
+          Add a passkey
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function RenamePasskey({ passkey, onDone }: { passkey: Passkey; onDone: (passkeys: Passkey[]) => void }) {
+  const [name, setName] = useState(passkey.name);
+  const { pending, run } = useAction();
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void run(
+          "rename",
+          async () => onDone(await api<Passkey[]>(`/auth/passkeys/${passkey.id}`, { method: "PATCH", body: { name } })),
+          "Passkey renamed",
+        );
+      }}
+    >
+      <Field label="Name">
+        <Input autoFocus required maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <div className="flex justify-end">
+        <Button type="submit" disabled={!name.trim()} loading={pending === "rename"}>
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }
