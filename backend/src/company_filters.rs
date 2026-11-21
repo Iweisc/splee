@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::future::BoxFuture;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -56,9 +56,21 @@ pub struct Answer {
 
 #[derive(Serialize)]
 pub struct Described {
+    #[serde(serialize_with = "without_scope")]
     pub filters: SearchQuery,
     /// What it couldn't turn into a filter, in a sentence or two, or empty.
     pub note: String,
+}
+
+/// Only the filters. Whoever searches keeps their own project_id and include_hidden, which other SearchQuery JSON, like the CSV
+/// download's audit entry, keeps.
+fn without_scope<S: Serializer>(filters: &SearchQuery, s: S) -> Result<S::Ok, S::Error> {
+    let mut value = serde_json::to_value(filters).map_err(serde::ser::Error::custom)?;
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("project_id");
+        fields.remove("include_hidden");
+    }
+    value.serialize(s)
 }
 
 /// Whoever reads the description. Tests swap in a fake, so they never call Claude.
