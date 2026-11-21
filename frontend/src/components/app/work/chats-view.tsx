@@ -75,7 +75,8 @@ export function ChatsView({ projectId, initialChat }: { projectId: string; initi
                 <li key={c.id} className="border-b border-border">
                   <button
                     onClick={() => setSelected(c.id)}
-                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent focus-visible:-outline-offset-2", selectedId === c.id && "bg-accent")}
+                    aria-current={selectedId === c.id || undefined}
+                    className={cn("flex w-full gap-3 px-4 py-3 text-left focus-visible:-outline-offset-2", selectedId === c.id ? "bg-accent" : "hover:bg-black/[0.02]")}
                   >
                     <Avatar name={c.name || c.email || "?"} />
                     <span className="min-w-0 flex-1">
