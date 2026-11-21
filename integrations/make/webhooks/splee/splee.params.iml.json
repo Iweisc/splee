@@ -28,6 +28,10 @@
             {
                 "label": "New lead added",
                 "value": "lead_added"
+            },
+            {
+                "label": "Lead deleted",
+                "value": "lead_erased"
             }
         ]
     },

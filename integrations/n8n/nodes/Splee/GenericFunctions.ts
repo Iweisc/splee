@@ -32,6 +32,7 @@ export const EVENTS = [
 	{ name: 'Lead Status Changed', value: 'status_changed', description: "Someone on your team changed a lead's status" },
 	{ name: 'Deal Won', value: 'deal.won', description: 'A deal closed as won, with its final value' },
 	{ name: 'New Lead Added', value: 'lead_added', description: 'A lead was added from any source, within about a minute' },
+	{ name: 'Lead Deleted', value: 'lead_erased', description: 'Someone deleted or forgot a lead. Only its ids are sent' },
 ];
 
 // Keep in sync with LEAD_STATUSES in backend/src/routes/util_input.rs.

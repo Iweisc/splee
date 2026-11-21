@@ -1347,6 +1347,7 @@ const HOOK_EVENTS: [event: string, description: string][] = [
   ["status_changed", "someone on your team changed the lead's status, with previous_status"],
   ["deal.won", "a deal closed as won, with the deal"],
   ["lead_added", "a new lead in the project, from any source, within about a minute"],
+  ["lead_erased", "someone deleted or forgot a lead, with only its id and campaign_id, forgotten and erased_at"],
 ];
 
 function EndpointSection({ e, base }: { e: Endpoint; base: string }) {

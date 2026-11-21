@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use axum::extract::{Path, Query, State};
@@ -792,10 +793,10 @@ async fn email_progress(State(state): State<AppState>, auth: Auth, Path(id): Pat
     Ok(Json(json!({ "queued": queued, "room": room, "hourly": waterfall::HOURLY })))
 }
 
-/// Deletes leads with their emails and the webhook log entries that carry their details, and keeps their ids in erased_leads for
-/// GET /v1/erased-leads. With `forget`, their addresses go on the do-not-contact list first, so no later import or search brings
-/// them back.
-async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppResult<()> {
+/// Deletes leads with their emails and the webhook log entries that carry their details, keeps their ids in erased_leads for
+/// GET /v1/erased-leads and posts lead_erased with only those ids. With `forget`, their addresses go on the do-not-contact list
+/// first, so no later import or search brings them back.
+pub(super) async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppResult<()> {
     if forget {
         suppressions::insert(db, org_id, leads.iter().filter_map(|l| l.email.as_deref())).await?;
     }
@@ -819,6 +820,14 @@ async fn erase(db: &PgPool, org_id: Uuid, leads: &[Lead], forget: bool) -> AppRe
         .await?;
     sqlx::query("delete from leads where id = any($1)").bind(&ids).execute(&mut *tx).await?;
     tx.commit().await?;
+    // After the commit, so a receiver that looks the lead up finds it gone.
+    let mut by_project: HashMap<Uuid, Vec<(Uuid, Option<Uuid>)>> = HashMap::new();
+    for lead in leads {
+        by_project.entry(lead.project_id).or_default().push((lead.id, lead.segment_id));
+    }
+    for (project_id, erased) in by_project {
+        crate::hooks::send_erased(db, project_id, &erased, forget).await;
+    }
     Ok(())
 }
 

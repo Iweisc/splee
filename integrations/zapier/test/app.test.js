@@ -79,6 +79,7 @@ const EVENTS = {
   lead_status_changed: 'status_changed',
   deal_won: 'deal.won',
   new_lead: 'lead_added',
+  lead_erased: 'lead_erased',
 };
 
 test('each trigger subscribes to its own event, with the project when one is picked', async () => {

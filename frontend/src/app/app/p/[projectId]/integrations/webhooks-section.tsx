@@ -84,6 +84,7 @@ const EVENTS: { value: WebhookEvent; label: string; hint: string }[] = [
   { value: "deal.stage_changed", label: "Deal moved", hint: "A deal moved to another stage of the pipeline." },
   { value: "deal.won", label: "Deal won", hint: "A deal closed as won, with its final value." },
   { value: "deal.lost", label: "Deal lost", hint: "A deal closed as lost, with the reason given." },
+  { value: "lead_erased", label: "Lead deleted", hint: "Someone deleted or forgot a lead. Only its ids are sent, to delete your copy." },
 ];
 
 /** The last lead events the webhook got and how each went, with a way to send one again after fixing the endpoint. */
@@ -240,7 +241,9 @@ export function WebhooksSection({ projectId, settings: s, update }: { projectId:
             <code>answer</code>. <code>status_changed</code> sends <code>&quot;reply&quot;: null</code> and the old status as{" "}
             <code>previous_status</code>. The deal events send <code>&quot;reply&quot;: null</code> and a <code>deal</code> with its <code>id</code>,{" "}
             <code>stage</code>, <code>previous_stage</code>, <code>status</code> (open, won or lost), <code>value</code>, <code>currency</code>,{" "}
-            <code>close_date</code>, <code>owner</code>, <code>lost_reason</code> and <code>url</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
+            <code>close_date</code>, <code>owner</code>, <code>lost_reason</code> and <code>url</code>. <code>lead_erased</code> sends only the lead&apos;s{" "}
+            <code>id</code> and <code>campaign_id</code>, since its name and address are gone, with <code>forgotten</code>, <code>erased_at</code> and{" "}
+            <code>&quot;reply&quot;: null</code>. &quot;Send a test&quot; posts the hot_lead shape with{" "}
             <code>&quot;event&quot;: &quot;test&quot;</code>. The lead&apos;s <code>meeting_at</code> is when the call they booked starts, once
             their scheduling tool sent it.
           </p>

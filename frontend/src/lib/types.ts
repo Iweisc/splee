@@ -491,7 +491,8 @@ export type WebhookEvent =
   | "deal.created"
   | "deal.stage_changed"
   | "deal.won"
-  | "deal.lost";
+  | "deal.lost"
+  | "lead_erased";
 
 export interface ProjectSummary extends Project {
   sent: number;
@@ -726,7 +727,7 @@ export interface Endpoint {
 }
 
 /** What a REST hook subscription can be for. Keep in sync with rest_hooks::EVENTS in backend/src/rest_hooks.rs. */
-export type HookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "status_changed" | "deal.won" | "lead_added";
+export type HookEvent = "hot_lead" | "lead_replied" | "meeting_booked" | "status_changed" | "deal.won" | "lead_added" | "lead_erased";
 
 /** A Zapier, Make or n8n trigger listening for one lead event (GET /projects/{id}/hook-subscriptions), made with an API key. */
 export interface HookSubscription {

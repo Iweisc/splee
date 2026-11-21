@@ -108,4 +108,17 @@ module.exports = [
     description: 'Triggers when a lead is added to Splee from any source, within about a minute.',
     sample: { lead: { ...LEAD, status: 'new' } },
   }),
+  hookTrigger({
+    key: 'lead_erased',
+    event: 'lead_erased',
+    label: 'Lead Deleted',
+    description: 'Triggers when someone deletes or forgets a lead, with only its ids, so you can delete your copy.',
+    // The lead is gone, so there's no name, address or link to it.
+    sample: {
+      lead: { id: LEAD.id, campaign_id: '5d0a9e3b-0000-4000-8000-000000000005' },
+      forgotten: false,
+      erased_at: '2026-11-20T10:00:00Z',
+      url: undefined,
+    },
+  }),
 ];
