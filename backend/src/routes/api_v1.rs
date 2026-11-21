@@ -15,7 +15,7 @@ use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::attachments;
 use super::calls::{self, CallRow, LogBody};
 use super::dedup_lists::{self, Contents, OffsetQuery as DedupPage};
-use super::directory::{self, Added, DescribeBody, SearchQuery};
+use super::directory::{self, Added, ByDomains, ByDomainsBody, DescribeBody, SearchQuery};
 use super::directory_export::{self, ExportQuery};
 use super::saved_searches::{self, NewMatches, NewSearch, SearchRow};
 use super::emails::{self, EmailRow};
@@ -112,6 +112,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/companies", get(search_companies))
         .route("/v1/companies/export", get(export_companies))
         .route("/v1/companies/filters", post(companies_filters))
+        .route("/v1/companies/by-domains", post(companies_by_domains))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/projects/{id}/saved-searches", get(list_saved_searches).post(save_search))
         .route("/v1/saved-searches/{id}", delete(delete_saved_search))
@@ -1344,6 +1345,15 @@ pub(super) async fn companies_filters(
     Json(body): Json<DescribeBody>,
 ) -> AppResult<Json<Described>> {
     Ok(Json(company_filters::describe(&state, model.as_ref(), auth.org_id, &body.query).await?))
+}
+
+/// The database's company for each of up to 1,000 domains, and the domains it doesn't have.
+pub(super) async fn companies_by_domains(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Json(body): Json<ByDomainsBody>,
+) -> AppResult<Json<ByDomains>> {
+    Ok(Json(directory::by_domains(&state.db, auth.org_id, body).await?))
 }
 
 /// The search as a file, up to 50,000 rows a page. See routes/directory_export.rs.

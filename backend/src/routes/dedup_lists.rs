@@ -475,6 +475,24 @@ mod tests {
         let (_, page) = call(reqwest::Method::GET, KEY_A, &format!("{search}&include_hidden=true"), None).await;
         assert_eq!(page["total"], json!(3));
 
+        // A CRM's accounts come back in their order, cleaned up and counted once, minus what the project's lists hide.
+        fn found(page: &Value) -> Vec<&str> {
+            page["items"].as_array().unwrap().iter().map(|c| c["domain"].as_str().unwrap()).collect()
+        }
+        let lookup = |key: &str, body: Value| call(reqwest::Method::POST, key, "/v1/companies/by-domains", Some(body));
+        let domains = json!(["https://www.Grin.co.uk/team", "cafe.co.uk", "nowhere.example", "CAFE.co.uk", "smile.co.uk"]);
+        let (status, page) = lookup(KEY_A, json!({"domains": domains, "project_id": a.projects[0]})).await;
+        assert_eq!((status, found(&page)), (200, vec!["cafe.co.uk"]), "{page}");
+        assert_eq!(page["not_found"], json!(["grin.co.uk", "nowhere.example", "smile.co.uk"]));
+        let (_, page) = lookup(KEY_A, json!({"domains": domains, "project_id": a.projects[0], "include_hidden": true})).await;
+        assert_eq!((found(&page), page["not_found"].clone()), (vec!["grin.co.uk", "cafe.co.uk", "smile.co.uk"], json!(["nowhere.example"])));
+        assert_eq!(found(&lookup(KEY_B, json!({"domains": domains})).await.1).len(), 3, "A's lists hide nothing from B");
+        let (status, error) = lookup(KEY_A, json!({"domains": ["cafe.co.uk", "not a domain"]})).await;
+        assert_eq!((status, error["error"].clone()), (400, json!("\"not a domain\" isn't a domain")));
+        assert_eq!(lookup(KEY_A, json!({"domains": []})).await.0, 400);
+        let too_many: Vec<String> = (0..1001).map(|i| format!("d{i}.example")).collect();
+        assert_eq!(lookup(KEY_A, json!({ "domains": too_many })).await.0, 400);
+
         assert_eq!(call(reqwest::Method::GET, KEY_A, "/v1/dedup/companies", None).await.1.as_array().map(Vec::len), Some(1));
         assert_eq!(call(reqwest::Method::GET, KEY_B, "/v1/dedup/companies", None).await, (200, json!([])));
         let one = format!("/v1/dedup/companies/{id}");

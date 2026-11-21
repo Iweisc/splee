@@ -365,6 +365,32 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "POST",
+      path: "/companies/by-domains",
+      summary:
+        "Look up to 1,000 domains in the company database, like your CRM's accounts. Addresses are cleaned up first, so https://www.globex.com/about finds globex.com. items keeps the order you sent, and not_found has the rest, including companies your dedup lists hide unless include_hidden is true.",
+      body: `{ "domains": ["https://www.smiledental.co.uk/", "nowhere.example"], "project_id": "${projectId}" }`,
+      response: `{
+  "items": [
+    {
+      "domain": "smiledental.co.uk",
+      "name": "Smile Dental",
+      "website": "https://smiledental.co.uk",
+      "phone": "+44 113 496 0000",
+      "email": "hello@smiledental.co.uk",
+      "address": "12 Park Row",
+      "city": "Leeds",
+      "region": "West Yorkshire",
+      "postcode": "LS1 5HD",
+      "country_code": "GB",
+      "category": "dental_clinic",
+      "tech": ["Google Workspace"]
+    }
+  ],
+  "not_found": ["nowhere.example"]
+}`,
+    },
+    {
+      method: "POST",
       path: "/segments/5d0a…/companies",
       summary:
         "Add companies from the search above to a campaign by domain, up to 500 at a time. Companies the project already has and ones on your do-not-contact list are skipped.",
