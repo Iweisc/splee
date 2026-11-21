@@ -282,6 +282,8 @@ export function LeadsView({ projectId, segmentId }: { projectId: string; segment
                         {/* Its click bubbles to the row, which opens the lead. */}
                         <button className="block text-left font-medium">{l.full_name || "—"}</button>
                         <p className="truncate text-xs text-muted-foreground">{l.title}</p>
+                        {/* The company column is hidden on phones, so the company goes under the title there. */}
+                        {l.company_name && <p className="truncate text-xs text-muted-foreground sm:hidden">{l.company_name}</p>}
                         {/* The email column, where the result sits on wide screens, is hidden below 2xl. */}
                         <EmailSearchBadge lead={l} className="mt-1 2xl:hidden" />
                         {/* The company column, where the badge sits from sm up, is hidden on phones. */}
