@@ -132,6 +132,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/segments/{id}/local-businesses", post(add_local_businesses))
         .route("/v1/segments/{id}/write-emails", post(write_emails))
         .route("/v1/runs/{id}", get(get_run))
+        .route("/v1/tasks", get(list_tasks))
         .route("/v1/emails", get(list_emails))
         .route("/v1/emails/{id}/approve", post(approve_email))
         .route("/v1/emails/{id}/skip", post(skip_email))
@@ -1714,6 +1715,85 @@ pub(super) async fn get_run(State(state): State<AppState>, auth: ApiKeyAuth, Pat
     let run = runs::load(&state.db, auth.org_id, id).await?;
     let message = runs::last_message(&state.db, id).await?;
     Ok(Json(RunStatus { run, message }))
+}
+
+/// Work that goes on in the background after a request returns: an agent run, a find-email batch or a campaign import.
+#[derive(Serialize, FromRow)]
+pub(super) struct Task {
+    id: Uuid,
+    /// run, email_batch or campaign_import.
+    #[serde(rename = "type")]
+    task_type: String,
+    /// A run's kind, like find_people. Null for the others.
+    kind: Option<String>,
+    project_id: Option<Uuid>,
+    /// pending, completed or failed. A cancelled run counts as failed. Its own route has the details.
+    status: String,
+    created_at: Ts,
+    finished_at: Option<Ts>,
+    /// The route that follows it.
+    url: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct TasksQuery {
+    status: Option<String>,
+    #[serde(rename = "type")]
+    task_type: Option<String>,
+    /// A run kind, since every reply's classify_reply run would bury the ones an agent started.
+    kind: Option<String>,
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    project_id: Option<Uuid>,
+}
+
+/// The organization's background work of every kind, newest first, so a lost task id can be found again.
+pub(super) async fn list_tasks(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<TasksQuery>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Json<Paginated<Task>>> {
+    if let Some(status) = &q.status {
+        util_input::one_of("status", status, &["pending", "completed", "failed"])?;
+    }
+    if let Some(task_type) = &q.task_type {
+        util_input::one_of("type", task_type, &["run", "email_batch", "campaign_import"])?;
+    }
+    let tasks = "select * from (
+           select r.id, 'run' as task_type, r.kind, r.project_id,
+                  case when r.status = 'succeeded' then 'completed' when r.status in ('failed', 'cancelled') then 'failed'
+                       else 'pending' end as status,
+                  r.created_at, r.finished_at, '/v1/runs/' || r.id as url
+           from agent_runs r left join projects p on p.id = r.project_id where r.org_id = $1 or p.org_id = $1
+           union all
+           select id, 'email_batch', null, project_id, case when finished_at is null then 'pending' else 'completed' end, created_at, finished_at,
+                  '/v1/enrich/email/batch/' || id
+           from email_lookup_batches where org_id = $1
+           union all
+           select id, 'campaign_import', null, project_id, status, created_at, completed_at, '/v1/campaigns/import/' || id
+           from campaign_imports where org_id = $1
+         ) t
+         where ($2::text is null or status = $2) and ($3::text is null or task_type = $3) and ($4::uuid is null or project_id = $4)
+           and ($5::text is null or kind = $5)";
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from ({tasks}) counted"))
+        .bind(auth.org_id)
+        .bind(&q.status)
+        .bind(&q.task_type)
+        .bind(q.project_id)
+        .bind(&q.kind)
+        .fetch_one(&state.db)
+        .await?;
+    let items = sqlx::query_as::<_, Task>(&format!("{tasks} order by created_at desc, id limit $6 offset $7"))
+        .bind(auth.org_id)
+        .bind(&q.status)
+        .bind(&q.task_type)
+        .bind(q.project_id)
+        .bind(&q.kind)
+        .bind(page.limit())
+        .bind(page.offset())
+        .fetch_all(&state.db)
+        .await?;
+    Ok(Json(Paginated { items, total }))
 }
 
 /// An outbound email with who it's for, without the sending details.
@@ -3325,5 +3405,77 @@ mod tests {
 
         write("2026-11-20T11:00:00Z").await.unwrap();
         assert_eq!(needs_reply().await, json!(1), "a new reply brings the thread back");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn tasks_of_every_type_are_listed_newest_first_for_the_keys_organization(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(a).fetch_one(&db).await.unwrap();
+        let second: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Second') returning id")
+            .bind(org)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        /// Runs the insert with {ago} as that many minutes before now, so the rows have an order.
+        async fn task(db: &PgPool, sql: &str, project: Uuid, minutes_ago: i32) -> Uuid {
+            let sql = sql.replace("{ago}", "now() - make_interval(mins => $2)");
+            sqlx::query_scalar(&sql).bind(project).bind(minutes_ago).fetch_one(db).await.unwrap()
+        }
+        let import = task(
+            &db,
+            "insert into campaign_imports (org_id, project_id, status, created_at) select org_id, id, 'failed', {ago} from projects where id = $1
+             returning id",
+            second,
+            5,
+        )
+        .await;
+        let batch_sql = "insert into email_lookup_batches (org_id, project_id, created_at) select org_id, id, {ago} from projects where id = $1
+                         returning id";
+        let batch = task(&db, batch_sql, a, 4).await;
+        // A run counts for the organization through its project, or through org_id when it has none.
+        let found_sql = "insert into agent_runs (project_id, kind, status, created_at, finished_at)
+                         values ($1, 'find_people', 'succeeded', {ago}, now()) returning id";
+        let found = task(&db, found_sql, a, 3).await;
+        let cancelled_sql = "insert into agent_runs (org_id, kind, status, created_at)
+                             select org_id, 'classify_reply', 'cancelled', {ago} from projects where id = $1 returning id";
+        let cancelled = task(&db, cancelled_sql, a, 2).await;
+        let writing_sql = "insert into agent_runs (project_id, kind, status, created_at) values ($1, 'write_emails', 'running', {ago}) returning id";
+        let writing = task(&db, writing_sql, second, 1).await;
+        let theirs = task(&db, "insert into agent_runs (project_id, kind, created_at) values ($1, 'find_people', {ago}) returning id", b, 0).await;
+
+        let ids = |page: &Value| -> Vec<Uuid> {
+            page["items"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().parse().unwrap()).collect()
+        };
+        let (status, all) = api.get("/v1/tasks").await;
+        assert_eq!((status, &all["total"]), (200, &json!(5)), "{all}");
+        assert_eq!(ids(&all), [writing, cancelled, found, batch, import]);
+        let summary: Vec<(&str, Option<&str>, &str, String)> = all["items"].as_array().unwrap().iter().map(|t| {
+            (t["type"].as_str().unwrap(), t["kind"].as_str(), t["status"].as_str().unwrap(), t["url"].as_str().unwrap().to_string())
+        }).collect();
+        assert_eq!(summary, [
+            ("run", Some("write_emails"), "pending", format!("/v1/runs/{writing}")),
+            ("run", Some("classify_reply"), "failed", format!("/v1/runs/{cancelled}")),
+            ("run", Some("find_people"), "completed", format!("/v1/runs/{found}")),
+            ("email_batch", None, "pending", format!("/v1/enrich/email/batch/{batch}")),
+            ("campaign_import", None, "failed", format!("/v1/campaigns/import/{import}")),
+        ]);
+        // Each url is the route that follows the task.
+        for task in all["items"].as_array().unwrap() {
+            let (status, body) = api.get(task["url"].as_str().unwrap()).await;
+            assert_eq!(status, 200, "{task} {body}");
+        }
+
+        assert_eq!(ids(&api.get("/v1/tasks?status=pending").await.1), [writing, batch]);
+        assert_eq!(ids(&api.get("/v1/tasks?type=run&kind=find_people").await.1), [found]);
+        assert_eq!(ids(&api.get(&format!("/v1/tasks?project_id={second}")).await.1), [writing, import]);
+        let (_, page) = api.get("/v1/tasks?per_page=2&page=2").await;
+        assert_eq!((ids(&page), &page["total"]), (vec![found, batch], &json!(5)));
+        for bad in ["status=done", "type=job"] {
+            assert_eq!(api.get(&format!("/v1/tasks?{bad}")).await.0, 400, "{bad}");
+        }
+        assert_eq!(ids(&api.send(Method::GET, KEYS[1], "/v1/tasks", None, None).await.2), [theirs]);
     }
 }

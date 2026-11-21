@@ -827,6 +827,33 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: "/tasks?status=pending",
+      summary:
+        "Everything still working in the background, or done, newest first: agent runs, find-email batches and campaign imports. A cancelled run counts as failed. Each has the url that follows it, so a lost run_id or task_id can be found again. kind filters runs, since every reply gets its own classify_reply run.",
+      params: [
+        ["status", "optional: pending, completed or failed"],
+        ["type", "optional: run, email_batch or campaign_import"],
+        ["kind", "optional: a run's kind, like find_people"],
+        ["project_id", "optional: only this project's"],
+      ],
+      response: `{
+  "items": [
+    {
+      "id": "9b4f…",
+      "type": "run",
+      "kind": "write_emails",
+      "project_id": "c1d2…",
+      "status": "pending",
+      "created_at": "2026-11-04T10:00:00Z",
+      "finished_at": null,
+      "url": "/v1/runs/9b4f…"
+    }
+  ],
+  "total": 1
+}`,
+    },
+    {
+      method: "GET",
       path: "/leads?email=sarah@northwind.studio",
       summary:
         "Find leads by email across all your projects, for tools that only know the address, such as a calendar booking. Newest first, up to 100. Then use the id with PATCH below.",
