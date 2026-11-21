@@ -96,7 +96,7 @@ export function ProposalSection({ deal }: { deal: Deal }) {
     return (
       <section className="flex flex-wrap items-center gap-3 rounded-xl border border-brand-200 bg-brand-50/60 p-4">
         <BadgeCheck className="size-5 shrink-0 text-brand-700" />
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-56">
           <p className="text-sm font-medium text-brand-800">
             Accepted by {[proposal.accepted_name, proposal.accepted_title].filter(Boolean).join(", ")} {timeAgo(proposal.accepted_at)}
           </p>
