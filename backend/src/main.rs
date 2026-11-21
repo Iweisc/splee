@@ -35,6 +35,7 @@ mod events;
 mod exports;
 mod fingerprints;
 mod grist;
+mod handoffs;
 mod hashnode;
 mod hiring;
 mod hooks;

@@ -1,6 +1,7 @@
 //! Close plans: a deal's steps to a signed deal, the buyer's and ours, with dates. The agent drafts one from the conversation
 //! (agent/close_plans.rs), the team edits it in the deal's window, and the buyer gets it at PUBLIC_URL/plan/{token}, where
-//! they tick off their own steps. Their first look and each step they finish ping the project's chats.
+//! they tick off their own steps. Their first look and each step they finish ping the project's chats. Once the deal is won,
+//! the handoff (agent/handoffs.rs) adds an onboarding goal and onboarding steps, and the same page becomes the onboarding plan.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,20 @@ use crate::error::{AppError, AppResult};
 use crate::hooks::{self, ChatAlert};
 use crate::models::{Lead, Ts};
 
-/// Steps a plan holds. The agent writes at most 8, which leaves room for the team's own.
+/// Steps a plan holds in each phase. The agent writes at most 8, which leaves room for the team's own.
 pub const MAX_STEPS: i64 = 20;
+
+/// The phase a deal's new steps go in: onboarding once it's won, else closing.
+pub fn phase_for(deal_status: &str) -> &'static str {
+    if deal_status == "won" { "onboarding" } else { "close" }
+}
+
+/// The plan the buyer sees, for a query with the plan as p and its deal as d: the onboarding plan while the deal is won and
+/// the handoff wrote one, else the close plan. A deal reopened or lost after a win goes back to its close plan.
+const PHASE: &str = "case when d.status = 'won' and p.onboarding_goal is not null then 'onboarding' else 'close' end";
+
+/// Whether the buyer's page has a plan to show, for the same query.
+const SHOWN: &str = "(p.goal is not null or (d.status = 'won' and p.onboarding_goal is not null))";
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Step {
@@ -24,6 +37,8 @@ pub struct Step {
     pub due_date: Option<NaiveDate>,
     pub done_at: Option<Ts>,
     pub done_by: Option<String>,
+    /// "close" or "onboarding".
+    pub phase: String,
 }
 
 /// The deal's plan for the app.
@@ -32,8 +47,12 @@ pub struct Plan {
     pub id: Uuid,
     pub token: String,
     pub goal: Option<String>,
+    /// Set by the handoff once the deal is won, when the plan carries on as the onboarding plan.
+    pub onboarding_goal: Option<String>,
     /// writing while the agent drafts it, ready once it has a goal, else failed.
     pub status: String,
+    /// "close" or "onboarding": the plan the buyer sees, on its page and in the deal room.
+    pub phase: String,
     pub views: i32,
     pub first_viewed_at: Option<Ts>,
     pub last_viewed_at: Option<Ts>,
@@ -48,18 +67,19 @@ pub fn url(public_url: &str, token: &str) -> String {
 }
 
 async fn steps(db: &PgPool, plan_id: Uuid) -> sqlx::Result<Vec<Step>> {
-    sqlx::query_as("select id, title, detail, side, due_date, done_at, done_by from close_plan_steps where plan_id = $1 order by position, created_at")
+    sqlx::query_as("select id, title, detail, side, due_date, done_at, done_by, phase from close_plan_steps where plan_id = $1 order by position, created_at")
         .bind(plan_id)
         .fetch_all(db)
         .await
 }
 
 pub async fn for_deal(db: &PgPool, public_url: &str, deal_id: Uuid) -> sqlx::Result<Option<Plan>> {
-    let plan = sqlx::query_as::<_, Plan>(
-        "select p.id, p.token, p.goal, p.views, p.first_viewed_at, p.last_viewed_at,
-                case when r.status in ('queued', 'running') then 'writing' when p.goal is not null then 'ready' else 'failed' end as status
-         from close_plans p left join agent_runs r on r.id = p.run_id where p.deal_id = $1",
-    )
+    let plan = sqlx::query_as::<_, Plan>(&format!(
+        "select p.id, p.token, p.goal, p.onboarding_goal, p.views, p.first_viewed_at, p.last_viewed_at,
+                case when r.status in ('queued', 'running') then 'writing' when coalesce(p.goal, p.onboarding_goal) is not null then 'ready'
+                     else 'failed' end as status, {PHASE} as phase
+         from close_plans p join deals d on d.id = p.deal_id left join agent_runs r on r.id = p.run_id where p.deal_id = $1",
+    ))
     .bind(deal_id)
     .fetch_optional(db)
     .await?;
@@ -106,24 +126,26 @@ pub struct NewStep {
     pub due_date: Option<NaiveDate>,
 }
 
-/// Adds a step at the end of the plan, making the plan first if the deal has none.
-pub async fn add_step(db: &PgPool, project_id: Uuid, deal_id: Uuid, step: NewStep) -> AppResult<()> {
+/// Adds a step at the end of the plan's `phase`, making the plan first if the deal has none.
+pub async fn add_step(db: &PgPool, project_id: Uuid, deal_id: Uuid, phase: &str, step: NewStep) -> AppResult<()> {
     let (title, side) = (title(&step.title)?, side(&step.side)?);
     let mut tx = db.begin().await?;
     let plan = ensure(&mut tx, project_id, deal_id).await?;
-    let count: i64 = sqlx::query_scalar("select count(*) from close_plan_steps where plan_id = $1").bind(plan).fetch_one(&mut *tx).await?;
+    let count: i64 =
+        sqlx::query_scalar("select count(*) from close_plan_steps where plan_id = $1 and phase = $2").bind(plan).bind(phase).fetch_one(&mut *tx).await?;
     if count >= MAX_STEPS {
         return Err(AppError::BadRequest(format!("A plan holds up to {MAX_STEPS} steps")));
     }
     sqlx::query(
-        "insert into close_plan_steps (plan_id, position, title, detail, side, due_date)
-         values ($1, (select coalesce(max(position) + 1, 0) from close_plan_steps where plan_id = $1), $2, $3, $4, $5)",
+        "insert into close_plan_steps (plan_id, position, title, detail, side, due_date, phase)
+         values ($1, (select coalesce(max(position) + 1, 0) from close_plan_steps where plan_id = $1), $2, $3, $4, $5, $6)",
     )
     .bind(plan)
     .bind(title)
     .bind(step.detail.trim().chars().take(300).collect::<String>())
     .bind(side)
     .bind(step.due_date)
+    .bind(phase)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -179,7 +201,12 @@ pub async fn delete_step(db: &PgPool, step_id: Uuid) -> sqlx::Result<()> {
 /// What the buyer's page shows: the plan and who it's between, nothing the team keeps to itself.
 #[derive(Debug, Serialize, FromRow)]
 pub struct Public {
+    /// The close plan's goal, empty when the plan only ever had an onboarding one.
     pub goal: String,
+    pub onboarding_goal: Option<String>,
+    /// "close" or "onboarding", the plan to show. In the onboarding plan the close steps come as titles only, the history
+    /// of how they signed, and in the close plan there are no onboarding steps.
+    pub phase: String,
     pub first_name: String,
     pub company: String,
     pub company_domain: Option<String>,
@@ -195,10 +222,13 @@ pub struct Public {
 }
 
 pub async fn public(db: &PgPool, public_url: &str, token: &str) -> sqlx::Result<Option<Public>> {
-    let row = sqlx::query_as::<_, (Uuid,)>("select id from close_plans where token = $1 and goal is not null").bind(token).fetch_optional(db).await?;
+    let row = sqlx::query_as::<_, (Uuid,)>(&format!("select p.id from close_plans p join deals d on d.id = p.deal_id where p.token = $1 and {SHOWN}"))
+        .bind(token)
+        .fetch_optional(db)
+        .await?;
     let Some((plan_id,)) = row else { return Ok(None) };
-    let page = sqlx::query_as::<_, Public>(
-        "select p.goal, l.first_name, l.company_name as company, l.company_domain::text as company_domain,
+    let page = sqlx::query_as::<_, Public>(&format!(
+        "select coalesce(p.goal, '') as goal, p.onboarding_goal, {PHASE} as phase, l.first_name, l.company_name as company, l.company_domain::text as company_domain,
                 coalesce(nullif(pr.company->>'name', ''), pr.name) as from_name, pr.domain::text as from_domain,
                 coalesce(nullif(m.from_name, ''), s.sender_name, '') as sender_name,
                 coalesce(nullif(m.booking_link, ''), $2 || '/book/' || b.slug, nullif(s.booking_link, '')) as booking_url,
@@ -210,20 +240,29 @@ pub async fn public(db: &PgPool, public_url: &str, token: &str) -> sqlx::Result<
          left join mailboxes m on m.id = e.mailbox_id
          left join booking_pages b on b.mailbox_id = m.id
          where p.id = $1",
-    )
+    ))
     .bind(plan_id)
     .bind(public_url.trim_end_matches('/'))
     .fetch_one(db)
     .await?;
-    Ok(Some(Public { steps: steps(db, plan_id).await?, ..page }))
+    let steps = steps(db, plan_id)
+        .await?
+        .into_iter()
+        .filter_map(|s| match (page.phase.as_str(), s.phase.as_str()) {
+            ("onboarding", "close") => Some(Step { detail: String::new(), due_date: None, done_at: None, done_by: None, ..s }),
+            (shown, phase) if shown == phase => Some(s),
+            _ => None,
+        })
+        .collect();
+    Ok(Some(Public { steps, ..page }))
 }
 
 /// Counts a look at the buyer's page and returns whether it was the first.
 pub async fn record_view(db: &PgPool, token: &str) -> sqlx::Result<bool> {
-    let first: Option<bool> = sqlx::query_scalar(
-        "update close_plans set views = views + 1, first_viewed_at = coalesce(first_viewed_at, now()), last_viewed_at = now()
-         where token = $1 and goal is not null returning views = 1",
-    )
+    let first: Option<bool> = sqlx::query_scalar(&format!(
+        "update close_plans p set views = views + 1, first_viewed_at = coalesce(first_viewed_at, now()), last_viewed_at = now()
+         from deals d where d.id = p.deal_id and p.token = $1 and {SHOWN} returning views = 1",
+    ))
     .bind(token)
     .fetch_optional(db)
     .await?;
@@ -232,12 +271,13 @@ pub async fn record_view(db: &PgPool, token: &str) -> sqlx::Result<bool> {
 
 /// The buyer ticks or unticks one of their own steps. Returns the step when it changed.
 pub async fn tick(db: &PgPool, token: &str, step_id: Uuid, done: bool) -> sqlx::Result<Option<Step>> {
-    sqlx::query_as(
+    // Only a step of the plan the page shows, so the close steps folded into an onboarding plan's history stay as they were.
+    sqlx::query_as(&format!(
         "update close_plan_steps s set done_at = case when $3 then now() end, done_by = case when $3 then 'them' end
-         from close_plans p where p.id = s.plan_id and p.token = $1 and p.goal is not null and s.id = $2 and s.side = 'them'
-           and (s.done_at is not null) <> $3
-         returning s.id, s.title, s.detail, s.side, s.due_date, s.done_at, s.done_by",
-    )
+         from close_plans p join deals d on d.id = p.deal_id
+         where p.id = s.plan_id and p.token = $1 and {SHOWN} and s.phase = {PHASE} and s.id = $2 and s.side = 'them' and (s.done_at is not null) <> $3
+         returning s.id, s.title, s.detail, s.side, s.due_date, s.done_at, s.done_by, s.phase",
+    ))
     .bind(token)
     .bind(step_id)
     .bind(done)
@@ -252,20 +292,30 @@ pub enum Seen<'a> {
 }
 
 pub async fn announce(db: &PgPool, public_url: &str, token: &str, seen: Seen<'_>) -> anyhow::Result<()> {
-    let (project_id, deal_id, lead_id, done, total): (Uuid, Uuid, Uuid, i64, i64) = sqlx::query_as(
-        "select p.project_id, p.deal_id, d.lead_id, (select count(*) from close_plan_steps s where s.plan_id = p.id and s.done_at is not null),
-                (select count(*) from close_plan_steps s where s.plan_id = p.id)
+    let phase = match seen {
+        Seen::Finished(step) => step.phase.as_str(),
+        Seen::Opened => "",
+    };
+    let (project_id, deal_id, lead_id, onboarding, done, total): (Uuid, Uuid, Uuid, bool, i64, i64) = sqlx::query_as(
+        "select p.project_id, p.deal_id, d.lead_id, p.onboarding_goal is not null,
+                (select count(*) from close_plan_steps s where s.plan_id = p.id and s.phase = $2 and s.done_at is not null),
+                (select count(*) from close_plan_steps s where s.plan_id = p.id and s.phase = $2)
          from close_plans p join deals d on d.id = p.deal_id where p.token = $1",
     )
     .bind(token)
+    .bind(phase)
     .fetch_one(db)
     .await?;
     let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead_id).fetch_one(db).await?;
     let who = if lead.full_name.trim().is_empty() { lead.email.clone().unwrap_or_default() } else { lead.full_name.trim().to_string() };
     let who = if lead.company_name.trim().is_empty() { who } else { format!("{who} ({})", lead.company_name.trim()) };
     let (label, summary) = match seen {
+        Seen::Opened if onboarding => ("Plan opened", format!("{who} opened the onboarding plan")),
         Seen::Opened => ("Plan opened", format!("{who} opened the close plan")),
-        Seen::Finished(step) => ("Plan step done", format!("{who} finished \"{}\" on the close plan, {done} of {total} steps done", step.title)),
+        Seen::Finished(step) => {
+            let plan = if step.phase == "onboarding" { "onboarding plan" } else { "close plan" };
+            ("Plan step done", format!("{who} finished \"{}\" on the {plan}, {done} of {total} steps done", step.title))
+        }
     };
     let link = format!("{}/app/pipeline?deal={deal_id}", public_url.trim_end_matches('/'));
     let alert = ChatAlert { label, summary: &summary, quote: None, link: &link, link_text: "Open the deal" };
@@ -304,10 +354,10 @@ mod tests {
             .unwrap();
 
         let step = |title: &str, side: &str| NewStep { title: title.into(), detail: String::new(), side: side.into(), due_date: None };
-        add_step(&db, project, deal, step("Send the order form", "us")).await.unwrap();
-        add_step(&db, project, deal, step("Sign the order form", "them")).await.unwrap();
-        assert!(add_step(&db, project, deal, step(" ", "them")).await.is_err());
-        assert!(add_step(&db, project, deal, step("Pay", "both")).await.is_err());
+        add_step(&db, project, deal, "close", step("Send the order form", "us")).await.unwrap();
+        add_step(&db, project, deal, "close", step("Sign the order form", "them")).await.unwrap();
+        assert!(add_step(&db, project, deal, "close", step(" ", "them")).await.is_err());
+        assert!(add_step(&db, project, deal, "close", step("Pay", "both")).await.is_err());
         let plan = for_deal(&db, "https://app.example", deal).await.unwrap().unwrap();
         assert_eq!(plan.url, format!("https://app.example/plan/{}", plan.token));
         let (ours, theirs) = (plan.steps[0].id, plan.steps[1].id);

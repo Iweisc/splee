@@ -153,7 +153,7 @@ pub(super) const OPEN_DEALS: &str = "select d.id, l.company_name as company, l.f
             case when q.items is not null then (select count(*) from jsonb_array_elements(q.items) i where i->>'status' = 'confirmed') end as confirmed,
             (select string_agg(i->>'key', ', ') from jsonb_array_elements(q.items) i where i->>'status' = 'unknown') as unknown,
             (select count(*) filter (where st.done_at is not null) || ' of ' || count(*) || ' steps done'
-               from close_plans cp join close_plan_steps st on st.plan_id = cp.id where cp.deal_id = d.id having count(*) > 0) as plan,
+               from close_plans cp join close_plan_steps st on st.plan_id = cp.id and st.phase = 'close' where cp.deal_id = d.id having count(*) > 0) as plan,
             (select case when pr.accepted_at is not null then 'accepted' when pr.views > 0 then 'opened ' || pr.views || ' times, not accepted'
                          else 'sent, never opened' end from proposals pr where pr.deal_id = d.id and pr.title is not null) as proposal
      from deals d join deal_stages s on s.id = d.stage_id join leads l on l.id = d.lead_id left join users u on u.id = l.owner_id

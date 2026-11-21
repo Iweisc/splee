@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { ArrowRight, CalendarDays, Check, CircleAlert, Mail } from "lucide-react";
+import { ArrowRight, CalendarDays, Check, ChevronDown, CircleAlert, Mail } from "lucide-react";
 import { buttonClass } from "@/components/ui/button";
 import { Favicon, Spinner } from "@/components/ui/misc";
 import { LogoMark } from "@/components/ui/logo";
@@ -13,7 +13,10 @@ import { cn } from "@/lib/utils";
 
 const dueLabel = (date: string) => new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
-/** The buyer's side of a close plan: both teams' steps to a signed deal, with their own to tick off. */
+/**
+ * The buyer's side of a close plan: both teams' steps to a signed deal, with their own to tick off. Once the deal is won it
+ * becomes the onboarding plan at the same link, with the steps to a signed deal folded away above it.
+ */
 export function PlanView({ token, preview }: { token: string; preview: boolean }) {
   const path = `/plans/${encodeURIComponent(token)}`;
   const { data: plan, error, mutate } = useSWR<PublicClosePlan>(path, fetcher, { revalidateOnFocus: false });
@@ -62,8 +65,11 @@ export function PlanView({ token, preview }: { token: string; preview: boolean }
 
   const sender = plan.sender_name.trim();
   const them = plan.company.trim() || plan.first_name || "You";
-  const done = plan.steps.filter((s) => s.done_at).length;
-  const next = plan.steps.find((s) => !s.done_at);
+  const onboarding = plan.phase === "onboarding";
+  const steps = plan.steps.filter((s) => s.phase === (onboarding ? "onboarding" : "close"));
+  const signed = onboarding ? plan.steps.filter((s) => s.phase === "close") : [];
+  const done = steps.filter((s) => s.done_at).length;
+  const next = steps.find((s) => !s.done_at);
   return (
     <Frame>
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
@@ -78,29 +84,48 @@ export function PlanView({ token, preview }: { token: string; preview: boolean }
         </span>
       </header>
 
-      <p className="mt-8 font-mono text-xs tracking-wide text-muted-foreground uppercase">Our plan</p>
-      <h1 className="mt-2 text-3xl leading-tight font-semibold tracking-tight text-balance sm:text-4xl">{plan.goal}</h1>
+      <p className="mt-8 font-mono text-xs tracking-wide text-muted-foreground uppercase">{onboarding ? "Getting started" : "Our plan"}</p>
+      <h1 className="mt-2 text-3xl leading-tight font-semibold tracking-tight text-balance sm:text-4xl">
+        {onboarding ? plan.onboarding_goal : plan.goal}
+      </h1>
 
       <div className="mt-6 flex items-center gap-3">
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/5">
           <div
             className="h-full rounded-full bg-brand-500 transition-all duration-500"
-            style={{ width: `${plan.steps.length ? (done / plan.steps.length) * 100 : 0}%` }}
+            style={{ width: `${steps.length ? (done / steps.length) * 100 : 0}%` }}
           />
         </div>
         <span className="text-sm text-muted-foreground tabular-nums">
-          {done} of {plan.steps.length} done
+          {done} of {steps.length} done
         </span>
       </div>
 
+      {signed.length > 0 && (
+        <details className="group mt-8 rounded-2xl border border-border bg-card/60 px-4 py-3 text-sm">
+          <summary className="flex cursor-pointer list-none items-center gap-2 font-medium [&::-webkit-details-marker]:hidden">
+            <span className="flex size-5 items-center justify-center rounded-full bg-brand-600 text-white">
+              <Check className="size-3" strokeWidth={3} />
+            </span>
+            Signed, after {signed.length === 1 ? "one step" : `${signed.length} steps`} together
+            <ChevronDown className="ml-auto size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="mt-2 flex flex-col gap-1 pl-7 text-muted-foreground">
+            {signed.map((s) => (
+              <li key={s.id}>{s.title}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       <ol className="mt-8 flex flex-col">
-        {plan.steps.map((step, i) => {
+        {steps.map((step, i) => {
           const theirs = step.side === "them";
           const isNext = step === next;
           return (
             <li key={step.id} className="relative flex gap-4 pb-6 last:pb-0">
               {/* The line down the timeline, from this step's mark to the next one's. */}
-              {i < plan.steps.length - 1 && <span aria-hidden className="absolute top-8 bottom-0 left-[15px] w-px bg-border-strong" />}
+              {i < steps.length - 1 && <span aria-hidden className="absolute top-8 bottom-0 left-[15px] w-px bg-border-strong" />}
               {theirs ? (
                 <button
                   type="button"

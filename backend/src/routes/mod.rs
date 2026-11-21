@@ -41,6 +41,7 @@ mod commissions;
 mod capacity;
 mod contests;
 mod business_cases;
+mod handoffs;
 mod deal_rooms;
 mod feedback;
 mod deal_desk;
@@ -166,6 +167,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(contests::router())
         .merge(deal_rooms::router())
         .merge(business_cases::router())
+        .merge(handoffs::router())
         .merge(feedback::router())
         .merge(capacity::router())
         .merge(deal_desk::router())

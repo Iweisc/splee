@@ -211,7 +211,12 @@ pub async fn public(db: &PgPool, public_url: &str, token: &str) -> sqlx::Result<
     .await?;
     let plan = crate::close_plans::for_deal(db, public_url, deal_id)
         .await?
-        .and_then(|p| Some(PlanPart { goal: p.goal?, url: p.url, steps: p.steps }));
+        .and_then(|p| {
+            // The plan the buyer sees on its own page: the onboarding one while the deal is won.
+            let steps = p.steps.into_iter().filter(|s| s.phase == p.phase).collect();
+            let goal = if p.phase == "onboarding" { p.onboarding_goal } else { p.goal };
+            Some(PlanPart { goal: goal?, url: p.url, steps })
+        });
     let proposal = crate::proposals::for_deal(db, public_url, deal_id)
         .await?
         .and_then(|p| Some(ProposalPart { title: p.title?, url: p.url, held: p.held, accepted: p.accepted_at.is_some() }));
