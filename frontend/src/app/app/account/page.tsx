@@ -1,19 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CopyButton, CopyField } from "@/components/app/settings/copy-button";
 import { Section, SettingsColumn } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
-import { Button } from "@/components/ui/button";
+import { SSO_LABELS, SsoIcon, ssoStartUrl } from "@/components/sso";
+import { Button, buttonClass } from "@/components/ui/button";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Field, Input, Switch } from "@/components/ui/form";
 import { Modal } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { Me, TwoFactorSetup, TwoFactorStatus } from "@/lib/types";
+import type { Me, SignInMethods, SsoProvider, TwoFactorSetup, TwoFactorStatus } from "@/lib/types";
 
 export default function AccountPage() {
   const { me } = useMe();
@@ -23,6 +24,7 @@ export default function AccountPage() {
       <PageBody>
         <SettingsColumn>
           <Away />
+          <SignInMethodsSection />
           <ChangePassword />
           <TwoFactor />
         </SettingsColumn>
@@ -45,7 +47,78 @@ function Away() {
   );
 }
 
+function SignInMethodsSection() {
+  const { data, error, mutate } = useSWR<SignInMethods>("/auth/sign-in-methods", fetcher);
+  const { pending, run } = useAction();
+
+  // Connecting comes back here with the provider it connected, or why it couldn't.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("connected");
+    const failed = params.get("sso_error");
+    if (!connected && !failed) return;
+    // Cleared first, so a reload or React's second dev run doesn't toast twice.
+    window.history.replaceState(null, "", window.location.pathname);
+    if (failed) toast.error(failed);
+    if (connected) toast.success(`${SSO_LABELS[connected as SsoProvider] ?? connected} connected`);
+  }, []);
+
+  if (error) {
+    return (
+      <Section title="Sign-in methods">
+        <LoadError error={error} what="your sign-in methods" retry={() => mutate()} />
+      </Section>
+    );
+  }
+  if (!data || (data.providers.length === 0 && data.identities.length === 0)) return null;
+  const linked = new Set(data.identities.map((i) => i.provider));
+  const unlinked = data.providers.filter((p) => !linked.has(p));
+  // The backend refuses it too. Disabled here so the reason shows before the click.
+  const onlyWayIn = !data.password && data.identities.length === 1;
+  const disconnect = (id: string, provider: SsoProvider) =>
+    run(
+      id,
+      async () => mutate(await api<SignInMethods>(`/auth/identities/${id}`, { method: "DELETE" }), { revalidate: false }),
+      `${SSO_LABELS[provider]} disconnected`,
+    );
+
+  return (
+    <Section title="Sign-in methods" description="Google and Microsoft accounts that sign you in to Splee.">
+      <div className="grid gap-4">
+        {data.identities.map((i) => (
+          <div key={i.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="flex min-w-0 flex-1 basis-48 items-center gap-3">
+              <SsoIcon provider={i.provider} />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{SSO_LABELS[i.provider]}</p>
+                {i.email && <p className="truncate text-sm text-muted-foreground">{i.email}</p>}
+              </div>
+            </div>
+            <Button variant="outline" size="sm" disabled={onlyWayIn} loading={pending === i.id} onClick={() => void disconnect(i.id, i.provider)}>
+              Disconnect
+            </Button>
+          </div>
+        ))}
+        {onlyWayIn && <p className="text-xs text-muted-foreground">To disconnect it, set a password below or connect another account first.</p>}
+        {unlinked.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {unlinked.map((p) => (
+              <a key={p} href={ssoStartUrl(p, { from: "account" })} className={buttonClass("outline", "sm")}>
+                <SsoIcon provider={p} />
+                Connect {SSO_LABELS[p]}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
 function ChangePassword() {
+  // An account made with Google or Microsoft has no password until it sets one, which then needs no current password.
+  const { data: methods, mutate } = useSWR<SignInMethods>("/auth/sign-in-methods", fetcher);
+  const hasPassword = methods?.password ?? true;
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [repeat, setRepeat] = useState("");
@@ -55,7 +128,14 @@ function ChangePassword() {
   const mismatch = repeat.length >= next.length && repeat !== next ? "The two new passwords don't match" : null;
 
   return (
-    <Section title="Password" description="Changing it signs you out everywhere else, on other browsers and devices.">
+    <Section
+      title="Password"
+      description={
+        hasPassword
+          ? "Changing it signs you out everywhere else, on other browsers and devices."
+          : "You sign in with Google or Microsoft. Set a password to sign in with your email too."
+      }
+    >
       <form
         className="grid gap-4"
         onSubmit={(e) => {
@@ -63,18 +143,21 @@ function ChangePassword() {
           void run(
             "password",
             async () => {
-              await api("/auth/password", { body: { current_password: current, new_password: next } });
+              await api("/auth/password", { body: { current_password: hasPassword ? current : undefined, new_password: next } });
               setCurrent("");
               setNext("");
               setRepeat("");
+              await mutate();
             },
-            "Password changed",
+            hasPassword ? "Password changed" : "Password set",
           );
         }}
       >
-        <Field label="Current password">
-          <Input type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
-        </Field>
+        {hasPassword && (
+          <Field label="Current password">
+            <Input type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+          </Field>
+        )}
         <Field label="New password" hint="At least 8 characters.">
           <Input type="password" autoComplete="new-password" required minLength={8} value={next} onChange={(e) => setNext(e.target.value)} />
         </Field>
@@ -82,8 +165,8 @@ function ChangePassword() {
           <Input type="password" autoComplete="new-password" required value={repeat} onChange={(e) => setRepeat(e.target.value)} />
         </Field>
         <div>
-          <Button type="submit" disabled={!current || next.length < 8 || repeat !== next} loading={pending === "password"}>
-            Change password
+          <Button type="submit" disabled={(hasPassword && !current) || next.length < 8 || repeat !== next} loading={pending === "password"}>
+            {hasPassword ? "Change password" : "Set password"}
           </Button>
         </div>
       </form>

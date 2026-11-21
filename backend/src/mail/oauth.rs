@@ -31,7 +31,7 @@ pub enum Provider {
 pub const PROVIDERS: [Provider; 2] = [Provider::Google, Provider::Microsoft];
 
 /// Microsoft's tenant for personal accounts (outlook.com, hotmail.com), which send through another SMTP host.
-const CONSUMER_TENANT: &str = "9188040d-6c67-4c5b-b112-36a304b66dad";
+pub(crate) const CONSUMER_TENANT: &str = "9188040d-6c67-4c5b-b112-36a304b66dad";
 
 /// Where a mailbox's server settings come from. Microsoft's personal accounts send through smtp-mail.outlook.com.
 pub struct Hosts {

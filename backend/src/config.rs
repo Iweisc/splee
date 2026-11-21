@@ -38,7 +38,7 @@ pub struct Config {
     /// Lowercase emails of the people who run this instance. Only they can load countries into the company database,
     /// which every organization shares.
     pub operator_emails: Vec<String>,
-    /// The Google and Microsoft apps people sign in with to connect a mailbox. None hides that provider's button.
+    /// The Google and Microsoft apps people sign in with to connect a mailbox and to sign in to Splee. None hides that provider's buttons.
     pub google: Option<OAuthApp>,
     pub microsoft: Option<OAuthApp>,
     /// The Splee Slack app. None hides Add to Slack.

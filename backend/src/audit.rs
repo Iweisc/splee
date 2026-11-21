@@ -1,9 +1,9 @@
 //! The organization's audit log: who made the security- and money-relevant changes, and from where. Routes call record
 //! after a change succeeds. Admins read it through GET /organization/audit (routes/audit.rs).
 //!
-//! Actions: user.signed_in, user.sign_in_failed, user.password_changed, user.two_factor_enabled, user.two_factor_disabled,
-//! user.backup_codes_created, member.invited, member.joined, member.removed, member.role_changed, api_key.created,
-//! api_key.revoked, mailbox.connected, mailbox.removed, integration.connected, integration.disconnected,
+//! Actions: user.signed_in, user.sign_in_failed, user.password_changed, user.identity_linked, user.identity_unlinked,
+//! user.two_factor_enabled, user.two_factor_disabled, user.backup_codes_created, member.invited, member.joined,
+//! member.removed, member.role_changed, api_key.created, api_key.revoked, mailbox.connected, mailbox.removed, integration.connected, integration.disconnected,
 //! sending_domain.ordered, sending_domain.removed, campaign.launched, campaign.paused, project.started, project.paused,
 //! export.saved, export.removed and org.renamed. The frontend names each in app/audit/page.tsx.
 

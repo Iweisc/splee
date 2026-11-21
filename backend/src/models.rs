@@ -18,6 +18,15 @@ pub struct User {
     pub created_at: Ts,
 }
 
+/// A Google or Microsoft account the user signs in with (routes/sso.rs). The subject stays on the server.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct Identity {
+    pub id: Uuid,
+    pub provider: String,
+    pub email: String,
+    pub created_at: Ts,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Organization {
     pub id: Uuid,

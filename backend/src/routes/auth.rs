@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
+use axum_extra::extract::cookie::Cookie;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgConnection, PgPool};
@@ -12,7 +13,7 @@ use uuid::Uuid;
 use super::projects;
 use super::util_input;
 use crate::audit::{self, Target, Who};
-use crate::auth::{Auth, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
+use crate::auth::{Auth, NO_PASSWORD, SESSION_COOKIE, clear_session_cookie, create_session, hash_password, verify_password};
 use crate::crypto::sha256_hex;
 use crate::error::{AppError, AppResult};
 use crate::models::{INVITE_TTL, Organization, User};
@@ -148,7 +149,7 @@ struct SignupBody {
     invite_token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ClaimBody {
     pub project_id: Uuid,
     pub token: String,
@@ -159,21 +160,61 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
     if body.password.chars().count() < 8 {
         return Err(AppError::BadRequest("Password must be at least 8 characters".into()));
     }
-    // The very first account is always allowed, so a fresh instance can get its owner.
-    if body.invite_token.is_none() && !state.cfg.open_signup {
-        let anyone: bool = sqlx::query_scalar("select exists (select 1 from users)").fetch_one(&state.db).await?;
-        if anyone {
-            return Err(AppError::Forbidden("Sign-ups here are invite-only. Ask someone on your team for an invite.".into()));
-        }
-    }
-    let name = body.name.trim().to_string();
+    may_sign_up(&state, body.invite_token.is_some()).await?;
     let password_hash = hash_password(&body.password)?;
 
     let mut tx = state.db.begin().await?;
+    let account = create_account(&mut tx, &email, body.name.trim(), &password_hash, body.invite_token.as_deref(), body.claim.as_ref()).await?;
+    tx.commit().await?;
+    account.joined(&state).await;
+
+    let cookie = create_session(&state.db, account.user_id, account.org_id, state.cfg.secure_cookies()).await?;
+    Ok((jar.add(cookie), Json(me(&state, account.user_id, account.org_id).await?)))
+}
+
+/// Refuses a new account without an invite when OPEN_SIGNUP=false. The very first account is always allowed, so a fresh
+/// instance can get its owner.
+pub(super) async fn may_sign_up(state: &AppState, invited: bool) -> AppResult<()> {
+    if invited || state.cfg.open_signup {
+        return Ok(());
+    }
+    let anyone: bool = sqlx::query_scalar("select exists (select 1 from users)").fetch_one(&state.db).await?;
+    if anyone {
+        return Err(AppError::Forbidden("Sign-ups here are invite-only. Ask someone on your team for an invite.".into()));
+    }
+    Ok(())
+}
+
+pub(super) struct NewAccount {
+    pub user_id: Uuid,
+    pub org_id: Uuid,
+    /// The invite's role, when they joined an organization rather than starting one.
+    joined_as: Option<String>,
+}
+
+impl NewAccount {
+    /// Records the join in the invite's organization, after the transaction that made the account commits.
+    pub async fn joined(&self, state: &AppState) {
+        if let Some(role) = &self.joined_as {
+            joined(state, self.org_id, self.user_id, role).await;
+        }
+    }
+}
+
+/// Makes the user with their notification settings, in the invite's organization or in a new one they own. Signing up with
+/// a password and with Google or Microsoft both come through here.
+pub(super) async fn create_account(
+    tx: &mut PgConnection,
+    email: &str,
+    name: &str,
+    password_hash: &str,
+    invite_token: Option<&str>,
+    claim: Option<&ClaimBody>,
+) -> AppResult<NewAccount> {
     let user_id: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, $2, $3) returning id")
-        .bind(&email)
-        .bind(&name)
-        .bind(&password_hash)
+        .bind(email)
+        .bind(name)
+        .bind(password_hash)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match AppError::from(e) {
@@ -182,36 +223,26 @@ async fn signup(State(state): State<AppState>, jar: CookieJar, Json(body): Json<
         })?;
     sqlx::query("insert into notification_prefs (user_id) values ($1)").bind(user_id).execute(&mut *tx).await?;
 
-    let (org_id, joined_as) = match body.invite_token.as_deref() {
+    let (org_id, joined_as) = match invite_token {
         Some(token) => {
-            let (org_id, role): (Uuid, String) = take_invite(&mut tx, token)
-                .await?
-                .ok_or_else(|| AppError::BadRequest("This invite is no longer valid".into()))?;
-            add_member(&mut tx, org_id, user_id, &role).await?;
+            let (org_id, role): (Uuid, String) =
+                take_invite(tx, token).await?.ok_or_else(|| AppError::BadRequest("This invite is no longer valid".into()))?;
+            add_member(tx, org_id, user_id, &role).await?;
             (org_id, Some(role))
         }
         None => {
-            let org_name = if name.is_empty() { email.split('@').nth(1).unwrap_or(&email).to_string() } else { name.clone() };
-            let org_id: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id")
-                .bind(&org_name)
-                .fetch_one(&mut *tx)
-                .await?;
-            add_member(&mut tx, org_id, user_id, "owner").await?;
+            let org_name = if name.is_empty() { email.split('@').nth(1).unwrap_or(email) } else { name };
+            let org_id: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(org_name).fetch_one(&mut *tx).await?;
+            add_member(tx, org_id, user_id, "owner").await?;
             (org_id, None)
         }
     };
 
     // A stale or already-claimed demo shouldn't block account creation, so a failed claim is ignored here.
-    if let Some(claim) = &body.claim {
-        projects::claim(&mut tx, claim.project_id, &claim.token, org_id, user_id).await?;
+    if let Some(claim) = claim {
+        projects::claim(tx, claim.project_id, &claim.token, org_id, user_id).await?;
     }
-    tx.commit().await?;
-    if let Some(role) = joined_as {
-        joined(&state, org_id, user_id, &role).await;
-    }
-
-    let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
-    Ok((jar.add(cookie), Json(me(&state, user_id, org_id).await?)))
+    Ok(NewAccount { user_id, org_id, joined_as })
 }
 
 async fn joined(state: &AppState, org_id: Uuid, user_id: Uuid, role: &str) {
@@ -248,6 +279,15 @@ struct LoginBody {
 
 // Verifying against a throwaway hash keeps login timing the same whether or not the email exists.
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| hash_password("splee-timing-dummy").expect("argon2 hashing works"));
+
+/// False for an account without a password, after the same work as checking one, so timing doesn't tell those accounts apart.
+fn password_matches(password: &str, hash: &str) -> bool {
+    if hash == NO_PASSWORD {
+        verify_password(password, &DUMMY_HASH);
+        return false;
+    }
+    verify_password(password, hash)
+}
 
 /// Per email, not per IP: guessing one account's password is the attack, and the IP behind the proxy can be spoofed.
 /// Unknown emails count the same, so the limit doesn't reveal which accounts exist.
@@ -300,7 +340,7 @@ async fn login(State(state): State<AppState>, jar: CookieJar, Json(body): Json<L
         verify_password(&body.password, &DUMMY_HASH);
         return Err(invalid());
     };
-    if !verify_password(&body.password, &hash) {
+    if !password_matches(&body.password, &hash) {
         audit::record_account(&state.db, user_id, "user.sign_in_failed", json!({ "reason": "password" })).await;
         return Err(invalid());
     }
@@ -334,8 +374,14 @@ async fn login_code(State(state): State<AppState>, jar: CookieJar, Json(body): J
     sign_in(&state, jar, user_id, &email).await
 }
 
-/// Clears the email's failed attempts and starts a session in the user's first organization.
 async fn sign_in(state: &AppState, jar: CookieJar, user_id: Uuid, email: &str) -> AppResult<(CookieJar, Json<SignIn>)> {
+    let (cookie, org_id) = start_session(state, user_id, email, json!({})).await?;
+    Ok((jar.add(cookie), Json(SignIn::Done(Box::new(me(state, user_id, org_id).await?)))))
+}
+
+/// Clears the email's failed attempts, starts a session in the user's first organization and records the sign-in with
+/// `details`. Returns the session cookie and that organization.
+pub(super) async fn start_session(state: &AppState, user_id: Uuid, email: &str, details: Value) -> AppResult<(Cookie<'static>, Uuid)> {
     clear_attempts(&state.db, email).await?;
     let org_id: Uuid = sqlx::query_scalar("select org_id from memberships where user_id = $1 order by created_at limit 1")
         .bind(user_id)
@@ -343,8 +389,8 @@ async fn sign_in(state: &AppState, jar: CookieJar, user_id: Uuid, email: &str) -
         .await?
         .ok_or_else(|| AppError::Forbidden("Your account isn't part of any organization anymore".into()))?;
     let cookie = create_session(&state.db, user_id, org_id, state.cfg.secure_cookies()).await?;
-    audit::record_account(&state.db, user_id, "user.signed_in", json!({})).await;
-    Ok((jar.add(cookie), Json(SignIn::Done(Box::new(me(state, user_id, org_id).await?)))))
+    audit::record_account(&state.db, user_id, "user.signed_in", details).await;
+    Ok((cookie, org_id))
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> AppResult<(CookieJar, Json<Value>)> {
@@ -414,6 +460,8 @@ async fn accept_invite(State(state): State<AppState>, auth: Auth, Path(token): P
 
 #[derive(Deserialize)]
 struct PasswordBody {
+    /// Not needed by an account that signed up with Google or Microsoft and has no password yet.
+    #[serde(default)]
     current_password: String,
     new_password: String,
 }
@@ -421,7 +469,7 @@ struct PasswordBody {
 /// Signs out every other session too, so changing a leaked password also locks out whoever used it.
 async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): Json<PasswordBody>) -> AppResult<Json<Value>> {
     let hash: String = sqlx::query_scalar("select password_hash from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
-    if !verify_password(&body.current_password, &hash) {
+    if hash != NO_PASSWORD && !verify_password(&body.current_password, &hash) {
         return Err(AppError::BadRequest("Your current password is wrong".into()));
     }
     if body.new_password.chars().count() < 8 {
@@ -429,10 +477,19 @@ async fn change_password(State(state): State<AppState>, auth: Auth, Json(body): 
     }
     let new_hash = hash_password(&body.new_password)?;
     let mut tx = state.db.begin().await?;
-    sqlx::query("update users set password_hash = $2 where id = $1").bind(auth.user_id).bind(&new_hash).execute(&mut *tx).await?;
+    // Matched on the hash that was checked, so a password set elsewhere in the meantime can't be replaced without it.
+    let changed = sqlx::query("update users set password_hash = $2 where id = $1 and password_hash = $3")
+        .bind(auth.user_id)
+        .bind(&new_hash)
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+    if changed.rows_affected() == 0 {
+        return Err(AppError::Conflict("Your password changed in another tab. Reload the page.".into()));
+    }
     sqlx::query("delete from sessions where user_id = $1 and token_hash <> $2").bind(auth.user_id).bind(&auth.token_hash).execute(&mut *tx).await?;
     tx.commit().await?;
-    audit::record_account(&state.db, auth.user_id, "user.password_changed", json!({})).await;
+    audit::record_account(&state.db, auth.user_id, "user.password_changed", json!({ "first": hash == NO_PASSWORD })).await;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -533,7 +590,7 @@ async fn check_proof(state: &AppState, auth: &Auth, proof: &str) -> AppResult<()
         .fetch_one(&state.db)
         .await?;
     count_attempt(&state.db, &email).await?;
-    if !two_factor::take_code(&state.db, &state.cfg.app_secret, auth.user_id, proof).await? && !verify_password(proof, &hash) {
+    if !two_factor::take_code(&state.db, &state.cfg.app_secret, auth.user_id, proof).await? && !password_matches(proof, &hash) {
         return Err(AppError::BadRequest("That isn't your password or a current code".into()));
     }
     clear_attempts(&state.db, &email).await

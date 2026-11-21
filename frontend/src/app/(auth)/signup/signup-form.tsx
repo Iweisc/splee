@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
+import { SsoButtons } from "@/components/sso";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import type { DemoState, Me } from "@/lib/types";
@@ -21,11 +22,13 @@ export function SignupForm({
   claim,
   inviteToken,
   inviteEmail,
+  ssoError,
 }: {
   next: string | null;
   claim: Claim | null;
   inviteToken: string | null;
   inviteEmail: string | null;
+  ssoError: string | null;
 }) {
   const router = useRouter();
   const { mutate } = useMe();
@@ -68,6 +71,8 @@ export function SignupForm({
           Your research for {claimedName ? <strong className="font-medium">{claimedName}</strong> : "this demo"} will be saved.
         </p>
       )}
+      {ssoError && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger">{ssoError}</p>}
+      <SsoButtons params={{ from: "signup", next, invite: inviteToken, claim: claim?.project_id, token: claim?.token }} />
       <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
         <Field label="Name">
           <Input autoComplete="name" required value={name} onChange={(e) => setName(e.target.value)} />
