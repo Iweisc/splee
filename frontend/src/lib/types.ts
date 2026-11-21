@@ -881,6 +881,50 @@ export interface AbTest {
   pick_note: string;
 }
 
+/** A first email's two texts, both kept whatever the mode. See backend my_copy.rs. */
+export interface FirstEmail {
+  mode: "instructions" | "my_copy";
+  subject: string;
+  body: string;
+}
+
+/** GET /segments/{id}/my-copy. With source "project", mode, subject and body are the project's. */
+export interface CampaignCopy extends FirstEmail {
+  campaign_id: UUID;
+  project_id: UUID;
+  source: "project" | "campaign";
+  /** The campaign's angle, which the AI email is written from. */
+  instructions: string;
+  results: {
+    my_copy: { sent: number; replies: number };
+    ai: { sent: number; replies: number };
+    note: string;
+  };
+}
+
+/** GET /projects/{id}/my-copy. */
+export interface ProjectCopy extends FirstEmail {
+  project_id: UUID;
+  instructions: string;
+  campaign_ids: UUID[];
+}
+
+/** POST /segments/{id}/my-copy/preview: the text as each of the first 3 leads gets it. */
+export interface CopyPreview {
+  mode: FirstEmail["mode"];
+  emails: {
+    lead_id: UUID;
+    lead_name: string;
+    lead_company: string;
+    /** "ai" for a lead that gets the AI email instead, with why in note. */
+    gets: "my_copy" | "ai";
+    subject: string;
+    body: string;
+    sender_name: string;
+    note: string | null;
+  }[];
+}
+
 /** Emails sent and the leads whose first reply came after one of them. See RepliesSection. */
 export interface ReplyCounts {
   sent: number;

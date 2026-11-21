@@ -11,6 +11,7 @@ import { CompaniesTable } from "@/components/app/work/companies-table";
 import { EmailsView } from "@/components/app/work/emails-view";
 import { LeadsView } from "@/components/app/work/leads-view";
 import { AbTestCard } from "@/components/app/work/ab-test";
+import { MyCopyCard } from "@/components/app/work/my-copy";
 import { AdAudiencesCard } from "@/components/app/work/ad-audiences";
 import { ImportedSequence } from "@/components/app/work/imported-sequence";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
@@ -130,6 +131,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
             unmounted on the other tabs, so a look at the leads doesn't throw away unsaved edits. */}
         <div hidden={tab !== "details"} className="flex flex-col gap-4">
           <ImportedSequence segmentId={segId} />
+          <MyCopyCard scope={{ kind: "campaign", segmentId: segId }} />
           <AbTestCard segmentId={segId} />
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
           <LanguageCard segment={segment} />

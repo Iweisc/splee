@@ -1,6 +1,6 @@
 //! Step 6 (first emails), follow-ups, LinkedIn sequences and text steps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use futures::{StreamExt, TryStreamExt, stream};
 use serde::Deserialize;
@@ -12,6 +12,7 @@ use super::sdk::Call;
 use super::{Ctx, Outcome};
 use crate::language::{self, Language};
 use crate::models::{EmailMessage, Lead, Project, Segment, SegmentStep, Variant};
+use crate::my_copy::{self, Copies, Fields, Filled, Sender, Template};
 use crate::{hiring, tech};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
@@ -307,22 +308,61 @@ async fn write_initial(ctx: &Ctx, project_id: Uuid, leads: &[Lead], instructions
     let settings = WriterSettings::load(ctx, project_id).await?;
     let materials = materials(ctx, project_id).await?;
     let segments = segments_by_id(ctx, project_id).await?;
-    let mut leads = leads.to_vec();
-    crate::ab_test::assign(ctx.db(), &mut leads).await?;
     let variants = variants_by_id(ctx, project_id).await?;
     let imported = imported_steps(ctx, project_id).await?;
     let languages = language::for_leads(ctx.db(), &leads.iter().map(|l| l.id).collect::<Vec<_>>()).await?;
+    let lang_of = |lead: &Lead| languages.get(&lead.id).copied().unwrap_or(language::ENGLISH);
+
+    // My copy first. An imported campaign keeps sending its own first email.
+    let (copies, sender, cities) =
+        (Copies::load(ctx.db(), project_id).await?, Sender::load(ctx.db(), project_id).await?, my_copy::company_cities(ctx.db(), leads).await?);
+    let mut filled = 0;
+    let mut holdout = HashSet::new();
+    let mut with_lines: HashMap<Option<Uuid>, Vec<(Lead, Filled)>> = HashMap::new();
+    let mut leads_for_ai = Vec::new();
+    for mut lead in leads.iter().cloned() {
+        let imported_first = lead.segment_id.is_some_and(|id| imported.contains_key(&(id, 0)));
+        let Some(template) = copies.get(lead.segment_id).filter(|_| !imported_first) else {
+            leads_for_ai.push(lead);
+            continue;
+        };
+        if my_copy::gets_ai_email(lead.id) {
+            holdout.insert(lead.id);
+            leads_for_ai.push(lead);
+            continue;
+        }
+        // A lead missing a variable with no fallback gets the AI email, outside the comparison.
+        let Ok(text) = template.render(&Fields { lead: &lead, company_city: my_copy::company_city(&lead, &cities), sender: &sender }) else {
+            leads_for_ai.push(lead);
+            continue;
+        };
+        // The text is the user's, so it tests none of the campaign's angles, and its follow-ups thread under it without one.
+        lead.variant_id = None;
+        if template.ai_lines().is_empty() {
+            let segment = lead.segment_id.and_then(|id| segments.get(&id));
+            save_initial(ctx, &lead, segment, text.subject.trim(), &template.sign(&text.body(&[]), &sender), lang_of(&lead), Some(true)).await?;
+            filled += 1;
+        } else {
+            with_lines.entry(lead.segment_id).or_default().push((lead, text));
+        }
+    }
+    for (segment_id, group) in with_lines {
+        let Some(template) = copies.get(segment_id) else { continue };
+        let segment = segment_id.and_then(|id| segments.get(&id));
+        filled += write_my_copy_lines(ctx, template, &sender, &settings.sender(&profile), segment, group, &lang_of).await?;
+    }
+    let mut leads = leads_for_ai;
+    crate::ab_test::assign(ctx.db(), &mut leads).await?;
 
     // Each variant of a campaign gets its own prompt, and so does each language its leads are written in. A campaign without
     // variants in one language is one group, as before.
     // Keyed by the language's code as a String: a &'static str here makes the stream below not Send.
     let mut groups: HashMap<(Option<Uuid>, Option<Uuid>, String), Vec<Lead>> = HashMap::new();
-    let mut filled = 0;
     for lead in leads {
-        let lang = languages.get(&lead.id).copied().unwrap_or(language::ENGLISH);
+        let lang = lang_of(&lead);
         let own = lead.segment_id.and_then(|id| imported.get(&(id, 0)));
         if let Some((subject, body)) = own.and_then(|s| Some((fill(&s.subject, &lead, &settings)?, fill(&s.body, &lead, &settings)?))) {
-            save_initial(ctx, &lead, lead.segment_id.and_then(|id| segments.get(&id)), subject.trim(), &settings.sign(&body), lang).await?;
+            save_initial(ctx, &lead, lead.segment_id.and_then(|id| segments.get(&id)), subject.trim(), &settings.sign(&body), lang, None).await?;
             filled += 1;
             continue;
         }
@@ -336,13 +376,15 @@ async fn write_initial(ctx: &Ctx, project_id: Uuid, leads: &[Lead], instructions
         // The campaign's own email goes last, so it wins over the default subject, opening and length in the rules.
         let prompt =
             initial_prompt(&project, &profile, segment, variant, &settings, &materials, instructions, lang) + &own.map(own_email_rule).unwrap_or_default();
-        write_campaign(ctx, segment, variant, prompt, group, &settings, lang)
+        write_campaign(ctx, segment, variant, prompt, group, &settings, lang, &holdout)
     });
     let saved: usize = filled + stream::iter(campaigns).buffer_unordered(CAMPAIGN_AGENTS).try_collect::<Vec<_>>().await?.into_iter().sum::<usize>();
     ctx.log(format!("wrote {saved} personal emails…")).await?;
     Ok(saved)
 }
 
+/// `holdout` are the leads of My copy campaigns that get this AI email instead, so they're marked to compare the two.
+#[allow(clippy::too_many_arguments)]
 async fn write_campaign(
     ctx: &Ctx,
     segment: Option<&Segment>,
@@ -351,6 +393,7 @@ async fn write_campaign(
     leads: Vec<Lead>,
     settings: &WriterSettings,
     lang: &Language,
+    holdout: &HashSet<Uuid>,
 ) -> anyhow::Result<usize> {
     let campaign = segment.map_or("No campaign", |s| s.name.as_str());
     let label = variant.map_or_else(|| campaign.to_string(), |v| format!("{campaign} ({})", v.name));
@@ -370,7 +413,70 @@ async fn write_campaign(
                 }
                 None => d.body.clone(),
             };
-            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&body), lang).await?;
+            save_initial(ctx, lead, segment, d.subject.trim(), &settings.sign(&body), lang, holdout.contains(&lead.id).then_some(false)).await?;
+            saved += 1;
+        }
+    }
+    Ok(saved)
+}
+
+#[derive(Deserialize)]
+struct WrittenLines {
+    leads: Vec<LeadLines>,
+}
+
+#[derive(Deserialize)]
+struct LeadLines {
+    lead_id: Uuid,
+    lines: Vec<String>,
+}
+
+/// The user's own first email, with the writer writing only its {{ai: …}} lines for each lead. A lead whose lines didn't come
+/// back whole waits for the next run.
+async fn write_my_copy_lines(
+    ctx: &Ctx,
+    template: &Template,
+    sender: &Sender,
+    from: &str,
+    segment: Option<&Segment>,
+    leads: Vec<(Lead, Filled)>,
+    lang_of: &impl Fn(&Lead) -> &'static Language,
+) -> anyhow::Result<usize> {
+    let instructions = template.ai_lines();
+    let numbered = instructions.iter().enumerate().map(|(i, line)| format!("[AI {}]: {line}", i + 1)).collect::<Vec<_>>().join("\n");
+    let n = instructions.len();
+    let lines = json!({"type": "array", "items": {"type": "string"}, "minItems": n, "maxItems": n});
+    let schema = json!({
+        "type": "object",
+        "properties": {"leads": {"type": "array", "items": {"type": "object", "properties": {"lead_id": {"type": "string"}, "lines": lines},
+                                                             "required": ["lead_id", "lines"]}}},
+        "required": ["leads"]
+    });
+    let mut saved = 0;
+    for batch in leads.chunks(BATCH) {
+        let refs: Vec<&Lead> = batch.iter().map(|(lead, _)| lead).collect();
+        ctx.log(format!("Writing the AI lines of your email to {}…", refs.iter().map(|l| l.first_name.as_str()).collect::<Vec<_>>().join(", "))).await?;
+        let signals = company_signals(ctx, &refs).await?;
+        let list = serde_json::to_string_pretty(&refs.iter().map(|l| lead_brief(l, &signals)).collect::<Vec<_>>())?;
+        let prompt = format!(
+            "The user wrote a first cold email themselves, from {from}. It goes out as written, with the variables in double braces \
+             filled in from each lead and one option of each {{a|b}} picked. For each lead below, write only its lines marked [AI 1] \
+             to [AI {n}], each as its instruction asks:\n{numbered}\n\nThe email:\n{outline}\n\n\
+             Each line is one or two sentences in the language of the email around it, that read naturally where they stand. Write \
+             about this lead, with facts from their brief only. No greeting, sign-off, links or placeholders.\n\n\
+             Leads (write the lines for each lead_id, in order):\n{list}",
+            outline = template.outline(),
+        );
+        let written: WrittenLines = ctx.ask(&Call::writing(WRITER, prompt, schema.clone())).await?;
+        for (lead, text) in batch {
+            let Some(found) = written.leads.iter().find(|l| l.lead_id == lead.id) else { continue };
+            let lines: Vec<String> = found.lines.iter().map(|l| l.trim().to_string()).collect();
+            // A brace left in a line, like an unpicked {a|b}, would reach the lead as written.
+            if lines.len() != n || lines.iter().any(|l| l.is_empty() || has_placeholder(l) || l.contains(['{', '}'])) {
+                continue;
+            }
+            let body = template.sign(&text.body(&lines), sender);
+            save_initial(ctx, lead, segment, text.subject.trim(), &body, lang_of(lead), Some(true)).await?;
             saved += 1;
         }
     }
@@ -550,9 +656,19 @@ fn variant_rule(v: &Variant) -> String {
     )
 }
 
-async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject: &str, body: &str, lang: &Language) -> anyhow::Result<()> {
+/// `my_copy` is which way the email went in a campaign sending My copy, see migration 0188.
+#[allow(clippy::too_many_arguments)]
+async fn save_initial(
+    ctx: &Ctx,
+    lead: &Lead,
+    segment: Option<&Segment>,
+    subject: &str,
+    body: &str,
+    lang: &Language,
+    my_copy: Option<bool>,
+) -> anyhow::Result<()> {
     let updated = sqlx::query(
-        "update email_messages set subject = $2, body = $3, variant_id = $5, language = $6, written_at = now(),
+        "update email_messages set subject = $2, body = $3, variant_id = $5, language = $6, my_copy = $7, written_at = now(),
          -- The review window may have approved the old text while this was written. The new text waits its own window.
          status = case when approved_via = 'review_window' and status = 'approved' then 'draft' else status end,
          approved_via = case when approved_via = 'review_window' and status = 'approved' then null else approved_via end
@@ -565,6 +681,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(&UNSENT[..])
     .bind(lead.variant_id)
     .bind(lang.code)
+    .bind(my_copy)
     .execute(ctx.db())
     .await?;
     if updated.rows_affected() > 0 {
@@ -581,8 +698,8 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     let sending = !drafts && segment.is_some_and(|s| s.status == "working" || s.status == "scaling");
     sqlx::query(
         "insert into email_messages (project_id, lead_id, segment_id, direction, kind, step, subject, body, status, scheduled_for, to_email,
-                                     variant_id, language)
-         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8, $9, $10)",
+                                     variant_id, language, my_copy)
+         values ($1, $2, $3, 'outbound', 'initial', 0, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(lead.project_id)
     .bind(lead.id)
@@ -594,6 +711,7 @@ async fn save_initial(ctx: &Ctx, lead: &Lead, segment: Option<&Segment>, subject
     .bind(&lead.email)
     .bind(lead.variant_id)
     .bind(lang.code)
+    .bind(my_copy)
     .execute(ctx.db())
     .await?;
     if sending {
@@ -1173,7 +1291,7 @@ mod tests {
         ab_test::assign(&db, &mut leads).await.unwrap();
         let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
         for lead in &leads {
-            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello", ENGLISH).await.unwrap();
+            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello", ENGLISH, None).await.unwrap();
         }
         let first: Vec<(Uuid, Option<Uuid>)> =
             sqlx::query_as("select lead_id, variant_id from email_messages where kind = 'initial' order by created_at").fetch_all(&db).await.unwrap();
@@ -1207,7 +1325,7 @@ mod tests {
         let mut leads = add_leads(&db, &c, 1).await;
         ab_test::assign(&db, &mut leads).await.unwrap();
         let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
-        save_initial(&ctx, &leads[0], Some(&segment), "Hi", "Hello", ENGLISH).await.unwrap();
+        save_initial(&ctx, &leads[0], Some(&segment), "Hi", "Hello", ENGLISH, None).await.unwrap();
         let (status, variant): (String, Option<Uuid>) =
             sqlx::query_as("select status, variant_id from email_messages where lead_id = $1").bind(leads[0].id).fetch_one(&db).await.unwrap();
         assert_eq!((status.as_str(), variant), ("approved", None));
@@ -1369,5 +1487,112 @@ mod tests {
         assert_eq!(brief["why_now"], serde_json::json!(["Hiring 2 SDRs", "51-200 employees"]));
         lead.score_reasons = sqlx::types::Json(vec![reason("Uses a competitor: Outreach", "against")]);
         assert!(lead_brief(&lead, &Default::default()).get("why_now").is_none());
+    }
+
+    /// Leads with these ids, P1 and so on in order, at Delta. In my_copy's pinned split 6 and 15 get the AI email and 1 to 5 don't.
+    async fn leads_with_ids(db: &PgPool, c: &ab_test::tests::Campaign, ids: &[u128]) -> Vec<Lead> {
+        let ids: Vec<Uuid> = ids.iter().map(|i| Uuid::from_u128(*i)).collect();
+        sqlx::query(
+            "insert into leads (id, project_id, segment_id, email, first_name, company_name, created_at)
+             select id, $1, $2, id || '@x.com', 'P' || n, 'Delta', now() + n * interval '1 second' from unnest($3::uuid[]) with ordinality t(id, n)",
+        )
+        .bind(c.project)
+        .bind(c.segment)
+        .bind(&ids)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query_as("select * from leads where id = any($1) order by created_at").bind(&ids).fetch_all(db).await.unwrap()
+    }
+
+    async fn my_copy_on(db: &PgPool, project: Uuid, subject: &str, body: &str) {
+        sqlx::query(
+            "insert into project_settings (project_id, paused, sender_name, my_copy_mode, my_copy_subject, my_copy_body)
+             values ($1, false, 'Dana Reyes', 'my_copy', $2, $3)",
+        )
+        .bind(project)
+        .bind(subject)
+        .bind(body)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn my_copy_goes_out_as_written_to_nine_in_ten_and_follow_ups_are_written_as_before(db: PgPool) {
+        let c = seed(&db, 2).await;
+        my_copy_on(&db, c.project, "{Quick|Short} question, {{first_name}}", "Hi {{first_name}},\n\nHow does {{company}} plan visits in \
+            {{company_city|your city}}?\n\nThanks,\n{{sender_first_name}}").await;
+        let leads = leads_with_ids(&db, &c, &[1, 2, 6, 3]).await;
+        sqlx::query("update leads set company_name = '' where id = $1").bind(leads[3].id).execute(&db).await.unwrap();
+        let leads: Vec<Lead> = sqlx::query_as("select * from leads where project_id = $1 order by created_at").bind(c.project).fetch_all(&db).await.unwrap();
+
+        let ctx = ctx(&db, c.project).await;
+        fake::answer_with(ctx.run.id, written);
+        assert_eq!(super::write_initial(&ctx, c.project, &leads, "").await.unwrap(), 4);
+        // Only the AI side and the lead missing {{company}} went to the writer.
+        let prompts = fake::prompts(ctx.run.id).concat();
+        assert!(!prompts.contains(&leads[0].id.to_string()) && !prompts.contains(&leads[1].id.to_string()), "{prompts}");
+        assert!(prompts.contains(&leads[2].id.to_string()) && prompts.contains(&leads[3].id.to_string()));
+        let mine = first_email(&db, leads[0].id).await;
+        assert!(mine.0 == "Quick question, P1" || mine.0 == "Short question, P1", "{mine:?}");
+        assert_eq!((mine.1.as_str(), mine.2, mine.3), ("Hi P1,\n\nHow does Delta plan visits in your city?\n\nThanks,\nDana", Some(true), None));
+        let (subject, _, side, variant) = first_email(&db, leads[2].id).await;
+        assert!(subject == "Betreff" && side == Some(false) && variant.is_some(), "{subject} {side:?}");
+        assert_eq!(first_email(&db, leads[3].id).await.2, None);
+
+        // A rewrite picks the same options, so the lead's email doesn't change under them.
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, written);
+        super::write_initial(&ctx, c.project, &leads[..1], "").await.unwrap();
+        assert_eq!(first_email(&db, leads[0].id).await, mine);
+        assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from email_messages where kind = 'initial'").fetch_one(&db).await.unwrap(), 4);
+
+        // Its follow-up is written by the agent as before, threaded under the user's text and in neither side.
+        sqlx::query("update email_messages set status = 'sent', sent_at = now() - interval '4 days', message_id = gen_random_uuid()::text where kind = 'initial'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("update leads set status = 'contacted' where project_id = $1").bind(c.project).execute(&db).await.unwrap();
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, written);
+        assert_eq!(super::write_follow_ups(&ctx, c.project, &[leads[1].id], false, "").await.unwrap(), 1);
+        let prompt = prompt_for(&fake::prompts(ctx.run.id), &leads[1]);
+        assert!(prompt.contains("Write follow-up number 1") && prompt.contains("How does Delta plan visits in your city?"), "{prompt}");
+        let (subject, mine): (String, Option<bool>) =
+            sqlx::query_as("select subject, my_copy from email_messages where lead_id = $1 and kind = 'follow_up'").bind(leads[1].id).fetch_one(&db).await.unwrap();
+        assert!(subject.starts_with("Re: ") && mine.is_none(), "{subject}");
+    }
+
+    async fn first_email(db: &PgPool, lead: Uuid) -> (String, String, Option<bool>, Option<Uuid>) {
+        sqlx::query_as("select subject, body, my_copy, variant_id from email_messages where lead_id = $1 and kind = 'initial'")
+            .bind(lead)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_writer_writes_only_the_ai_lines_of_my_copy(db: PgPool) {
+        let c = seed(&db, 0).await;
+        my_copy_on(&db, c.project, "Hi", "Hi {{first_name}},\n\n{{ai: one line about their clinic}}\n\nWorth a chat?").await;
+        let leads = leads_with_ids(&db, &c, &[1, 2]).await;
+        let ctx = ctx(&db, c.project).await;
+        fake::answer_with(ctx.run.id, |call| {
+            let ids: Vec<&str> = call.prompt.split("\"lead_id\": \"").skip(1).map(|rest| &rest[..36]).collect();
+            // The second lead's line comes back empty, so it waits for the next run rather than going out with a hole.
+            let lines = |i: usize| if i == 0 { json!(["Your clinic just opened a second chair."]) } else { json!([" "]) };
+            json!({ "leads": ids.iter().enumerate().map(|(i, id)| json!({ "lead_id": id, "lines": lines(i) })).collect::<Vec<_>>() })
+        });
+        assert_eq!(super::write_initial(&ctx, c.project, &leads, "").await.unwrap(), 1);
+        let prompts = fake::prompts(ctx.run.id);
+        assert!(prompts.len() == 1 && prompts[0].contains("[AI 1]: one line about their clinic") && prompts[0].contains("Hi {{first_name}},\n\n[AI 1]"));
+        let bodies: Vec<(Uuid, String, Option<bool>)> =
+            sqlx::query_as("select lead_id, body, my_copy from email_messages where kind = 'initial'").fetch_all(&db).await.unwrap();
+        assert_eq!(bodies, vec![(leads[0].id, "Hi P1,\n\nYour clinic just opened a second chair.\n\nWorth a chat?\n\nDana Reyes".to_string(), Some(true))]);
     }
 }
