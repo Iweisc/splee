@@ -667,6 +667,158 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "POST",
+      path: `/projects/${projectId}/research/questions`,
+      summary:
+        "Add a question the agent answers about every company, like the Companies page's Research view. A project has up to 10. label is the column's name, the question's first words when you leave it out. With use_in_emails, the writer uses the answers.",
+      params: [
+        ["question", "up to 300 characters"],
+        ["label", "optional, up to 40 characters"],
+        ["answer_type", "optional yes_no or text, default yes_no"],
+        ["use_in_emails", "optional, default false"],
+      ],
+      body: `{ "question": "Do they sell to hospitals?", "label": "Sells to hospitals" }`,
+      response: `{
+  "id": "2c9c…",
+  "project_id": "${projectId}",
+  "label": "Sells to hospitals",
+  "question": "Do they sell to hospitals?",
+  "answer_type": "yes_no",
+  "use_in_emails": false,
+  "position": 0,
+  "created_at": "2026-11-04T10:00:00Z"
+}`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/research/run`,
+      summary:
+        "Have the agent answer the project's questions for its companies, up to 200 per call. A company is only asked what it has no answer to yet, unless redo is true. more counts the companies past the 200, for another call. dry_run counts what it would queue without queueing it, and cost_per_company_micros is what one company cost in this project's research so far.",
+      params: [
+        ["question_ids", "optional, every question without it"],
+        ["company_ids", "optional, every company that isn't excluded without it"],
+        ["segment_id", "optional, only this campaign's companies when company_ids is left out"],
+        ["redo", "optional, ask again where there's an answer"],
+        ["dry_run", "optional, count without queueing"],
+      ],
+      body: `{ "dry_run": true }`,
+      response: `{ "companies": 120, "answers": 120, "more": 0, "runs": 0, "cost_per_company_micros": 21000 }`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/research?question_id=2c9c…&answer=yes`,
+      summary:
+        "The project's questions and its companies' answers, best score first. answers is keyed by question id, and status is queued, answered, unknown or failed. researching counts the answers being worked on across the project.",
+      params: [
+        ["segment_id", "optional, one campaign's companies"],
+        ["q", "optional text in the company's name or domain"],
+        ["question_id, answer", "optional, only companies whose answer to that question is yes, no, answered (any), unknown, or none yet"],
+        ["page, per_page", "1-based page number, and 1 to 200 per page, default 50"],
+      ],
+      response: `{
+  "questions": [{ "id": "2c9c…", "label": "Sells to hospitals", "question": "Do they sell to hospitals?", "answer_type": "yes_no", "…": "…" }],
+  "items": [
+    {
+      "id": "e810…",
+      "domain": "northwind.studio",
+      "name": "Northwind Studio",
+      "score": 82,
+      "score_fit": 50,
+      "score_intent": 32,
+      "status": "new",
+      "segment_name": "Design studios",
+      "answers": {
+        "2c9c…": {
+          "question_id": "2c9c…",
+          "domain": "northwind.studio",
+          "status": "answered",
+          "answer": "yes",
+          "evidence": "Their case studies page lists three NHS trusts.",
+          "source_url": "https://northwind.studio/work",
+          "updated_at": "2026-11-04T10:20:00Z"
+        }
+      }
+    }
+  ],
+  "total": 1,
+  "researching": 0
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/signals?kind=funding_filing&days=30`,
+      summary:
+        "Funding filings and company news at the project's companies, newest first, like the Companies page's News tab, up to 1,000. source is sec for SEC filings or feed for news. amount is what a filing says was raised and offered what it set out to raise, in dollars. leads counts the project's leads at the company.",
+      params: [
+        ["kind", "optional funding_filing, funding_post, launch, acquisition, expansion or leadership"],
+        ["days", "optional, only signals from the last this many days"],
+      ],
+      response: `[
+  {
+    "id": "7f20…",
+    "domain": "northwind.studio",
+    "company_id": "e810…",
+    "company_name": "Northwind Studio",
+    "leads": 2,
+    "kind": "funding_filing",
+    "source": "sec",
+    "happened_on": "2026-11-02",
+    "title": "Northwind Studio Inc. Form D",
+    "amount": 4200000,
+    "offered": 5000000,
+    "industry": "Other Technology",
+    "url": "https://www.sec.gov/Archives/edgar/data/…",
+    "first_seen": "2026-11-03T06:00:00Z",
+    "checked_at": "2026-11-03T06:00:00Z",
+    "headline": "Raised $4.2M (SEC filing, Nov 2)"
+  }
+]`,
+    },
+    {
+      method: "POST",
+      path: `/projects/${projectId}/watch-list`,
+      summary:
+        "Add past customers or champions to the project's watch list, like the Job changes tab. Splee checks their LinkedIn and, when one moves to a new company, makes them a lead there. Each needs an email or a LinkedIn link. Someone already watched gets what was missing filled in and counts as updated.",
+      params: [
+        ["relationship", "optional won (they bought), booked (a meeting) or hot (replied with interest), default won"],
+        ["people", "a list of name, email, linkedin_url, company, company_domain and title"],
+        ["csv", "or a CSV with a header row, its columns in any order"],
+      ],
+      body: `{ "relationship": "won", "people": [{ "name": "Dana Ruiz", "linkedin_url": "https://www.linkedin.com/in/dana-ruiz", "company": "Northwind Studio" }, { "name": "Sam Lee" }] }`,
+      response: `{ "added": 1, "updated": 0, "skipped": 0, "errors": [{ "row": 2, "error": "Needs an email or a LinkedIn link" }] }`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/job-changes`,
+      summary:
+        "Moves seen among the people the project watches, newest first and up to 500, with the lead Splee made at each new company. connected is whether the project has LinkedIn through Unipile, which the checks need, and watching counts the people on the list.",
+      response: `{
+  "connected": true,
+  "segment_id": "5d0a…",
+  "watching": 140,
+  "last_checked_at": "2026-11-04T06:00:00Z",
+  "changes": [
+    {
+      "id": "b31d…",
+      "full_name": "Dana Ruiz",
+      "linkedin_url": "https://www.linkedin.com/in/dana-ruiz",
+      "relationship": "won",
+      "old_company": "Northwind Studio",
+      "old_domain": "northwind.studio",
+      "old_lead_id": "c42e…",
+      "new_company": "Harbor Health",
+      "new_domain": "harborhealth.com",
+      "new_title": "VP Operations",
+      "new_lead_id": "d09a…",
+      "new_lead_email": "dana@harborhealth.com",
+      "segment_id": "5d0a…",
+      "segment_name": "Design studios",
+      "seen_at": "2026-11-04T06:00:00Z"
+    }
+  ]
+}`,
+    },
+    {
       method: "GET",
       path: `/projects/${projectId}/companies?sort=score&min_score=50`,
       summary:
@@ -1275,6 +1427,77 @@ function endpoints(projectId: string): Endpoint[] {
       path: "/emails/a19c…/skip",
       summary: "Cancel an email so it never goes out. Approve can still send it later.",
       response: `{ "id": "a19c…", "status": "cancelled", "…": "…" }`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/calls?status=done`,
+      summary:
+        "Calls to make, overdue first, then the ones made in the last 14 days, newest first, like the Calls page, for a dialer or CRM to work from. bucket is overdue, today or done. local_time is the time where the lead is, and outside_hours says why now is outside their calling hours, or null.",
+      params: [
+        ["status", "optional open or done, both without it"],
+        ["owner", "optional, a teammate's id or email, unassigned or everyone"],
+      ],
+      response: `[
+  {
+    "id": "9497…",
+    "lead_id": "c42e…",
+    "segment_id": "5d0a…",
+    "kind": "manual",
+    "step": 0,
+    "status": "done",
+    "due_at": "2026-11-04T14:00:00Z",
+    "called_at": "2026-11-04T14:05:00Z",
+    "outcome": "connected",
+    "notes": "Wants pricing for two sites",
+    "lead_name": "Sarah Chen",
+    "lead_title": "Founder",
+    "lead_company": "Northwind Studio",
+    "lead_phone": "+15035550142",
+    "owner_name": "Maya Patel",
+    "bucket": "done",
+    "time_zone": "America/Los_Angeles",
+    "local_time": "07:05",
+    "outside_hours": "It's 07:05 where they are. Call between 8:00 and 20:00 their time.",
+    "…": "…"
+  }
+]`,
+    },
+    {
+      method: "POST",
+      path: "/leads/c42e…/calls",
+      summary:
+        "Log a call made with the lead, from a dialer or by hand. It closes their open call step if they have one, which moves their sequence on, and the outcome updates the lead as it does in the app.",
+      params: [
+        ["outcome", "connected, voicemail, no_answer, wrong_number, not_interested or meeting_booked"],
+        ["notes", "optional"],
+      ],
+      body: `{ "outcome": "connected", "notes": "Wants pricing for two sites" }`,
+      response: `{ "id": "9497…", "lead_id": "c42e…", "status": "done", "outcome": "connected", "notes": "Wants pricing for two sites", "…": "…" }`,
+    },
+    {
+      method: "GET",
+      path: "/leads/c42e…/meetings",
+      summary:
+        "The lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first, with the agent's summary, next steps and the stage it suggests for their deal. Transcripts stay in Splee, and transcript_chars is a transcript's length.",
+      response: `[
+  {
+    "id": "3e81…",
+    "lead_id": "c42e…",
+    "provider": "fireflies",
+    "title": "Northwind x Acme intro",
+    "started_at": "2026-11-05T16:00:00Z",
+    "duration_secs": 1860,
+    "attendees": [{ "name": "Sarah Chen", "email": "sarah@northwind.studio" }],
+    "summary": "Sarah wants one tool for both studios and a pilot in December.",
+    "next_steps": ["Send pricing for two sites", "Book a demo with their ops lead"],
+    "suggested_stage": "Proposal",
+    "stage_reason": "They asked for pricing.",
+    "stage_status": "pending",
+    "follow_up_status": "draft",
+    "transcript_chars": 18422,
+    "…": "…"
+  }
+]`,
     },
     {
       method: "GET",
