@@ -1228,3 +1228,28 @@ pub struct SupportMessage {
     pub content: String,
     pub created_at: Ts,
 }
+
+/// A company database search saved on a project's Companies page (saved_searches.rs). Empty filters aren't applied.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct SavedSearch {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    /// Who hears about new matches. None for one saved with an API key.
+    pub user_id: Option<Uuid>,
+    pub name: String,
+    pub q: String,
+    pub country: String,
+    pub city: String,
+    pub category: String,
+    pub has_email: bool,
+    pub has_phone: bool,
+    pub tech: String,
+    pub chat_alerts: bool,
+    pub add_to_segment_id: Option<Uuid>,
+    pub baseline_at: Option<Ts>,
+    pub checked_at: Option<Ts>,
+    /// It matched more than saved_searches::SEEN_CAP companies, so it isn't watched.
+    pub too_broad: bool,
+    pub opened_at: Option<Ts>,
+    pub created_at: Ts,
+}

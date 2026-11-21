@@ -228,6 +228,52 @@ function endpoints(projectId: string): Endpoint[] {
       response: `{ "added": 2, "skipped": 0 }`,
     },
     {
+      method: "POST",
+      path: `/projects/${projectId}/saved-searches`,
+      summary:
+        "Save the search's filters under a name. Splee checks it every hour for companies that match and didn't when it was saved, like ones from a country loaded later. A search saved with a key has no owner, so only the project's chat hears about new ones, with chat_alerts.",
+      params: [
+        ["name", "up to 120 characters"],
+        ["q, country, city, category, has_email, has_phone, tech", "the search's filters, at least one"],
+        ["chat_alerts", "optional true to post new companies to the project's chat"],
+        ["segment_id", "optional campaign to add up to 200 new companies to each hour, skipping known and do-not-contact ones"],
+      ],
+      body: `{ "name": "Dentists in Leeds", "category": "dental_clinic", "city": "Leeds", "chat_alerts": true }`,
+      response: `{
+  "id": "9b4e…",
+  "name": "Dentists in Leeds",
+  "category": "dental_clinic",
+  "city": "Leeds",
+  "chat_alerts": true,
+  "add_to_segment_id": null,
+  "too_broad": false,
+  "new_matches": 0,
+  "…": "…"
+}`,
+    },
+    {
+      method: "GET",
+      path: `/projects/${projectId}/saved-searches`,
+      summary: "The project's saved searches, newest first. too_broad means it matched over 10,000 companies, so it isn't checked.",
+      response: `[{ "id": "9b4e…", "name": "Dentists in Leeds", "new_matches": 3, "new_since": "2026-11-21T09:00:00Z", "…": "…" }]`,
+    },
+    {
+      method: "GET",
+      path: "/saved-searches/9b4e…/new?since=2026-11-21T09:00:00Z",
+      summary: "The companies a saved search found at or after since, newest first. Without since, the ones found since it was last opened in the app.",
+      response: `{
+  "since": "2026-11-21T09:00:00Z",
+  "items": [{ "domain": "brightsmiles.co.uk", "name": "Bright Smiles", "found_at": "2026-11-21T09:00:00Z", "…": "…" }],
+  "total": 3
+}`,
+    },
+    {
+      method: "DELETE",
+      path: "/saved-searches/9b4e…",
+      summary: "Delete a saved search. Splee stops checking it, and companies it added stay in their campaign.",
+      response: `{ "ok": true }`,
+    },
+    {
       method: "GET",
       path: `/local-businesses?what=dentists&where=Austin,%20TX&min_rating=4&project_id=${projectId}`,
       summary:

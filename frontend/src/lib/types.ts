@@ -1031,6 +1031,41 @@ export interface DirectoryPage extends Paginated<DirectoryCompany> {
   capped: boolean;
 }
 
+/** A company database search saved on the Companies page. Splee checks it hourly for companies that match and didn't before. */
+export interface SavedSearch {
+  id: string;
+  project_id: string;
+  /** Who hears about new matches. Null for one saved with an API key. */
+  user_id: string | null;
+  name: string;
+  /** The filters as /directory/companies takes them. Empty ones aren't applied. */
+  q: string;
+  country: string;
+  city: string;
+  category: string;
+  has_email: boolean;
+  has_phone: boolean;
+  tech: string;
+  chat_alerts: boolean;
+  /** The campaign new matches go into, up to 200 a check. */
+  add_to_segment_id: string | null;
+  campaign_name: string | null;
+  baseline_at: string | null;
+  checked_at: string | null;
+  /** It matched over 10,000 companies, so it isn't checked. */
+  too_broad: boolean;
+  opened_at: string | null;
+  created_at: string;
+  /** Companies found since it was last opened, and when the first of them was found. */
+  new_matches: number;
+  new_since: string | null;
+}
+
+/** The companies a saved search found since `since`, newest first. `since` is null when none are new. */
+export interface SavedSearchMatches extends Paginated<DirectoryCompany & { found_at: string }> {
+  since: string | null;
+}
+
 /** What "Find people" on the Companies page added from LinkedIn. A skipped company has an empty name. */
 export interface FoundPeople {
   added: { name: string; title: string; company: string; linkedin_url: string }[];

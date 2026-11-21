@@ -32,12 +32,13 @@ const LOOKALIKES = "Companies in the database like the ones you won deals with, 
 
 export default function CompaniesPage({ params, searchParams }: PageProps<"/app/p/[projectId]/companies">) {
   const { projectId } = use(params);
-  // ?tab=visitors is where hot-visitor alerts link to, and ?tab=news funding alerts.
-  const { tab: linked } = use(searchParams);
+  // ?tab=visitors is where hot-visitor alerts link to, and ?tab=news funding alerts. Saved search alerts add ?search and ?since.
+  const { tab: linked, search, since } = use(searchParams);
+  const saved = typeof search === "string" ? { id: search, since: typeof since === "string" ? since : null } : null;
   // Research is a second view of your companies, for the same reason as "Like your customers" below.
   const [research, setResearch] = useState(linked === "research");
   // "Like your customers" is a second view of the company database, since a seventh tab doesn't fit a phone.
-  const [tab, setTab] = useState<Tab>(linked === "lookalikes" ? "database" : (TABS.find((t) => t === linked) ?? "yours"));
+  const [tab, setTab] = useState<Tab>(linked === "lookalikes" || saved ? "database" : (TABS.find((t) => t === linked) ?? "yours"));
   const [lookalikes, setLookalikes] = useState(linked === "lookalikes");
   return (
     <>
@@ -92,7 +93,7 @@ export default function CompaniesPage({ params, searchParams }: PageProps<"/app/
                 ]}
               />
             </div>
-            {lookalikes ? <LookalikesView projectId={projectId} /> : <DirectoryView projectId={projectId} />}
+            {lookalikes ? <LookalikesView projectId={projectId} /> : <DirectoryView projectId={projectId} linked={saved} />}
           </>
         )}
         {tab === "local" && <LocalBusinesses projectId={projectId} />}

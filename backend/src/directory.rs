@@ -13,6 +13,7 @@ use anyhow::Context;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, RecordBatch, StructArray};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
@@ -202,14 +203,13 @@ pub struct Listing {
     pub tech: Vec<String>,
 }
 
+/// A Listing's columns from `directory_companies d`.
+pub const LISTING: &str = "d.domain, d.name, d.website, d.phone, d.email, d.address, d.city, d.region, d.postcode, d.country_code, d.category,
+    coalesce((select t.techs from tech_scans t where t.domain = d.domain::citext), '{}') as tech";
+
 /// The matches, the most reliable listings first.
 pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sqlx::Result<Vec<Listing>> {
-    let sql = format!(
-        "select domain, name, website, phone, email, address, city, region, postcode, country_code, category,
-                coalesce((select t.techs from tech_scans t where t.domain = d.domain::citext), '{{}}') as tech
-         {FILTER}
-         order by confidence desc, domain limit $9 offset $10"
-    );
+    let sql = format!("select {LISTING} {FILTER} order by confidence desc, domain limit $9 offset $10");
     let rows = search.bind(&sql).bind(limit).bind(offset).fetch_all(db).await?;
     rows.iter().map(Listing::from_row).collect()
 }
@@ -218,6 +218,19 @@ pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sq
 pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> {
     let sql = format!("select count(*) from (select 1 {FILTER} limit {cap} + 1) matches");
     search.bind(&sql).fetch_one(db).await?.try_get(0)
+}
+
+/// Records the matches `search_id` hasn't matched before in saved_search_matches, at most `limit`, in no order, and returns
+/// how many. `found_at` is None for the ones a new saved search starts from. Only saved_search_matches is written.
+pub async fn record_unseen(db: &PgPool, search: &Search, search_id: Uuid, found_at: Option<DateTime<Utc>>, limit: i64) -> sqlx::Result<u64> {
+    let sql = format!(
+        "insert into saved_search_matches (search_id, domain, found_at)
+         select $9, d.domain, $10 {FILTER}
+           and not exists (select 1 from saved_search_matches m where m.search_id = $9 and m.domain = d.domain)
+         limit $11
+         on conflict do nothing"
+    );
+    Ok(search.bind(&sql).bind(search_id).bind(found_at).bind(limit).execute(db).await?.rows_affected())
 }
 
 #[derive(Serialize, sqlx::FromRow)]
