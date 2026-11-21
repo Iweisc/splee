@@ -50,7 +50,7 @@ unarchive_campaign brings it back, \
 and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
 checks against the month's email spend. list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
 find_lookalikes and add_lookalikes find companies like the user's \
-customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. download_companies hands over a search's companies as CSV, with a link to the whole file. find_companies_by_domains looks up the companies behind a list of domains, like a CRM's accounts. suggest_sending_domains and check_sending_domains find domains to send cold email from, which the user buys on the Domains page. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. create_company_dedup_list hides domains, like the user's CRM accounts or a competitor's clients, from search_companies, download_companies, saved searches and find_lookalikes in the projects it covers. It never stops an email. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread, reply_to_lead answers it and mark_replied clears one answered elsewhere. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -371,11 +371,11 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "get_email_batch" => async { value(v1::email_batch(st(), auth, id(a, "task_id")?).await?) }.await,
+        "list_sending_domains" => async { value(v1::list_sending_domains(st(), auth).await?) }.await,
+        "suggest_sending_domains" => async { value(v1::suggest_sending_domains(st(), auth, Query(parse(a)?)).await?) }.await,
+        "check_sending_domains" => async { value(v1::check_sending_domains(st(), auth, Query(parse(&comma_joined(a, "domains"))?)).await?) }.await,
         "download_companies" => async {
-            let mut a = a.clone();
-            if let Some(domains) = a["domains"].as_array() {
-                a["domains"] = json!(domains.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","));
-            }
+            let mut a = comma_joined(a, "domains");
             a["per_page"] = json!(a["per_page"].as_i64().unwrap_or(20).clamp(1, MAX_DOWNLOAD_ROWS));
             a["format"] = json!("csv");
             a.as_object_mut().expect("an object").remove("page");
@@ -384,10 +384,7 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "find_lookalikes" => async {
-            let mut a = a.clone();
-            if let Some(seeds) = a["seeds"].as_array() {
-                a["seeds"] = json!(seeds.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","));
-            }
+            let a = comma_joined(a, "seeds");
             let limit = a["limit"].as_u64().unwrap_or(25).clamp(1, crate::lookalikes::LIMIT as u64) as usize;
             let found = value(v1::list_lookalikes(st(), auth, id(&a, "project_id")?, Query(parse(&a)?)).await?)?;
             let profile = &found["profile"];
@@ -578,6 +575,15 @@ fn patch_body(args: &Value, id: &str) -> Value {
         body.remove("per_page");
     }
     body
+}
+
+/// The arguments with a list under `key` as the comma-separated value the API's query string takes.
+fn comma_joined(args: &Value, key: &str) -> Value {
+    let mut args = args.clone();
+    if let Some(items) = args[key].as_array() {
+        args[key] = json!(items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","));
+    }
+    args
 }
 
 fn id(args: &Value, key: &str) -> AppResult<Path<Uuid>> {
@@ -788,6 +794,34 @@ fn tools() -> Vec<Value> {
                 "project_id": id_prop("Optional. The project looking, so its dedup lists apply too"),
                 "include_hidden": { "type": "boolean", "description": "Optional. True to find the companies on dedup lists too" },
             }),
+            &["domains"],
+            read.clone(),
+        ),
+        tool(
+            "list_sending_domains",
+            "List sending domains",
+            "The organization's own sending domains, like getacme.com, bought on the Domains page: status, the mailbox provider, \
+             whether its DNS is set, and how many mailboxes use and warm it.",
+            json!({}),
+            &[],
+            read.clone(),
+        ),
+        tool(
+            "suggest_sending_domains",
+            "Suggest sending domains",
+            "Names to send cold email from apart from the company's own domain, like getacme.com or acmehq.co, each with whether the \
+             organization's Porkbun account can buy it and its price in micro-dollars, buyable first. available is null when the \
+             registry didn't answer in time. Needs Porkbun connected on the Domains page, where the user buys them.",
+            json!({ "domain": { "type": "string", "description": "The company's own domain, like acme.com" } }),
+            &["domain"],
+            read.clone(),
+        ),
+        tool(
+            "check_sending_domains",
+            "Check sending domains",
+            "Whether the organization's Porkbun account can buy each of up to 20 names and at what price, buyable first. Needs \
+             Porkbun connected on the Domains page, where the user buys them.",
+            json!({ "domains": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Names like getacme.com" } }),
             &["domains"],
             read.clone(),
         ),
@@ -1862,6 +1896,7 @@ mod tests {
                      "list_hot_leads", "get_inbox_changes", "find_companies_by_domains", "get_monthly_cap",
                      "update_campaign",
                      "list_erased_leads",
+                     "list_sending_domains", "suggest_sending_domains", "check_sending_domains",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",

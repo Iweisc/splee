@@ -29,6 +29,7 @@ use super::projects;
 use super::research;
 use super::runs;
 use super::segments::{self, Archived, ArchivedQuery, FindPeopleBody, SegmentBody, SegmentWithStats, WriteEmailsBody};
+use super::sending_domains::{self, SuggestQuery};
 use super::settings;
 use super::sheets::{self, ImportedNow};
 use super::stats::{self, Totals};
@@ -52,9 +53,11 @@ use crate::jobchanges::{self, AddBody, Overview};
 use crate::local_businesses::{self, AddOutcome, Results};
 use crate::lookalikes::{self, Lookalikes};
 use crate::models::{
-    AgentRun, DedupList, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, Suppression, SuppressionList, Ts,
+    AgentRun, DedupList, EmailAttachment, EmailMessage, Lead, Project, ProjectSettings, Segment, SegmentStep, SendingDomain, Suppression,
+    SuppressionList, Ts,
 };
 use crate::monthly_cap::{self, Cap};
+use crate::porkbun::Availability;
 use crate::ownership;
 use crate::state::AppState;
 
@@ -116,6 +119,9 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/companies/export", get(export_companies))
         .route("/v1/companies/filters", post(companies_filters))
         .route("/v1/companies/by-domains", post(companies_by_domains))
+        .route("/v1/sending-domains", get(list_sending_domains))
+        .route("/v1/sending-domains/suggestions", get(suggest_sending_domains))
+        .route("/v1/sending-domains/availability", get(check_sending_domains))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/projects/{id}/saved-searches", get(list_saved_searches).post(save_search))
         .route("/v1/saved-searches/{id}", delete(delete_saved_search))
@@ -1483,6 +1489,48 @@ pub(super) async fn companies_by_domains(
     Ok(Json(directory::by_domains(&state.db, auth.org_id, body).await?))
 }
 
+/// The organization's sending domains as the Domains page lists them, with their DNS and how many mailboxes use each.
+pub(super) async fn list_sending_domains(State(state): State<AppState>, auth: ApiKeyAuth) -> AppResult<Json<Vec<SendingDomain>>> {
+    Ok(Json(crate::domains::list(&state.db, auth.org_id).await?))
+}
+
+/// The Domains page's suggestions for the company's domain, checked with the organization's Porkbun account.
+pub(super) async fn suggest_sending_domains(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<SuggestQuery>,
+) -> AppResult<Json<Vec<Availability>>> {
+    Ok(Json(sending_domains::suggest(&state, auth.org_id, &q).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct AvailabilityQuery {
+    /// Separated by commas.
+    domains: String,
+}
+
+/// The most names one availability check takes.
+const MAX_AVAILABILITY: usize = 20;
+
+/// Whether the organization's Porkbun account can buy each name and at what price. Buying stays in the app.
+pub(super) async fn check_sending_domains(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<AvailabilityQuery>,
+) -> AppResult<Json<Vec<Availability>>> {
+    let mut names: Vec<String> = vec![];
+    for raw in q.domains.split(',').map(str::trim).filter(|d| !d.is_empty()) {
+        let name = util_input::domain(raw).ok_or_else(|| AppError::BadRequest(format!("{raw:?} isn't a domain")))?;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() || names.len() > MAX_AVAILABILITY {
+        return Err(AppError::BadRequest(format!("Pass 1 to {MAX_AVAILABILITY} domains, separated by commas")));
+    }
+    Ok(Json(sending_domains::availability(&state, auth.org_id, &names).await?))
+}
+
 /// The search as a file, up to 50,000 rows a page. See routes/directory_export.rs.
 pub(super) async fn export_companies(
     State(state): State<AppState>,
@@ -2096,6 +2144,10 @@ mod tests {
 
         async fn start_with(db: &PgPool, limits: Limits, model: Arc<dyn crate::company_filters::Model>) -> Self {
             let state = AppState { rate_limits: RateLimiter::new(limits), ..crate::autopilot::tests::state(db.clone()) };
+            Self::serve(state, model).await
+        }
+
+        async fn serve(state: AppState, model: Arc<dyn crate::company_filters::Model>) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/api", listener.local_addr().unwrap());
             let app = Router::new().nest("/api", super::router_with(&state, model)).with_state(state);
@@ -2514,6 +2566,54 @@ mod tests {
         }
         let untouched = format!("select count(*) from segments where id = '{theirs}' and status = 'working' and archived_at is null");
         assert_eq!(count(&db, &untouched).await, 1);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn sending_domains_are_suggested_and_checked_with_the_organizations_porkbun(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let (porkbun, _) = crate::porkbun::fake::start().await;
+        let base = crate::autopilot::tests::state(db.clone());
+        let cfg = crate::config::Config { porkbun_api_url: porkbun, ..(*base.cfg).clone() };
+        let state = AppState { cfg: Arc::new(cfg), rate_limits: RateLimiter::new(LIMITS), ..base };
+        let secret = state.cfg.app_secret.clone();
+        let api = Api::serve(state, Arc::new(crate::company_filters::Claude)).await;
+
+        let (status, body) = api.get("/v1/sending-domains/suggestions?domain=acme.com").await;
+        assert_eq!((status, body["error"].as_str()), (400, Some("Connect your Porkbun account first")));
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(a).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into registrar_accounts (org_id, account, api_key_enc, secret_enc) values ($1, 'acme-ops', $2, $3)")
+            .bind(org)
+            .bind(crate::crypto::encrypt(&secret, "pk1_good"))
+            .bind(crate::crypto::encrypt(&secret, "sk1_good"))
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let (status, found) = api.get("/v1/sending-domains/suggestions?domain=acme.com").await;
+        assert_eq!((status, found[0]["domain"].as_str(), found[0]["available"].as_bool()), (200, Some("getacme.com"), Some(true)), "{found}");
+        // Cleaned up and counted once, buyable first, then the rest in the order asked. A registry that didn't answer is null.
+        let asked = "acmeslow.com,https://www.GetAcme.com/,acmetaken.com,getacme.com";
+        let (status, found) = api.get(&format!("/v1/sending-domains/availability?domains={asked}")).await;
+        assert_eq!(status, 200, "{found}");
+        let summary: Vec<(&str, Option<bool>, i64)> = found.as_array().unwrap().iter().map(|a| {
+            (a["domain"].as_str().unwrap(), a["available"].as_bool(), a["price_micros"].as_i64().unwrap())
+        }).collect();
+        assert_eq!(summary, [("getacme.com", Some(true), 11_080_000), ("acmeslow.com", None, 0), ("acmetaken.com", Some(false), 11_080_000)]);
+        let too_many = (0..21).map(|i| format!("acme{i}.com")).collect::<Vec<_>>().join(",");
+        for domains in ["", "acme.com,not a domain", too_many.as_str()] {
+            assert_eq!(api.get(&format!("/v1/sending-domains/availability?domains={domains}")).await.0, 400, "{domains}");
+        }
+
+        sqlx::query("insert into sending_domains (org_id, domain, status, price_micros) values ($1, 'getacme.com', 'registered', 11080000)")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        let (status, owned) = api.get("/v1/sending-domains").await;
+        assert_eq!((status, owned[0]["domain"].as_str(), owned[0]["status"].as_str()), (200, Some("getacme.com"), Some("registered")), "{owned}");
+        assert_eq!(api.send(Method::GET, KEYS[1], "/v1/sending-domains", None, None).await.2, json!([]));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
