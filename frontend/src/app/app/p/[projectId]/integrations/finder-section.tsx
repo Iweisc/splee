@@ -43,8 +43,9 @@ export function FinderSection({ projectId }: { projectId: string }) {
   const provider = open.includes(picked) ? picked : open[0];
   const move = (i: number, by: number) => {
     const order = list.map((f) => f.provider);
+    const key = `move-${by < 0 ? "up" : "down"}-${order[i]}`;
     [order[i], order[i + by]] = [order[i + by], order[i]];
-    run(`move-${order[i]}`, () => call("order", "PUT", { providers: order }));
+    run(key, () => call("order", "PUT", { providers: order }));
   };
   const disconnect = (name: string, provider: FinderName) => {
     if (confirm(`Disconnect ${name}? The other finders and the verifier still look for emails.`)) run(`remove-${provider}`, () => call(provider, "DELETE"), `${name} disconnected`);
@@ -74,10 +75,18 @@ export function FinderSection({ projectId }: { projectId: string }) {
                         <span className="w-5 text-sm text-muted-foreground tabular-nums">{i + 1}.</span>
                         <p className="min-w-0 flex-1 text-sm font-medium">{name}</p>
                         <div className="flex">
-                          <Button size="icon" variant="ghost" className="size-8" aria-label={`Move ${name} up`} disabled={i === 0} loading={pending === `move-${f.provider}`} onClick={() => move(i, -1)}>
+                          <Button size="icon" variant="ghost" className="size-8" aria-label={`Move ${name} up`} disabled={i === 0} loading={pending === `move-up-${f.provider}`} onClick={() => move(i, -1)}>
                             <ArrowUp className="size-4" />
                           </Button>
-                          <Button size="icon" variant="ghost" className="size-8" aria-label={`Move ${name} down`} disabled={i === list.length - 1} onClick={() => move(i, 1)}>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            aria-label={`Move ${name} down`}
+                            disabled={i === list.length - 1}
+                            loading={pending === `move-down-${f.provider}`}
+                            onClick={() => move(i, 1)}
+                          >
                             <ArrowDown className="size-4" />
                           </Button>
                           <Button
