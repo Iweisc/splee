@@ -255,20 +255,21 @@ function Stats({ projectId }: { projectId: string }) {
     },
     { label: "Hot leads", value: t && num(t.hot) },
     { label: "Meetings", value: t && num(t.meetings) },
+    // Cost per hot lead sits under Spend rather than in a seventh tile, so the six fill every row at 2, 3 and 6 columns.
     {
       label: "Spend",
       value: t && money(t.spend_micros),
+      note: t && t.cost_per_hot_micros !== null ? `${money(t.cost_per_hot_micros)} per hot lead` : undefined,
       // On a Claude subscription nothing is billed per run, so make clear what the AI figure means.
       title:
         t &&
         `AI ${money(t.ai_cost_micros)} · Email ${money(t.email_cost_micros)}\n\nAI is what Claude Code reports for the agent's runs. On a Claude subscription that's the equivalent API price, not a bill. Email is the cost per email you set on each mailbox.`,
     },
-    { label: "Cost/hot lead", title: "Spend divided by hot leads.", value: t && (t.cost_per_hot_micros === null ? "—" : money(t.cost_per_hot_micros)) },
   ];
 
   return (
     <>
-      <KpiCard kpis={kpis} className="grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 xl:divide-x xl:divide-border" />
+      <KpiCard kpis={kpis} className="grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 xl:divide-x xl:divide-border" />
       <Card className="p-5">
         <MicroLabel className="mb-3">Last 30 days</MicroLabel>
         {data ? <DailyChart daily={data.daily} /> : <Skeleton className="h-48" />}
