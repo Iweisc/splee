@@ -1,6 +1,7 @@
 //! Finding a person's email by name for the public API and MCP, without making them a lead: one at a time, or in batches the
 //! worker here searches (migration 0185). Both run the project's email waterfall (waterfall.rs) and count against the same
-//! hourly limit as the leads it searches, so a big batch waits for room rather than spending a month's credits at once.
+//! hourly limit as the leads it searches, so a big batch waits for room rather than spending a month's credits at once. A
+//! person's mobile by their LinkedIn profile is found here too, with the same finders and limit.
 
 use std::time::Duration;
 
@@ -14,7 +15,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::Ts;
 use crate::routes::util_input;
 use crate::state::AppState;
-use crate::waterfall::{self, Outcome};
+use crate::verify::Finder;
+use crate::waterfall::{self, Asked, Outcome};
 
 /// People one batch takes.
 pub const MAX_BATCH: usize = 500;
@@ -112,6 +114,125 @@ pub async fn find(state: &AppState, project_id: Uuid, person: &Person) -> Found 
         Ok(outcome) => outcome.into(),
         Err(e) => Outcome::ended("failed", format!("{e:#}")).into(),
     }
+}
+
+/// Someone to find a mobile for, by their LinkedIn profile.
+#[derive(Deserialize)]
+pub struct PhoneQuery {
+    pub linkedin_url: String,
+    /// An address they're known by, which helps the finders match.
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+impl PhoneQuery {
+    /// The query trimmed, with a lowercased address, or why it can't be searched.
+    pub fn checked(self) -> Result<PhoneQuery, String> {
+        let linkedin_url = self.linkedin_url.trim().to_string();
+        if crate::unipile::profile_id(&linkedin_url).is_none() {
+            return Err(format!("linkedin_url {:?} isn't a LinkedIn profile, like https://www.linkedin.com/in/jane-doe", self.linkedin_url));
+        }
+        let email = match self.email.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            Some(email) => Some(util_input::email(email).ok_or_else(|| format!("email {email:?} isn't an address"))?),
+            None => None,
+        };
+        Ok(PhoneQuery { linkedin_url, email })
+    }
+}
+
+/// What looking up a mobile found, as the API returns it.
+#[derive(Serialize, Debug)]
+pub struct PhoneFound {
+    /// found, not_found, suppressed or failed.
+    pub status: &'static str,
+    /// In E.164.
+    pub phone: Option<String>,
+    /// The finder that found it.
+    pub source: String,
+    pub note: String,
+}
+
+impl PhoneFound {
+    fn ended(status: &'static str, source: &str, note: String) -> PhoneFound {
+        PhoneFound { status, phone: None, source: source.to_string(), note }
+    }
+}
+
+/// A 409 when none of the project's email finders return mobiles. Keep the names in sync with Finder::finds_phones.
+pub async fn check_phone_finder(db: &PgPool, project_id: Uuid) -> AppResult<()> {
+    let providers: Vec<String> = sqlx::query_scalar("select provider from project_finders where project_id = $1").bind(project_id).fetch_all(db).await?;
+    if !providers.iter().filter_map(|p| Finder::parse(p)).any(Finder::finds_phones) {
+        let connect = "Connect People Data Labs, RocketReach, Lusha or Prospeo to the project under Integrations first. They're the email finders that return mobiles";
+        return Err(AppError::Conflict(connect.into()));
+    }
+    Ok(())
+}
+
+/// Asks the project's finders that return mobiles, in its order, for the mobile of the person behind the profile, stopping
+/// at the first that has one. Like a lead's, a number without a + is read in the project's country, and one on the
+/// do-not-contact list is passed over for the next finder's. The caller has claimed the search.
+pub async fn find_phone(state: &AppState, org_id: Uuid, project_id: Uuid, query: &PhoneQuery) -> PhoneFound {
+    search_phone(state, org_id, project_id, query).await.unwrap_or_else(|e| PhoneFound::ended("failed", "", format!("{e:#}")))
+}
+
+async fn search_phone(state: &AppState, org_id: Uuid, project_id: Uuid, query: &PhoneQuery) -> anyhow::Result<PhoneFound> {
+    let db = &state.db;
+    let country = crate::routes::leads::phone_country(db, project_id, "").await?;
+    let finders = waterfall::finders(db, &state.cfg.app_secret, project_id).await?;
+    let (linkedin, email) = (query.linkedin_url.as_str(), query.email.as_deref().unwrap_or_default());
+    let (mut asked, mut paused, mut failure, mut suppressed) = (Vec::new(), paused_before(db, project_id).await?, None, None);
+    for finder in finders.iter().filter(|f| f.service.finds_phones()) {
+        let label = finder.service.label();
+        let raw = match waterfall::ask_with(db, project_id, finder, |service, key| service.find_phone(key, linkedin, email)).await {
+            Asked::Answer(raw) => raw,
+            Asked::Paused(why) | Asked::Skipped(why) => {
+                paused.push(why);
+                continue;
+            }
+            Asked::Failed(e) => {
+                failure.get_or_insert_with(|| format!("{label}: {e:#}"));
+                continue;
+            }
+        };
+        asked.push(label);
+        let Some(phone) = raw.and_then(|raw| crate::phone::normalize(&raw, &country)) else { continue };
+        let listed: bool = sqlx::query_scalar("select exists (select 1 from suppressions where org_id = $1 and value = $2)")
+            .bind(org_id)
+            .bind(&phone)
+            .fetch_one(db)
+            .await?;
+        if !listed {
+            return Ok(PhoneFound { status: "found", phone: Some(phone), source: label.to_string(), note: String::new() });
+        }
+        suppressed.get_or_insert((phone, label));
+    }
+    if let Some((phone, label)) = suppressed {
+        return Ok(PhoneFound::ended("suppressed", label, format!("{phone} is on the do-not-contact list.")));
+    }
+    // Like the waterfall: a failure explains why better than the finders' silence, and a paused finder is named.
+    if let Some(failure) = failure {
+        return Ok(PhoneFound::ended("failed", "", failure));
+    }
+    let tried = (!asked.is_empty()).then(|| format!("{} had no mobile for this profile.", waterfall::and_list(asked)));
+    let skipped = (!paused.is_empty()).then(|| format!("Skipped {}.", paused.join("; ")));
+    let note = match (tried, skipped) {
+        (Some(tried), Some(skipped)) => format!("{tried} {skipped}"),
+        (Some(note), None) | (None, Some(note)) => note,
+        // check_phone_finder found one, so it was removed since.
+        (None, None) => "The project has no finder that returns mobiles.".into(),
+    };
+    Ok(PhoneFound::ended("not_found", "", note))
+}
+
+/// The finders that return mobiles and were paused before this search, which finders() leaves out and the note still names.
+async fn paused_before(db: &PgPool, project_id: Uuid) -> sqlx::Result<Vec<String>> {
+    let providers: Vec<String> =
+        sqlx::query_scalar("select provider from project_finders where project_id = $1 and paused_until > now() order by position, created_at")
+            .bind(project_id)
+            .fetch_all(db)
+            .await?;
+    let paused = providers.iter().filter_map(|p| Finder::parse(p)).filter(|f| f.finds_phones());
+    Ok(paused.map(|f| waterfall::skipped(f.label())).collect())
 }
 
 /// Saves checked people as a batch for the worker, and starts it.

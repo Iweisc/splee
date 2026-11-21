@@ -607,6 +607,18 @@ function endpoints(projectId: string): Endpoint[] {
 }`,
     },
     {
+      method: "POST",
+      path: `/projects/${projectId}/enrich/phone`,
+      summary:
+        "Find the mobile of the person behind a LinkedIn profile with the project's finders that return mobiles, People Data Labs, RocketReach, Lusha and Prospeo, in the project's order. They don't become a lead. status is found, not_found, suppressed (on the do-not-contact list) or failed, and note says why when nothing was found. Each call is one of your 200 email searches an hour, and a project with none of those finders gets a 409.",
+      params: [
+        ["linkedin_url", "required, their profile"],
+        ["email", "optional, an address they're known by, which helps the finders match"],
+      ],
+      body: `{ "linkedin_url": "https://www.linkedin.com/in/sarah-chen" }`,
+      response: `{ "status": "found", "phone": "+14155550134", "source": "People Data Labs", "note": "" }`,
+    },
+    {
       method: "GET",
       path: `/local-businesses?what=dentists&where=Austin,%20TX&min_rating=4&project_id=${projectId}`,
       summary:

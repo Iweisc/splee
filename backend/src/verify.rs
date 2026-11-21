@@ -450,25 +450,15 @@ impl Finder {
             }
             Finder::RocketReach => {
                 let name = format!("{first} {last}");
+                // RocketReach matches on the employer's name and has no domain field, so a lead without a company name is looked
+                // up at its domain.
                 let employer = if person.company.is_empty() { domain } else { person.company };
                 let mut query = vec![("name", name.trim()), ("current_employer", employer)];
                 if !linkedin.is_empty() {
                     query.push(("linkedin_url", linkedin));
                 }
-                let url = Url::parse_with_params(&format!("{ROCKETREACH}/person/lookup"), query)?;
-                let mut body = rocketreach_call(client()?.get(url), key).await?;
-                // RocketReach matches on the employer's name and has no domain field, so a lead without a company name is looked
-                // up at its domain. A lookup still searching is read again from its status, for up to half a minute.
-                for _ in 0..6 {
-                    let Some(id) = body["id"].as_i64().filter(|_| rocketreach_searching(&body)) else { break };
-                    tokio::time::sleep(POLL_WAIT).await;
-                    let url = Url::parse_with_params(&format!("{ROCKETREACH}/person/checkStatus"), [("ids", id.to_string())])?;
-                    let list = rocketreach_call(client()?.get(url), key).await?;
-                    body = list.as_array().and_then(|l| l.first().cloned()).unwrap_or(Value::Null);
-                }
-                let phones = &body["phones"];
-                let phone = mobile(phones, "e164").or_else(|| mobile(phones, "number"));
-                Ok(Search { found: rocketreach_found(&body, domain), credits: None, phone })
+                let body = rocketreach_lookup(query, key).await?;
+                Ok(Search { found: rocketreach_found(&body, domain), credits: None, phone: rocketreach_mobile(&body) })
             }
             Finder::Snov => {
                 let token = snov_token(key).await?;
@@ -532,6 +522,40 @@ impl Finder {
                 let req = client()?.post(format!("{KASPR}/profile/linkedin")).json(&json!({ "id": id, "name": name.trim(), "dataToGet": ["workEmail"] }));
                 Ok(found(kaspr_found(&kaspr_call(req, key).await?, domain)))
             }
+        }
+    }
+
+    /// The mobile, as the finder wrote it, of the person behind a LinkedIn profile, matched on the profile alone, or on it and
+    /// an address they're known by. Only the finders that mark mobiles (finds_phones) are asked, and the rest have none.
+    pub(crate) async fn find_phone(self, key: &str, linkedin: &str, email: &str) -> anyhow::Result<Option<String>> {
+        match self {
+            Finder::Prospeo => {
+                let mut data = json!({ "linkedin_url": linkedin });
+                if !email.is_empty() {
+                    data["email"] = json!(email);
+                }
+                // Only a match with a mobile costs a credit, since the address isn't wanted here.
+                let body = json!({ "data": data, "enrich_mobile": true, "only_verified_mobile": true });
+                Ok(prospeo_mobile(&prospeo_call(client()?.post("https://api.prospeo.io/enrich-person").json(&body), key).await?))
+            }
+            Finder::Lusha => {
+                let mut contact = json!({ "linkedinUrl": linkedin });
+                if !email.is_empty() {
+                    contact["email"] = json!(email);
+                }
+                let req = client()?.post(format!("{LUSHA}/contacts/search-and-enrich")).json(&json!({ "contacts": [contact], "reveal": ["phones"] }));
+                Ok(mobile(&lusha_call(req, key).await?["results"][0]["phones"], "number"))
+            }
+            Finder::PeopleDataLabs => {
+                let mut query = vec![("profile", linkedin), ("min_likelihood", "6")];
+                if !email.is_empty() {
+                    query.push(("email", email));
+                }
+                let body = pdl_call(client()?.get(Url::parse_with_params(&format!("{PDL}/person/enrich"), query)?), key).await?;
+                Ok(body["data"]["mobile_phone"].as_str().map(str::to_string))
+            }
+            Finder::RocketReach => Ok(rocketreach_mobile(&rocketreach_lookup(vec![("linkedin_url", linkedin)], key).await?)),
+            _ => Ok(None),
         }
     }
 }
@@ -924,6 +948,24 @@ async fn rocketreach_call(req: reqwest::RequestBuilder, key: &str) -> anyhow::Re
     let said = body["detail"].as_str().or(body["message"].as_str());
     failed(status, said).map_err(|e| if e.is::<Paused>() || status != reqwest::StatusCode::UNAUTHORIZED { e } else { anyhow::anyhow!("the API key was rejected") })?;
     Ok(body)
+}
+
+/// Looks a person up by `query`. A lookup still searching is read again from its status, for up to half a minute.
+async fn rocketreach_lookup(query: Vec<(&str, &str)>, key: &str) -> anyhow::Result<Value> {
+    let url = Url::parse_with_params(&format!("{ROCKETREACH}/person/lookup"), query)?;
+    let mut body = rocketreach_call(client()?.get(url), key).await?;
+    for _ in 0..6 {
+        let Some(id) = body["id"].as_i64().filter(|_| rocketreach_searching(&body)) else { break };
+        tokio::time::sleep(POLL_WAIT).await;
+        let url = Url::parse_with_params(&format!("{ROCKETREACH}/person/checkStatus"), [("ids", id.to_string())])?;
+        let list = rocketreach_call(client()?.get(url), key).await?;
+        body = list.as_array().and_then(|l| l.first().cloned()).unwrap_or(Value::Null);
+    }
+    Ok(body)
+}
+
+fn rocketreach_mobile(body: &Value) -> Option<String> {
+    mobile(&body["phones"], "e164").or_else(|| mobile(&body["phones"], "number"))
 }
 
 fn rocketreach_searching(body: &Value) -> bool {

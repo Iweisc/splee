@@ -46,7 +46,7 @@ use crate::auth::{self, ApiKeyAuth, KeyAuth};
 use crate::campaign_imports::{self, RowOutcome, SubmittedLead};
 use crate::company_filters::{self, Claude, Described, Model};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
-use crate::email_lookups::{self, Batch, BatchPerson, Found, Person};
+use crate::email_lookups::{self, Batch, BatchPerson, Found, Person, PhoneFound, PhoneQuery};
 use crate::error::{AppError, AppResult};
 use crate::hooks;
 use crate::jobchanges::{self, AddBody, Overview};
@@ -94,6 +94,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/projects/{id}/enrich/email", post(find_email))
         .route("/v1/projects/{id}/enrich/email/batch", post(find_emails))
         .route("/v1/enrich/email/batch/{id}", get(email_batch))
+        .route("/v1/projects/{id}/enrich/phone", post(find_phone))
         .route("/v1/leads", get(find_leads))
         .route("/v1/leads/{id}", get(get_lead).patch(update_lead))
         .route("/v1/leads/{id}/assign", post(assign_lead))
@@ -2211,6 +2212,16 @@ pub(super) async fn find_email(State(state): State<AppState>, auth: ApiKeyAuth, 
     Ok(Json(email_lookups::find(&state, id, &person).await))
 }
 
+/// Finds the mobile of the person behind a LinkedIn profile with the project's finders that return mobiles, without adding
+/// them as a lead. Each call counts against the organization's hourly email searches.
+pub(super) async fn find_phone(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>, Json(body): Json<PhoneQuery>) -> AppResult<Json<PhoneFound>> {
+    check_project(&state.db, id, auth.org_id).await?;
+    let query = body.checked().map_err(AppError::BadRequest)?;
+    email_lookups::check_phone_finder(&state.db, id).await?;
+    email_lookups::claim_one(&state.db, auth.org_id).await?;
+    Ok(Json(email_lookups::find_phone(&state, auth.org_id, id, &query).await))
+}
+
 #[derive(Deserialize)]
 pub(super) struct BatchBody {
     people: Vec<BatchPerson>,
@@ -2969,6 +2980,44 @@ mod tests {
         let task = format!("/v1/enrich/email/batch/{}", theirs["task_id"].as_str().unwrap());
         assert_eq!(api.get(&task).await.0, 404);
         assert_eq!(api.send(Method::GET, KEYS[1], &task, None, None).await.0, 200);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    // The finders' answers are in waterfall.rs, since a real call here would reach the finder.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn finding_a_phone_needs_a_profile_a_finder_with_mobiles_and_room_in_the_hour(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let find = format!("/v1/projects/{a}/enrich/phone");
+        let finder = |project: Uuid, provider: &'static str| {
+            sqlx::query("insert into project_finders (project_id, provider, key_enc, position) values ($1, $2, $3, 0)")
+                .bind(project)
+                .bind(provider)
+                .bind(crate::crypto::encrypt("", "key"))
+                .execute(&db)
+        };
+        let sam = json!({ "linkedin_url": " https://www.linkedin.com/in/sam-lee/ ", "email": "Sam@Lee.example" });
+
+        for bad in [json!({ "linkedin_url": "https://www.linkedin.com/company/acme" }), json!({ "linkedin_url": "https://www.linkedin.com/in/sam", "email": "sam" })] {
+            let (status, _, body) = api.post(KEYS[0], &find, None, bad).await;
+            assert_eq!(status, 400, "{body}");
+        }
+        // Hunter finds addresses only.
+        finder(a, "hunter").await.unwrap();
+        let (status, _, body) = api.post(KEYS[0], &find, None, sam.clone()).await;
+        assert!(status == 409 && body["error"].as_str().unwrap().contains("People Data Labs, RocketReach, Lusha or Prospeo"), "{status} {body}");
+
+        // With one, the hour still has to have room, and the 429 comes before any finder is called.
+        finder(a, "peopledatalabs").await.unwrap();
+        spend_the_hour(&db, a, 200).await;
+        let (status, headers, body) = api.post(KEYS[0], &find, None, sam.clone()).await;
+        assert!(status == 429 && body["error"].as_str().unwrap().contains("200 email searches"), "{status} {body}");
+        assert!(header(&headers, "retry-after").is_some());
+
+        // Another organization's project looks like one that doesn't exist.
+        finder(b, "peopledatalabs").await.unwrap();
+        assert_eq!(api.post(KEYS[0], &format!("/v1/projects/{b}/enrich/phone"), None, sam).await.0, 404);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
