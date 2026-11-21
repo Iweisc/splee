@@ -1066,6 +1066,12 @@ export interface SavedSearchMatches extends Paginated<DirectoryCompany & { found
   since: string | null;
 }
 
+/** How many rows Download CSV takes: the matches, up to the 50,000 one download holds. `capped` says more match. */
+export interface DirectoryDownload {
+  rows: number;
+  capped: boolean;
+}
+
 /** What "Find people" on the Companies page added from LinkedIn. A skipped company has an empty name. */
 export interface FoundPeople {
   added: { name: string; title: string; company: string; linkedin_url: string }[];

@@ -13,6 +13,7 @@ use super::analytics::{self, Analytics, AnalyticsQuery};
 use super::attachments;
 use super::calls::{self, CallRow, LogBody};
 use super::directory::{self, Added, SearchQuery};
+use super::directory_export::{self, ExportQuery};
 use super::saved_searches::{self, NewMatches, NewSearch, SearchRow};
 use super::emails::{self, EmailRow};
 use super::inbox::{self, InboxThread, ReplyExtras, ThreadMessage as WithFiles};
@@ -35,6 +36,7 @@ use super::util_input::{self, LEAD_STATUSES};
 use super::util_idempotency;
 use super::util_scope;
 use crate::ab_test::{self, AbTest};
+use crate::audit::Who;
 use crate::auth::{self, ApiKeyAuth, KeyAuth};
 use crate::deals::{self, Deal, DealFilter, Move, NewDeal, Stage};
 use crate::email_lookups::{self, Batch, BatchPerson, Found, Person};
@@ -83,6 +85,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/v1/suppression-lists/{id}", patch(rescope_suppression_list).delete(delete_suppression_list))
         .route("/v1/suppression-lists/{id}/entries", get(suppression_list_entries))
         .route("/v1/companies", get(search_companies))
+        .route("/v1/companies/export", get(export_companies))
         .route("/v1/segments/{id}/companies", post(add_companies))
         .route("/v1/projects/{id}/saved-searches", get(list_saved_searches).post(save_search))
         .route("/v1/saved-searches/{id}", delete(delete_saved_search))
@@ -1125,6 +1128,16 @@ pub(super) async fn search_companies(
     Ok(Json(directory::page_of(&state.db, &q, &page).await?))
 }
 
+/// The search as a file, up to 50,000 rows a page. See routes/directory_export.rs.
+pub(super) async fn export_companies(
+    State(state): State<AppState>,
+    auth: ApiKeyAuth,
+    Query(q): Query<SearchQuery>,
+    Query(x): Query<ExportQuery>,
+) -> AppResult<Response> {
+    directory_export::export(&state, Who::from(&auth), &q, &x).await
+}
+
 #[derive(Deserialize)]
 pub(super) struct AddCompaniesBody {
     #[serde(default)]
@@ -1897,7 +1910,7 @@ mod tests {
     #[ignore = "needs Postgres"]
     async fn each_organization_gets_its_hour_of_requests_then_a_429(db: PgPool) {
         seed(&db).await;
-        let api = Api::start(&db, Limits { per_hour: 2, in_flight: 150 }).await;
+        let api = Api::start(&db, Limits { per_hour: 2, in_flight: 150, what: "API requests" }).await;
 
         for remaining in ["1", "0"] {
             let (status, headers, _) = api.send(Method::GET, KEYS[0], "/v1/projects", None, None).await;

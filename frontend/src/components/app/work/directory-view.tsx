@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bookmark, Building2, Mail, Pencil, Phone, Search, X } from "lucide-react";
+import { Bookmark, Building2, Download, Mail, Pencil, Phone, Search, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
-import { Button, LinkButton } from "@/components/ui/button";
+import { Button, buttonClass, LinkButton } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
 import { Badge, Card, EmptyState, Favicon, Host, Modal } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
@@ -14,6 +14,7 @@ import { SOURCE_URL } from "@/lib/source";
 import type {
   DirectoryCompany,
   DirectoryCountry,
+  DirectoryDownload,
   DirectoryPage,
   FoundPeople,
   ProjectSettings,
@@ -97,6 +98,8 @@ const filterWords = (f: Filters) =>
     .filter(Boolean)
     .join(" · ");
 
+const downloadLabel = (d: DirectoryDownload) => (d.capped ? `Download the first ${num(d.rows)}` : `Download ${num(d.rows)} as CSV`);
+
 /** "Dental clinic in Leeds, United Kingdom" */
 function suggestedName(f: Filters) {
   const category = f.category.trim() && categoryWords(f.category.trim().replaceAll(" ", "_"));
@@ -142,11 +145,15 @@ function DirectorySearch({
   const { data: saved } = useSWR<SavedSearch[]>(savedSearchesKey(projectId), fetcher);
   const opened = open && saved?.find((s) => s.id === open.id);
   const empty = countries?.length === 0;
-  const params = { ...filters, country, has_email: hasEmail || null, has_phone: hasPhone || null, tech: tech || null, page, per_page: PER_PAGE };
-  const key = empty ? null : `/directory/companies${qs(params)}`;
+  const search = { ...filters, country, has_email: hasEmail || null, has_phone: hasPhone || null, tech: tech || null };
+  const key = empty ? null : `/directory/companies${qs({ ...search, page, per_page: PER_PAGE })}`;
   const { data, error, mutate, isLoading } = useSWR<DirectoryPage>(key, fetcher, { keepPreviousData: true });
   // keepPreviousData shows the last results while typing or loading. They no longer match the filters, so they can't be ticked.
   const stale = isLoading || q !== filters.q || city !== filters.city || category !== filters.category;
+  // The search stops counting at 10,000, so past that the download asks how many of its 50,000 it would take.
+  const { data: counted } = useSWR<DirectoryDownload>(data?.capped ? `/directory/companies/export/count${qs(search)}` : null, fetcher);
+  const download: DirectoryDownload | undefined = data && (data.capped ? counted : { rows: data.total, capped: false });
+  const downloadPath = (domains?: string[]) => `/api/directory/companies/export${qs({ ...search, domains: domains?.join(",") })}`;
   const turnPage = (p: number) => {
     setPage(p);
     setPicked(new Set());
@@ -218,6 +225,7 @@ function DirectorySearch({
           <PickedBar
             projectId={projectId}
             domains={[...picked]}
+            downloadHref={downloadPath([...picked])}
             segments={segments ?? []}
             linkedin={settings?.unipile_connected}
             onDone={() => setPicked(new Set())}
@@ -263,9 +271,10 @@ function DirectorySearch({
             onClose={() => setOpen(null)}
           />
         )}
-        {/* The checkboxes sit beside the count, since next to the four filters they took a row of their own on a laptop. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-4 py-2.5 text-sm">
-          <div className="flex min-w-0 items-center gap-2">
+        {/* The checkboxes sit beside the count, since next to the four filters they took a row of their own on a laptop. A phone
+            can't fit them beside the count and both buttons, so there they take the row below. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-2.5 text-sm">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <p className="text-muted-foreground tabular-nums">
               {data && `${num(data.total)}${data.capped ? "+" : ""} ${data.total === 1 && !data.capped ? "company" : "companies"}`}
             </p>
@@ -283,7 +292,7 @@ function DirectorySearch({
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-4 whitespace-nowrap">
+          <div className="flex items-center gap-4 whitespace-nowrap max-md:order-last max-md:w-full">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={hasEmail} onChange={(e) => filter(setHasEmail)(e.target.checked)} className="accent-black" />
               Has email
@@ -292,6 +301,9 @@ function DirectorySearch({
               <input type="checkbox" checked={hasPhone} onChange={(e) => filter(setHasPhone)(e.target.checked)} className="accent-black" />
               Has phone
             </label>
+          </div>
+          {/* The short labels keep both buttons beside the count on a phone and beside the checkboxes on a laptop. */}
+          <div className="flex items-center gap-2 whitespace-nowrap">
             <Button
               variant="outline"
               size="sm"
@@ -300,10 +312,23 @@ function DirectorySearch({
               title={hasFilters(current) ? "Save these filters and hear when new companies match" : "Pick a filter first"}
             >
               <Bookmark className="size-4" />
-              {/* "Save search" next to both checkboxes is wider than a 390px phone. */}
-              <span className="sm:hidden">Save</span>
-              <span className="max-sm:hidden">Save search</span>
+              <span className="md:hidden">Save</span>
+              <span className="max-md:hidden">Save search</span>
             </Button>
+            {!!download?.rows && (
+              // A plain link, so the browser streams the file with the session cookie.
+              <a
+                href={downloadPath()}
+                download
+                aria-disabled={stale}
+                title={downloadLabel(download)}
+                className={buttonClass("outline", "sm", cn(stale && "pointer-events-none opacity-50"))}
+              >
+                <Download className="size-3.5" />
+                <span className="xl:hidden">CSV</span>
+                <span className="max-xl:hidden">{downloadLabel(download)}</span>
+              </a>
+            )}
           </div>
         </div>
 
@@ -660,6 +685,7 @@ export function PickedBar({
   projectId,
   addPath = `/projects/${projectId}/directory/add`,
   domains,
+  downloadHref,
   segments,
   linkedin,
   onDone,
@@ -669,6 +695,8 @@ export function PickedBar({
   /** Takes {segment_id, domains} and answers {added, skipped}, like the company database's. */
   addPath?: string;
   domains: string[];
+  /** The ticked companies as a CSV file, where the list offers one. */
+  downloadHref?: string;
   segments: SegmentWithStats[];
   /** Undefined while the settings load. */
   linkedin: boolean | undefined;
@@ -721,6 +749,11 @@ export function PickedBar({
         <X className="size-4" />
       </Button>
       <p className="mr-auto text-sm font-medium">{plural(domains.length, "company", "companies")} selected</p>
+      {downloadHref && (
+        <a href={downloadHref} download className={buttonClass("outline", "sm", "h-9 flex-auto sm:flex-none")}>
+          <Download className="size-3.5" /> Download selected
+        </a>
+      )}
       {segments.length > 0 ? (
         <>
           <Select value="" onChange={(e) => add(e.target.value)} disabled={busy || searching} className="h-9 w-auto flex-auto sm:w-56 sm:flex-none" aria-label="Add to campaign">

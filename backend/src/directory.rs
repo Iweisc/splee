@@ -15,7 +15,7 @@ use arrow_array::{Array, ArrayRef, RecordBatch, StructArray};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
@@ -132,6 +132,8 @@ pub struct Search {
     pub skip_project: Option<Uuid>,
     /// Only companies whose tech scan found one of these tools. Only domains in some project have been scanned.
     pub tech: Option<Vec<String>>,
+    /// Only these domains, like the rows ticked on the Companies page.
+    pub domains: Option<Vec<String>>,
 }
 
 impl Search {
@@ -160,6 +162,7 @@ impl Search {
             has_phone,
             skip_project: None,
             tech: None,
+            domains: None,
         })
     }
 
@@ -173,6 +176,7 @@ impl Search {
             .bind(self.has_phone)
             .bind(self.skip_project)
             .bind(&self.tech)
+            .bind(&self.domains)
     }
 }
 
@@ -184,7 +188,8 @@ const FILTER: &str = "from directory_companies d
       and (not $5 or email is not null)
       and (not $6 or phone is not null)
       and ($7::uuid is null or not exists (select 1 from companies c where c.project_id = $7 and c.domain = d.domain::citext))
-      and ($8::text[] is null or d.domain in (select lower(t.domain::text) from tech_scans t where t.techs && $8))";
+      and ($8::text[] is null or d.domain in (select lower(t.domain::text) from tech_scans t where t.techs && $8))
+      and ($9::text[] is null or d.domain = any($9))";
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Listing {
@@ -209,7 +214,7 @@ pub const LISTING: &str = "d.domain, d.name, d.website, d.phone, d.email, d.addr
 
 /// The matches, the most reliable listings first.
 pub async fn search(db: &PgPool, search: &Search, limit: i64, offset: i64) -> sqlx::Result<Vec<Listing>> {
-    let sql = format!("select {LISTING} {FILTER} order by confidence desc, domain limit $9 offset $10");
+    let sql = format!("select {LISTING} {FILTER} order by confidence desc, domain limit $10 offset $11");
     let rows = search.bind(&sql).bind(limit).bind(offset).fetch_all(db).await?;
     rows.iter().map(Listing::from_row).collect()
 }
@@ -225,12 +230,54 @@ pub async fn count(db: &PgPool, search: &Search, cap: i64) -> sqlx::Result<i64> 
 pub async fn record_unseen(db: &PgPool, search: &Search, search_id: Uuid, found_at: Option<DateTime<Utc>>, limit: i64) -> sqlx::Result<u64> {
     let sql = format!(
         "insert into saved_search_matches (search_id, domain, found_at)
-         select $9, d.domain, $10 {FILTER}
-           and not exists (select 1 from saved_search_matches m where m.search_id = $9 and m.domain = d.domain)
-         limit $11
+         select $10, d.domain, $11 {FILTER}
+           and not exists (select 1 from saved_search_matches m where m.search_id = $10 and m.domain = d.domain)
+         limit $12
          on conflict do nothing"
     );
     Ok(search.bind(&sql).bind(search_id).bind(found_at).bind(limit).execute(db).await?.rows_affected())
+}
+
+/// A company as a download has it: the listing and where it came from in Overture.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Export {
+    pub name: String,
+    pub domain: String,
+    pub website: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub postcode: Option<String>,
+    pub country_code: String,
+    pub category: Option<String>,
+    /// Overture's 0-1 confidence that the place exists as listed.
+    pub confidence: f32,
+    /// The Overture place id and the release it came from.
+    pub source_id: String,
+    pub release: String,
+}
+
+/// How many matches there are from `offset` on, counting no further than `limit` + 1, so the caller knows when there are more.
+pub async fn count_from(db: &PgPool, search: &Search, offset: i64, limit: i64) -> sqlx::Result<i64> {
+    let sql = format!("select count(*) from (select 1 {FILTER} limit $10 offset $11) matches");
+    search.bind(&sql).bind(limit + 1).bind(offset).fetch_one(db).await?.try_get(0)
+}
+
+/// The matches in the search's order, read from Postgres as the caller takes them instead of all at once.
+pub fn export(db: PgPool, search: Search, limit: i64, offset: i64) -> impl Stream<Item = sqlx::Result<Export>> + Send + 'static {
+    async_stream::try_stream! {
+        let sql = format!(
+            "select name, domain, website, email, phone, address, city, region, postcode, country_code, category, confidence, source_id, release
+             {FILTER}
+             order by confidence desc, domain limit $10 offset $11"
+        );
+        let mut rows = search.bind(&sql).bind(limit).bind(offset).fetch(&db);
+        while let Some(row) = rows.try_next().await? {
+            yield Export::from_row(&row)?;
+        }
+    }
 }
 
 #[derive(Serialize, sqlx::FromRow)]

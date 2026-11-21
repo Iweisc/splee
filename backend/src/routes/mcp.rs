@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use axum::body::Bytes;
+use axum::body::{Bytes, to_bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -46,7 +46,7 @@ list_projects, then list_campaigns or create_campaign, search_companies and add_
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
 stop_campaign and approve_campaign run it, and update_project_controls sets the project's sending, limits, schedule, autopilot \
 and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
-customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
+customers. download_companies hands over a search's companies as CSV, with a link to the whole file. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. save_search keeps a search_companies search, and list_new_matches shows the companies that match it later. find_email finds one person's email from their name and company domain with the project's email finders and verifier, and find_emails does up to 500 in the background for get_email_batch to follow. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
 campaigns, mailboxes, follow-ups and send times get replies. For local businesses like dentists or gyms in a city, \
@@ -254,9 +254,10 @@ pub(crate) async fn call(state: &AppState, auth: ApiKeyAuth, name: &str, args: V
 }
 
 /// The tools that only read, for Ask Splee. Local business search is left out because it spends the organization's Google
-/// Maps calls.
+/// Maps calls, and downloading companies because it spends the organization's downloads.
 pub(crate) fn read_tools() -> Vec<Value> {
-    tools().into_iter().filter(|t| t["annotations"]["readOnlyHint"] == json!(true) && t["name"] != "search_local_businesses").collect()
+    let spends = ["search_local_businesses", "download_companies"];
+    tools().into_iter().filter(|t| t["annotations"]["readOnlyHint"] == json!(true) && !spends.iter().any(|s| t["name"] == *s)).collect()
 }
 
 const EMAIL_BATCH_NEXT: &str = "This runs in the background, within the organization's 200 email searches an hour. Call get_email_batch with task_id until status is completed.";
@@ -290,6 +291,8 @@ const SIGNAL_FIELDS: &[&str] =
     &["domain", "company_id", "company_name", "leads", "kind", "happened_on", "headline", "title", "amount", "offered", "industry", "url", "checked_at"];
 const RESEARCH_QUESTION_FIELDS: &[&str] = &["id", "label", "question", "answer_type", "use_in_emails"];
 const RESEARCH_ANSWER_FIELDS: &[&str] = &["status", "answer", "evidence", "source_url"];
+/// Rows download_companies puts in its answer. The rest are a download_url away.
+const MAX_DOWNLOAD_ROWS: i64 = 200;
 /// Signals one list_company_signals call returns at most, so a big project's list doesn't fill the client's context.
 const MAX_SIGNALS: usize = 100;
 const JOB_CHANGE_FIELDS: &[&str] = &[
@@ -336,6 +339,18 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
         }
         .await,
         "get_email_batch" => async { value(v1::email_batch(st(), auth, id(a, "task_id")?).await?) }.await,
+        "download_companies" => async {
+            let mut a = a.clone();
+            if let Some(domains) = a["domains"].as_array() {
+                a["domains"] = json!(domains.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","));
+            }
+            a["per_page"] = json!(a["per_page"].as_i64().unwrap_or(20).clamp(1, MAX_DOWNLOAD_ROWS));
+            a["format"] = json!("csv");
+            a.as_object_mut().expect("an object").remove("page");
+            let res = v1::export_companies(st(), auth, Query(parse(&a)?), Query(parse(&a)?)).await?;
+            downloaded(state, res, &a).await
+        }
+        .await,
         "find_lookalikes" => async {
             let mut a = a.clone();
             if let Some(seeds) = a["seeds"].as_array() {
@@ -508,6 +523,40 @@ fn id(args: &Value, key: &str) -> AppResult<Path<Uuid>> {
     // Tools name campaigns campaign_id, which `run` renamed to the API's segment_id.
     let shown = if key == "segment_id" { "campaign_id" } else { key };
     args[key].as_str().and_then(|s| s.trim().parse().ok()).map(Path).ok_or_else(|| AppError::BadRequest(format!("Pass {shown} as an id")))
+}
+
+/// The first rows as CSV for the model, and the API link that downloads the whole search with an API key.
+async fn downloaded(state: &AppState, res: Response, args: &Value) -> AppResult<Value> {
+    // A Response isn't Sync, so what reads its headers can't live across the await below.
+    let (rows, more, status) = {
+        let header = |name: &str| res.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        (header("splee-rows").parse::<i64>().unwrap_or(0), header("splee-capped") == "true", res.status())
+    };
+    let body = to_bytes(res.into_body(), 16 << 20).await.map_err(|e| AppError::Internal(e.into()))?;
+    let text = String::from_utf8_lossy(&body).into_owned();
+    // The download answers its rate limit as a response rather than an error, for the API's Retry-After.
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or(text);
+        return Err(AppError::TooManyRequests(message));
+    }
+    let base = format!("{}/api/v1/companies/export", state.cfg.public_url.trim_end_matches('/'));
+    let mut url = Url::parse(&base).map_err(|e| AppError::Internal(e.into()))?;
+    for key in ["q", "country", "city", "category", "has_email", "has_phone", "tech", "domains"] {
+        let value = match &args[key] {
+            Value::String(v) if !v.trim().is_empty() => v.as_str(),
+            Value::Bool(true) => "true",
+            _ => continue,
+        };
+        url.query_pairs_mut().append_pair(key, value);
+    }
+    Ok(json!({
+        "rows": rows,
+        "more": more,
+        "csv": text,
+        "download_url": url.as_str(),
+        "next": "GET download_url with a Splee API key as Authorization: Bearer for every match, up to 50,000 rows a page (add page=2 for the next), \
+                 or add format=jsonl for JSON lines. Each download counts against the organization's 20 an hour.",
+    }))
 }
 
 fn started(created: AppResult<Value>) -> AppResult<Value> {
@@ -725,6 +774,27 @@ fn tools() -> Vec<Value> {
              order sent, pending until searched. Results are kept for 30 days.",
             json!({ "task_id": id_prop("A task_id from find_emails") }),
             &["task_id"],
+            read.clone(),
+        ),
+        tool(
+            "download_companies",
+            "Download company search",
+            "The companies a search_companies search finds, in its order, as CSV: name, domain, website, email, phone, address, city, \
+             region, postcode, country, category, Overture's confidence, source_id and source_release. Returns the first rows (20 \
+             unless per_page says up to 200), more when there are others, and download_url, the whole file from the API. Cells that \
+             start like a formula start with an apostrophe. Counts against the organization's 20 downloads an hour, so search first.",
+            json!({
+                "q": { "type": "string", "description": "Words in the name or category, like \"dental\"" },
+                "country": { "type": "string", "description": "Two-letter country code, like GB" },
+                "city": { "type": "string", "description": "City name, like Leeds" },
+                "category": { "type": "string", "description": "Exact category, like dental_clinic" },
+                "has_email": { "type": "boolean", "description": "Only companies that list an email" },
+                "has_phone": { "type": "boolean", "description": "Only companies that list a phone" },
+                "tech": { "type": "string", "description": "Only companies that use this tool or a tool of this category, like search_companies" },
+                "domains": { "type": "array", "items": { "type": "string" }, "description": "Optional. Only these of the search's companies, up to 500" },
+                "per_page": { "type": "integer", "minimum": 1, "maximum": MAX_DOWNLOAD_ROWS, "description": "Rows in the answer, 20 by default" },
+            }),
+            &[],
             read.clone(),
         ),
         tool(
@@ -1436,7 +1506,7 @@ mod tests {
                      "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
                      "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
-                     "get_email_batch"] {
+                     "get_email_batch", "download_companies"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1881,6 +1951,39 @@ mod tests {
         assert_eq!(campaigns.as_array().unwrap().iter().find(|c| c["id"] == json!(segment)).unwrap()["language"], "nl", "{text}");
         let other: String = sqlx::query_scalar("select language from segments where id = $1").bind(other_segment).fetch_one(&db).await.unwrap();
         assert_eq!(other, "lead");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn downloading_companies_answers_the_first_rows_and_a_link_to_the_rest(db: PgPool) {
+        seed(&db).await;
+        for (domain, name, confidence) in [("smile.co.uk", "Smile Dental", 0.9), ("grin.co.uk", "=Grin Dental", 0.8), ("cafe.co.uk", "Leeds Cafe", 0.7)] {
+            sqlx::query(
+                "insert into directory_companies (domain, name, website, city, country_code, category, categories, confidence, source_id, release)
+                 values ($1, $2, 'https://' || $1, 'Leeds', 'GB', 'dental_clinic', '{dental_clinic}', $3, 'x', 'r')",
+            )
+            .bind(domain)
+            .bind(name)
+            .bind(confidence)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let server = Server::start(db).await;
+
+        let (is_error, text) = server.call(KEY, "download_companies", json!({ "q": "dental", "city": "Leeds", "has_email": false, "per_page": 1 })).await;
+        assert!(!is_error, "{text}");
+        let found: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((found["rows"].clone(), found["more"].clone()), (json!(1), json!(true)));
+        assert_eq!(found["csv"].as_str().unwrap().lines().nth(1).unwrap(), "Smile Dental,smile.co.uk,https://smile.co.uk,,,,Leeds,,,GB,dental_clinic,0.90,x,r");
+        assert_eq!(found["download_url"], "http://localhost:3346/api/v1/companies/export?q=dental&city=Leeds");
+
+        let (_, text) = server.call(KEY, "download_companies", json!({ "domains": ["grin.co.uk", "cafe.co.uk"], "category": "dental_clinic" })).await;
+        let found: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((found["rows"].clone(), found["more"].clone()), (json!(2), json!(false)));
+        assert!(found["csv"].as_str().unwrap().contains("\n'=Grin Dental,grin.co.uk,"), "{text}");
+        assert_eq!(found["download_url"], "http://localhost:3346/api/v1/companies/export?category=dental_clinic&domains=grin.co.uk%2Ccafe.co.uk");
+        assert!(!super::read_tools().iter().any(|t| t["name"] == "download_companies"), "Ask Splee doesn't spend the downloads");
     }
 
     #[sqlx::test]

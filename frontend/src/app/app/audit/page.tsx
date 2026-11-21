@@ -68,6 +68,7 @@ const ACTIONS: { group: string; actions: Record<string, string> }[] = [
     actions: {
       "export.saved": "Changed the data export",
       "export.removed": "Stopped the data export",
+      "companies.downloaded": "Downloaded companies",
     },
   },
 ];
@@ -119,6 +120,13 @@ function note(e: AuditEvent): string | null {
       return typeof d.project === "string" ? `In ${d.project}` : null;
     case "export.saved":
       return Array.isArray(d.tables) ? `${plural(d.tables.length, "table")}${d.include_bodies ? " with email bodies" : ""}` : null;
+    case "companies.downloaded": {
+      if (typeof d.rows !== "number") return null;
+      const f = (d.filters ?? {}) as Record<string, unknown>;
+      const words = [f.q, f.category, f.city, f.country, f.tech].filter((w): w is string => typeof w === "string" && w.trim() !== "");
+      const picked = typeof d.selected === "number" ? ", picked by hand" : "";
+      return `${plural(d.rows, "company", "companies")}${words.length ? ` matching ${words.join(", ")}` : ""}${picked}`;
+    }
     case "org.renamed":
       return typeof d.from === "string" ? `Was ${d.from}` : null;
     default:
