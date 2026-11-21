@@ -28,6 +28,7 @@ export const EMAIL_KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string>
   referral_ask: "Referral ask",
   retention: "Retention",
   story_ask: "Case study ask",
+  feature_shipped: "Shipped news",
 };
 
 /** How long a draft has before the review window sends it: "in 5h". Under a minute or past, the sender's next pass takes it. */

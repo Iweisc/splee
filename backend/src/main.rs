@@ -180,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
     agent::churn::spawn_worker(state.clone());
     agent::renewals::spawn_worker(state.clone());
     agent::team_brief::spawn_worker(state.clone());
+    agent::feedback::spawn_worker(state.clone());
     contests::spawn_worker(state.clone());
     waterfall::spawn_worker(state.clone());
     email_lookups::spawn_worker(state.clone());
