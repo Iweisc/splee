@@ -484,7 +484,12 @@ Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk
       params: [["seeds", "optional comma-separated domains to match instead of the saved seeds"]],
       response: `{
   "profile": {
-    "seeds": [{ "domain": "northwind.studio", "name": "Northwind Studio", "won": true, "in_database": true, "known": true }],
+    "seeds": [
+      { "domain": "brightsmile.co.uk", "name": "Bright Smile", "won": true, "in_database": true, "known": true },
+      { "domain": "parkdental.co.uk", "name": "Park Dental", "won": true, "in_database": true, "known": true },
+      { "domain": "leedsortho.co.uk", "name": "Leeds Orthodontics", "won": true, "in_database": true, "known": true },
+      { "domain": "corephysio.co.uk", "name": "Core Physio", "won": false, "in_database": true, "known": true }
+    ],
     "parts": [
       { "key": "category", "label": "Industry", "on": true, "known": 4, "values": [{ "value": "dentist", "label": "Dentist", "seeds": 3 }] },
       { "key": "tech", "label": "Tools they use", "on": false, "known": 0, "values": [] }
@@ -1369,12 +1374,12 @@ Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk
       response: `[
   {
     "id": "6b0d…",
-    "dt": "2026-11-03",
+    "dt": "2026-11-04",
     "trigger": "daily",
     "status": "done",
-    "files": [{ "table": "leads", "key": "splee/leads/dt=2026-11-03/part-0000.jsonl.gz", "rows": 4210, "bytes": 391022 }],
-    "rows": 18630,
-    "bytes": 1720311,
+    "files": [{ "table": "leads", "key": "splee/leads/dt=2026-11-04/part-0000.jsonl.gz", "rows": 4210, "bytes": 391022 }],
+    "rows": 4210,
+    "bytes": 391022,
     "error": null,
     "started_at": "2026-11-04T03:00:00Z",
     "finished_at": "2026-11-04T03:01:12Z"
