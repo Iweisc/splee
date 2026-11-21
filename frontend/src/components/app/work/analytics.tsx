@@ -11,7 +11,10 @@ import { MicroLabel, Td, Th } from "./states";
 
 type Cell = string | number | null;
 
-/** Tighter on phones, so three columns and a campaign name fit 390px without wrapping. */
+/**
+ * Tighter on phones, so three columns fit 390px. The first column's names wrap when they don't fit, because a
+ * long campaign name on one line pushed the last column off the card at every width.
+ */
 const CELL = "px-3 sm:px-4";
 
 export type Column<T> = {
@@ -106,7 +109,7 @@ export function Breakdown<T>({
             {sorted.map((r) => (
               <tr key={rowKey(r)} className={cn("border-t border-border", rowClass?.(r))}>
                 {columns.map((c, i) => (
-                  <Td key={c.label} className={cn(CELL, c.numeric && "text-right tabular-nums", i === 0 && "font-medium whitespace-nowrap", c.className)}>
+                  <Td key={c.label} className={cn(CELL, c.numeric && "text-right tabular-nums", i === 0 && "font-medium", c.className)}>
                     {c.render ? c.render(r) : formatCell(c.value(r))}
                   </Td>
                 ))}
