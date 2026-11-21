@@ -89,12 +89,18 @@ async fn list(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Vec<P
 }
 
 #[derive(Deserialize)]
-struct CreateBody {
+pub(super) struct CreateBody {
     domain: Option<String>,
     description: Option<String>,
 }
 
 async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<CreateBody>) -> AppResult<Json<Project>> {
+    Ok(Json(insert(&state.db, auth.org_id, Some(auth.user_id), body).await?.0))
+}
+
+/// A project from the business's website or a description of it, and the explore run that researches it, whose id comes back
+/// with the project. `created_by` is None for an API key.
+pub(super) async fn insert(db: &PgPool, org_id: Uuid, created_by: Option<Uuid>, body: CreateBody) -> AppResult<(Project, Uuid)> {
     let domain = match body.domain.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         Some(raw) => Some(util_input::domain(raw).ok_or_else(|| AppError::BadRequest("Enter a valid website, like acme.com".into()))?),
         None => None,
@@ -104,22 +110,22 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Crea
         return Err(AppError::BadRequest("Enter your website or describe your business".into()));
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     let project = sqlx::query_as::<_, Project>(
         "insert into projects (org_id, domain, business_description, name, created_by)
          values ($1, $2, $3, coalesce($2, ''), $4) returning *",
     )
-    .bind(auth.org_id)
+    .bind(org_id)
     .bind(&domain)
     .bind(description)
-    .bind(auth.user_id)
+    .bind(created_by)
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query("insert into project_settings (project_id) values ($1)").bind(project.id).execute(&mut *tx).await?;
     tx.commit().await?;
 
-    agent::enqueue(&state.db, kind::EXPLORE, Some(project.id), Some(auth.org_id), json!({ "mode": "app" })).await?;
-    Ok(Json(project))
+    let run_id = agent::enqueue(db, kind::EXPLORE, Some(project.id), Some(org_id), json!({ "mode": "app" })).await?;
+    Ok((project, run_id))
 }
 
 async fn claim_signed_in(State(state): State<AppState>, auth: Auth, Json(body): Json<ClaimBody>) -> AppResult<Json<Project>> {

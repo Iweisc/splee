@@ -43,7 +43,8 @@ const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
-list_projects, then list_campaigns or create_campaign, search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
+list_projects (or create_project for a new business), then list_campaigns or create_campaign, \
+search_companies (fill_company_filters turns a sentence into its filters) and add_companies, find_people, write_emails, then \
 list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition and update_campaign \
 changes it, start_campaign, stop_campaign and approve_campaign run it, archive_campaign puts away one that's done and \
 unarchive_campaign brings it back, \
@@ -334,6 +335,12 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
     let a = &args;
     Some(match name {
         "list_projects" => async { Ok(pick(value(v1::list_projects(st(), auth).await?)?, PROJECT_FIELDS)) }.await,
+        "get_project" => async { value(v1::get_project(st(), auth, id(a, "project_id")?).await?) }.await,
+        "create_project" => async {
+            let created = value(v1::create_project(st(), auth, Json(parse(a)?)).await?)?;
+            Ok(json!({ "project_id": created["project_id"], "run_id": created["run_id"], "next": RUN_NEXT }))
+        }
+        .await,
         "list_campaigns" => async { value(v1::list_campaigns(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "create_campaign" => async {
             let created = value(v1::create_campaign(st(), auth, id(a, "project_id")?, Json(parse(a)?)).await?)?;
@@ -681,6 +688,26 @@ fn tools() -> Vec<Value> {
     let campaign = id_prop("A campaign id from list_campaigns or create_campaign");
     vec![
         tool("list_projects", "List projects", "The organization's projects. A project is one business doing outreach.", json!({}), &[], read.clone()),
+        tool(
+            "get_project",
+            "Get project",
+            "A project with what Splee learned about the business (company) and its controls, as update_project_controls returns them.",
+            json!({ "project_id": project }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
+            "create_project",
+            "Create project",
+            "Creates a project for a business from its website or a description, as the app's New project does. An agent researches \
+             the business, which takes a few minutes, then create_campaign can start. Returns project_id and run_id.",
+            json!({
+                "domain": { "type": "string", "description": "The business's website, like acme.com" },
+                "description": { "type": "string", "description": "What the business sells and to whom, when there's no website" },
+            }),
+            &[],
+            adds.clone(),
+        ),
         tool(
             "list_campaigns",
             "List campaigns",
@@ -1511,6 +1538,8 @@ fn tools() -> Vec<Value> {
                                          "description": "Optional. Drafts nobody reviewed go out after this many hours. null keeps them waiting" },
                 "monthly_cap_micros": { "type": ["integer", "null"], "minimum": 1000000, "maximum": 1_000_000_000_000_i64,
                                         "description": "Optional. Email spend a month in micro-dollars. null for no cap" },
+                "sender_name": { "type": "string", "maxLength": 100,
+                                 "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),
             &["project_id"],
             control,
@@ -1897,6 +1926,7 @@ mod tests {
                      "update_campaign",
                      "list_erased_leads",
                      "list_sending_domains", "suggest_sending_domains", "check_sending_domains",
+                     "get_project", "create_project",
                      "list_saved_searches", "save_search", "delete_saved_search", "list_new_matches", "find_email", "find_emails",
                      "get_email_batch", "download_companies", "fill_company_filters", "import_campaign", "get_campaign_import",
                      "list_campaign_import_rows", "get_my_copy", "update_my_copy", "set_my_copy_source", "preview_my_copy",

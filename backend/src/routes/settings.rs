@@ -160,6 +160,7 @@ pub(super) struct Controls {
     review_window_hours: Option<Option<i32>>,
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     monthly_cap_micros: Option<Option<i64>>,
+    sender_name: Option<String>,
 }
 
 impl From<Controls> for SettingsBody {
@@ -177,6 +178,7 @@ impl From<Controls> for SettingsBody {
             autopilot_auto_send: c.autopilot_auto_send,
             review_window_hours: c.review_window_hours,
             monthly_cap_micros: c.monthly_cap_micros,
+            sender_name: c.sender_name,
             ..Default::default()
         }
     }
@@ -249,6 +251,12 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     }
     if body.monthly_cap_micros.flatten().is_some_and(|m| !(1_000_000..=1_000_000_000_000).contains(&m)) {
         return bad("The monthly cap must be between $1 and $1,000,000");
+    }
+    let sender_name = body.sender_name.as_deref().map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "));
+    // Checked on what was sent, since collapsing the spaces would hide a newline or a tab.
+    let control = body.sender_name.as_deref().is_some_and(|n| n.chars().any(char::is_control));
+    if control || sender_name.as_deref().is_some_and(|n| n.chars().count() > 100 || n.contains('@')) {
+        return bad("The sender name must be a person's or team's name of up to 100 characters, not an email address");
     }
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
@@ -334,7 +342,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.booking_link.as_deref().map(str::trim))
     .bind(body.auto_reply_mode)
     .bind(body.auto_reply_instructions)
-    .bind(body.sender_name.as_deref().map(str::trim))
+    .bind(sender_name)
     .bind(body.signature)
     .bind(body.tone)
     .bind(body.email_language)
