@@ -48,8 +48,8 @@ async fn get_settings(State(state): State<AppState>, auth: Auth, Path(id): Path<
 }
 
 // `paused` is left out on purpose: unpausing goes through POST /projects/:id/start, which checks for an active mailbox.
-#[derive(Deserialize)]
-struct SettingsBody {
+#[derive(Deserialize, Default)]
+pub(super) struct SettingsBody {
     daily_email_limit: Option<i32>,
     timezone: Option<String>,
     send_days: Option<Vec<i32>>,
@@ -128,6 +128,45 @@ fn check_text_steps(steps: &Value) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The sending controls PATCH /v1/projects/{id} changes. A field it doesn't know is a 422, so a typo never passes as a change.
+/// `sending` is the project's Start and Pause sending buttons, which routes/projects.rs runs.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Controls {
+    pub(super) sending: Option<bool>,
+    daily_email_limit: Option<i32>,
+    daily_text_limit: Option<i32>,
+    timezone: Option<String>,
+    send_days: Option<Vec<i32>>,
+    send_start_hour: Option<i32>,
+    send_end_hour: Option<i32>,
+    autopilot: Option<bool>,
+    autopilot_budget_micros: Option<i64>,
+    autopilot_lead_cap: Option<i32>,
+    autopilot_auto_send: Option<bool>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    review_window_hours: Option<Option<i32>>,
+}
+
+impl From<Controls> for SettingsBody {
+    fn from(c: Controls) -> Self {
+        Self {
+            daily_email_limit: c.daily_email_limit,
+            daily_text_limit: c.daily_text_limit,
+            timezone: c.timezone,
+            send_days: c.send_days,
+            send_start_hour: c.send_start_hour,
+            send_end_hour: c.send_end_hour,
+            autopilot: c.autopilot,
+            autopilot_budget_micros: c.autopilot_budget_micros,
+            autopilot_lead_cap: c.autopilot_lead_cap,
+            autopilot_auto_send: c.autopilot_auto_send,
+            review_window_hours: c.review_window_hours,
+            ..Default::default()
+        }
+    }
+}
+
 async fn update_settings(
     State(state): State<AppState>,
     auth: Auth,
@@ -135,7 +174,12 @@ async fn update_settings(
     Json(body): Json<SettingsBody>,
 ) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
-    let current = load_or_create(&state.db, id).await?;
+    Ok(Json(apply(&state.db, auth.org_id, id, body).await?))
+}
+
+/// Saves the fields the body fills in, with the settings page's checks, for a project the caller already checked.
+pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBody) -> AppResult<ProjectSettings> {
+    let current = load_or_create(db, id).await?;
     let bad = |m: &str| Err(AppError::BadRequest(m.into()));
 
     if body.daily_email_limit.is_some_and(|n| !(1..=5000).contains(&n)) {
@@ -144,7 +188,7 @@ async fn update_settings(
     if let Some(tz) = &body.timezone {
         let known: bool = sqlx::query_scalar("select exists(select 1 from pg_timezone_names where name = $1)")
             .bind(tz)
-            .fetch_one(&state.db)
+            .fetch_one(db)
             .await?;
         if !known {
             return bad("Unknown timezone");
@@ -196,7 +240,7 @@ async fn update_settings(
             let mut seen = std::collections::HashSet::new();
             members.retain(|m| seen.insert(*m));
             for member in &members {
-                crate::ownership::check_member(&state.db, auth.org_id, Some(*member)).await?;
+                crate::ownership::check_member(db, org_id, Some(*member)).await?;
             }
             Some(members)
         }
@@ -306,9 +350,9 @@ async fn update_settings(
     .bind(body.prep_renewals)
     .bind(body.review_window_hours.is_some())
     .bind(body.review_window_hours.flatten())
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await?;
-    Ok(Json(settings))
+    Ok(settings)
 }
 
 #[derive(Deserialize)]

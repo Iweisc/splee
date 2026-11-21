@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::auth::{Auth, KeyAuth};
+use crate::auth::{ApiKeyAuth, Auth, KeyAuth};
 use crate::routes::demo::client_ip;
 
 /// Older events go with the hourly visitor data cleanup (agent::expire_visitor_data).
@@ -63,6 +63,12 @@ impl Who {
 impl From<&Auth> for Who {
     fn from(auth: &Auth) -> Self {
         Who { org_id: auth.org_id, user_id: Some(auth.user_id), key_id: None }
+    }
+}
+
+impl From<&ApiKeyAuth> for Who {
+    fn from(auth: &ApiKeyAuth) -> Self {
+        Who { org_id: auth.org_id, user_id: auth.user_id, key_id: auth.key_id }
     }
 }
 

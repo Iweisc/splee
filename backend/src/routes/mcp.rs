@@ -24,7 +24,7 @@ use uuid::Uuid;
 use super::api_v1 as v1;
 use super::oauth;
 use super::util_input::LEAD_STATUSES;
-use crate::auth::{ApiKeyAuth, api_key_org};
+use crate::auth::{ApiKeyAuth, KeyAuth};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -43,7 +43,9 @@ const CACHE_MS: u64 = 3_600_000;
 
 const INSTRUCTIONS: &str = "Splee finds companies and people for outbound email campaigns and writes the emails. A typical loop: \
 list_projects, then list_campaigns or create_campaign, search_companies and add_companies, find_people, write_emails, then \
-list_emails_to_approve and approve_email or skip_email. find_lookalikes and add_lookalikes find companies like the user's \
+list_emails_to_approve and approve_email or skip_email. get_campaign reads a campaign's whole definition, start_campaign, \
+stop_campaign and approve_campaign run it, and update_project_controls sets the project's sending, limits, schedule, autopilot \
+and review window. list_hot_leads and get_inbox_changes follow what comes back. find_lookalikes and add_lookalikes find companies like the user's \
 customers. add_research_question and research_companies have the agent answer a question about every company, like \"Do they sell to hospitals?\", and list_research shows the answers. list_company_signals shows companies that just raised money or announced news. Finding people and writing emails take minutes: they return a run_id, so poll get_run until it's done. Approved \
 emails go out from the user's own mailboxes on the project's schedule. Hot replies open deals on the pipeline, which list_deals, \
 create_deal and move_deal follow to won or lost. assign_lead gives a lead to someone on the team. get_thread reads a reply thread and reply_to_lead answers it. get_analytics says which \
@@ -61,12 +63,12 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
     {
         return failure(StatusCode::FORBIDDEN, -32600, "This origin can't use the MCP server");
     }
-    let org_id = match authenticate(&state, &headers).await {
-        Ok(org_id) => org_id,
+    let auth = match authenticate(&state, &headers).await {
+        Ok(auth) => auth,
         Err(res) => return res,
     };
     // The same per-organization limits as the public API, which most tools call into.
-    let permit = match state.rate_limits.acquire(org_id) {
+    let permit = match state.rate_limits.acquire(auth.org_id) {
         Ok(permit) => permit,
         Err(refused) => {
             let mut res = failure(StatusCode::TOO_MANY_REQUESTS, -32000, &refused.message);
@@ -74,12 +76,12 @@ async fn handle(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
             return res;
         }
     };
-    let mut res = answer(&state, org_id, &headers, &body).await;
+    let mut res = answer(&state, &auth, &headers, &body).await;
     permit.quota.stamp(res.headers_mut());
     res
 }
 
-async fn answer(state: &AppState, org_id: Uuid, headers: &HeaderMap, body: &Bytes) -> Response {
+async fn answer(state: &AppState, auth: &ApiKeyAuth, headers: &HeaderMap, body: &Bytes) -> Response {
     let Ok(message) = serde_json::from_slice::<Value>(body) else {
         return failure(StatusCode::BAD_REQUEST, -32700, "The body isn't JSON");
     };
@@ -91,7 +93,7 @@ async fn answer(state: &AppState, org_id: Uuid, headers: &HeaderMap, body: &Byte
     let header_version = headers.get("mcp-protocol-version").and_then(|v| v.to_str().ok());
     let asked = message["params"]["_meta"][VERSION_KEY].as_str().or(header_version);
     if message["method"] != "initialize" && asked.is_some_and(|v| !LEGACY.contains(&v)) {
-        return stateless(state, org_id, headers, &message).await;
+        return stateless(state, auth, headers, &message).await;
     }
     // Notifications, like notifications/initialized, and responses need nothing back.
     let (Some(id), Some(method)) = (message.get("id"), message.get("method").and_then(Value::as_str)) else {
@@ -102,7 +104,7 @@ async fn answer(state: &AppState, org_id: Uuid, headers: &HeaderMap, body: &Byte
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(state, org_id, &params).await,
+        "tools/call" => call_tool(state, auth, &params).await,
         _ => Err((-32601, format!("Unknown method {method}"))),
     };
     Json(match outcome {
@@ -114,19 +116,21 @@ async fn answer(state: &AppState, org_id: Uuid, headers: &HeaderMap, body: &Byte
 
 /// An API key, or an OAuth access token issued for this server. A 401 points the client at the protected resource metadata,
 /// where it finds Splee's authorization server and signs the user in.
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Uuid, Response> {
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<ApiKeyAuth, Response> {
     let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
     let found = match token {
-        Some(token) => match api_key_org(&state.db, token).await {
-            Ok(Some(org_id)) => Ok(Some(org_id)),
-            Ok(None) => oauth::token_org(&state.db, token, &oauth::resource(&state.cfg)).await,
+        Some(token) => match KeyAuth::find(&state.db, token).await {
+            Ok(Some(KeyAuth { org_id, key_id })) => Ok(Some(ApiKeyAuth { key_id: Some(key_id), ..ApiKeyAuth::org(org_id) })),
+            Ok(None) => oauth::token_org(&state.db, token, &oauth::resource(&state.cfg))
+                .await
+                .map(|found| found.map(|(org_id, user_id)| ApiKeyAuth { user_id: Some(user_id), ..ApiKeyAuth::org(org_id) })),
             Err(e) => Err(e),
         },
         None => Ok(None),
     };
     let metadata = oauth::resource_metadata_url(&state.cfg);
     let challenge = match (found, token) {
-        (Ok(Some(org_id)), _) => return Ok(org_id),
+        (Ok(Some(auth)), _) => return Ok(auth),
         (Err(e), _) => return Err(AppError::from(e).into_response()),
         (Ok(None), None) => format!("Bearer resource_metadata=\"{metadata}\""),
         (Ok(None), Some(_)) => format!("Bearer error=\"invalid_token\", error_description=\"The token is wrong, expired or revoked\", resource_metadata=\"{metadata}\""),
@@ -173,7 +177,7 @@ fn header_value(value: &str) -> Option<String> {
 }
 
 /// The 2026-07-28 revision. The body is the source of truth, and the headers that mirror it have to agree with it.
-async fn stateless(state: &AppState, org_id: Uuid, headers: &HeaderMap, message: &Value) -> Response {
+async fn stateless(state: &AppState, auth: &ApiKeyAuth, headers: &HeaderMap, message: &Value) -> Response {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let params = &message["params"];
     let meta = &params["_meta"];
@@ -214,7 +218,7 @@ async fn stateless(state: &AppState, org_id: Uuid, headers: &HeaderMap, message:
             "cacheScope": "private",
         }),
         "tools/list" => json!({ "tools": tools(), "ttlMs": CACHE_MS, "cacheScope": "private" }),
-        "tools/call" => match call_tool(state, org_id, params).await {
+        "tools/call" => match call_tool(state, auth, params).await {
             Ok(result) => result,
             Err((code, text)) => return refuse(StatusCode::OK, code, &text),
         },
@@ -225,10 +229,10 @@ async fn stateless(state: &AppState, org_id: Uuid, headers: &HeaderMap, message:
     Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
 }
 
-async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Value, (i64, String)> {
+async fn call_tool(state: &AppState, auth: &ApiKeyAuth, params: &Value) -> Result<Value, (i64, String)> {
     let name = params["name"].as_str().unwrap_or_default();
     let args = Some(&params["arguments"]).filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
-    let Some((text, is_error)) = call(state, org_id, name, args).await else {
+    let Some((text, is_error)) = call(state, auth.clone(), name, args).await else {
         return Err((-32602, format!("Unknown tool {name}")));
     };
     Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
@@ -236,9 +240,9 @@ async fn call_tool(state: &AppState, org_id: Uuid, params: &Value) -> Result<Val
 
 /// Runs a tool for the organization, as the text the model reads and whether it failed. None for a tool that doesn't exist.
 /// Also how Ask Splee reads the pipeline (agent/ask.rs).
-pub(crate) async fn call(state: &AppState, org_id: Uuid, name: &str, args: Value) -> Option<(String, bool)> {
+pub(crate) async fn call(state: &AppState, auth: ApiKeyAuth, name: &str, args: Value) -> Option<(String, bool)> {
     // A failed call is a result the model reads and can recover from, like a wrong id, not a protocol error.
-    Some(match run(state, ApiKeyAuth { org_id }, name, args).await? {
+    Some(match run(state, auth, name, args).await? {
         Ok(value) => (value.to_string(), false),
         Err(e) => {
             if let AppError::Internal(err) = &e {
@@ -388,7 +392,26 @@ async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args: Value) ->
                        "effective_language": detail["effective_language"], "effective_language_source": detail["effective_language_source"] }))
         }
         .await,
-        "set_campaign_language" => async { value(v1::update_campaign(st(), auth, id(a, "segment_id")?, Json(parse(a)?)).await?) }.await,
+        "set_campaign_language" => async {
+            value(v1::update_campaign(st(), auth, id(a, "segment_id")?, Json(json!({ "language": a["language"] }))).await?)
+        }
+        .await,
+        "get_campaign" => async { value(v1::get_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "start_campaign" => async { value(v1::start_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "stop_campaign" => async { value(v1::stop_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "approve_campaign" => async { value(v1::approve_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "update_project_controls" => async {
+            // The rest of the arguments are the PATCH body, which refuses fields it doesn't know.
+            let mut body = a.clone();
+            if let Some(body) = body.as_object_mut() {
+                body.remove("project_id");
+                body.remove("per_page");
+            }
+            value(v1::update_project(st(), auth, id(a, "project_id")?, Json(body)).await?)
+        }
+        .await,
+        "list_hot_leads" => async { value(v1::hot_leads(st(), auth, Query(parse(a)?), Query(parse(a)?)).await?) }.await,
+        "get_inbox_changes" => async { value(v1::inbox_changes(st(), auth, id(a, "project_id")?, Query(parse(a)?)).await?) }.await,
         "assign_lead" => async {
             let detail = value(v1::assign_lead(st(), auth, id(a, "lead_id")?, Json(parse(a)?)).await?)?;
             Ok(json!({ "id": detail["id"], "full_name": detail["full_name"], "owner_id": detail["owner_id"], "owner_email": detail["owner_email"] }))
@@ -524,6 +547,7 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
 fn tools() -> Vec<Value> {
     let read = json!({ "readOnlyHint": true });
     let adds = json!({ "readOnlyHint": false, "destructiveHint": false });
+    let control = json!({ "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true });
     let project = id_prop("A project id from list_projects");
     let campaign = id_prop("A campaign id from list_campaigns or create_campaign");
     vec![
@@ -878,6 +902,95 @@ fn tools() -> Vec<Value> {
             adds.clone(),
         ),
         tool(
+            "get_campaign",
+            "Get campaign",
+            "A campaign's whole definition as its page shows it: status and status_reason, targeting, the brief its emails are \
+             written from (pain_points, angle, and the A/B test's angles in ab_test), language, tracking, the project's schedule and \
+             follow-ups it sends on, an imported campaign's sequence, and its funnel. read_only lists what can't be changed here and why.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            read.clone(),
+        ),
+        tool(
+            "start_campaign",
+            "Start campaign",
+            "The campaign's Start button: it sends on the project's schedule, and its drafts are approved for sending. A campaign \
+             that's already sending is left as it is. Sending also needs the project's sending on, see update_project_controls.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
+            "stop_campaign",
+            "Stop campaign",
+            "The campaign's Pause button: its unsent first emails and follow-ups go back to drafts until it starts again. Replies \
+             still come in, and answers to them stay queued. A campaign that isn't sending is left as it is.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
+            "approve_campaign",
+            "Approve campaign drafts",
+            "Approves every first email and follow-up waiting as a draft in the campaign, like approve_email on each, and says how \
+             many in approved. In a sending campaign they go out on the project's schedule. A paused one holds them until it starts.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
+            "update_project_controls",
+            "Update project controls",
+            "Changes a project's sending controls and returns them all. Pass only what changes, or nothing to read them. sending \
+             turns the whole project's sending on or off, and on needs an active mailbox. A field it doesn't take is refused.",
+            json!({
+                "project_id": project,
+                "sending": { "type": "boolean", "description": "Optional. The project's Start and Pause sending" },
+                "daily_email_limit": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Optional. Emails a day" },
+                "daily_text_limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Optional. Texts a day" },
+                "timezone": { "type": "string", "description": "Optional. The send window's time zone, like Europe/London" },
+                "send_days": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 7 }, "description": "Optional. 1 is Monday, 7 Sunday" },
+                "send_start_hour": { "type": "integer", "minimum": 0, "maximum": 23, "description": "Optional" },
+                "send_end_hour": { "type": "integer", "minimum": 1, "maximum": 24, "description": "Optional. After send_start_hour" },
+                "autopilot": { "type": "boolean", "description": "Optional. Keeps sending campaigns stocked with written emails" },
+                "autopilot_budget_micros": { "type": "integer", "minimum": 0, "description": "Optional. Claude spend a month in micro-dollars" },
+                "autopilot_lead_cap": { "type": "integer", "minimum": 0, "maximum": 100000, "description": "Optional. New leads emailed a month" },
+                "autopilot_auto_send": { "type": "boolean", "description": "Optional. Autopilot's emails go out without approval" },
+                "review_window_hours": { "type": ["integer", "null"], "minimum": 1, "maximum": 72,
+                                         "description": "Optional. Drafts nobody reviewed go out after this many hours. null keeps them waiting" },
+            }),
+            &["project_id"],
+            control,
+        ),
+        tool(
+            "list_hot_leads",
+            "List hot leads",
+            "Every lead across the organization whose reply was hot, newest first: name, email, title, company, domain, LinkedIn, \
+             their campaign, the reply that made them hot and why_hot, and became_hot_at. Pass since as the newest became_hot_at \
+             you've seen to get only new ones.",
+            page_props(json!({
+                "since": { "type": "string", "format": "date-time", "description": "Optional. Only leads that became hot after this" },
+                "project_id": id_prop("Optional. Only this project's leads"),
+            })),
+            &[],
+            read.clone(),
+        ),
+        tool(
+            "get_inbox_changes",
+            "Get new replies",
+            "A project's replies that came in since cursor, oldest first, each once. Pass next_cursor as cursor on the next call. \
+             On the first call pass since or nothing for every reply. has_more means call again now. A reply shows up about 5 \
+             seconds after it arrives, and classification is null until the classifier has read it.",
+            json!({
+                "project_id": project,
+                "cursor": { "type": "string", "description": "Optional. next_cursor from the last call" },
+                "since": { "type": "string", "format": "date-time", "description": "Optional. On the first call, only replies after this" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Optional. At most this many, 100 by default" },
+            }),
+            &["project_id"],
+            read.clone(),
+        ),
+        tool(
             "assign_lead",
             "Assign lead",
             "Gives a lead to someone on the team, who then gets its hot-reply alerts, or takes it back with owner null. The project's \
@@ -1201,7 +1314,8 @@ mod tests {
                      "create_deal", "move_deal", "get_analytics", "assign_lead", "list_call_tasks", "log_call", "list_meetings", "get_thread", "reply_to_lead",
                      "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                      "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
-                     "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research"] {
+                     "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
+                     "start_campaign", "stop_campaign", "approve_campaign", "update_project_controls", "list_hot_leads", "get_inbox_changes"] {
             assert!(names.contains(&name), "{name} missing");
         }
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && !t["description"].as_str().unwrap().is_empty()));
@@ -1882,5 +1996,81 @@ mod tests {
         assert_eq!((added["added"][0]["email"].as_str(), added["added"][0]["contact_name"].as_str()), (Some("ana.ruiz@smile.example"), Some("Ana Ruiz")));
         let (_, text) = server.call(KEY, "add_local_businesses", json!({ "campaign_id": segment, "place_ids": ["smile"] })).await;
         assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["skipped"][0]["reason"], "Already in this project");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn campaigns_run_and_replies_follow_through_mcp(db: PgPool) {
+        let [(project, segment), (other_project, other_segment)] = seed(&db).await;
+        let lead: Uuid = sqlx::query_scalar(
+            "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Ana', 'ana@smile.example') returning id),
+             e as (insert into email_messages (project_id, lead_id, segment_id, direction, kind, subject, body, status)
+                   select $1, l.id, $2, 'outbound', 'initial', 'Hi', 'Hello', 'draft' from l)
+             select id from l",
+        )
+        .bind(project)
+        .bind(segment)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, direction, kind, body, status, classification, classification_reason, created_at)
+             values ($1, $2, 'inbound', 'inbound', 'Can we talk Tuesday?', 'received', 'hot', 'Wants a call', now() - interval '1 minute')",
+        )
+        .bind(project)
+        .bind(lead)
+        .execute(&db)
+        .await
+        .unwrap();
+        let server = Server::start(db.clone()).await;
+        let status = |id: Uuid| {
+            let db = db.clone();
+            async move { sqlx::query_scalar::<_, String>("select status from segments where id = $1").bind(id).fetch_one(&db).await.unwrap() }
+        };
+        let parsed = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+
+        let (is_error, text) = server.call(KEY, "get_campaign", json!({ "campaign_id": segment })).await;
+        assert!(!is_error && parsed(&text)["status"] == "draft" && parsed(&text)["schedule"].is_object(), "{text}");
+        let (is_error, text) = server.call(KEY, "approve_campaign", json!({ "campaign_id": segment })).await;
+        assert_eq!((is_error, parsed(&text)), (false, json!({ "accepted": true, "approved": 1 })), "{text}");
+        assert_eq!(server.call(KEY, "start_campaign", json!({ "campaign_id": segment })).await, (false, r#"{"accepted":true}"#.into()));
+        assert_eq!(status(segment).await, "working");
+        assert_eq!(server.call(KEY, "stop_campaign", json!({ "campaign_id": segment })).await, (false, r#"{"accepted":true}"#.into()));
+        assert_eq!(status(segment).await, "paused");
+        let audited: i64 = sqlx::query_scalar("select count(*) from audit_events where action in ('campaign.launched', 'campaign.paused') and actor_key_id is not null")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(audited, 2, "the audit log names the key");
+
+        let (is_error, text) = server.call(KEY, "update_project_controls", json!({ "project_id": project, "daily_email_limit": 70, "review_window_hours": 12 })).await;
+        assert!(!is_error && parsed(&text)["daily_email_limit"] == 70 && parsed(&text)["review_window_hours"] == 12, "{text}");
+        let (is_error, text) = server.call(KEY, "update_project_controls", json!({ "project_id": project, "budget": 5 })).await;
+        assert!(is_error && text.contains("unknown field `budget`"), "{text}");
+
+        let (is_error, text) = server.call(KEY, "list_hot_leads", json!({})).await;
+        let hot = parsed(&text);
+        assert!(!is_error, "{text}");
+        assert_eq!((hot["total"].clone(), hot["items"][0]["lead_id"].clone(), hot["items"][0]["reply"].clone()), (json!(1), json!(lead), json!("Can we talk Tuesday?")));
+        let (is_error, text) = server.call(KEY, "get_inbox_changes", json!({ "project_id": project })).await;
+        let changes = parsed(&text);
+        assert!(!is_error && changes["items"].as_array().unwrap().len() == 1 && changes["has_more"] == false, "{text}");
+        let (_, text) = server.call(KEY, "get_inbox_changes", json!({ "project_id": project, "cursor": changes["next_cursor"] })).await;
+        assert_eq!(parsed(&text)["items"], json!([]));
+
+        // Another organization's ids look like ids that don't exist.
+        for (tool, args) in [
+            ("get_campaign", json!({ "campaign_id": other_segment })),
+            ("start_campaign", json!({ "campaign_id": other_segment })),
+            ("stop_campaign", json!({ "campaign_id": other_segment })),
+            ("approve_campaign", json!({ "campaign_id": other_segment })),
+            ("update_project_controls", json!({ "project_id": other_project, "daily_email_limit": 70 })),
+            ("get_inbox_changes", json!({ "project_id": other_project })),
+            ("list_hot_leads", json!({ "project_id": other_project })),
+        ] {
+            assert_eq!(server.call(KEY, tool, args).await, (true, "Not found".into()), "{tool}");
+        }
+        assert_eq!(status(other_segment).await, "draft");
     }
 }

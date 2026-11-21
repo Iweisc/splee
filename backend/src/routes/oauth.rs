@@ -618,14 +618,14 @@ async fn revoke(State(state): State<AppState>, headers: HeaderMap, form: Result<
     }
 }
 
-/// The organization an access token acts for, when it's live, was issued for `resource`, its grant isn't revoked and the user who
+/// The organization an access token acts for and the member who allowed it, when it's live, was issued for `resource`, its grant isn't revoked and the user who
 /// allowed it is still in the organization. A token can then do what a member can, like an API key.
-pub async fn token_org(db: &PgPool, token: &str, resource: &str) -> sqlx::Result<Option<Uuid>> {
-    sqlx::query_scalar(
+pub async fn token_org(db: &PgPool, token: &str, resource: &str) -> sqlx::Result<Option<(Uuid, Uuid)>> {
+    sqlx::query_as(
         "update oauth_grants g set last_used_at = now() from oauth_tokens t, memberships m
          where t.token_hash = $1 and t.kind = 'access' and t.expires_at > now() and g.id = t.grant_id and g.revoked_at is null
            and g.resource = $2 and m.user_id = g.user_id and m.org_id = g.org_id
-         returning g.org_id",
+         returning g.org_id, g.user_id",
     )
     .bind(sha256_hex(token))
     .bind(resource)

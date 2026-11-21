@@ -6,6 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::util_scope;
@@ -128,18 +129,23 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 }
 
 #[derive(Serialize)]
-struct Steps {
+pub(super) struct Steps {
     /// The tool the campaign came from, or null for a campaign made in Splee.
-    imported_from: Option<String>,
-    steps: Vec<SegmentStep>,
+    pub imported_from: Option<String>,
+    pub steps: Vec<SegmentStep>,
 }
 
 async fn steps(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Steps>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let imported_from: Option<String> = sqlx::query_scalar("select imported_from from segments where id = $1").bind(segment.id).fetch_one(&state.db).await?;
+    Ok(Json(steps_of(&state.db, segment.id).await?))
+}
+
+/// The emails a campaign brought over from another tool, which Splee sends as written. Empty for a campaign made in Splee.
+pub(super) async fn steps_of(db: &PgPool, segment_id: Uuid) -> AppResult<Steps> {
+    let imported_from: Option<String> = sqlx::query_scalar("select imported_from from segments where id = $1").bind(segment_id).fetch_one(db).await?;
     let steps = sqlx::query_as::<_, SegmentStep>("select position, delay_days, subject, body from segment_steps where segment_id = $1 order by position")
-        .bind(segment.id)
-        .fetch_all(&state.db)
+        .bind(segment_id)
+        .fetch_all(db)
         .await?;
-    Ok(Json(Steps { imported_from: imported_from.and_then(|t| Tool::parse(&t)).map(|t| t.label().to_string()), steps }))
+    Ok(Steps { imported_from: imported_from.and_then(|t| Tool::parse(&t)).map(|t| t.label().to_string()), steps })
 }

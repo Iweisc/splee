@@ -3,13 +3,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::auth::ClaimBody;
 use super::{settings, util_input};
 use crate::agent::{self, kind};
-use crate::audit::{self, Target};
+use crate::audit::{self, Target, Who};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::{AgentRun, Project, ProjectSettings};
@@ -262,28 +262,45 @@ fn label(project: &Project) -> &str {
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let project = auth.project(&state.db, id).await?;
-    let has_mailbox: bool = sqlx::query_scalar("select exists(select 1 from mailboxes where org_id = $1 and status = 'active')")
-        .bind(auth.org_id)
-        .fetch_one(&state.db)
-        .await?;
-    if !has_mailbox {
-        return Err(AppError::BadRequest("Connect an active mailbox before starting. Emails are sent from your own mailboxes.".into()));
-    }
-    settings::load_or_create(&state.db, id).await?;
-    let mut tx = state.db.begin().await?;
-    sqlx::query("update project_settings set paused = false where project_id = $1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("update projects set status = 'active' where id = $1").bind(id).execute(&mut *tx).await?;
-    tx.commit().await?;
-    audit::record(&state.db, &auth, "project.started", Target::new("project", id, label(&project)), json!({})).await;
+    start_sending(&state.db, &auth, &project).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+pub(super) const NO_MAILBOX: &str = "Connect an active mailbox before starting. Emails are sent from your own mailboxes.";
+
+/// Emails are sent from the organization's own mailboxes, so a project can't start sending without one.
+pub(super) async fn has_mailbox(db: &PgPool, org_id: Uuid) -> AppResult<bool> {
+    Ok(sqlx::query_scalar("select exists(select 1 from mailboxes where org_id = $1 and status = 'active')").bind(org_id).fetch_one(db).await?)
+}
+
+/// The project's Start sending button. PATCH /v1/projects/{id} with sending true calls it too.
+pub(super) async fn start_sending(db: &PgPool, who: impl Into<Who>, project: &Project) -> AppResult<()> {
+    let who = who.into();
+    // The app's toggle offers to connect a mailbox on this 400. The public API checks first and answers 409.
+    if !has_mailbox(db, who.org_id()).await? {
+        return Err(AppError::BadRequest(NO_MAILBOX.into()));
+    }
+    settings::load_or_create(db, project.id).await?;
+    let mut tx = db.begin().await?;
+    sqlx::query("update project_settings set paused = false where project_id = $1").bind(project.id).execute(&mut *tx).await?;
+    sqlx::query("update projects set status = 'active' where id = $1").bind(project.id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record(db, who, "project.started", Target::new("project", project.id, label(project)), json!({})).await;
+    Ok(())
 }
 
 async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let project = auth.project(&state.db, id).await?;
-    let mut tx = state.db.begin().await?;
-    sqlx::query("update project_settings set paused = true where project_id = $1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("update projects set status = 'paused' where id = $1 and status = 'active'").bind(id).execute(&mut *tx).await?;
-    tx.commit().await?;
-    audit::record(&state.db, &auth, "project.paused", Target::new("project", id, label(&project)), json!({})).await;
+    pause_sending(&state.db, &auth, &project).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// The project's Pause sending button. PATCH /v1/projects/{id} with sending false calls it too.
+pub(super) async fn pause_sending(db: &PgPool, who: impl Into<Who>, project: &Project) -> AppResult<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("update project_settings set paused = true where project_id = $1").bind(project.id).execute(&mut *tx).await?;
+    sqlx::query("update projects set status = 'paused' where id = $1 and status = 'active'").bind(project.id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit::record(db, who, "project.paused", Target::new("project", project.id, label(project)), json!({})).await;
+    Ok(())
 }

@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use super::sdk::Call;
 use super::{Ctx, Outcome};
+use crate::auth::ApiKeyAuth;
 use crate::routes::mcp;
 use crate::state::AppState;
 
@@ -61,7 +62,7 @@ fn tools(state: &AppState, org_id: Uuid) -> Vec<SdkMcpTool> {
             tool!(name, t["description"].as_str().unwrap_or_default(), t["inputSchema"].clone(), move |args: Value| {
                 let (state, name) = (state.clone(), called.clone());
                 async move {
-                    let (text, is_error) = mcp::call(&state, org_id, &name, args).await.unwrap_or_else(|| (format!("Unknown tool {name}"), true));
+                    let (text, is_error) = mcp::call(&state, ApiKeyAuth::org(org_id), &name, args).await.unwrap_or_else(|| (format!("Unknown tool {name}"), true));
                     Ok(ToolResult { content: vec![McpToolResultContent::Text { text }], is_error })
                 }
             })

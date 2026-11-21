@@ -1184,7 +1184,7 @@ mod tests {
         let session = Auth { user_id: Uuid::new_v4(), org_id: other, role: "owner".into(), token_hash: String::new() };
         let refused = super::project_analytics(State(state.clone()), session, Path(s.project), Query(october())).await;
         assert!(matches!(refused, Err(AppError::NotFound)));
-        let refused = super::super::api_v1::project_analytics(State(state), ApiKeyAuth { org_id: other }, Path(s.project), Query(october())).await;
+        let refused = super::super::api_v1::project_analytics(State(state), ApiKeyAuth::org(other), Path(s.project), Query(october())).await;
         assert!(matches!(refused, Err(AppError::NotFound)));
     }
 
@@ -1289,7 +1289,7 @@ mod tests {
             .unwrap();
         }
         let state = crate::autopilot::tests::state(db.clone());
-        let api = || super::super::api_v1::project_analytics(State(state.clone()), ApiKeyAuth { org_id: s.org }, Path(s.project), Query(october()));
+        let api = || super::super::api_v1::project_analytics(State(state.clone()), ApiKeyAuth::org(s.org), Path(s.project), Query(october()));
         let Json(usd) = api().await.unwrap();
         let usd = serde_json::to_value(usd).unwrap();
         assert_eq!((usd["totals"]["revenue_per_meeting_cents"].as_i64(), usd["previous"]["revenue_per_meeting_cents"].as_i64()), (Some(100_000), Some(30_000)));

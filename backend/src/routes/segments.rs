@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{util_input, util_scope};
 use crate::agent::{self, kind};
-use crate::audit::{self, Target};
+use crate::audit::{self, Target, Who};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::Segment;
@@ -345,7 +345,18 @@ pub(super) async fn start_write_emails(db: &PgPool, org_id: Uuid, segment: &Segm
 
 async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let mut tx = state.db.begin().await?;
+    launch(&state.db, &auth, &segment).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Whether the campaign sends. The app shows Pause for these and Start for the rest.
+pub(super) fn running(segment: &Segment) -> bool {
+    matches!(segment.status.as_str(), "working" | "scaling")
+}
+
+/// The campaign's Start button: it sends, and its drafts are approved. POST /v1/campaigns/{id}/start calls it too.
+pub(super) async fn launch(db: &PgPool, who: impl Into<Who>, segment: &Segment) -> AppResult<()> {
+    let mut tx = db.begin().await?;
     sqlx::query("update segments set status = 'working' where id = $1").bind(segment.id).execute(&mut *tx).await?;
     // Pausing turned queued follow-ups back into drafts, so starting queues them again for the day they were due.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
@@ -366,13 +377,19 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         .await?;
     tx.commit().await?;
     let details = json!({ "project_id": segment.project_id, "emails_queued": lead_ids.len() });
-    audit::record(&state.db, &auth, "campaign.launched", Target::new("campaign", segment.id, &segment.name), details).await;
-    Ok(Json(json!({ "ok": true })))
+    audit::record(db, who, "campaign.launched", Target::new("campaign", segment.id, &segment.name), details).await;
+    Ok(())
 }
 
 async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
-    let mut tx = state.db.begin().await?;
+    hold(&state.db, &auth, &segment).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The campaign's Pause button: its unsent emails go back to drafts until it starts again. POST /v1/campaigns/{id}/stop calls it too.
+pub(super) async fn hold(db: &PgPool, who: impl Into<Who>, segment: &Segment) -> AppResult<()> {
+    let mut tx = db.begin().await?;
     sqlx::query("update segments set status = 'paused' where id = $1").bind(segment.id).execute(&mut *tx).await?;
     // Manual and auto replies are answers to real people, so pausing a campaign leaves them queued.
     let lead_ids: Vec<Uuid> = sqlx::query_scalar(
@@ -393,8 +410,8 @@ async fn pause(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
         .await?;
     tx.commit().await?;
     let details = json!({ "project_id": segment.project_id, "emails_held": lead_ids.len() });
-    audit::record(&state.db, &auth, "campaign.paused", Target::new("campaign", segment.id, &segment.name), details).await;
-    Ok(Json(json!({ "ok": true })))
+    audit::record(db, who, "campaign.paused", Target::new("campaign", segment.id, &segment.name), details).await;
+    Ok(())
 }
 
 #[cfg(test)]
