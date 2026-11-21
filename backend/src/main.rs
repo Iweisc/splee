@@ -10,6 +10,7 @@ mod blog;
 mod bluesky;
 mod booking;
 mod calls;
+mod campaign_imports;
 mod chat;
 mod close_plans;
 mod config;
@@ -151,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
     mail::spawn_workers(state.clone());
     deliverability::spawn_worker(state.clone());
     directory_queue::spawn_worker(state.db.clone());
+    campaign_imports::spawn_worker(state.db.clone());
     saved_searches::spawn_worker(state.clone());
     hiring::spawn_worker(state.db.clone());
     jobchanges::spawn_worker(state.clone());
