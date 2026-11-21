@@ -1011,6 +1011,23 @@ function endpoints(projectId: string): Endpoint[] {
     },
     {
       method: "GET",
+      path: "/erased-leads?cursor=1762251120000000_c42e…",
+      summary:
+        "Leads someone deleted or forgot in Splee, oldest first, so you can delete what you keep of each one in your CRM, sheets and automations. Only the ids you got the lead with are left, because the name and address are gone. forgotten means the address also went on your do-not-contact list. Poll it like inbox changes. A lead shows up about 5 seconds after it's erased.",
+      params: [
+        ["project_id", "optional, only this project"],
+        ["cursor", "next_cursor from the last call"],
+        ["since", "on the first call instead, only leads erased after this. Without either, from the first"],
+        ["limit", "1 to 500, default 100"],
+      ],
+      response: `{
+  "items": [{ "lead_id": "c42e…", "project_id": "${projectId}", "campaign_id": "5d0a…", "forgotten": true, "erased_at": "2026-11-04T10:12:00Z" }],
+  "next_cursor": "1762251120000000_c42e…",
+  "has_more": false
+}`,
+    },
+    {
+      method: "GET",
       path: `/emails?project_id=${projectId}`,
       summary:
         "Draft emails waiting for approval, oldest first, across all projects or one. Pass status to see others, like approved or sent.",
