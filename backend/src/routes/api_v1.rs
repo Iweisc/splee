@@ -57,8 +57,9 @@ use crate::models::{
     SuppressionList, Ts,
 };
 use crate::monthly_cap::{self, Cap};
-use crate::porkbun::Availability;
 use crate::ownership;
+use crate::porkbun::Availability;
+use crate::send_state::{self, SendState};
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
@@ -76,6 +77,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/campaigns/import/{id}", get(campaign_import))
         .route("/v1/campaigns/import/{id}/rows", get(campaign_import_rows))
         .route("/v1/campaigns/{id}/start", post(start_campaign))
+        .route("/v1/campaigns/{id}/send-state", get(campaign_send_state))
         .route("/v1/campaigns/{id}/stop", post(stop_campaign))
         .route("/v1/campaigns/{id}/approve", post(approve_campaign))
         .route("/v1/campaigns/{id}/archive", post(archive_campaign))
@@ -568,6 +570,13 @@ fn status_reason(segment: &Segment, project_sending: bool, by_optimizer: bool) -
         ("scaling", _) => "Sending ahead of the project's other campaigns, since it gets hot leads for fewer emails".into(),
         _ => "Sending on the project's schedule".into(),
     }
+}
+
+/// Whether the campaign's emails go out now and, if not, the one thing holding them. See send_state.rs.
+pub(super) async fn campaign_send_state(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<SendState>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let settings = settings::load_or_create(&state.db, segment.project_id).await?;
+    Ok(Json(send_state::load(&state.db, auth.org_id, &segment, &settings, chrono::Utc::now()).await?))
 }
 
 fn accepted() -> Json<Value> {
@@ -3523,5 +3532,85 @@ mod tests {
             assert_eq!(api.get(&format!("/v1/tasks?{bad}")).await.0, 400, "{bad}");
         }
         assert_eq!(ids(&api.send(Method::GET, KEYS[1], "/v1/tasks", None, None).await.2), [theirs]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaigns_send_state_names_what_holds_it_for_the_keys_organization(db: PgPool) {
+        let [a, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let (segment, email) = campaign(&db, a, "working").await;
+        // Sending, every hour of every day, so the test doesn't depend on when it runs. New projects start paused.
+        sqlx::query(
+            "insert into project_settings (project_id, paused, send_days, send_start_hour, send_end_hour) values ($1, false, '{1,2,3,4,5,6,7}', 0, 24)
+             on conflict (project_id) do update set paused = false, send_days = excluded.send_days, send_start_hour = 0, send_end_hour = 24",
+        )
+        .bind(a)
+        .execute(&db)
+        .await
+        .unwrap();
+        let path = format!("/v1/campaigns/{segment}/send-state");
+        let state = || async { api.get(&path).await.1 };
+
+        assert_eq!(state().await["state"], "no_mailbox");
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(a).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, 'sam@acme.test', 'x', '', '')")
+            .bind(org)
+            .execute(&db)
+            .await
+            .unwrap();
+        let waiting = state().await;
+        assert_eq!(
+            (&waiting["state"], &waiting["message"], &waiting["sending_now"], &waiting["today"]["drafts"]),
+            (&json!("awaiting_approval"), &json!("1 email waits for approval"), &json!(false), &json!(1)),
+            "{waiting}"
+        );
+        assert_eq!(waiting["next_action"], format!("POST /v1/campaigns/{segment}/approve"));
+        assert_eq!(waiting["allowed_actions"], json!(["stop", "approve", "archive"]));
+
+        sqlx::query("update email_messages set status = 'approved' where id = $1").bind(email).execute(&db).await.unwrap();
+        let sending = state().await;
+        let summary = (&sending["state"], &sending["sending_now"], &sending["today"]["queued"]);
+        assert_eq!(summary, (&json!("sending"), &json!(true), &json!(1)), "{sending}");
+        assert_eq!(sending["next_action"], Value::Null);
+
+        // A follow-up waits for its thread's mailbox, here one still warming up, even with another mailbox free.
+        let warming: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, warmup, total_daily_limit)
+             values ($1, 'ana@acme.test', 'x', '', '', true, 0) returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("update email_messages set kind = 'follow_up', mailbox_id = $2 where id = $1")
+            .bind(email)
+            .bind(warming)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(state().await["state"], "mailboxes_full");
+        // A first email due too can go out from the free mailbox, until autopilot's lead cap holds it.
+        sqlx::query(
+            "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Bo', 'bo@smile.example') returning id)
+             insert into email_messages (project_id, lead_id, segment_id, direction, kind, subject, body, status)
+             select $1, l.id, $2, 'outbound', 'initial', 'Hi', 'Hello', 'approved' from l",
+        )
+        .bind(a)
+        .bind(segment)
+        .execute(&db)
+        .await
+        .unwrap();
+        assert_eq!(state().await["state"], "sending");
+        sqlx::query("update project_settings set autopilot = true, autopilot_lead_cap = 0 where project_id = $1").bind(a).execute(&db).await.unwrap();
+        assert_eq!(state().await["state"], "mailboxes_full", "the follow-up still waits for its mailbox, and the first email for the 1st");
+
+        sqlx::query("update project_settings set paused = true where project_id = $1").bind(a).execute(&db).await.unwrap();
+        let paused = state().await;
+        let resume = format!("PATCH /v1/projects/{a} with {{\"sending\": true}}");
+        assert_eq!((&paused["state"], &paused["next_action"]), (&json!("project_paused"), &json!(resume)));
+
+        assert_eq!(api.send(Method::GET, KEYS[1], &path, None, None).await.0, 404);
     }
 }

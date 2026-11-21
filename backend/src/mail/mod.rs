@@ -12,7 +12,7 @@ pub(crate) mod smtp;
 pub mod warmup;
 
 pub use notify::notify_team;
-pub use sender::in_window;
+pub use sender::{day_start, in_window, window_opens};
 
 use std::time::Duration;
 
