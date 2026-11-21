@@ -1,7 +1,7 @@
 //! Search over the company database, the queue instance operators load countries into it with, and adding its companies, or
 //! the people LinkedIn finds at them, to a project.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -103,6 +103,56 @@ pub(crate) struct DescribeBody {
 /// The filters a sentence like "dentists in Leeds that list an email" stands for, for the page to fill in.
 async fn filters_from_text(State(state): State<AppState>, auth: Auth, Json(body): Json<DescribeBody>) -> AppResult<Json<Described>> {
     Ok(Json(company_filters::describe(&state, &Claude, auth.org_id, &body.query).await?))
+}
+
+/// The most domains one lookup takes.
+const MAX_LOOKUP: usize = 1000;
+
+#[derive(Deserialize)]
+pub(crate) struct ByDomainsBody {
+    domains: Vec<String>,
+    /// As in SearchQuery: the project whose dedup lists hide companies as well as the ones for every project, and true to
+    /// show the hidden companies too.
+    #[serde(default, deserialize_with = "util_input::blank_as_none")]
+    project_id: Option<Uuid>,
+    #[serde(default)]
+    include_hidden: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ByDomains {
+    /// One company per domain the database has, in the order the domains came.
+    items: Vec<Listing>,
+    /// The other domains, cleaned up like the found ones, which includes those your dedup lists hide.
+    not_found: Vec<String>,
+}
+
+/// The database's company for each domain, for a list from a CRM or a spreadsheet. Domains are cleaned up like everywhere else,
+/// so https://www.Acme.com/about finds acme.com, and repeats count once.
+pub(crate) async fn by_domains(db: &PgPool, org_id: Uuid, body: ByDomainsBody) -> AppResult<ByDomains> {
+    if body.domains.is_empty() || body.domains.len() > MAX_LOOKUP {
+        return Err(AppError::BadRequest(format!("Send 1 to {MAX_LOOKUP} domains")));
+    }
+    let (mut domains, mut seen) = (Vec::with_capacity(body.domains.len()), HashSet::new());
+    for raw in &body.domains {
+        let domain = util_input::domain(raw).ok_or_else(|| AppError::BadRequest(format!("{raw:?} isn't a domain")))?;
+        if seen.insert(domain.clone()) {
+            domains.push(domain);
+        }
+    }
+    let q = SearchQuery { project_id: body.project_id, include_hidden: body.include_hidden, ..SearchQuery::default() };
+    let mut search = q.search(Some(org_id))?;
+    search.domains = Some(domains.clone());
+    let mut found: HashMap<String, Listing> =
+        directory::search(db, &search, MAX_LOOKUP as i64, 0).await?.into_iter().map(|c| (c.domain.clone(), c)).collect();
+    let (mut items, mut not_found) = (vec![], vec![]);
+    for domain in domains {
+        match found.remove(&domain) {
+            Some(company) => items.push(company),
+            None => not_found.push(domain),
+        }
+    }
+    Ok(ByDomains { items, not_found })
 }
 
 /// The countries that have companies, most companies first.
