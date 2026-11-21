@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Bell, CalendarCheck, Check, FileText, Flame, Inbox, MessageSquareText, Paperclip, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/form";
-import { Avatar, Badge, Card, EmptyState, Message, Modal, Spinner, Tabs } from "@/components/ui/misc";
+import { Avatar, Badge, Card, EmptyState, Message, Modal, Skeleton, Spinner, Tabs } from "@/components/ui/misc";
 import { api, qs } from "@/lib/api";
 import type {
   Call,
@@ -18,6 +18,7 @@ import type {
   LeadDetail,
   LeadStatus,
   Meeting,
+  OwnerFilter,
   Paginated,
   ProjectSummary,
   SavedReply,
@@ -27,7 +28,7 @@ import type {
 import { cn, dateTime, fileSize, isPast, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
-import { ListSkeleton, LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
+import { LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
 import { CallCard } from "./calls";
 import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
@@ -52,7 +53,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const { data: projects } = useSWR<ProjectSummary[]>(projectId ? null : "/projects", fetcher);
   const ownerParam = owner === "everyone" ? "" : owner;
   const key = `/inbox${qs({ project_id: projectId ?? project, filter, q: query, owner: ownerParam, page, per_page: PER_PAGE })}`;
-  const { data, error, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
+  const { data, error, isLoading, mutate } = useSWR<Paginated<InboxThread>>(key, fetcher, { keepPreviousData: true, refreshInterval: 60_000 });
   useLastPageGuard(data?.total, page, setPage);
   // A lead an alert linked to stays open even when it isn't on this page of the list. Otherwise a selection the
   // filter hides falls back to the first thread.
@@ -60,8 +61,18 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
   const selectedId = data?.items.find((t) => t.lead.id === selectedLead)?.lead.id ?? (linked ? selectedLead : data?.items[0]?.lead.id);
   // Phones show one pane at a time, so the keys start at md, where the list and the thread sit side by side.
   const listRef = useListKeys(data?.items.map((t) => t.lead.id), selectedId ?? undefined, setSelectedLead, "48rem");
-  // After e marks a thread done, open the one below it, or the one above when it was last. In Needs reply the done
-  // thread leaves the list, so staying put would jump to the top.
+  const pickFilter = (f: Filter) => {
+    setFilter(f);
+    setPage(1);
+    setSelectedLead(null);
+  };
+  const pickOwner = (o: OwnerFilter) => {
+    setOwner(o);
+    setPage(1);
+    setSelectedLead(null);
+  };
+  // After Done or e marks a thread done, open the one below it, or the one above when it was last. In Needs reply the
+  // done thread leaves the list, so staying put would jump to the top.
   const selectNext = () => {
     const items = data?.items ?? [];
     const at = items.findIndex((t) => t.lead.id === selectedId);
@@ -76,11 +87,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
         <div className="flex flex-col gap-2 border-b border-border p-3">
           <Tabs
             value={filter}
-            onChange={(f) => {
-              setFilter(f);
-              setPage(1);
-              setSelectedLead(null);
-            }}
+            onChange={pickFilter}
             options={[
               { value: "all", label: "All" },
               { value: "hot", label: "Hot" },
@@ -102,14 +109,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           />
           {/* Side by side across the org, where the project picker shares the row. Alone, the owner filter takes it. */}
           <div className="flex gap-2 [&>*]:min-w-0 [&>*]:flex-1">
-            <OwnerFilterSelect
-              value={owner}
-              onChange={(o) => {
-                setOwner(o);
-                setPage(1);
-                setSelectedLead(null);
-              }}
-            />
+            <OwnerFilterSelect value={owner} onChange={pickOwner} />
             {!projectId && (
               <Select
                 value={project}
@@ -135,39 +135,41 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           {error ? (
             <LoadError error={error} retry={() => mutate()} />
           ) : !data ? (
-            <ListSkeleton />
+            <RowsSkeleton />
           ) : data.items.length === 0 ? (
-            <EmptyState
-              icon={query ? <Search className="size-5" /> : <Inbox className="size-5" />}
-              title={query ? "No replies match your search" : filter === "all" && owner === "everyone" ? "No replies yet" : "Nothing here"}
-            >
-              {!query && filter === "all" && owner === "everyone" && "Replies to your emails land here. Splee checks your mailboxes every minute."}
-            </EmptyState>
+            query ? (
+              <EmptyState icon={<Search className="size-5" />} title="No replies match your search" />
+            ) : filter !== "all" ? (
+              <EmptyState
+                icon={<Inbox className="size-5" />}
+                title={EMPTY[filter]}
+                action={
+                  <Button variant="outline" size="sm" onClick={() => pickFilter("all")}>
+                    Show all replies
+                  </Button>
+                }
+              />
+            ) : owner !== "everyone" ? (
+              <EmptyState
+                icon={<Inbox className="size-5" />}
+                title={owner === "mine" ? "No replies from your leads" : "No replies from unassigned leads"}
+                action={
+                  <Button variant="outline" size="sm" onClick={() => pickOwner("everyone")}>
+                    Show everyone&apos;s
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyState icon={<Inbox className="size-5" />} title="No replies yet">
+                Replies to your emails land here. Splee checks your mailboxes every minute.
+              </EmptyState>
+            )
           ) : (
-            <ul ref={listRef}>
+            // keepPreviousData leaves the last filter's rows up until the new ones arrive, so they dim to show it's working.
+            <ul ref={listRef} aria-busy={isLoading} className={cn("transition-opacity", isLoading && "opacity-50")}>
               {data.items.map((t) => (
                 <li key={t.lead.id} data-key={t.lead.id} className="border-b border-border">
-                  <button
-                    onClick={() => setSelectedLead(t.lead.id)}
-                    className={cn("flex w-full gap-3 px-4 py-3 text-left hover:bg-accent focus-visible:-outline-offset-2", selectedId === t.lead.id && "bg-accent")}
-                  >
-                    <Avatar name={t.lead.full_name || t.lead.email || "?"} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-sm font-medium">{t.lead.full_name || t.lead.email}</span>
-                        <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(t.last_message.sent_at ?? t.last_message.created_at)}</span>
-                      </span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {[t.lead.company_name, !projectId && t.project_name].filter(Boolean).join(" · ")}
-                      </span>
-                      <span className="mt-1 block truncate text-sm text-foreground/75">{t.last_message.body}</span>
-                      <span className="mt-1.5 flex flex-wrap gap-1">
-                        {t.classification && <ClassificationBadge value={t.classification} />}
-                        {t.pending_auto_reply && <Badge tone="amber">Reply draft</Badge>}
-                        {t.lead.remind_at && <ReminderBadge at={t.lead.remind_at} />}
-                      </span>
-                    </span>
-                  </button>
+                  <ThreadRow thread={t} selected={selectedId === t.lead.id} showProject={!projectId} onSelect={() => setSelectedLead(t.lead.id)} />
                 </li>
               ))}
             </ul>
@@ -192,6 +194,108 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
         )}
       </div>
     </Card>
+  );
+}
+
+const EMPTY: Record<Exclude<Filter, "all">, string> = {
+  hot: "No hot replies",
+  needs_reply: "Nothing needs a reply",
+  auto_replied: "No auto-replied threads",
+  other: "Nothing here",
+};
+
+// Keep in sync with is_needs_reply in backend/src/routes/inbox.rs, so the dot marks the same threads as Needs reply.
+const ANSWERED_FOR_YOU = ["not_interested", "ooo", "unsubscribe", "bounce"];
+const CLOSED: LeadStatus[] = ["meeting_booked", "not_interested", "bounced", "unsubscribed", "do_not_contact"];
+
+function needsReply({ last_message: m, lead, classification }: InboxThread) {
+  const unanswered = m.direction === "inbound" && !m.handled_at && !ANSWERED_FOR_YOU.includes(classification ?? "") && !CLOSED.includes(lead.status);
+  return unanswered || (!!lead.remind_at && isPast(lead.remind_at));
+}
+
+/**
+ * A thread waiting on you has a bold name and a green dot, so the ones to answer stand out from the ones that are dealt
+ * with. Hot leads get a flame by the name. The preview says when the last word was yours, not theirs.
+ */
+function ThreadRow({ thread: t, selected, showProject, onSelect }: { thread: InboxThread; selected: boolean; showProject: boolean; onSelect: () => void }) {
+  const waiting = needsReply(t);
+  const hot = t.classification === "hot" || t.lead.status === "hot";
+  const m = t.last_message;
+  const sentAt = m.sent_at ?? m.created_at;
+  const from = m.direction === "inbound" ? "" : m.kind === "auto_reply" ? "Auto-reply: " : "You: ";
+  return (
+    <button
+      onClick={onSelect}
+      aria-current={selected || undefined}
+      // Hover is lighter than the selection, so j and k's row still shows with the pointer resting on another.
+      className={cn("flex w-full gap-3 px-4 py-3 text-left focus-visible:-outline-offset-2", selected ? "bg-accent" : "hover:bg-black/[0.02]")}
+    >
+      <Avatar name={t.lead.full_name || t.lead.email || "?"} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          {hot && (
+            <>
+              <Flame className="size-3.5 shrink-0 text-brand-600" />
+              <span className="sr-only">Hot lead:</span>
+            </>
+          )}
+          <span className={cn("min-w-0 flex-1 truncate text-sm", waiting ? "font-semibold" : "font-medium")}>{t.lead.full_name || t.lead.email}</span>
+          <span title={dateTime(sentAt)} className={cn("shrink-0 text-xs", waiting ? "font-medium text-brand-700" : "text-muted-foreground")}>
+            {timeAgo(sentAt)}
+          </span>
+          {waiting && (
+            <span className="size-2 shrink-0 rounded-full bg-brand-500">
+              <span className="sr-only">Needs reply</span>
+            </span>
+          )}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">{[t.lead.company_name, showProject && t.project_name].filter(Boolean).join(" · ")}</span>
+        <span className={cn("mt-1 block truncate text-sm", waiting ? "text-foreground" : "text-foreground/65")}>
+          {from && <span className="font-medium">{from}</span>}
+          {m.body}
+        </span>
+        <span className="mt-1.5 flex flex-wrap gap-1">
+          {t.classification && <ClassificationBadge value={t.classification} />}
+          {t.pending_auto_reply && <Badge tone="amber">Reply draft</Badge>}
+          {t.lead.remind_at && <ReminderBadge at={t.lead.remind_at} />}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** The shape of the rows it stands in for, so the list doesn't jump when they arrive. */
+function RowsSkeleton() {
+  return (
+    <div aria-busy className="flex flex-col">
+      {Array.from({ length: 6 }, (_, i) => (
+        <div key={i} className="flex gap-3 border-b border-border px-4 py-3">
+          <Skeleton className="size-8 shrink-0 rounded-full" />
+          <div className="flex min-w-0 flex-1 flex-col gap-2 pt-0.5">
+            <Skeleton className="h-3.5 w-2/5" />
+            <Skeleton className="h-3 w-1/3" />
+            <Skeleton className="h-3.5 w-11/12" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A header and a few messages, where the thread will be. */
+function ThreadSkeleton() {
+  return (
+    <div aria-busy className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-col gap-2 border-b border-border px-5 py-4">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-3 w-64 max-w-full" />
+      </div>
+      <div className="flex flex-1 flex-col gap-3 bg-muted/40 px-5 py-5">
+        <Skeleton className="h-16 w-[min(80%,36rem)] rounded-2xl" />
+        <Skeleton className="h-12 w-[min(60%,28rem)] self-end rounded-2xl" />
+        <Skeleton className="h-20 w-[min(80%,36rem)] rounded-2xl" />
+      </div>
+    </div>
   );
 }
 
@@ -266,20 +370,35 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       setMarking(false);
     }
   };
+  // The button moves on like e does.
+  const finish = () => {
+    onDone();
+    markDone();
+  };
   // Only while the Done button shows: Done also clears a reminder, which e on a thread that isn't waiting shouldn't.
-  useShortcut(
-    "e",
-    awaiting
-      ? () => {
-          onDone();
-          markDone();
-        }
-      : null,
-  );
+  useShortcut("e", awaiting ? finish : null);
   useShortcut("r", () => replyBox.current?.focus());
+  // Opens at the latest message, the one to answer, and follows new ones, like a chat. The first email is at the top.
+  // Someone who scrolled up to read an older one stays there.
+  const thread = useRef<HTMLOListElement>(null);
+  const atLatest = useRef(true);
+  const shown = conversation.length + (pendingDraft ? 1 : 0) + (activeRun ? 1 : 0);
+  useEffect(() => {
+    if (thread.current && atLatest.current) thread.current.scrollTop = thread.current.scrollHeight;
+  }, [shown]);
+  // On a phone the thread mounts hidden behind the list and only gets a height once it's shown, so it scrolls then too.
+  const observeThread = useCallback((el: HTMLOListElement | null) => {
+    thread.current = el;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (atLatest.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   if (error) return <LoadError error={error} retry={() => mutate()} className="flex-1" />;
-  if (!data) return <ListSkeleton className="flex-1" />;
+  if (!data) return <ThreadSkeleton />;
 
   const { lead } = data;
 
@@ -320,7 +439,9 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   // Bounces aren't replies, so there's nothing to answer.
   const canDraft = !byText && !pendingDraft && !activeRun && messages.some((m) => m.direction === "inbound" && m.classification !== "bounce");
 
+  const canSend = !!reply.trim() && !uploads.uploading && !sending;
   const send = async () => {
+    if (!canSend) return;
     setSending(true);
     try {
       const body = byText
@@ -426,7 +547,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             </Button>
           ))}
           {awaiting && (
-            <Button size="sm" variant="outline" onClick={markDone} loading={marking} title="Needs no reply. Takes it out of Needs reply until they write again.">
+            <Button size="sm" variant="outline" onClick={finish} loading={marking} title="Needs no reply. Takes it out of Needs reply until they write again.">
               <Check className="size-3.5" /> Done
             </Button>
           )}
@@ -437,7 +558,14 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
 
-      <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5 focus-visible:-outline-offset-2">
+      <ol
+        ref={observeThread}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          atLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 px-5 py-5 focus-visible:-outline-offset-2"
+      >
         {conversation.map((m) =>
           "direction" in m ? (
             <Bubble key={m.id} message={m} />
@@ -476,8 +604,12 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
           ref={replyBox}
           value={reply}
           onChange={(e) => setReply(e.target.value)}
+          // Read-only while it sends: what you typed meanwhile was thrown away with the sent reply.
+          readOnly={sending}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim() && !uploads.uploading) send();
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+            // Out of the box, so j, k and e work again without reaching for the mouse.
+            if (e.key === "Escape") e.currentTarget.blur();
           }}
           placeholder={`${byText === "whatsapp" ? "Reply on WhatsApp to" : byText ? "Text" : "Reply to"} ${lead.first_name || lead.full_name || "lead"}…`}
           className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @xs:flex-1"
@@ -495,7 +627,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             <Sparkles className="size-4" /> <span className="@max-lg:hidden">Draft reply</span>
           </Button>
         )}
-        <Button onClick={send} loading={sending} disabled={!reply.trim() || uploads.uploading} aria-label="Send reply">
+        <Button onClick={send} loading={sending} disabled={!canSend} aria-label="Send reply">
           <Send className="size-4" /> <span className="@max-lg:hidden">Send</span>
         </Button>
       </div>
