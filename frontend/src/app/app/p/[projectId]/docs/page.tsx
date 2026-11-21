@@ -112,10 +112,26 @@ function endpoints(projectId: string): Endpoint[] {
       method: "PATCH",
       path: "/campaigns/5d0a…",
       summary:
-        "Set the language a campaign writes its emails, follow-ups, texts and LinkedIn messages in. lead writes to each lead in the language set on them, else their country's, else their company website's, else English. Emails already written keep theirs until they're rewritten. Any other field is a 422. Returns the campaign like the list above.",
-      params: [["language", "lead, the default, or one of en, de, fr, es, pt, it, nl, sv, nb, da, fi, pl, cs, sk, ro, bg, hu, el, tr, ru, uk, ar, he, ja, ko, zh, zh-Hant, hi, id, ms, th, vi"]],
-      body: `{ "language": "de" }`,
-      response: `{ "id": "5d0a…", "language": "de", "…": "…" }`,
+        "Change a campaign's definition, as its page does. Send only what changes. Each targeting list you send replaces that list, and the others stay. Emails already written keep their brief and language until they're rewritten. A field it doesn't take, like schedule, is a 422. Returns the campaign like GET below.",
+      params: [
+        ["name", "can't be empty"],
+        ["description", "who the campaign is for"],
+        ["targeting", "industries, roles, company_sizes, countries, exclude_countries, keywords or exclude_keywords, each a list"],
+        ["pain_points, angle", "the brief its emails are written from"],
+        [
+          "language",
+          "the language of its emails, follow-ups, texts and LinkedIn messages: lead, the default, writes to each lead in the language set on them, else their country's, else their company website's, else English. Or one of en, de, fr, es, pt, it, nl, sv, nb, da, fi, pl, cs, sk, ro, bg, hu, el, tr, ru, uk, ar, he, ja, ko, zh, zh-Hant, hi, id, ms, th, vi",
+        ],
+        ["track_clicks, track_opens, lead_pages", "true or false"],
+      ],
+      body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "language": "de" }`,
+      response: `{
+  "id": "5d0a…",
+  "language": "de",
+  "targeting": { "industries": ["Design"], "countries": ["US"], "roles": ["Founder", "Studio manager"] },
+  "angle": "Get paid on time without awkward emails",
+  "…": "…"
+}`,
     },
     {
       method: "GET",

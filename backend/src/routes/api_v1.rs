@@ -379,22 +379,75 @@ fn strict<T: DeserializeOwned>(body: Value) -> AppResult<T> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CampaignUpdate {
-    language: String,
+    name: Option<String>,
+    description: Option<String>,
+    targeting: Option<CampaignTargeting>,
+    pain_points: Option<String>,
+    angle: Option<String>,
+    language: Option<String>,
+    track_clicks: Option<bool>,
+    track_opens: Option<bool>,
+    lead_pages: Option<bool>,
 }
 
-/// Sets the language the campaign writes in. Emails already written keep theirs until they're rewritten.
+/// The lists the campaign page edits. Each one sent replaces that list and the others stay, so a typo in a key is a 422 rather
+/// than a list nobody reads.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignTargeting {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    industries: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roles: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    company_sizes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    countries: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exclude_countries: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keywords: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exclude_keywords: Option<Vec<String>>,
+}
+
+/// Changes the fields sent, as the campaign page does, and returns the whole definition. Emails already written keep their brief
+/// and language until they're rewritten.
 pub(super) async fn update_campaign(
     State(state): State<AppState>,
     auth: ApiKeyAuth,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
-) -> AppResult<Json<Campaign>> {
+) -> AppResult<Json<CampaignDetail>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     let body: CampaignUpdate = strict(body)?;
-    let language = body.language.trim();
-    segments::check_language(language)?;
-    sqlx::query("update segments set language = $2 where id = $1").bind(segment.id).bind(language).execute(&state.db).await?;
-    Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &segment).await?)))
+    let name = body.name.as_deref().map(str::trim);
+    if name == Some("") {
+        return Err(AppError::Unprocessable("name can't be empty".into()));
+    }
+    let language = body.language.as_deref().map(str::trim);
+    if let Some(language) = language {
+        segments::check_language(language)?;
+    }
+    sqlx::query(
+        "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{}'),
+           pain_points = coalesce($5, pain_points), angle = coalesce($6, angle), language = coalesce($7, language),
+           track_clicks = coalesce($8, track_clicks), track_opens = coalesce($9, track_opens), lead_pages = coalesce($10, lead_pages)
+         where id = $1",
+    )
+    .bind(segment.id)
+    .bind(name)
+    .bind(body.description)
+    .bind(body.targeting.map(|t| json!(t)))
+    .bind(body.pain_points)
+    .bind(body.angle)
+    .bind(language)
+    .bind(body.track_clicks)
+    .bind(body.track_opens)
+    .bind(body.lead_pages)
+    .execute(&state.db)
+    .await?;
+    get_campaign(State(state), auth, Path(id)).await
 }
 
 /// A campaign as its page shows it, with the project's schedule and follow-ups it sends on.
@@ -2304,6 +2357,50 @@ mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
+    async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
+        let [a, b] = seed(&db).await;
+        let (segment, _) = campaign(&db, a, "draft").await;
+        let (theirs, _) = campaign(&db, b, "draft").await;
+        sqlx::query("update segments set targeting = $2, angle = 'Fewer no-shows' where id = $1")
+            .bind(segment)
+            .bind(json!({ "roles": ["Practice Manager"], "countries": ["GB"] }))
+            .execute(&db)
+            .await
+            .unwrap();
+        let api = Api::start(&db, LIMITS).await;
+        let path = format!("/v1/campaigns/{segment}");
+
+        let body = json!({
+            "name": " Leeds dentists ",
+            "targeting": { "countries": ["GB", "IE"], "keywords": [] },
+            "pain_points": "Empty chairs",
+            "track_opens": true,
+            "language": "de",
+        });
+        let (status, detail) = api.patch(&path, body).await;
+        assert_eq!((status, detail["name"].as_str(), detail["language"].as_str()), (200, Some("Leeds dentists"), Some("de")), "{detail}");
+        assert_eq!(detail["targeting"], json!({ "roles": ["Practice Manager"], "countries": ["GB", "IE"], "keywords": [] }));
+        assert_eq!((detail["pain_points"].as_str(), detail["angle"].as_str()), (Some("Empty chairs"), Some("Fewer no-shows")));
+        assert_eq!((detail["track_opens"].clone(), detail["read_only"][0]["field"].clone()), (json!(true), json!("schedule")), "{detail}");
+
+        // A refused body changes nothing, and another organization's campaign looks like one that doesn't exist.
+        for (body, status) in [
+            (json!({ "name": " " }), 422),
+            (json!({ "angle": "New", "targeting": { "role": ["CEO"] } }), 422),
+            (json!({ "angle": "New", "schedule": { "send_days": [1] } }), 422),
+            (json!({ "angle": "New", "language": "xx" }), 400),
+        ] {
+            assert_eq!(api.patch(&path, body.clone()).await.0, status, "{body}");
+        }
+        assert_eq!(api.patch(&format!("/v1/campaigns/{theirs}"), json!({ "name": "Mine now" })).await.0, 404);
+        let names: Vec<(String, String)> =
+            sqlx::query_as("select name, angle from segments order by name").fetch_all(&db).await.unwrap();
+        assert_eq!(names, [("Dentists".into(), "".into()), ("Leeds dentists".into(), "Fewer no-shows".into())]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn an_archived_campaign_stops_sending_and_leaves_the_list_until_it_comes_back_paused(db: PgPool) {
         let [a, b] = seed(&db).await;
         let (segment, email) = campaign(&db, a, "draft").await;
@@ -2406,7 +2503,7 @@ mod tests {
         assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": null })).await.1["monthly_cap_micros"], Value::Null);
 
         // The campaign PATCH refuses fields it doesn't take too, rather than ignoring them.
-        let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "name": "Renamed" })).await;
+        let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "sequence": [] })).await;
         assert_eq!(status, 422, "{body}");
         let language: String = sqlx::query_scalar("select language from segments where id = $1").bind(segment).fetch_one(&db).await.unwrap();
         assert_eq!(language, "lead");
