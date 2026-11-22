@@ -15,6 +15,17 @@ export type Recording = {
 
 export async function startRecording(maxSecs: number): Promise<Recording> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const release = () => stream.getTracks().forEach((t) => t.stop());
+  try {
+    return record(stream, release, maxSecs);
+  } catch (e) {
+    // A browser that can't record still let go of the microphone.
+    release();
+    throw e;
+  }
+}
+
+function record(stream: MediaStream, release: () => void, maxSecs: number): Recording {
   const recorder = new MediaRecorder(stream);
   const chunks: Blob[] = [];
   let cancelled = false;
@@ -22,7 +33,7 @@ export async function startRecording(maxSecs: number): Promise<Recording> {
   const wav = new Promise<Blob | null>((resolve, reject) => {
     recorder.onstop = () => {
       clearTimeout(timer);
-      stream.getTracks().forEach((t) => t.stop());
+      release();
       if (cancelled) resolve(null);
       else toWav(new Blob(chunks, { type: recorder.mimeType })).then(resolve, reject);
     };

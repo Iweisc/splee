@@ -44,31 +44,41 @@ fn audio_url(public_url: &str, token: &str) -> String {
     format!("{public_url}/api/voicemails/{token}.wav")
 }
 
-/// How long a PCM WAV plays for, from its byte rate and the length of its data, or why it isn't one.
+/// How long a PCM WAV plays for, from its format and the length of its data, or why it isn't one. The format's fields have to
+/// agree with each other, so a header can't pass a long recording off as a short one.
 fn wav_secs(bytes: &[u8]) -> Result<f64, &'static str> {
     const NOT_WAV: &str = "That isn't a WAV recording";
+    const NOT_PCM: &str = "The recording has to be plain PCM audio";
+    let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as u32;
+    let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(NOT_WAV);
     }
-    let (mut at, mut byte_rate, mut data) = (12usize, 0u32, None);
-    while at + 8 <= bytes.len() {
-        let len = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]) as usize;
-        let body = &bytes[at + 8..at.saturating_add(8).saturating_add(len).min(bytes.len())];
-        match &bytes[at..at + 4] {
-            b"fmt " if body.len() >= 16 => {
-                if u16::from_le_bytes([body[0], body[1]]) != 1 {
-                    return Err("The recording has to be plain PCM audio");
+    let (mut at, mut byte_rate, mut data) = (12usize, None, None);
+    while at < bytes.len() {
+        let head = bytes.get(at..at.saturating_add(8)).ok_or(NOT_WAV)?;
+        let len = u32_at(head, 4) as usize;
+        let body = bytes.get(at + 8..(at + 8).saturating_add(len)).ok_or(NOT_WAV)?;
+        match &head[0..4] {
+            b"fmt " => {
+                if body.len() < 16 || u16_at(body, 0) != 1 {
+                    return Err(NOT_PCM);
                 }
-                byte_rate = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
+                let (channels, rate, per_sec, align, bits) = (u16_at(body, 2), u32_at(body, 4), u32_at(body, 8), u16_at(body, 12), u16_at(body, 14));
+                let usual = (1..=2).contains(&channels) && matches!(bits, 8 | 16) && (8_000..=48_000).contains(&rate);
+                if !usual || align != channels * bits / 8 || per_sec != rate * align {
+                    return Err(NOT_PCM);
+                }
+                byte_rate = Some(per_sec);
             }
-            b"data" => data = Some(body.len()),
+            b"data" => data = Some(len),
             _ => {}
         }
-        // Chunks are padded to an even length.
-        at = at.saturating_add(8).saturating_add(len).saturating_add(len % 2);
+        // Chunks are padded to an even length, though the last one's pad byte is often left off.
+        at = (at + 8).saturating_add(len).saturating_add(len % 2);
     }
-    match data {
-        Some(data) if byte_rate > 0 => Ok(data as f64 / byte_rate as f64),
+    match (byte_rate, data) {
+        (Some(byte_rate), Some(data)) => Ok(data as f64 / byte_rate as f64),
         _ => Err(NOT_WAV),
     }
 }
@@ -225,7 +235,15 @@ mod tests {
         let mut float = recording(3);
         float[20] = 3;
         assert_eq!(wav_secs(&float), Err("The recording has to be plain PCM audio"));
-        assert_eq!(wav_secs(&recording(3)[..44]), Ok(0.0));
+        // Two minutes that say they play at twice the rate.
+        let mut doubled = recording(120);
+        doubled[28..32].copy_from_slice(&32_000u32.to_le_bytes());
+        assert_eq!(wav_secs(&doubled), Err("The recording has to be plain PCM audio"));
+        let mut stereo = recording(3);
+        stereo[22] = 2;
+        assert_eq!(wav_secs(&stereo), Err("The recording has to be plain PCM audio"));
+        // Cut short, in the data or in the format.
+        assert_eq!(wav_secs(&recording(3)[..1000]), Err("That isn't a WAV recording"));
         assert_eq!(wav_secs(&recording(3)[..30]), Err("That isn't a WAV recording"));
     }
 
