@@ -37,11 +37,13 @@ export function OutcomeForm({
   onSave,
   onCancel,
   cancelLabel = "Not now",
+  saveLabel = "Save",
 }: {
   initial?: CallOutcome | null;
   onSave: (outcome: CallOutcome, notes: string) => Promise<void>;
   onCancel?: () => void;
   cancelLabel?: string;
+  saveLabel?: string;
 }) {
   const [outcome, setOutcome] = useState<CallOutcome | null>(initial ?? null);
   const [notes, setNotes] = useState("");
@@ -94,7 +96,7 @@ export function OutcomeForm({
           </Button>
         )}
         <Button onClick={save} loading={busy} disabled={!outcome}>
-          Save
+          {saveLabel}
         </Button>
       </div>
     </div>
