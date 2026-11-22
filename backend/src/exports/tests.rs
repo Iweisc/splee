@@ -70,51 +70,7 @@ fn refusals_say_what_to_fix() {
 }
 
 fn config(s3_api_url: &str) -> Config {
-    Config {
-        database_url: String::new(),
-        app_secret: "test-secret".into(),
-        public_url: "https://splee.example".into(),
-        unsubscribe_url: String::new(),
-        bind_addr: String::new(),
-        agent_model: String::new(),
-        agent_concurrency: 0,
-        sending_enabled: false,
-        bird_bin: None,
-        open_signup: true,
-        public_agent: false,
-        porkbun_api_url: String::new(),
-        twilio_api_url: String::new(),
-        bots_api_url: String::new(),
-        outreach_api_url: String::new(),
-        postmaster_api_url: String::new(),
-        operator_emails: Vec::new(),
-        google: None,
-        microsoft: None,
-        slack: None,
-        tumblr: None,
-        meta: None,
-        graph_api_url: String::new(),
-        salesforce: None,
-        zoho: None,
-        crm_api_url: String::new(),
-        payments_api_url: String::new(),
-        meetings_api_url: String::new(),
-        aircall_api_url: String::new(),
-        dialpad_api_url: String::new(),
-        justcall_api_url: String::new(),
-        webflow_api_url: String::new(),
-        linkedin_ads: None,
-        google_ads_developer_token: None,
-        ads_api_url: String::new(),
-        ipinfo_token: None,
-        places_api_url: String::new(),
-        local_sites_url: String::new(),
-        sheets_api_url: String::new(),
-        sec_user_agent: None,
-        sec_api_url: String::new(),
-        news_sites_url: String::new(),
-        s3_api_url: s3_api_url.into(),
-    }
+    Config { public_url: "https://splee.example".into(), s3_api_url: s3_api_url.into(), ..Config::test() }
 }
 
 const SECRET: &str = "wJalrXUtnFEMI-splee-test-secret-key";

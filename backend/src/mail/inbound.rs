@@ -352,51 +352,7 @@ mod tests {
     #[sqlx::test]
     #[ignore = "needs Postgres"]
     async fn warmup_emails_never_reach_the_inbox_or_the_classifier(db: PgPool) {
-        let cfg = Config {
-            database_url: String::new(),
-            app_secret: String::new(),
-            public_url: String::new(),
-            unsubscribe_url: String::new(),
-            bind_addr: String::new(),
-            agent_model: String::new(),
-            agent_concurrency: 0,
-            sending_enabled: false,
-            bird_bin: None,
-            open_signup: true,
-            public_agent: false,
-            porkbun_api_url: String::new(),
-            twilio_api_url: String::new(),
-            bots_api_url: String::new(),
-            outreach_api_url: String::new(),
-            postmaster_api_url: String::new(),
-            operator_emails: Vec::new(),
-            google: None,
-            microsoft: None,
-            slack: None,
-            tumblr: None,
-            salesforce: None,
-            zoho: None,
-            meta: None,
-            graph_api_url: String::new(),
-            crm_api_url: String::new(),
-            payments_api_url: String::new(),
-            meetings_api_url: String::new(),
-            aircall_api_url: String::new(),
-            dialpad_api_url: String::new(),
-            justcall_api_url: String::new(),
-            webflow_api_url: String::new(),
-            linkedin_ads: None,
-            google_ads_developer_token: None,
-            ads_api_url: String::new(),
-            ipinfo_token: None,
-            places_api_url: String::new(),
-            local_sites_url: String::new(),
-            sheets_api_url: String::new(),
-            sec_user_agent: None,
-            sec_api_url: String::new(),
-            news_sites_url: String::new(),
-            s3_api_url: String::new(),
-        };
+        let cfg = Config { app_secret: String::new(), ..Config::test() };
         let state = AppState { db: db.clone(), cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(1).0, rate_limits: Default::default() };
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
         let project: Uuid =

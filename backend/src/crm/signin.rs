@@ -476,12 +476,6 @@ pub(crate) mod tests {
                 zoho: Some(app("/oauth/v2/auth", "/oauth/v2/token")),
                 microsoft: Some(app("/dynamics/authorize", "/dynamics/token")),
                 crm_api_url: self.base.clone(),
-                payments_api_url: String::new(),
-                meetings_api_url: String::new(),
-                aircall_api_url: String::new(),
-                dialpad_api_url: String::new(),
-                justcall_api_url: String::new(),
-                webflow_api_url: String::new(),
                 ..config(&unused)
             }
         }
