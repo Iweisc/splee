@@ -8,6 +8,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::warmup::{HOLD_DAYS, LANDING_IN_SPAM, WARMUP_SENT_TODAY};
+use super::providers::{self, Family};
 use super::{attachments, dns, smtp};
 use crate::agent::{self, kind};
 use crate::hooks::{self, Alert};
@@ -51,6 +52,7 @@ struct SendingProject {
     autopilot: bool,
     autopilot_lead_cap: i32,
     monthly_cap_micros: Option<i64>,
+    match_provider: bool,
 }
 
 impl SendingProject {
@@ -107,7 +109,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     schedule_follow_ups(state).await?;
     let projects = sqlx::query_as::<_, SendingProject>(
         "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused,
-                s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros
+                s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros, s.match_provider
          from projects p join project_settings s on s.project_id = p.id
          where p.org_id is not null and exists (
              select 1 from email_messages e where e.project_id = p.id and e.direction = 'outbound'
@@ -207,7 +209,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
             new_leads -= 1;
         }
         let id = email.id;
-        deliver(state, p.org_id, email).await?;
+        deliver(state, p, email).await?;
         room -= 1;
         if p.monthly_cap_micros.is_some() {
             cap_left -= monthly_cap::cost_of(&state.db, id).await?;
@@ -223,6 +225,12 @@ enum Skip {
     Fail(&'static str),
     /// Try again on a later tick.
     Wait,
+}
+
+/// Whose servers take the lead's mail, from their domain's MX.
+async fn lead_family(lead: &Lead) -> anyhow::Result<Option<Family>> {
+    let domain = lead.email.as_deref().and_then(|e| e.rsplit_once('@')).map(|(_, d)| d).unwrap_or_default();
+    Ok(providers::family_of_mx(&dns::mx_exchanges(&dns::resolver()?, domain).await))
 }
 
 async fn check_recipient(state: &AppState, org_id: Uuid, email: &EmailMessage, lead: &Lead) -> anyhow::Result<Option<Skip>> {
@@ -332,14 +340,21 @@ pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyh
 }
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
-async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
-    pick_from(db, mailboxes_with_room(db, org_id).await?, email).await
+async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage, prefer: Option<Family>) -> anyhow::Result<Option<Mailbox>> {
+    pick_from(db, mailboxes_with_room(db, org_id).await?, email, prefer).await
 }
 
-/// pick_mailbox's choice among `available`, the organization's mailboxes_with_room.
-pub(crate) async fn pick_from(db: &sqlx::PgPool, available: Vec<Mailbox>, email: &EmailMessage) -> anyhow::Result<Option<Mailbox>> {
+/// pick_mailbox's choice among `available`, the organization's mailboxes_with_room. A first email goes out from the least
+/// used one, or with `prefer`, the least used one on that provider when one has room, so matching never holds it back.
+pub(crate) async fn pick_from(
+    db: &sqlx::PgPool,
+    available: Vec<Mailbox>,
+    email: &EmailMessage,
+    prefer: Option<Family>,
+) -> anyhow::Result<Option<Mailbox>> {
     if email.kind == "initial" {
-        return Ok(available.into_iter().next());
+        let matched = prefer.and_then(|f| available.iter().position(|m| providers::mailbox_family(&m.provider, &m.smtp_host) == Some(f)));
+        return Ok(available.into_iter().nth(matched.unwrap_or(0)));
     }
     let thread_mailbox: Option<Uuid> = match email.mailbox_id {
         Some(id) => Some(id),
@@ -442,7 +457,8 @@ pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str, langua
     }
 }
 
-async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow::Result<()> {
+async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> anyhow::Result<()> {
+    let org_id = p.org_id;
     let claimed = sqlx::query("update email_messages set status = 'sending' where id = $1 and status in ('approved', 'scheduled')")
         .bind(email.id)
         .execute(&state.db)
@@ -455,7 +471,8 @@ async fn deliver(state: &AppState, org_id: Uuid, email: EmailMessage) -> anyhow:
     if let Some(skip) = check_recipient(state, org_id, &email, &lead).await? {
         return release(state, &email, skip).await;
     }
-    let Some(mb) = pick_mailbox(&state.db, org_id, &email).await? else {
+    let prefer = if p.match_provider && email.kind == "initial" { lead_family(&lead).await? } else { None };
+    let Some(mb) = pick_mailbox(&state.db, org_id, &email, prefer).await? else {
         return release(state, &email, Skip::Wait).await;
     };
     let to = lead.email.clone().unwrap_or_default();
@@ -849,8 +866,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite, swap_link,
-        swap_signature, with_footer,
+        Family, MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite,
+        swap_link, swap_signature, with_footer,
     };
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
@@ -1226,10 +1243,10 @@ mod tests {
 
         for kind in ["manual_reply", "auto_reply"] {
             let reply = queued(kind).await.unwrap();
-            assert_eq!(pick_mailbox(&db, org, &reply).await.unwrap().map(|m| m.id), Some(mailbox), "{kind}");
+            assert_eq!(pick_mailbox(&db, org, &reply, None).await.unwrap().map(|m| m.id), Some(mailbox), "{kind}");
         }
         let follow_up = queued("follow_up").await.unwrap();
-        assert!(pick_mailbox(&db, org, &follow_up).await.unwrap().is_none());
+        assert!(pick_mailbox(&db, org, &follow_up, None).await.unwrap().is_none());
 
         // Held by Deliverability, the thread waits for it even with another mailbox free, replies included.
         sqlx::query("update mailboxes set status = 'paused', health_held_at = now() where id = $1").bind(mailbox).execute(&db).await.unwrap();
@@ -1239,8 +1256,56 @@ mod tests {
             .await
             .unwrap();
         for kind in ["follow_up", "manual_reply"] {
-            assert!(pick_mailbox(&db, org, &queued(kind).await.unwrap()).await.unwrap().is_none(), "{kind}");
+            assert!(pick_mailbox(&db, org, &queued(kind).await.unwrap(), None).await.unwrap().is_none(), "{kind}");
         }
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_first_email_prefers_a_mailbox_on_the_preferred_provider(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str, provider: &'static str, host: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, provider, smtp_host, smtp_username, smtp_password_enc) values ($1, $2, $3, $4, $2, 'x') returning id",
+            )
+            .bind(org)
+            .bind(email)
+            .bind(provider)
+            .bind(host)
+            .fetch_one(&db)
+        };
+        let google = mailbox("g@example.test", "google", "smtp.gmail.com").await.unwrap();
+        let microsoft = mailbox("m@example.test", "password", "smtp.office365.com").await.unwrap();
+        // The Microsoft mailbox has sent once today, so without a preference the Google one goes first.
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+             values ($1, $2, $3, 'outbound', 'initial', 'sent', now())",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(microsoft)
+        .execute(&db)
+        .await
+        .unwrap();
+        let first = sqlx::query_as::<_, EmailMessage>(
+            "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', 'initial', 'approved') returning *",
+        )
+        .bind(project)
+        .bind(lead)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        let pick = |prefer| pick_mailbox(&db, org, &first, prefer);
+        assert_eq!(pick(None).await.unwrap().map(|m| m.id), Some(google));
+        assert_eq!(pick(Some(Family::Microsoft)).await.unwrap().map(|m| m.id), Some(microsoft));
+        // With no Microsoft mailbox free, matching doesn't hold the email back.
+        sqlx::query("update mailboxes set status = 'paused' where id = $1").bind(microsoft).execute(&db).await.unwrap();
+        assert_eq!(pick(Some(Family::Microsoft)).await.unwrap().map(|m| m.id), Some(google));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

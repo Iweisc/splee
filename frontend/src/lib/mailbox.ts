@@ -11,6 +11,19 @@ export function bouncing(emailed: number, bounced: number): boolean {
   return emailed >= 20 && bounced / emailed > 0.05;
 }
 
+const FAMILY_HOSTS: Record<SignInProvider, string[]> = {
+  google: ["google.com", "googlemail.com", "gmail.com"],
+  microsoft: ["outlook.com", "office365.com", "mx.microsoft"],
+};
+
+/** Whose servers send for `m`, or null for any other provider. Keep in sync with mailbox_family in backend/src/mail/providers.rs. */
+export function mailboxFamily(m: Mailbox): SignInProvider | null {
+  if (m.provider !== "password") return m.provider;
+  const host = m.smtp_host.trim().replace(/\.$/, "").toLowerCase();
+  const under = (d: string) => host === d || host.endsWith(`.${d}`);
+  return (Object.keys(FAMILY_HOSTS) as SignInProvider[]).find((f) => FAMILY_HOSTS[f].some(under)) ?? null;
+}
+
 /** "15%", rounded like MailboxStats::bounce_percent in the digest. */
 export function wholePercent(part: number, total: number): string {
   return `${Math.min(100, Math.round((part / Math.max(1, total)) * 100))}%`;
