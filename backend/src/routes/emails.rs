@@ -162,7 +162,7 @@ pub(crate) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: Update
         util_input::one_of("status", status, &["approved", "cancelled"])?;
     }
     let mut tx = db.begin().await?;
-    sqlx::query(
+    let changed = sqlx::query(
         "update email_messages set
            -- An edit keeps the draft out of the review window, since someone has looked at it.
            edited_at = case when ($2 is not null and $2 is distinct from subject) or ($3 is not null and $3 is distinct from body) then now() else edited_at end,
@@ -180,14 +180,19 @@ pub(crate) async fn update_one(db: &PgPool, org_id: Uuid, id: Uuid, body: Update
            error = case when $4 = 'approved' then '' else error end,
            -- Sending a failed email again gives a server that asked to try later its full set of tries again.
            deferrals = case when $4 = 'approved' then 0 else deferrals end
-         where id = $1",
+         -- Checked again here: the sender may have taken it since it was loaded above, and a cancel then would stop nothing.
+         where id = $1 and status = any($5)",
     )
     .bind(id)
     .bind(body.subject)
     .bind(body.body)
     .bind(&body.status)
+    .bind(EDITABLE)
     .execute(&mut *tx)
     .await?;
+    if changed.rows_affected() == 0 {
+        return Err(AppError::Conflict("This email is already going out and can't be changed".into()));
+    }
     if body.status.as_deref() == Some("approved") {
         sqlx::query("update leads set status = 'queued' where id = $1 and status = 'new'")
             .bind(row.email.lead_id)

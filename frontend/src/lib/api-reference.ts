@@ -1216,6 +1216,7 @@ Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk
         ["cc_emails", "optional, the whole list to copy in. Without it, reply_all decides"],
         ["reply_all", "optional, default true: copy in everyone the lead copied in last, as reply_cc shows"],
         ["attachment_ids", "optional ids from POST /attachments, up to 10"],
+        ["send_at", "optional ISO time within 30 days to send it then instead of now"],
       ],
       body: `{ "body_text": "Happy to. Does Tuesday at 10 or Wednesday at 2 work?" }`,
       response: `{
