@@ -429,6 +429,8 @@ export interface ProjectSettings extends CrmStatus {
   review_window_hours: number | null;
   /** The most the project may spend on emails in a calendar month (UTC), $1 to $1,000,000. null is no cap. */
   monthly_cap_micros: number | null;
+  /** A first email to a lead whose mail goes to Google or Microsoft goes out from a mailbox on the same provider when one has room. */
+  match_provider: boolean;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */

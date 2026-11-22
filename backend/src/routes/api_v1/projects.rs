@@ -76,6 +76,8 @@ pub(in crate::routes) struct ProjectControls {
     review_window_hours: Option<i32>,
     /// Email spend a calendar month (UTC) may reach before first emails and follow-ups wait for the 1st, or null for no cap.
     monthly_cap_micros: Option<i64>,
+    /// A first email to a lead on Google or Microsoft mail goes out from a mailbox on the same provider when one has room.
+    match_provider: bool,
     /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
     sender_name: String,
 }
@@ -97,6 +99,7 @@ impl From<ProjectSettings> for ProjectControls {
             autopilot_auto_send: s.autopilot_auto_send,
             review_window_hours: s.review_window_hours,
             monthly_cap_micros: s.monthly_cap_micros,
+            match_provider: s.match_provider,
             sender_name: s.sender_name,
         }
     }

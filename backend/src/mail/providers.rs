@@ -61,9 +61,66 @@ fn provider(host: &str) -> Option<Settings> {
     })
 }
 
+/// The two providers most leads' mail goes to. Their filters trust mail from their own servers more, so provider matching
+/// (mail/sender.rs pick_from) sends a lead on one from a mailbox on the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    Google,
+    Microsoft,
+}
+
+/// The family of a mail server, an MX host or a mailbox's SMTP host. Outlook.com and Hotmail addresses take mail at
+/// *.olc.protection.outlook.com, and Microsoft 365 at *.mail.protection.outlook.com or *.mx.microsoft.
+pub fn family(host: &str) -> Option<Family> {
+    let host = host.trim().trim_end_matches('.').to_lowercase();
+    let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    if ["google.com", "googlemail.com", "gmail.com"].iter().any(|d| under(d)) {
+        Some(Family::Google)
+    } else if ["outlook.com", "office365.com", "mx.microsoft"].iter().any(|d| under(d)) {
+        Some(Family::Microsoft)
+    } else {
+        None
+    }
+}
+
+/// The family of a domain's mail, from its MX hosts in preference order.
+pub fn family_of_mx(hosts: &[String]) -> Option<Family> {
+    hosts.iter().find_map(|h| family(h))
+}
+
+/// A mailbox's family: the provider it signed in with, else where it sends from.
+pub fn mailbox_family(provider: &str, smtp_host: &str) -> Option<Family> {
+    match provider {
+        "google" => Some(Family::Google),
+        "microsoft" => Some(Family::Microsoft),
+        _ => family(smtp_host),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_google_and_microsoft_mail_apart() {
+        let mx = |list: &[&str]| family_of_mx(&hosts(list));
+        assert_eq!(mx(&["gmail-smtp-in.l.google.com", "alt1.gmail-smtp-in.l.google.com"]), Some(Family::Google));
+        assert_eq!(mx(&["aspmx.l.google.com"]), Some(Family::Google));
+        assert_eq!(mx(&["hotmail-com.olc.protection.outlook.com"]), Some(Family::Microsoft));
+        assert_eq!(mx(&["acme-com.mail.protection.outlook.com"]), Some(Family::Microsoft));
+        assert_eq!(mx(&["acme-com.p-v1.mx.microsoft."]), Some(Family::Microsoft));
+        // A filtering service in front decides nothing, so the first host that says wins.
+        assert_eq!(mx(&["mx1.mimecast.example", "acme-com.mail.protection.outlook.com"]), Some(Family::Microsoft));
+        assert_eq!(mx(&["mx.zoho.eu"]), None);
+        assert_eq!(mx(&["notgoogle.com"]), None);
+        assert_eq!(mx(&[]), None);
+        assert_eq!(mailbox_family("password", "smtp.gmail.com"), Some(Family::Google));
+        assert_eq!(mailbox_family("password", "smtp.office365.com"), Some(Family::Microsoft));
+        assert_eq!(mailbox_family("password", "smtp-mail.outlook.com"), Some(Family::Microsoft));
+        assert_eq!(mailbox_family("google", ""), Some(Family::Google));
+        assert_eq!(mailbox_family("microsoft", ""), Some(Family::Microsoft));
+        assert_eq!(mailbox_family("password", "smtp.zoho.com"), None);
+    }
 
     fn hosts(list: &[&str]) -> Vec<String> {
         list.iter().map(|h| h.to_string()).collect()

@@ -957,6 +957,8 @@ pub(super) fn tools() -> Vec<Value> {
                                          "description": "Optional. Drafts nobody reviewed go out after this many hours. null keeps them waiting" },
                 "monthly_cap_micros": { "type": ["integer", "null"], "minimum": 1000000, "maximum": 1_000_000_000_000_i64,
                                         "description": "Optional. Email spend a month in micro-dollars. null for no cap" },
+                "match_provider": { "type": "boolean",
+                                    "description": "Optional. First emails to Gmail or Outlook leads go from a mailbox on the same provider" },
                 "sender_name": { "type": "string", "maxLength": 100,
                                  "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),

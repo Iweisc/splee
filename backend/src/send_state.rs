@@ -184,7 +184,7 @@ async fn mailbox_ready(db: &PgPool, rooms: Vec<Mailbox>, segment_id: Uuid, follo
     .fetch_all(db)
     .await?;
     for email in &due {
-        if mail::sender::pick_from(db, rooms.clone(), email).await?.is_some() {
+        if mail::sender::pick_from(db, rooms.clone(), email, None).await?.is_some() {
             return Ok(true);
         }
     }

@@ -8,7 +8,7 @@ import { MicroLabel } from "@/components/app/work/states";
 import { Field, NumberInput, Switch } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
-import { todayLimit } from "@/lib/mailbox";
+import { mailboxFamily, SIGN_IN_LABEL, todayLimit } from "@/lib/mailbox";
 import type { Mailbox, MonthlyCap, ProjectSettings } from "@/lib/types";
 import { money, num } from "@/lib/utils";
 
@@ -34,6 +34,8 @@ export default function DailyLimitPage() {
   const capacity = mailboxes?.filter((m) => m.status === "active").reduce((sum, m) => sum + todayLimit(m), 0);
   // Without a price on any mailbox, sent emails cost nothing here and a cap never stops anything.
   const unpriced = mailboxes !== undefined && mailboxes.every((m) => m.cost_per_email_micros === 0);
+  const families = new Set(mailboxes?.filter((m) => m.status === "active").map(mailboxFamily));
+  const missing = mailboxes === undefined ? [] : (["google", "microsoft"] as const).filter((f) => !families.has(f));
 
   return (
     <ProjectSettingsPage title="Daily limit" description="How many emails this project may send per day." problem={problem}>
@@ -140,6 +142,24 @@ export default function DailyLimitPage() {
                   </p>
                 )}
               </>
+            )}
+          </Section>
+
+          <Section
+            title="Match the lead's provider"
+            description="A first email to a lead whose mail is on Google or Microsoft goes out from one of your mailboxes on the same provider, which tends to land it in the inbox more often. When none of those has room left today, another mailbox sends it, so nothing waits. Follow-ups stay in the first email's thread."
+            toggle={<Switch checked={s.match_provider} onChange={(on) => update({ match_provider: on })} label="Match the lead's provider" />}
+          >
+            {s.match_provider && missing.length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {missing.length === 2
+                  ? "None of your active mailboxes are on Google or Microsoft, so first emails go out as before until you "
+                  : `None of your active mailboxes are on ${SIGN_IN_LABEL[missing[0]]}, so leads there get first emails as before until you `}
+                <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
+                  connect one
+                </Link>
+                .
+              </p>
             )}
           </Section>
         </>

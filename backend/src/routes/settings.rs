@@ -104,6 +104,7 @@ pub(super) struct SettingsBody {
     /// A present null removes the cap.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     monthly_cap_micros: Option<Option<i64>>,
+    match_provider: Option<bool>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -161,6 +162,7 @@ pub(super) struct Controls {
     review_window_hours: Option<Option<i32>>,
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     monthly_cap_micros: Option<Option<i64>>,
+    match_provider: Option<bool>,
     sender_name: Option<String>,
 }
 
@@ -179,6 +181,7 @@ impl From<Controls> for SettingsBody {
             autopilot_auto_send: c.autopilot_auto_send,
             review_window_hours: c.review_window_hours,
             monthly_cap_micros: c.monthly_cap_micros,
+            match_provider: c.match_provider,
             sender_name: c.sender_name,
             ..Default::default()
         }
@@ -336,7 +339,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            prep_renewals = coalesce($43, prep_renewals),
            review_window_hours = case when $44 then $45 else review_window_hours end,
            monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end,
-           assign_territories = coalesce($48, assign_territories)
+           assign_territories = coalesce($48, assign_territories),
+           match_provider = coalesce($49, match_provider)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -387,6 +391,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.monthly_cap_micros.is_some())
     .bind(body.monthly_cap_micros.flatten())
     .bind(assign_territories)
+    .bind(body.match_provider)
     .fetch_one(db)
     .await?;
     Ok(settings)
