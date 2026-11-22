@@ -195,6 +195,7 @@ pub fn parse(event: &Value) -> Option<Ended> {
         user_email: text(&target["email"]).filter(|_| target["type"] == "user").map(|e| e.to_lowercase()).unwrap_or_default(),
         asset: recording.unwrap_or_default(),
         step: text(&event["custom_data"]).and_then(|data| data.parse().ok()),
+        later_leg: id(&event["master_call_id"]).is_some_and(|first| Some(first) != id(&event["call_id"])),
     })
 }
 

@@ -49,6 +49,9 @@ pub struct Ended {
     pub asset: String,
     /// The call step it was started from on the Calls page, when the phone hands that back, as Dialpad does.
     pub step: Option<Uuid>,
+    /// A leg after the first of a transferred call, which is kept on its own and never closes a step, since the first leg
+    /// closed it.
+    pub later_leg: bool,
 }
 
 impl Ended {
@@ -142,7 +145,7 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
         "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
            {column} = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11
          where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' and twilio_sid is null order by due_at limit 1))
-           and status = 'open'
+           and status = 'open' and not $13
          returning *"
     );
     let open: Option<Call> = sqlx::query_as(&sql)
@@ -158,6 +161,7 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
         .bind(e.talk_secs())
         .bind(&e.asset)
         .bind(dialed.map(|(call, _)| call))
+        .bind(e.later_leg)
         .fetch_optional(&mut *tx)
         .await?;
     let call: Option<Call> = match open {

@@ -225,7 +225,14 @@ async fn calls_with_leads_are_kept_once_with_their_recordings_and_transcripts(db
     let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'summarize_call'").fetch_all(&s.db).await.unwrap();
     assert_eq!(runs, [json!({ "call_id": c["id"] })]);
 
-    // Each leg of a transferred call is a call of its own, with its outcome and transcript.
+    // Each leg of a transferred call is a call of its own, with its outcome and transcript. Only the first closes a step, so
+    // Sarah's next one stays open.
+    let next: Uuid = sqlx::query_scalar("insert into calls (project_id, lead_id, kind, status) values ($1, $2, 'manual', 'open') returning id")
+        .bind(s.project)
+        .bind(s.sarah)
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
     let mut leg = dialpad_call(6009, "+447700900123", "outbound", true, 300, 60);
     leg["master_call_id"] = json!("6001");
     leg["state"] = json!("call_transcription");
@@ -235,9 +242,10 @@ async fn calls_with_leads_are_kept_once_with_their_recordings_and_transcripts(db
     let sarahs = s.calls_of(s.sarah).await;
     let leg = sarahs.iter().find(|c| c["dialpad_id"] == 6009).unwrap();
     assert_eq!(
-        (sarahs.len(), leg["kind"].as_str(), leg["duration_secs"].as_i64(), leg["transcript"].as_str()),
-        (2, Some("manual"), Some(60), Some("Us: Sam here, I run onboarding."))
+        (sarahs.len(), leg["kind"].as_str(), leg["status"].as_str(), leg["duration_secs"].as_i64(), leg["transcript"].as_str()),
+        (3, Some("manual"), Some("done"), Some(60), Some("Us: Sam here, I run onboarding."))
     );
+    assert!(sarahs.iter().any(|c| c["id"] == next.to_string() && c["status"] == "open"), "{sarahs:?}");
 
     // Numbers that aren't a lead's, hidden ones and states Splee doesn't read aren't kept.
     assert_eq!(s.event(&token, 1, &dialpad_call(6002, "+1 415 555 0100", "outbound", true, 60, 30)).await.1, json!({ "matched": false }));

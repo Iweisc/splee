@@ -174,6 +174,7 @@ pub fn parse(call: &Value) -> Option<Ended> {
         // Aircall's page for the call, which only the team can open.
         asset: text(&call["asset"]).filter(|_| recorded).unwrap_or_default(),
         step: None,
+        later_leg: false,
     })
 }
 
