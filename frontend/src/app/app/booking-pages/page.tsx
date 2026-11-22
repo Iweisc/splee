@@ -8,7 +8,7 @@ import { CopyField } from "@/components/app/settings/copy-button";
 import { LoadError, Section, SectionsSkeleton, SettingsColumn } from "@/components/app/settings/layout";
 import { useAction } from "@/components/app/settings/use-action";
 import { MicroLabel } from "@/components/app/work/states";
-import { Button } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import { Field, Input, NumberInput, Select, Switch } from "@/components/ui/form";
 import { Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
@@ -75,8 +75,16 @@ export default function BookingPagesPage() {
               ))}
               {mailboxes && !mailboxes.length ? (
                 <Card>
-                  <EmptyState icon={<CalendarCheck className="size-6" />} title="Connect a mailbox first">
-                    Bookings are emailed from a mailbox, so each booking page belongs to one. Add one on the Mailboxes page.
+                  <EmptyState
+                    icon={<CalendarCheck className="size-6" />}
+                    title="Connect a mailbox first"
+                    action={
+                      <LinkButton href="/app/domains" variant="outline" size="sm">
+                        Add a mailbox
+                      </LinkButton>
+                    }
+                  >
+                    Bookings are emailed from a mailbox, so each booking page belongs to one.
                   </EmptyState>
                 </Card>
               ) : (

@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
+import Link from "next/link";
 import { Check, Pencil, Smartphone, X } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -64,7 +65,11 @@ export default function TextsPage({ params }: PageProps<"/app/p/[projectId]/text
       <PageBody>
         {twilio && !twilio.connection && (
           <p className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-pretty text-amber-800">
-            Twilio isn&apos;t connected, so approved texts wait. Connect it on the Integrations page.
+            Twilio isn&apos;t connected, so approved texts wait. Connect it on the{" "}
+            <Link href={`/app/p/${projectId}/integrations`} className="font-medium underline underline-offset-2">
+              Integrations page
+            </Link>
+            .
           </p>
         )}
         {error ? (
