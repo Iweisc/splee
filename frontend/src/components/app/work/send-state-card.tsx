@@ -64,6 +64,11 @@ const VIEWS: Partial<Record<SendStateName, (s: SendState, projectId: string) => 
     text: `The project sent its ${plural(s.today.daily_email_limit, "email")} for today.${s.today.next_send_at ? ` More go out ${when(s.today.next_send_at)}.` : ""}`,
     fix: { label: "Change limit", href: `/app/p/${p}/daily-limit` },
   }),
+  // Changed in this campaign's Daily limit card, further down the same page.
+  campaign_limit_reached: (s) => ({
+    icon: <Hourglass className="size-4 text-amber-700" />,
+    text: `This campaign sent its ${plural(s.today.campaign_limit ?? 0, "email")} for today.${s.today.next_send_at ? ` More go out ${when(s.today.next_send_at)}.` : ""}`,
+  }),
   mailboxes_full: (s) => ({
     icon: <Mailbox className="size-4 text-amber-700" />,
     text: `Its mailboxes sent their most for today or are still warming up.${s.today.next_send_at ? ` More go out ${when(s.today.next_send_at)}.` : ""}`,
@@ -77,8 +82,8 @@ export function SendStateCard({ projectId, segmentId }: { projectId: string; seg
   const { data } = useSWR<SendState>(`/segments/${segmentId}/send-state`, fetcher, { refreshInterval: 60_000 });
   const view = data && VIEWS[data.state]?.(data, projectId);
   if (!data || !view) return null;
-  const { sent, queued, drafts } = data.today;
-  const today = [`${num(sent)} sent today`, `${num(queued)} queued`, drafts > 0 && plural(drafts, "draft")].filter(Boolean).join(" · ");
+  const { sent, queued, drafts, campaign_limit } = data.today;
+  const today = [`${num(sent)}${campaign_limit === null ? "" : ` of ${num(campaign_limit)}`} sent today`, `${num(queued)} queued`, drafts > 0 && plural(drafts, "draft")].filter(Boolean).join(" · ");
   return (
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       {view.icon}

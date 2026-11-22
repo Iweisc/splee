@@ -19,6 +19,7 @@ import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
 import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
+import { DailyLimitCard } from "@/components/app/work/daily-limit-card";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LeadPagesCard } from "@/components/app/work/lead-page";
@@ -139,6 +140,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           <MyCopyCard scope={{ kind: "campaign", segmentId: segId }} />
           <AbTestCard segmentId={segId} />
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
+          <DailyLimitCard key={segment.daily_limit ?? "none"} segment={segment} />
           <LanguageCard segment={segment} />
           <TrackingCard segment={segment} />
           <LeadPagesCard segment={segment} />

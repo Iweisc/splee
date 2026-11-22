@@ -139,6 +139,17 @@ pub(super) struct SegmentBody {
     lead_pages: Option<bool>,
     /// "lead" (the default) for each lead's own language, or a code from language::LANGUAGES.
     language: Option<String>,
+    /// The campaign's own daily limit, where null takes it off and leaves out keeps it.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    daily_limit: Option<Option<i32>>,
+}
+
+/// A campaign's own daily limit, or a 400.
+pub(super) fn check_daily_limit(limit: Option<Option<i32>>) -> AppResult<()> {
+    match limit.flatten() {
+        Some(n) if !(1..=5000).contains(&n) => Err(AppError::BadRequest("daily_limit is 1 to 5,000 emails, or null for none".into())),
+        _ => Ok(()),
+    }
 }
 
 /// A campaign's language setting, or a 400 that lists the ones that work.
@@ -176,7 +187,7 @@ impl SegmentBody {
         if let Some(language) = &self.language {
             check_language(language)?;
         }
-        Ok(())
+        check_daily_limit(self.daily_limit)
     }
 }
 
@@ -273,7 +284,8 @@ async fn update(
            track_clicks = coalesce($12, track_clicks),
            track_opens = coalesce($13, track_opens),
            language = coalesce($14, language),
-           lead_pages = coalesce($15, lead_pages)
+           lead_pages = coalesce($15, lead_pages),
+           daily_limit = case when $16 then $17 else daily_limit end
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -291,6 +303,8 @@ async fn update(
     .bind(body.track_opens)
     .bind(body.language)
     .bind(body.lead_pages)
+    .bind(body.daily_limit.is_some())
+    .bind(body.daily_limit.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
