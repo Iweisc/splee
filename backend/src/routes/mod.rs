@@ -55,6 +55,7 @@ mod local_businesses;
 mod lookalikes;
 mod tech;
 mod visitors;
+mod voicemail;
 mod win_backs;
 pub mod linkedin;
 pub(crate) mod calendar;
@@ -237,6 +238,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(slack::router())
         .merge(texts::router())
         .merge(calls::router())
+        .merge(voicemail::router())
         .merge(aircall::router())
         .merge(dialpad::router())
         .merge(meetings::router())

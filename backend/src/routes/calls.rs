@@ -325,7 +325,7 @@ pub async fn log_for_lead(state: &AppState, org_id: Uuid, lead_id: Uuid, body: &
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use axum::Router;
@@ -341,7 +341,7 @@ mod tests {
 
     const PUBLIC: &str = "https://splee.test";
     /// A US number, so Sam is called in the project's time zone.
-    const SAM: &str = "+14155550134";
+    pub(crate) const SAM: &str = "+14155550134";
     const KEY: &str = "splee_test_calls";
 
     /// The fixed-offset zone where it's `hour` o'clock now, so calling hours don't depend on when the tests run.
@@ -356,26 +356,26 @@ mod tests {
         if offset >= 0 { format!("Etc/GMT-{offset}") } else { format!("Etc/GMT+{}", -offset) }
     }
 
-    struct Seeded {
+    pub(crate) struct Seeded {
         state: AppState,
-        base: String,
-        client: reqwest::Client,
-        sent: fake::Sent,
+        pub(crate) base: String,
+        pub(crate) client: reqwest::Client,
+        pub(crate) sent: fake::Sent,
         acme_org: Uuid,
         project: Uuid,
         /// Signed in as session "jo", on Acme's team. Sam's owner.
-        jo: Uuid,
+        pub(crate) jo: Uuid,
         beta_user: Uuid,
         beta_project: Uuid,
         /// A contacted lead whose first email went out 3 days ago, so their call step, 2 days after it, is due.
-        sam: Uuid,
+        pub(crate) sam: Uuid,
         beta_lead: Uuid,
     }
 
     impl Seeded {
         /// Acme has Twilio set up for calls with the fake's account, its TwiML App and transcription on, and a project whose
         /// first follow-up is a call 2 days after the first email, then an email 3 days after that. It's midday for Sam.
-        async fn start(db: PgPool) -> Self {
+        pub(crate) async fn start(db: PgPool) -> Self {
             let (fake_url, sent) = fake::start().await;
             let base_cfg = (*crate::autopilot::tests::state(db.clone()).cfg).clone();
             let cfg = Config { app_secret: "test-secret".into(), public_url: PUBLIC.into(), twilio_api_url: fake_url, ..base_cfg };
@@ -446,11 +446,11 @@ mod tests {
             Self { state, base, client: reqwest::Client::new(), sent, acme_org, project, jo, beta_user, beta_project, sam, beta_lead }
         }
 
-        fn db(&self) -> &PgPool {
+        pub(crate) fn db(&self) -> &PgPool {
             &self.state.db
         }
 
-        async fn call(&self, session: &str, method: Method, path: &str, body: Value) -> (u16, Value) {
+        pub(crate) async fn call(&self, session: &str, method: Method, path: &str, body: Value) -> (u16, Value) {
             let res = self.client.request(method, format!("{}{path}", self.base)).header("cookie", format!("splee_session={session}")).json(&body).send().await.unwrap();
             (res.status().as_u16(), res.json().await.unwrap_or_default())
         }
@@ -476,14 +476,14 @@ mod tests {
         }
 
         /// What Twilio asks when `user`'s browser dials `to` for `call`.
-        async fn voice(&self, call: Uuid, user: Uuid, to: &str, sid: &str) -> (u16, String) {
+        pub(crate) async fn voice(&self, call: Uuid, user: Uuid, to: &str, sid: &str) -> (u16, String) {
             let from = format!("client:{}", calls::identity(user));
             let call = call.to_string();
             let params = [("AccountSid", fake::ACCOUNT), ("ApplicationSid", fake::APP), ("CallSid", sid), ("From", from.as_str()), ("To", to), ("call_id", call.as_str())];
             self.webhook("voice", &params, "token").await
         }
 
-        async fn open_call(&self, lead: Uuid) -> Uuid {
+        pub(crate) async fn open_call(&self, lead: Uuid) -> Uuid {
             sqlx::query_scalar("insert into calls (project_id, lead_id, kind, step, status, to_number) select project_id, id, 'sequence', 1, 'open', phone from leads where id = $1 returning id")
                 .bind(lead)
                 .fetch_one(self.db())

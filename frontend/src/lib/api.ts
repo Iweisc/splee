@@ -7,21 +7,23 @@ export class ApiError extends Error {
   }
 }
 
-type Body = Record<string, unknown> | unknown[] | FormData;
+/** JSON, or a form or file sent as it is. */
+type Body = Record<string, unknown> | unknown[] | FormData | Blob;
 
 /**
  * Client-side fetch for the Rust API. Paths start after /api, e.g. api("/projects").
  * Throws ApiError with the backend's `{error}` message on non-2xx, and with status 0 when the request got no answer.
  */
 export async function api<T>(path: string, init: { method?: string; body?: Body; signal?: AbortSignal } = {}): Promise<T> {
-  const isForm = init.body instanceof FormData;
+  // fetch sets the Content-Type of a form or a file itself.
+  const raw = init.body instanceof FormData || init.body instanceof Blob;
   let res: Response;
   try {
     res = await fetch(`/api${path}`, {
       method: init.method ?? (init.body ? "POST" : "GET"),
       credentials: "same-origin",
-      headers: init.body && !isForm ? { "Content-Type": "application/json" } : undefined,
-      body: init.body ? (isForm ? (init.body as FormData) : JSON.stringify(init.body)) : undefined,
+      headers: init.body && !raw ? { "Content-Type": "application/json" } : undefined,
+      body: init.body ? (raw ? (init.body as FormData | Blob) : JSON.stringify(init.body)) : undefined,
       signal: init.signal,
     });
   } catch (e) {
