@@ -1872,6 +1872,8 @@ export interface TwilioStatus {
     /** The number calls come from. Empty uses the SMS number. */
     voice_from: string;
     call_transcription: boolean;
+    /** With local presence on, the numbers calls go out from, nearest the lead first. Empty is off. */
+    local_numbers: string[];
     error: string | null;
     failed_at: Ts | null;
     created_at: Ts;

@@ -53,6 +53,8 @@ struct Connection {
     twiml_app_sid: String,
     voice_from: String,
     call_transcription: bool,
+    /// With local presence on, the numbers calls go out from. Empty is off.
+    local_numbers: Vec<String>,
     error: Option<String>,
     failed_at: Option<Ts>,
     created_at: Ts,
@@ -140,6 +142,7 @@ async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<Con
            whatsapp_template_sid = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_sid else '' end,
            whatsapp_template_body = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_body else '' end,
            whatsapp_template_vars = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_vars else '{}' end,
+           local_numbers = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.local_numbers else '{}' end,
            account_sid = excluded.account_sid, account_name = excluded.account_name, api_key_sid = excluded.api_key_sid,
            api_secret_enc = excluded.api_secret_enc, auth_token_enc = excluded.auth_token_enc, sms_from = excluded.sms_from,
            whatsapp_from = excluded.whatsapp_from, error = null, failed_at = null",
@@ -223,6 +226,9 @@ struct CallingBody {
     voice_from: String,
     #[serde(default)]
     transcribe: bool,
+    /// Calls each lead from the account's number nearest them. Saving reads the numbers from Twilio again.
+    #[serde(default)]
+    local_presence: bool,
 }
 
 /// Turns on calling from the browser with a TwiML App, which Splee points at /api/twilio/voice so the account's calls ask it
@@ -235,6 +241,7 @@ async fn set_calling(State(state): State<AppState>, auth: Auth, Json(body): Json
         "" => String::new(),
         raw => sender_number(raw).ok_or_else(|| bad("Enter the calling number with its country code, like +14155550100"))?,
     };
+    let mut local = vec![];
     let app = match body.twiml_app_sid.trim() {
         "" => String::new(),
         raw => {
@@ -245,14 +252,21 @@ async fn set_calling(State(state): State<AppState>, auth: Auth, Json(body): Json
             let client = Client::for_account(&state, &account)?;
             let url = crate::calls::voice_url(&state.cfg.public_url);
             client.point_app(&app, &url).await.map_err(|e| bad(&format!("Twilio couldn't set up that TwiML App. {}", e.reason())))?;
+            if body.local_presence {
+                local = client.voice_numbers().await.map_err(|e| bad(&format!("Twilio couldn't list your numbers. {}", e.reason())))?;
+                if local.is_empty() {
+                    return Err(bad("This Twilio account has no numbers that can make calls"));
+                }
+            }
             app
         }
     };
-    sqlx::query("update twilio_accounts set twiml_app_sid = $2, voice_from = $3, call_transcription = $4 where org_id = $1")
+    sqlx::query("update twilio_accounts set twiml_app_sid = $2, voice_from = $3, call_transcription = $4, local_numbers = $5 where org_id = $1")
         .bind(auth.org_id)
         .bind(app)
         .bind(voice_from)
         .bind(body.transcribe)
+        .bind(local)
         .execute(&state.db)
         .await?;
     status(State(state), auth).await

@@ -194,25 +194,52 @@ pub async fn check(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, to: 
     Ok(Ok((call, lead)))
 }
 
+/// What authorize reads of the organization's Twilio account.
+#[derive(sqlx::FromRow)]
+struct Calling {
+    account_sid: String,
+    api_key_sid: String,
+    api_secret_enc: String,
+    twiml_app_sid: String,
+    voice_from: String,
+    sms_from: String,
+    call_transcription: bool,
+    local_numbers: Vec<String>,
+}
+
+/// The number to call `to` from: with local presence on, the first of the default and the account's `local` numbers that's in
+/// their area code, for the US, Canada and the rest of +1, else in their country, else the default.
+pub fn caller_id(to: &str, local: &[String], default: &str) -> String {
+    let area = |n: &str| n.strip_prefix("+1").and_then(|rest| rest.get(..3)).map(str::to_string);
+    let numbers: Vec<&str> = std::iter::once(default).chain(local.iter().map(String::as_str)).collect();
+    let same_area = area(to).and_then(|code| numbers.iter().find(|n| area(n).as_ref() == Some(&code)));
+    let country = |n: &str| phone::nanp_country(n).or_else(|| phone::country(n));
+    let same_country = country(to).and_then(|c| numbers.iter().find(|n| country(n) == Some(c)));
+    same_area.or(same_country).copied().unwrap_or(default).to_string()
+}
+
 /// `check`, and that the organization's Twilio is set up for calls, with what Twilio needs to place the call.
 pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, to: Option<&str>, now: Ts) -> sqlx::Result<Result<Dial, String>> {
     let (call, lead) = match check(db, org_id, user_id, call_id, to, now).await? {
         Ok(checked) => checked,
         Err(why) => return Ok(Err(why)),
     };
-    let account: Option<(String, String, String, String, String, String, bool)> = sqlx::query_as(
-        "select account_sid, api_key_sid, api_secret_enc, twiml_app_sid, voice_from, sms_from, call_transcription from twilio_accounts where org_id = $1",
+    let account: Option<Calling> = sqlx::query_as(
+        "select account_sid, api_key_sid, api_secret_enc, twiml_app_sid, voice_from, sms_from, call_transcription, local_numbers
+         from twilio_accounts where org_id = $1",
     )
     .bind(org_id)
     .fetch_optional(db)
     .await?;
-    let Some((account_sid, api_key_sid, api_secret_enc, twiml_app_sid, voice_from, sms_from, transcribe)) = account else {
+    let Some(a) = account else {
         return Ok(Err("Connect Twilio on the Integrations page to call from Splee.".into()));
     };
-    let from = if voice_from.is_empty() && sms_from.starts_with('+') { sms_from } else { voice_from };
-    if twiml_app_sid.is_empty() || from.is_empty() {
+    let from = if a.voice_from.is_empty() && a.sms_from.starts_with('+') { a.sms_from } else { a.voice_from };
+    if a.twiml_app_sid.is_empty() || from.is_empty() {
         return Ok(Err("Turn on calling in the Twilio card on the Integrations page first.".into()));
     }
+    let from = caller_id(&lead.phone, &a.local_numbers, &from);
+    let Calling { account_sid, api_key_sid, api_secret_enc, twiml_app_sid, call_transcription: transcribe, .. } = a;
     Ok(Ok(Dial { call, lead, from, transcribe, account_sid, api_key_sid, api_secret_enc, twiml_app_sid }))
 }
 
@@ -456,6 +483,27 @@ pub(crate) mod tests {
     use sha2::Sha256;
 
     use super::*;
+
+    #[test]
+    fn local_presence_calls_from_the_same_area_code_then_the_same_country() {
+        let local: Vec<String> = ["+12125550100", "+13105550100", "+442071838750", "+61291234567"].map(String::from).to_vec();
+        let from = |to: &str| caller_id(to, &local, "+14155550100");
+        assert_eq!(from("+12125550134"), "+12125550100");
+        assert_eq!(from("+13105550134"), "+13105550100");
+        // The default when it's local too, and when no number is.
+        assert_eq!(from("+14155550134"), "+14155550100");
+        assert_eq!(from("+16175550134"), "+14155550100");
+        assert_eq!(from("+447700900123"), "+442071838750");
+        assert_eq!(from("+61412345678"), "+61291234567");
+        assert_eq!(from("+4915112345678"), "+14155550100");
+        // +1 is more than the US: Vancouver gets the Toronto number, and Jamaica none of the US ones.
+        let local: Vec<String> = ["+12125550100", "+14165550100"].map(String::from).to_vec();
+        assert_eq!(caller_id("+16045550134", &local, "+14155550100"), "+14165550100");
+        assert_eq!(caller_id("+18765550134", &local, "+13105550100"), "+13105550100");
+        assert_eq!(caller_id("+16175550134", &local, "+14165550100"), "+12125550100");
+        // Off, there are no local numbers.
+        assert_eq!(caller_id("+12125550134", &[], "+14155550100"), "+14155550100");
+    }
 
     #[test]
     fn calling_hours_are_eight_to_eight_in_the_leads_zone() {

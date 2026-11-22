@@ -879,4 +879,32 @@ pub(crate) mod tests {
         let (status, off) = s.call("jo", Method::POST, &format!("/calls/{call}/dial"), json!({})).await;
         assert_eq!((status, off["error"].as_str()), (409, Some("Turn on calling in the Twilio card on the Integrations page first.")));
     }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn local_presence_calls_each_lead_from_the_number_nearest_them(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let body = |local: bool| json!({ "twiml_app_sid": fake::APP, "voice_from": "+14155550100", "local_presence": local });
+        let (status, saved) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(true)).await;
+        assert_eq!(status, 200, "{saved}");
+        // Only the numbers that can make calls.
+        assert_eq!(saved["connection"]["local_numbers"], json!(["+14155550100", "+12125550100", "+442071838750"]));
+
+        // Sam moved to New York.
+        sqlx::query("update leads set phone = '+12125550134' where id = $1").bind(s.sam).execute(s.db()).await.unwrap();
+        let call = s.open_call(s.sam).await;
+        let (_, twiml) = s.voice(call, s.jo, "+12125550134", "CA7").await;
+        assert!(twiml.contains("<Dial callerId=\"+12125550100\""), "{twiml}");
+
+        // Reconnecting the same account keeps them, and connecting another account drops them, since it doesn't own them.
+        let account =
+            json!({ "account_sid": fake::ACCOUNT, "api_key_sid": fake::KEY, "api_secret": "secret", "auth_token": "token", "sms_from": "+14155550100" });
+        let kept = |status: Value| status["connection"]["local_numbers"].as_array().map_or(0, Vec::len);
+        assert_eq!(kept(s.call("acme", Method::PUT, "/organization/twilio", account.clone()).await.1), 3);
+        sqlx::query("update twilio_accounts set account_sid = 'ACbefore' where org_id = $1").bind(s.acme_org).execute(s.db()).await.unwrap();
+        assert_eq!(kept(s.call("acme", Method::PUT, "/organization/twilio", account).await.1), 0);
+
+        let (_, off) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(false)).await;
+        assert_eq!(off["connection"]["local_numbers"], json!([]));
+    }
 }

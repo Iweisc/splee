@@ -135,9 +135,21 @@ export function TwilioSection({ settings }: { settings: ProjectSettings }) {
 /** Calls from the browser go through a TwiML App, which saving points at Splee. Calls are recorded, and transcribed when it's on. */
 function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (fresh: TwilioStatus) => void }) {
   const c = status.connection!;
-  const [form, setForm] = useState({ twiml_app_sid: c.twiml_app_sid, voice_from: c.voice_from, transcribe: c.call_transcription });
+  const local = c.local_numbers.length > 0;
+  const [form, setForm] = useState({
+    twiml_app_sid: c.twiml_app_sid,
+    voice_from: c.voice_from,
+    transcribe: c.call_transcription,
+    local_presence: local,
+  });
   const [busy, setBusy] = useState(false);
-  const changed = form.twiml_app_sid !== c.twiml_app_sid || form.voice_from !== c.voice_from || form.transcribe !== c.call_transcription;
+  // With local presence on, saving reads the numbers from Twilio again, so it's never a no-op.
+  const changed =
+    form.twiml_app_sid !== c.twiml_app_sid ||
+    form.voice_from !== c.voice_from ||
+    form.transcribe !== c.call_transcription ||
+    form.local_presence !== local ||
+    form.local_presence;
   const save = async (body: typeof form) => {
     setBusy(true);
     try {
@@ -167,6 +179,18 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
           <Input placeholder={fallback || "+14155550100"} autoComplete="off" value={form.voice_from} onChange={(e) => setForm({ ...form, voice_from: e.target.value.trim() })} />
         </Field>
       </div>
+      <span className="flex items-start gap-2.5 text-sm">
+        <Switch checked={form.local_presence} onChange={(local_presence) => setForm({ ...form, local_presence })} label="Call from a local number" />
+        <span className="text-pretty">
+          Call each lead from your Twilio number in their area code, or else their country
+          {local && (
+            <span className="mt-0.5 block text-xs text-muted-foreground">
+              From {c.local_numbers.length === 1 ? "your one number" : `your ${c.local_numbers.length} numbers`}. Save again after you add
+              one in Twilio.
+            </span>
+          )}
+        </span>
+      </span>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="flex items-center gap-2.5 text-sm">
           <Switch checked={form.transcribe} onChange={(transcribe) => setForm({ ...form, transcribe })} label="Transcribe calls" />
@@ -174,7 +198,12 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
         </span>
         <span className="flex gap-2">
           {c.twiml_app_sid && (
-            <Button type="button" variant="ghost" loading={busy} onClick={() => save({ twiml_app_sid: "", voice_from: form.voice_from, transcribe: false })}>
+            <Button
+              type="button"
+              variant="ghost"
+              loading={busy}
+              onClick={() => save({ twiml_app_sid: "", voice_from: form.voice_from, transcribe: false, local_presence: false })}
+            >
               Turn off
             </Button>
           )}

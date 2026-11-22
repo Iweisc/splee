@@ -153,6 +153,22 @@ impl Client {
         Ok(app["friendly_name"].as_str().unwrap_or_default().to_string())
     }
 
+    /// The account's numbers that can make calls, in E.164, a page of a thousand at a time up to MAX_PAGES.
+    pub async fn voice_numbers(&self) -> Result<Vec<String>, Failure> {
+        const MAX_PAGES: usize = 20;
+        let mut next = Some(format!("/2010-04-01/Accounts/{}/IncomingPhoneNumbers.json?PageSize=1000", self.account_sid));
+        let mut voice = vec![];
+        for _ in 0..MAX_PAGES {
+            // Twilio gives the next page as a path on its own API, and nothing else is followed.
+            let Some(path) = next.take().filter(|p| p.starts_with("/2010-04-01/Accounts/")) else { break };
+            let found = self.call(self.http.get(format!("{}{path}", self.api))).await?;
+            let numbers = found["incoming_phone_numbers"].as_array().into_iter().flatten();
+            voice.extend(numbers.filter(|n| n["capabilities"]["voice"] == true).filter_map(|n| n["phone_number"].as_str().map(String::from)));
+            next = found["next_page_uri"].as_str().map(String::from);
+        }
+        Ok(voice)
+    }
+
     /// A call recording's audio as MP3. Twilio keeps recordings behind the account's credentials, so the app plays them
     /// through Splee.
     pub async fn recording(&self, sid: &str) -> Result<Vec<u8>, Failure> {
@@ -809,6 +825,20 @@ pub(crate) mod fake {
             sent.lock().unwrap().push(form);
             (StatusCode::OK, Json(json!({ "status": "in-progress" })))
         }
+        // Three numbers that can call and one that can only text, over two pages.
+        async fn numbers(headers: HeaderMap, Path(sid): Path<String>, Query(q): Query<HashMap<String, String>>) -> (StatusCode, Json<Value>) {
+            if !authed(&headers) {
+                return refused();
+            }
+            let number = |n: &str, voice: bool| json!({ "phone_number": n, "capabilities": { "voice": voice, "sms": true } });
+            if q.get("Page").is_some_and(|p| p == "1") {
+                let rest = [number("+442071838750", true), number("+13105550100", false)];
+                return (StatusCode::OK, Json(json!({ "incoming_phone_numbers": rest, "next_page_uri": null })));
+            }
+            let next = format!("/2010-04-01/Accounts/{sid}/IncomingPhoneNumbers.json?PageSize=1000&Page=1&PageToken=PA1");
+            let first = [number("+14155550100", true), number("+12125550100", true)];
+            (StatusCode::OK, Json(json!({ "incoming_phone_numbers": first, "next_page_uri": next })))
+        }
         let sent = Sent::default();
         let app = Router::new()
             .route("/2010-04-01/Accounts/{file}", get(account))
@@ -816,6 +846,7 @@ pub(crate) mod fake {
             .route("/2010-04-01/Accounts/{sid}/Applications/{file}", get(application).post(update_application))
             .route("/2010-04-01/Accounts/{sid}/Recordings/{file}", get(recording))
             .route("/2010-04-01/Accounts/{sid}/Calls.json", get(calls))
+            .route("/2010-04-01/Accounts/{sid}/IncomingPhoneNumbers.json", get(numbers))
             .route("/2010-04-01/Accounts/{sid}/Calls/{file}", post(update_call))
             .route("/v1/Content/{sid}", get(content))
             .with_state(sent.clone());
