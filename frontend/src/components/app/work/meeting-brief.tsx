@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { MeetingBrief } from "@/lib/types";
-import { dayTime, timeAgo } from "@/lib/utils";
+import { dayTime, isPast, timeAgo } from "@/lib/utils";
 import { MicroLabel, toastError } from "./states";
 
 /** The brief the agent writes before a lead's call: on its own a day ahead, or now from the button. */
@@ -42,7 +42,7 @@ export function MeetingBriefCard({ leadId, meetingAt }: { leadId: string; meetin
             <p className="mt-1 text-xs text-muted-foreground">
               {brief && data?.written_at
                 ? `Written ${timeAgo(data.written_at)}${data.meeting_at ? ` for the call on ${dayTime(data.meeting_at)}` : ""}`
-                : meetingAt
+                : meetingAt && !isPast(meetingAt)
                   ? `Written on its own a day before the call on ${dayTime(meetingAt)}, then posted to your chats.`
                   : "Who they are, what was said so far and what to ask, from what Splee knows."}
             </p>
