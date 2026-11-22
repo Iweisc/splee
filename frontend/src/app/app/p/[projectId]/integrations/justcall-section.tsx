@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { PhoneCall } from "lucide-react";
 import useSWR from "swr";
 import { Section } from "@/components/app/settings/layout";
@@ -61,7 +62,11 @@ export function JustcallSection({ projectId }: { projectId: string }) {
               JustCall last sent an event <span title={dateTime(data.last_event_at)}>{timeAgo(data.last_event_at)}</span>.{" "}
             </>
           )}
-          A call closes the lead&apos;s next call step on the Calls page, or is logged there on its own. Calls with numbers that aren&apos;t a
+          A call closes the lead&apos;s next call step on the{" "}
+          <Link href={`/app/p/${projectId}/calls`} className="font-medium underline underline-offset-2">
+            Calls page
+          </Link>
+          , or is logged there on its own. Calls with numbers that aren&apos;t a
           lead&apos;s stay in JustCall.
         </p>
       ) : (
