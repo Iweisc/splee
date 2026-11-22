@@ -105,7 +105,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let value = if deal.value_cents > 0 { format!(", worth {} {}", deal.value_cents / 100, deal.currency.to_uppercase()) } else { String::new() };
     let close = deal.close_date.map(|d| format!(" They expect to close by {d}.")).unwrap_or_default();
     let notes = if deal.notes.trim().is_empty() { String::new() } else { format!("\nThe deal's notes: {}", deal.notes.trim()) };
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let prices = if kept.is_empty() {
         format!(
             "4. items: the prices exactly as quoted to them in the conversation or written in the deal's notes, never from our materials alone, in {currency}, each \

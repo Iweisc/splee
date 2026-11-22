@@ -399,7 +399,7 @@ pub async fn announce(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let (project, profile) = load_project(ctx, project_id).await?;
     let org_id = project.org_id.context("the project has no organization")?;
     let settings = WriterSettings::load(ctx, project_id).await?;
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
 
     let more = askers.len() as i64 == MAX_NOTICES;
     let (mut drafted, mut skipped) = (0, 0);

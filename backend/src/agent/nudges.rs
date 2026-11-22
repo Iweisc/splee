@@ -192,7 +192,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let days = (chrono::Utc::now() - deal.last_touch).num_days();
     let value = if deal.value_cents > 0 { format!(", worth {} {}", deal.value_cents / 100, deal.currency.to_uppercase()) } else { String::new() };
     let notes = if deal.notes.trim().is_empty() { String::new() } else { format!("\nThe deal's notes: {}", deal.notes.trim()) };
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let prompt = format!(
         "{us} has an open deal with this lead in the {stage} stage{value}, and nobody has written, called or moved it in {days} \
          days.{notes}\n\n\

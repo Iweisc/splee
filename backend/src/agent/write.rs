@@ -62,7 +62,12 @@ impl WriterSettings {
     }
 
     fn sender(&self, profile: &Profile) -> String {
-        if self.sender_name.is_empty() { format!("the team at {}", profile.name) } else { format!("{} at {}", self.sender_name, profile.name) }
+        if self.sender_name.is_empty() { format!("the team at {}", profile.name) } else { self.sender_at(&profile.name) }
+    }
+
+    /// Who an email to someone we already talk with is from: "Dana at Acme", or the company alone with no sender name set.
+    pub fn sender_at(&self, company: &str) -> String {
+        if self.sender_name.is_empty() { company.to_string() } else { format!("{} at {company}", self.sender_name) }
     }
 
     /// Appended by code so the user's exact signature is used.
@@ -1126,6 +1131,15 @@ mod tests {
 
     async fn ctx(db: &PgPool, project: Uuid) -> Ctx {
         run_ctx(db, project, "write_emails", json!({})).await
+    }
+
+    #[test]
+    fn sender_lines() {
+        let profile = super::Profile { name: "Acme".into(), ..Default::default() };
+        let mut settings = super::WriterSettings::default();
+        assert_eq!((settings.sender(&profile), settings.sender_at("Acme")), ("the team at Acme".into(), "Acme".into()));
+        settings.sender_name = "Dana".into();
+        assert_eq!((settings.sender(&profile), settings.sender_at("Acme")), ("Dana at Acme".into(), "Dana at Acme".into()));
     }
 
     async fn run_ctx(db: &PgPool, project: Uuid, kind: &str, input: Value) -> Ctx {

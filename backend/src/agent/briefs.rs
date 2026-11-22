@@ -176,7 +176,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let materials = materials(ctx, lead.project_id).await?;
     let gaps = super::qualify::gaps(db, lead.id).await?;
     let gaps = if gaps.is_empty() { String::new() } else { format!("\n\n{gaps}") };
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let when = row.meeting_at.map_or("soon".to_string(), |at| hooks::meeting_time(at, &timezone));
     let prompt = format!(
         "{us} has a call with a lead {when}. Write them a brief to read before it.\n\n\

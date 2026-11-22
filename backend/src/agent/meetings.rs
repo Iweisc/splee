@@ -77,7 +77,7 @@ where
     let who = [lead.full_name.trim(), lead.title.trim(), lead.company_name.trim()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(", ");
     let attendees = meeting.attendees.as_array().into_iter().flatten().filter_map(|a| a["name"].as_str().or(a["email"].as_str())).collect::<Vec<_>>().join(", ");
     let stage_names: Vec<&str> = stages.iter().map(|s| s.name.as_str()).collect();
-    let sender = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let sender = settings.sender_at(&profile.name);
     let prompt = format!(
         "Here is a sales meeting between {us} and a lead ({who}), \"{title}\" on {day}. Attendees from their side: {attendees}.\n\n\
          {provider_notes}Transcript (from speech recognition, so expect small errors):\n{transcript}\n\n\

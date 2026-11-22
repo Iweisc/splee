@@ -63,7 +63,7 @@ pub(super) async fn load(ctx: &Ctx, deal_id: Uuid) -> anyhow::Result<Deal> {
     let settings = WriterSettings::load(ctx, lead.project_id).await?;
     let lang = crate::language::for_lead(db, lead.id).await?;
     let context = briefs::gather(db, &lead, org_id).await?;
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     Ok(Deal { lead, us, name: profile.name, description: profile.description, context, language: crate::language::instruction(lang), stage })
 }
 
