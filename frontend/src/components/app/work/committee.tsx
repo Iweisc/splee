@@ -66,10 +66,12 @@ export function BuyingCommitteeCard({
 
   return (
     <section className="rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <MicroLabel className="flex items-center gap-1.5">
-            <Users className="size-3.5" /> Buying committee at {company}
+      {/* The button drops under the text in a narrow lead window rather than squeezing it into a column a few words wide. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 basis-56">
+          {/* Top-aligned: a long company name wraps the label, and centring would put the icon beside its second line. */}
+          <MicroLabel className="flex items-start gap-1.5">
+            <Users className="mt-px size-3.5 shrink-0" /> Buying committee at {company}
           </MicroLabel>
           <p className="mt-1 text-xs text-pretty text-muted-foreground">
             {working
