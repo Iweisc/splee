@@ -100,7 +100,7 @@ export function ChatsView({ projectId, initialChat }: { projectId: string; initi
         </div>
         {data && <Pager page={page} total={data.total} onChange={setPage} />}
       </div>
-      <div className={cn("min-h-0 flex-col md:flex", selected ? "flex" : "hidden")}>
+      <div className={cn("min-h-0 flex-col md:flex", selected ? "flex" : "hidden")} data-thread-open={selected ? "" : undefined}>
         <button
           onClick={() => setSelected(null)}
           className="flex items-center gap-1.5 border-b border-border px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground md:hidden"

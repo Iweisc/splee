@@ -229,7 +229,7 @@ export function InboxView({ projectId, initialLead }: { projectId?: string; init
           <ListKeysHint className="hidden border-t border-border px-4 py-2 text-xs text-muted-foreground md:block" />
         )}
       </div>
-      <div className={cn("min-h-0 flex-col md:flex", selectedLead ? "flex" : "hidden")}>
+      <div className={cn("min-h-0 flex-col md:flex", selectedLead ? "flex" : "hidden")} data-thread-open={selectedLead ? "" : undefined}>
         <button
           onClick={() => setSelectedLead(null)}
           className="flex items-center gap-1.5 border-b border-border px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground md:hidden"

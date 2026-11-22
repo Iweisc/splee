@@ -2,10 +2,11 @@
 
 import { use } from "react";
 import { useRouter } from "next/navigation";
-import { PageBody, PageHeader, ScreenPage } from "@/components/app/page-header";
+import { HIDE_OVER_THREAD, PageBody, PageHeader, ScreenPage } from "@/components/app/page-header";
 import { ChatsView } from "@/components/app/work/chats-view";
 import { InboxView } from "@/components/app/work/inbox-view";
 import { Tabs } from "@/components/ui/misc";
+import { cn } from "@/lib/utils";
 
 const DESCRIPTIONS = {
   email: "Replies are classified automatically. Hot leads and questions get a reply draft with your booking link.",
@@ -21,7 +22,7 @@ export default function ProjectInboxPage({ params, searchParams }: PageProps<"/a
   const tab = linked === "chats" ? "chats" : "email";
   return (
     <ScreenPage>
-      <PageHeader title="Inbox" description={DESCRIPTIONS[tab]} />
+      <PageHeader title="Inbox" description={DESCRIPTIONS[tab]} className={HIDE_OVER_THREAD} />
       <PageBody className="flex min-h-0 flex-1 flex-col gap-4">
         <Tabs
           value={tab}
@@ -30,7 +31,7 @@ export default function ProjectInboxPage({ params, searchParams }: PageProps<"/a
             { value: "email", label: "Email" },
             { value: "chats", label: "Chats" },
           ]}
-          className="self-start"
+          className={cn("self-start", HIDE_OVER_THREAD)}
         />
         {tab === "chats" ? (
           <ChatsView projectId={projectId} initialChat={typeof chat === "string" ? chat : undefined} />
