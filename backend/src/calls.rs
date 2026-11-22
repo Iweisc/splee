@@ -3,6 +3,10 @@
 //! organization's Twilio account: Splee mints a short-lived Access Token, the Voice SDK calls the TwiML App, and Twilio asks
 //! /api/twilio/voice what to do, which dials the lead only after the checks in `authorize`. Twilio's callbacks then bring
 //! the length, the recording and, with transcription on, the transcript the agent summarizes.
+//!
+//! A lead calling one of the organization's numbers set to the TwiML App reaches /api/twilio/voice too, and rings the browsers
+//! of whoever should take it (`incoming`). A call nobody takes asks them for a message and puts a call back at the top of the
+//! Calls page (`on_dialed`).
 
 use chrono::Timelike;
 use chrono_tz::Tz;
@@ -23,6 +27,13 @@ pub const OUTCOMES: &[&str] = &["connected", "voicemail", "no_answer", "wrong_nu
 pub const CONNECTED: [&str; 3] = ["connected", "not_interested", "meeting_booked"];
 /// How long a browser's token to place calls lasts. The page asks for a new one for each call.
 pub const TOKEN_SECS: i64 = 600;
+/// How long the team's browsers ring for a lead's call before they're asked for a message.
+pub const RING_SECS: u32 = 20;
+/// Twilio asks dialed_url once the browsers stop ringing, but not when the caller hung up first, so a call still ringing this
+/// long after it came in was given up on, and tick counts it missed.
+const ABANDONED_SECS: i32 = 120;
+/// Twilio rings at most 10 browsers at once.
+const MAX_RINGING: i64 = 10;
 
 /// The lead's last finished step of the email sequence, as `last` (step, at): the last email sent, or a call step done or
 /// skipped after it. Joined laterally on a lead aliased `l`, `join {LAST_STEP} on true`.
@@ -45,6 +56,9 @@ fn suppressed() -> String {
 
 /// Takes a lead's open calls off. $1 is the lead, $2 the reason shown on them.
 pub const STOP_CALLS: &str = "update calls set status = 'cancelled', cancel_reason = $2, closed_at = now() where lead_id = $1 and status = 'open'";
+/// STOP_CALLS for the sequence's call steps only, which a reply ends. A call back after the lead called stays.
+pub const STOP_SEQUENCE_CALLS: &str =
+    "update calls set status = 'cancelled', cancel_reason = $2, closed_at = now() where lead_id = $1 and status = 'open' and kind = 'sequence'";
 
 pub fn voice_url(public_url: &str) -> String {
     format!("{}/api/twilio/voice", public_url.trim_end_matches('/'))
@@ -60,6 +74,21 @@ pub fn recording_url(public_url: &str) -> String {
 
 pub fn transcription_url(public_url: &str) -> String {
     format!("{}/api/twilio/calls/transcription", public_url.trim_end_matches('/'))
+}
+
+/// Twilio's callbacks when a team member's browser answers a lead's call, and when that browser's side of it ends.
+pub fn client_url(public_url: &str) -> String {
+    format!("{}/api/twilio/calls/client", public_url.trim_end_matches('/'))
+}
+
+/// What Twilio asks once the browsers stop ringing for a lead's call, answered or not, unless the lead hung up first.
+pub fn dialed_url(public_url: &str) -> String {
+    format!("{}/api/twilio/calls/dialed", public_url.trim_end_matches('/'))
+}
+
+/// What Twilio asks once a lead nobody answered is done leaving a message.
+pub fn message_url(public_url: &str) -> String {
+    format!("{}/api/twilio/calls/message", public_url.trim_end_matches('/'))
 }
 
 /// The time zone a lead is called in: theirs, from their number or country, else the project's.
@@ -86,9 +115,10 @@ pub fn caller(from: &str) -> Option<Uuid> {
     from.strip_prefix("client:")?.strip_prefix('u')?.parse().ok()
 }
 
-/// A Twilio Access Token with a Voice grant that lets the browser place calls through the TwiML App, and nothing else: no
-/// incoming calls. It's a JWT signed with the API key's secret, as Twilio's helper libraries make it.
-pub fn access_token(account_sid: &str, key_sid: &str, key_secret: &str, app_sid: &str, identity: &str, now: i64) -> String {
+/// A Twilio Access Token with a Voice grant that lets the browser place calls through the TwiML App, and with `incoming`, ring
+/// for calls leads make to the organization's numbers. It's a JWT signed with the API key's secret, as Twilio's helper
+/// libraries make it.
+pub fn access_token(account_sid: &str, key_sid: &str, key_secret: &str, app_sid: &str, identity: &str, incoming: bool, now: i64) -> String {
     let header = json!({ "alg": "HS256", "typ": "JWT", "cty": "twilio-fpa;v=1" });
     let claims = json!({
         "jti": format!("{key_sid}-{now}"),
@@ -97,7 +127,7 @@ pub fn access_token(account_sid: &str, key_sid: &str, key_secret: &str, app_sid:
         "iat": now,
         "nbf": now,
         "exp": now + TOKEN_SECS,
-        "grants": { "identity": identity, "voice": { "incoming": { "allow": false }, "outgoing": { "application_sid": app_sid } } },
+        "grants": { "identity": identity, "voice": { "incoming": { "allow": incoming }, "outgoing": { "application_sid": app_sid } } },
     });
     crate::crypto::hs256_jwt(key_secret.as_bytes(), &header, &claims)
 }
@@ -116,17 +146,19 @@ pub fn twiml_play(url: &str) -> String {
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Play>{}</Play><Hangup/></Response>", xml(url))
 }
 
-/// Dials the lead from the organization's number, recording both sides from when they answer. With transcription on, Twilio
-/// transcribes the call too: the inbound track is the caller in the browser, the outbound one the lead.
+/// Has Twilio transcribe the call, both sides, with who's on the inbound track (the audio coming into Twilio) and who on the
+/// outbound one. On a call the team makes the inbound track is the browser, and on one the lead makes it's the lead.
+fn twiml_transcribe(public_url: &str, inbound: &str, outbound: &str) -> String {
+    format!(
+        "<Start><Transcription statusCallbackUrl=\"{}\" track=\"both_tracks\" inboundTrackLabel=\"{inbound}\" outboundTrackLabel=\"{outbound}\"/></Start>",
+        xml(&transcription_url(public_url))
+    )
+}
+
+/// Dials the lead from the organization's number, recording both sides from when they answer, and with transcription on,
+/// transcribing it too.
 pub fn twiml_dial(public_url: &str, from: &str, to: &str, transcribe: bool) -> String {
-    let start = if transcribe {
-        format!(
-            "<Start><Transcription statusCallbackUrl=\"{}\" track=\"both_tracks\" inboundTrackLabel=\"Us\" outboundTrackLabel=\"Lead\"/></Start>",
-            xml(&transcription_url(public_url))
-        )
-    } else {
-        String::new()
-    };
+    let start = if transcribe { twiml_transcribe(public_url, "Us", "Lead") } else { String::new() };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response>{start}<Dial callerId=\"{}\" answerOnBridge=\"true\" timeLimit=\"3600\" \
          record=\"record-from-answer-dual\" recordingStatusCallback=\"{}\" recordingStatusCallbackEvent=\"completed\">\
@@ -137,6 +169,45 @@ pub fn twiml_dial(public_url: &str, from: &str, to: &str, transcribe: bool) -> S
         xml(to),
     )
 }
+
+/// Rings the browsers of `members` for a call a lead made to one of the organization's numbers, with `caller` for the browser
+/// to show who it is. Whoever answers first takes it, and it's recorded from then. With transcription on the whole call is
+/// transcribed, a message they leave included. After RING_SECS, or once it ends, Twilio asks dialed_url what next. Each
+/// browser's answered and completed callbacks go to client_url, since a lead hanging up first ends it without dialed_url.
+pub fn twiml_ring(public_url: &str, members: &[Uuid], caller: &[(&str, &str)], transcribe: bool) -> String {
+    let start = if transcribe { twiml_transcribe(public_url, "Lead", "Us") } else { String::new() };
+    let params: String = caller.iter().map(|(name, value)| format!("<Parameter name=\"{}\" value=\"{}\"/>", xml(name), xml(value))).collect();
+    let clients: String = members
+        .iter()
+        .map(|member| {
+            format!(
+                "<Client statusCallback=\"{}\" statusCallbackEvent=\"answered completed\"><Identity>{}</Identity>{params}</Client>",
+                xml(&client_url(public_url)),
+                identity(*member)
+            )
+        })
+        .collect();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response>{start}<Dial timeout=\"{RING_SECS}\" answerOnBridge=\"true\" timeLimit=\"3600\" \
+         action=\"{}\" record=\"record-from-answer-dual\" recordingStatusCallback=\"{}\" recordingStatusCallbackEvent=\"completed\">{clients}</Dial></Response>",
+        xml(&dialed_url(public_url)),
+        xml(&recording_url(public_url)),
+    )
+}
+
+/// Asks a lead nobody answered for a message of up to two minutes, which the recording callback keeps on their call. It doesn't
+/// name the organization, which is often still named after whoever signed up.
+pub fn twiml_message(public_url: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Say>Sorry we missed your call. Leave a message after the tone and we'll call you \
+         back.</Say><Record maxLength=\"120\" timeout=\"5\" playBeep=\"true\" action=\"{}\" recordingStatusCallback=\"{}\" \
+         recordingStatusCallbackEvent=\"completed\"/></Response>",
+        xml(&message_url(public_url)),
+        xml(&recording_url(public_url)),
+    )
+}
+
+pub const TWIML_HANGUP: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>";
 
 /// A call the checks let through, with what Twilio needs to place it.
 #[derive(Debug)]
@@ -245,11 +316,22 @@ pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, 
     Ok(Ok(Dial { call, lead, from, transcribe, account_sid, api_key_sid, api_secret_enc, twiml_app_sid }))
 }
 
-/// Every minute with the sender: call steps that came due become open calls, and open calls of leads who replied, booked or
-/// went on the do-not-contact list are cancelled.
-pub async fn tick(db: &PgPool) -> anyhow::Result<()> {
-    schedule(db).await?;
-    cancel_stale(db, None).await?;
+/// Every minute with the sender: call steps that came due become open calls, open calls of leads who replied, booked or went
+/// on the do-not-contact list are cancelled, and calls leads gave up on while they rang are missed.
+pub async fn tick(state: &AppState) -> anyhow::Result<()> {
+    schedule(&state.db).await?;
+    cancel_stale(&state.db, None).await?;
+    let abandoned: Vec<(Uuid, String)> = sqlx::query_as(
+        "select p.org_id, c.twilio_sid from calls c join projects p on p.id = c.project_id
+         where c.inbound and c.call_status = 'ringing' and c.called_at < now() - make_interval(secs => $1) and p.org_id is not null
+         limit 100",
+    )
+    .bind(ABANDONED_SECS)
+    .fetch_all(&state.db)
+    .await?;
+    for (org_id, sid) in abandoned {
+        after_ringing(state, org_id, &sid, "canceled", None).await?;
+    }
     Ok(())
 }
 
@@ -289,7 +371,8 @@ pub async fn schedule(db: &PgPool) -> sqlx::Result<u64> {
 }
 
 /// Cancels the open calls of leads who replied, booked or went on the do-not-contact list, in `project` or everywhere. The
-/// paths that change a lead do it at once too. This catches the rest, like an address added to the list by hand.
+/// paths that change a lead do it at once too. This catches the rest, like an address added to the list by hand. A reply
+/// only ends the sequence's call steps, since a lead who calls in has often replied before, and their call back stays.
 pub async fn cancel_stale(db: &PgPool, project: Option<Uuid>) -> sqlx::Result<u64> {
     let blocked = suppressed();
     let done = sqlx::query(&format!(
@@ -298,8 +381,8 @@ pub async fn cancel_stale(db: &PgPool, project: Option<Uuid>) -> sqlx::Result<u6
                  when {blocked} or l.status in ('unsubscribed', 'do_not_contact') then 'On the do-not-contact list'
                  when l.status = 'meeting_booked' then 'They booked a meeting'
                  when l.status = 'not_interested' then 'Marked not interested'
-                 when l.status in ('replied', 'hot') or exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
-                   then 'They replied'
+                 when o.kind = 'sequence' and (l.status in ('replied', 'hot')
+                   or exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')) then 'They replied'
                end as why
                from calls o join leads l on l.id = o.lead_id join projects p on p.id = o.project_id
                where o.status = 'open' and ($1::uuid is null or o.project_id = $1)) r
@@ -443,15 +526,20 @@ pub async fn on_transcription(db: &PgPool, org_id: Uuid, call_sid: &str, event: 
             if text.is_empty() {
                 return Ok(());
             }
-            let who = if matches!(param("Track"), "inbound_track" | "Us") { "Us" } else { "Lead" };
-            let part = json!([{ "seq": param("SequenceId").parse::<i64>().unwrap_or_default(), "who": who, "text": text }]);
+            // The track's label, as twiml_transcribe gave it, or else which way the audio went, which is the other way round on
+            // a call the lead made.
             sqlx::query(
-                "update calls c set transcript_parts = c.transcript_parts || $3 from projects p
+                "update calls c set transcript_parts = c.transcript_parts || jsonb_build_array(jsonb_build_object(
+                   'seq', $3::bigint, 'text', $5::text,
+                   'who', case when $4 in ('Us', 'Lead') then $4 when ($4 = 'inbound_track') <> c.inbound then 'Us' else 'Lead' end))
+                 from projects p
                  where p.id = c.project_id and p.org_id = $1 and c.twilio_sid = $2 and c.transcribed_at is null",
             )
             .bind(org_id)
             .bind(call_sid)
-            .bind(part)
+            .bind(param("SequenceId").parse::<i64>().unwrap_or_default())
+            .bind(param("Track"))
+            .bind(text)
             .execute(db)
             .await?;
         }
@@ -474,6 +562,189 @@ pub async fn on_transcription(db: &PgPool, org_id: Uuid, call_sid: &str, event: 
         }
         _ => {}
     }
+    Ok(())
+}
+
+// Calls leads make
+
+/// The notes a lead's call is kept with, the same as for one taken in Aircall or Dialpad (cloud_phone.rs).
+const CALLED_IN: &str = "They called in.";
+const NOBODY_ANSWERED: &str = "They called and nobody answered.";
+const LEFT_MESSAGE: &str = "They called and left a voicemail.";
+const CALL_BACK: &str = "They called and nobody answered. Call them back.";
+
+/// A lead's call to one of the organization's numbers, and whose browsers ring for it.
+pub struct Incoming {
+    /// The lead with that number most recently contacted in any of the organization's projects, or None for a number no lead
+    /// has.
+    pub lead: Option<Lead>,
+    /// The lead's owner while they're on the team and not away, as push::lead_recipients has it, or else everyone on the team
+    /// who isn't away, up to the 10 Twilio rings at once.
+    pub members: Vec<Uuid>,
+    pub transcribe: bool,
+}
+
+/// Finds who's calling and whose browsers ring, and keeps the call on the lead as not answered until someone does. Twilio
+/// asking again for the same CallSid keeps it once.
+pub async fn incoming(db: &PgPool, org_id: Uuid, call_sid: &str, from: &str) -> sqlx::Result<Incoming> {
+    let lead: Option<Lead> = match phone::normalize(from, "") {
+        Some(number) => {
+            sqlx::query_as(
+                "select l.* from leads l join projects p on p.id = l.project_id where p.org_id = $1 and l.phone = $2
+                 order by l.last_contacted_at desc nulls last, l.created_at desc limit 1",
+            )
+            .bind(org_id)
+            .bind(number)
+            .fetch_optional(db)
+            .await?
+        }
+        None => None,
+    };
+    if let Some(lead) = &lead {
+        sqlx::query(
+            "insert into calls (project_id, lead_id, segment_id, kind, owner_id, status, to_number, called_at, closed_at, outcome, notes,
+                                twilio_sid, call_status, inbound)
+             values ($1, $2, $3, 'manual', $4, 'done', $5, now(), now(), 'no_answer', $6, $7, 'ringing', true)
+             on conflict (twilio_sid) do nothing",
+        )
+        .bind(lead.project_id)
+        .bind(lead.id)
+        .bind(lead.segment_id)
+        .bind(lead.owner_id)
+        .bind(&lead.phone)
+        .bind(NOBODY_ANSWERED)
+        .bind(call_sid)
+        .execute(db)
+        .await?;
+    }
+    let members: Vec<Uuid> = sqlx::query_scalar(
+        "select m.user_id from memberships m
+         where m.org_id = $1 and not m.away
+           and (m.user_id = $2 or not exists (select 1 from memberships o where o.org_id = $1 and o.user_id = $2 and not o.away))
+         order by m.created_at limit $3",
+    )
+    .bind(org_id)
+    .bind(lead.as_ref().and_then(|l| l.owner_id))
+    .bind(MAX_RINGING)
+    .fetch_all(db)
+    .await?;
+    let transcribe: Option<bool> = sqlx::query_scalar("select call_transcription from twilio_accounts where org_id = $1").bind(org_id).fetch_optional(db).await?;
+    Ok(Incoming { lead, members, transcribe: transcribe.unwrap_or(false) })
+}
+
+/// A team member's browser answered a lead's call, from the <Client> status callback, whose To names them: it's theirs now.
+/// The callback can come after dialed_url finished the call, which keeps its end.
+pub async fn on_answered(db: &PgPool, org_id: Uuid, parent_sid: &str, to: &str) -> sqlx::Result<()> {
+    let Some(user) = caller(to) else { return Ok(()) };
+    sqlx::query(
+        "update calls c set called_by = $3, outcome = 'connected', notes = $4,
+                            call_status = case when c.call_status = 'ringing' then 'in-progress' else c.call_status end
+         from projects p
+         where p.id = c.project_id and p.org_id = $1 and c.twilio_sid = $2 and c.inbound and c.called_by is null
+           and c.call_status in ('ringing', 'in-progress', 'completed')
+           and exists (select 1 from memberships m where m.org_id = $1 and m.user_id = $3)",
+    )
+    .bind(org_id)
+    .bind(parent_sid)
+    .bind(user)
+    .bind(CALLED_IN)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// What became of a lead's call once the browsers stopped ringing.
+#[derive(Debug)]
+pub enum Dialed {
+    Answered,
+    /// Nobody took it. `first` is false when Twilio asks again.
+    Missed { lead: Box<Lead>, first: bool },
+    /// A call from a number no lead has, which nothing was kept for.
+    Unknown,
+}
+
+/// Keeps how a lead's call went once the browsers stop ringing, with Twilio's DialCallStatus. Answered, it's connected and the
+/// lead was just contacted. Missed, the lead gets a call back on the Calls page: one opens for their owner due now, or the one
+/// already open moves up to now. It's a manual call apart from any call step, so a reply that ends the sequence leaves it.
+/// Done once, while the call is still ringing or on, so asking again changes nothing.
+pub async fn on_dialed(db: &PgPool, org_id: Uuid, call_sid: &str, status: &str, duration: Option<i32>) -> sqlx::Result<Dialed> {
+    let answered = matches!(status, "completed" | "answered");
+    let mut tx = db.begin().await?;
+    let changed: Option<Uuid> = sqlx::query_scalar(
+        "update calls c set call_status = $3, duration_secs = case when $4 then $5 end, outcome = case when $4 then 'connected' else c.outcome end,
+                            notes = case when $4 then $6 else c.notes end
+         from projects p
+         where p.id = c.project_id and p.org_id = $1 and c.twilio_sid = $2 and c.inbound and c.call_status in ('ringing', 'in-progress')
+         returning c.lead_id",
+    )
+    .bind(org_id)
+    .bind(call_sid)
+    .bind(status)
+    .bind(answered)
+    .bind(duration)
+    .bind(CALLED_IN)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let lead_id = match changed {
+        Some(id) => Some((id, true)),
+        None => sqlx::query_scalar::<_, Uuid>(
+            "select c.lead_id from calls c join projects p on p.id = c.project_id where p.org_id = $1 and c.twilio_sid = $2 and c.inbound",
+        )
+        .bind(org_id)
+        .bind(call_sid)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|id| (id, false)),
+    };
+    let Some((lead_id, first)) = lead_id else { return Ok(Dialed::Unknown) };
+    if answered {
+        if first {
+            sqlx::query("update leads set last_contacted_at = now() where id = $1").bind(lead_id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        return Ok(Dialed::Answered);
+    }
+    if first {
+        sqlx::query(
+            "with moved as (update calls set due_at = least(due_at, now()) where lead_id = $1 and status = 'open' and kind = 'manual' returning id)
+             insert into calls (project_id, lead_id, segment_id, kind, owner_id, status, due_at, to_number, instructions)
+             select project_id, id, segment_id, 'manual', owner_id, 'open', now(), phone, $2 from leads
+             where id = $1 and phone <> '' and not exists (select 1 from moved)",
+        )
+        .bind(lead_id)
+        .bind(CALL_BACK)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let lead: Lead = sqlx::query_as("select * from leads where id = $1").bind(lead_id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Dialed::Missed { lead: Box::new(lead), first })
+}
+
+/// on_dialed, and a push to whoever hears about the lead the first time it says they missed the call.
+pub async fn after_ringing(state: &AppState, org_id: Uuid, sid: &str, status: &str, duration: Option<i32>) -> sqlx::Result<Dialed> {
+    let dialed = on_dialed(&state.db, org_id, sid, status, duration).await?;
+    if let Dialed::Missed { lead, first: true } = &dialed {
+        crate::push::spawn_lead_alert(state, lead, crate::push::Pref::HotLeads, crate::push::missed_call(&state.cfg.public_url, lead));
+    }
+    Ok(dialed)
+}
+
+/// A lead nobody answered is done leaving a message of `secs`: their call says they left one. The recording itself comes
+/// with on_recording.
+pub async fn on_message(db: &PgPool, org_id: Uuid, call_sid: &str, secs: i32) -> sqlx::Result<()> {
+    if secs < 1 {
+        return Ok(());
+    }
+    sqlx::query(
+        "update calls c set notes = $3 from projects p
+         where p.id = c.project_id and p.org_id = $1 and c.twilio_sid = $2 and c.inbound and c.outcome = 'no_answer'",
+    )
+    .bind(org_id)
+    .bind(call_sid)
+    .bind(LEFT_MESSAGE)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -528,7 +799,7 @@ pub(crate) mod tests {
     #[test]
     fn the_access_token_lets_one_member_place_calls_and_expires() {
         let user = Uuid::parse_str("0e5c3a8e-1f43-4a4e-9a51-3c1e0c9b7a10").unwrap();
-        let token = access_token("AC1", "SK1", "secret", "AP1", &identity(user), 1_800_000_000);
+        let token = access_token("AC1", "SK1", "secret", "AP1", &identity(user), false, 1_800_000_000);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3);
         let decode = |p: &str| serde_json::from_slice::<Value>(&URL_SAFE_NO_PAD.decode(p).unwrap()).unwrap();

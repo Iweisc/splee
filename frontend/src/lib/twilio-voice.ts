@@ -1,7 +1,7 @@
 /**
  * Twilio's Voice JavaScript SDK, loaded when someone first places a call rather than bundled. Twilio stopped putting 2.x
  * releases on its own CDN, so this is the jsDelivr copy of the npm release that Twilio's quickstart uses, pinned with its
- * hash. Only the part of the SDK the Calls page uses is typed here.
+ * hash. Only the part of the SDK the Calls page and IncomingCalls use is typed here.
  */
 
 const SDK_URL = "https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.5/dist/twilio.min.js";
@@ -12,10 +12,22 @@ export interface VoiceCall {
   on(event: "error", listener: (error: { message?: string }) => void): void;
   disconnect(): void;
   mute(muted: boolean): void;
+  /** For a call ringing this browser. */
+  accept(): void;
+  reject(): void;
+  /** The <Parameter>s of the <Client> that rang this browser. */
+  customParameters: Map<string, string>;
+  /** Twilio's own, like From. */
+  parameters: Record<string, string>;
 }
 
 export interface VoiceDevice {
   connect(options: { params: Record<string, string> }): Promise<VoiceCall>;
+  /** Starts ringing for calls to this identity. */
+  register(): Promise<void>;
+  updateToken(token: string): void;
+  on(event: "incoming", listener: (call: VoiceCall) => void): void;
+  on(event: "tokenWillExpire", listener: () => void): void;
   destroy(): void;
 }
 
