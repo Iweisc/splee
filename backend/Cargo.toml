@@ -31,7 +31,7 @@ hex = "0.4.3"
 hmac = "0.13"
 hickory-resolver = { version = "0.26.3", features = ["tokio"] }
 k256 = { version = "0.14.0", default-features = false, features = ["schnorr", "std"] }
-lettre = { version = "0.11.23", default-features = false, features = ["tokio1", "tokio1-rustls", "builder", "smtp-transport", "hostname", "ring", "rustls-native-certs"] }
+lettre = { version = "0.11.24", default-features = false, features = ["tokio1", "tokio1-rustls", "builder", "smtp-transport", "hostname", "ring", "rustls-native-certs"] }
 mail-parser = "0.11.9"
 reqwest = { version = "0.13.5", default-features = false, features = ["form", "gzip", "json", "multipart", "rustls"] }
 # P-256 ECDH, ECDSA, HKDF and AES-GCM for browser push (push/mod.rs). Already in the tree through rustls.
