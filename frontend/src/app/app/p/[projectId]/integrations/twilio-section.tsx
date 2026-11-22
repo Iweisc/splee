@@ -170,6 +170,12 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
           Lets your team call leads from the Calls page. Create a TwiML App in Twilio under Voice, TwiML Apps, and paste its SID here. Saving
           points its Voice URL at Splee. Calls are recorded, so tell leads at the start where the law asks you to.
         </p>
+        {c.twiml_app_sid && (
+          <p className="mt-1.5 text-xs text-pretty text-muted-foreground">
+            To take calls from leads, set &quot;A call comes in&quot; on each of your numbers to this TwiML App. They ring in Splee for the lead&apos;s
+            owner, or else the whole team, and one nobody answers takes a message and adds a call back.
+          </p>
+        )}
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="TwiML App SID">

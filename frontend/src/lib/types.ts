@@ -1815,6 +1815,8 @@ export interface Call {
   aircall_id: number | null;
   /** The call's id in Dialpad, for one made or taken there. */
   dialpad_id: number | null;
+  /** A call the lead made to the team. */
+  inbound: boolean;
 }
 
 /** GET /projects/{id}/calls. */

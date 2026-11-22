@@ -927,6 +927,8 @@ pub struct Call {
     pub aircall_id: Option<i64>,
     /// The call's id in Dialpad, for one made or taken there (dialpad/).
     pub dialpad_id: Option<i64>,
+    /// A call the lead made to the team, rather than one the team made to them.
+    pub inbound: bool,
 }
 
 /// A sales meeting with a lead, from Fireflies, Fathom, Gong, Zoom or tl;dv, and the agent's notes on it. See meetings/. The

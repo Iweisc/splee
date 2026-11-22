@@ -51,7 +51,7 @@ fn scores(metric: &str) -> String {
         "deals_won" => deals("count(*)", "closed_at", "and d.status = 'won'"),
         "pipeline" => deals("sum(d.value_cents)", "created_at", ""),
         "calls" => "select c.called_by as user_id, count(*) as value from calls c join projects p on p.id = c.project_id
-                    where p.org_id = $1 and c.status = 'done' and c.closed_at >= $2 and c.closed_at < $3 group by 1"
+                    where p.org_id = $1 and c.status = 'done' and not c.inbound and c.closed_at >= $2 and c.closed_at < $3 group by 1"
             .into(),
         _ => format!(
             "select s.user_id, count(*) as value from practice_sessions s join projects p on p.id = s.project_id

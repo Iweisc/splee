@@ -389,6 +389,16 @@ pub fn reply(public_url: &str, lead: &Lead, project_name: &str, reply: &str, hot
     }
 }
 
+/// A lead's call nobody answered, which opens the Calls page where their call back is.
+pub fn missed_call(public_url: &str, lead: &Lead) -> Push {
+    Push {
+        title: format!("Missed call from {}", lead.full_name),
+        body: format!("{} called and nobody answered. Call them back from the Calls page.", who(lead)),
+        url: format!("{public_url}/app/p/{}/calls", lead.project_id),
+        tag: format!("call-{}", lead.id),
+    }
+}
+
 /// A reminder on a lead that just came due.
 pub fn reminder(public_url: &str, lead: &Lead, project_name: &str) -> Push {
     let notes = lead.notes.trim();

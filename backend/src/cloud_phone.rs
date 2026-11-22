@@ -143,7 +143,7 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
     let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
     let sql = format!(
         "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
-           {column} = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11
+           {column} = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11, inbound = $14
          where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' and twilio_sid is null order by due_at limit 1))
            and status = 'open' and not $13
          returning *"
@@ -162,6 +162,7 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
         .bind(&e.asset)
         .bind(dialed.map(|(call, _)| call))
         .bind(e.later_leg)
+        .bind(e.inbound)
         .fetch_optional(&mut *tx)
         .await?;
     let call: Option<Call> = match open {
@@ -170,8 +171,8 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
         None => {
             let sql = format!(
                 "insert into calls (project_id, lead_id, segment_id, kind, owner_id, status, to_number, called_by, called_at, closed_at, outcome, notes,
-                                    {column}, call_status, duration_secs, recording_url)
-                 values ($1, $2, $3, 'manual', $4, 'done', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                    {column}, call_status, duration_secs, recording_url, inbound)
+                 values ($1, $2, $3, 'manual', $4, 'done', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                  on conflict (project_id, {column}) where {column} is not null do nothing returning *"
             );
             sqlx::query_as(&sql)
@@ -189,6 +190,7 @@ pub async fn record(state: &AppState, phone: Phone, project: Project, e: &Ended)
                 .bind(call_status)
                 .bind(e.talk_secs())
                 .bind(&e.asset)
+                .bind(e.inbound)
                 .fetch_optional(&mut *tx)
                 .await?
         }

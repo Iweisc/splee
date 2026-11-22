@@ -795,13 +795,13 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
            from first_replies f join leads l on l.id = f.lead_id, w
            where f.at >= w.lo and f.at < w.hi and ($5::uuid is null or l.segment_id = $5)
          ), calls as (
-           -- A call counts once it's logged, on the day it was made.
+           -- A call counts once it's logged, on the day it was made. Calls the lead made aren't calls made.
            select count(*) as calls, count(distinct c.lead_id) as call_leads,
              count(*) filter (where c.outcome = any($6)) as connected,
              count(*) filter (where c.outcome = 'meeting_booked') as call_meetings
            from calls c, w
-           where c.project_id = $1 and c.status = 'done' and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi
-             and ($5::uuid is null or c.segment_id = $5)
+           where c.project_id = $1 and c.status = 'done' and not c.inbound
+             and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi and ($5::uuid is null or c.segment_id = $5)
          )
          select linkedin.*, texts.*, text_replies.*, calls.*,
            (select count(*) from social_posts p, w where p.project_id = $1 and p.status = 'posted' and p.posted_at >= w.lo and p.posted_at < w.hi) as posts
@@ -831,7 +831,8 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
 }
 
 /// The calls logged in the range, counted by the weekday and hour where the lead was, from their number or country, else
-/// the project's zone. Calls count on the day they were made, like the channel row. A mailbox filter has none.
+/// the project's zone. Calls count on the day they were made, and only the team's, like the channel row. A mailbox filter has
+/// none.
 async fn call_slots(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to: NaiveDate, tz: &str) -> sqlx::Result<Vec<CallSlot>> {
     if q.mailbox_id.is_some() {
         return Ok(vec![]);
@@ -839,8 +840,8 @@ async fn call_slots(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, 
     let calls: Vec<(Option<Ts>, Option<String>, String, String)> = sqlx::query_as(
         "with w as (select $2::date::timestamp at time zone $4 as lo, ($3::date + 1)::timestamp at time zone $4 as hi)
          select coalesce(c.called_at, c.closed_at), c.outcome, l.phone, l.country_code from calls c join leads l on l.id = c.lead_id, w
-         where c.project_id = $1 and c.status = 'done' and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi
-           and ($5::uuid is null or c.segment_id = $5)",
+         where c.project_id = $1 and c.status = 'done' and not c.inbound
+           and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi and ($5::uuid is null or c.segment_id = $5)",
     )
     .bind(id)
     .bind(from)
@@ -1021,24 +1022,30 @@ mod tests {
         .execute(db)
         .await
         .unwrap();
-        // Calls made in October: two answered, one of them booked, and a no answer. One still open and one from September don't count.
-        for (lead, segment, status, outcome, at) in [
-            (l1, Some(alpha), "done", Some("connected"), "2026-10-10 14:00Z"),
-            (l2, Some(alpha), "done", Some("meeting_booked"), "2026-10-11 14:00Z"),
-            (l1, Some(alpha), "done", Some("no_answer"), "2026-10-12 14:00Z"),
-            (l6, Some(beta), "open", None, "2026-10-12 14:00Z"),
-            (l6, Some(beta), "done", Some("connected"), "2026-09-12 14:00Z"),
+        // Calls made in October: two answered, one of them booked, and a no answer. One still open, one from September and one the
+        // lead made don't count.
+        for (lead, segment, status, outcome, at, inbound) in [
+            (l1, Some(alpha), "done", Some("connected"), "2026-10-10 14:00Z", false),
+            (l2, Some(alpha), "done", Some("meeting_booked"), "2026-10-11 14:00Z", false),
+            (l1, Some(alpha), "done", Some("no_answer"), "2026-10-12 14:00Z", false),
+            (l6, Some(beta), "open", None, "2026-10-12 14:00Z", false),
+            (l6, Some(beta), "done", Some("connected"), "2026-09-12 14:00Z", false),
+            (l1, Some(alpha), "done", Some("connected"), "2026-10-13 14:00Z", true),
         ] {
-            sqlx::query("insert into calls (project_id, lead_id, segment_id, kind, status, outcome, called_at, closed_at) values ($1, $2, $3, 'manual', $4, $5, $6::timestamptz, $6::timestamptz)")
-                .bind(project)
-                .bind(lead)
-                .bind(segment)
-                .bind(status)
-                .bind(outcome)
-                .bind(at)
-                .execute(db)
-                .await
-                .unwrap();
+            sqlx::query(
+                "insert into calls (project_id, lead_id, segment_id, kind, status, outcome, called_at, closed_at, inbound)
+                 values ($1, $2, $3, 'manual', $4, $5, $6::timestamptz, $6::timestamptz, $7)",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(segment)
+            .bind(status)
+            .bind(outcome)
+            .bind(at)
+            .bind(inbound)
+            .execute(db)
+            .await
+            .unwrap();
         }
         sqlx::query("insert into social_posts (project_id, platform, body, status, posted_at) values ($1, 'x', 'Hello', 'posted', '2026-10-15 12:00Z')")
             .bind(project)

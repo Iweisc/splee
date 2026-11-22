@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { keepLoadedOnError } from "@/hooks/keep-loaded";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { AskSplee } from "./ask-splee";
+import { IncomingCalls } from "./incoming-calls";
 import { ShortcutsDialog } from "./work/shortcuts-dialog";
 import { LoadError } from "./work/states";
 import { orgNav, projectNav } from "./nav";
@@ -206,6 +207,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <SWRConfig value={swrConfig}>{children}</SWRConfig>
       </main>
       <Toasts />
+      <IncomingCalls />
     </div>
   );
 }

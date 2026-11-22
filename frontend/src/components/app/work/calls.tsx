@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Phone, PhoneMissed, Sparkles } from "lucide-react";
+import { Phone, PhoneIncoming, PhoneMissed, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
 import { Badge, type BadgeTone } from "@/components/ui/misc";
@@ -111,8 +111,8 @@ export function CallCard({ call: c, className }: { call: Call; className?: strin
     <div className={cn("flex flex-col gap-2 rounded-xl border border-border p-3", missed ? "bg-muted/60" : "bg-card", className)}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          {missed ? <PhoneMissed className="size-3.5" /> : <Phone className="size-3.5" />}
-          {c.kind === "sequence" ? `Call step ${c.step}` : "Call"}
+          {missed ? <PhoneMissed className="size-3.5" /> : c.inbound ? <PhoneIncoming className="size-3.5" /> : <Phone className="size-3.5" />}
+          {c.inbound ? "They called" : c.kind === "sequence" ? `Call step ${c.step}` : "Call"}
           {c.duration_secs ? ` · ${clock(c.duration_secs)}` : ""}
         </span>
         <span className="flex items-center gap-2">

@@ -1,6 +1,7 @@
 //! The Calls page: open call steps and calls made, a token for calling from the browser, logging what happened, and the
-//! webhooks Twilio posts for calls: the TwiML request when the browser dials (/api/twilio/voice), and the status, recording
-//! and transcription callbacks. The rules are in crate::calls.
+//! webhooks Twilio posts for calls: the TwiML request when the browser dials or a lead calls one of the organization's numbers
+//! (/api/twilio/voice), what happens once the browsers stop ringing for a lead and they leave a message, and the status,
+//! recording and transcription callbacks. The rules are in crate::calls.
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -33,7 +34,11 @@ pub fn router() -> Router<AppState> {
         .route("/calls/{id}/skip", post(skip))
         .route("/calls/{id}/prep", post(prep))
         .route("/calls/{id}/recording", get(recording))
+        .route("/calls/ring-token", post(ring_token))
         .route("/twilio/voice", post(voice))
+        .route("/twilio/calls/client", post(client_callback))
+        .route("/twilio/calls/dialed", post(dialed))
+        .route("/twilio/calls/message", post(message))
         .route("/twilio/calls/status", post(status_callback))
         .route("/twilio/calls/recording", post(recording_callback))
         .route("/twilio/calls/transcription", post(transcription_callback))
@@ -166,8 +171,31 @@ async fn dial(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     let dial = calls::authorize(&state.db, auth.org_id, auth.user_id, call.id, None, now).await?.map_err(AppError::Conflict)?;
     let secret = crate::crypto::decrypt(&state.cfg.app_secret, &dial.api_secret_enc)?;
     let identity = calls::identity(auth.user_id);
-    let token = calls::access_token(&dial.account_sid, &dial.api_key_sid, &secret, &dial.twiml_app_sid, &identity, now.timestamp());
+    let token = calls::access_token(&dial.account_sid, &dial.api_key_sid, &secret, &dial.twiml_app_sid, &identity, false, now.timestamp());
     Ok(Json(DialToken { token, identity, to: dial.lead.phone, expires_at: now + chrono::Duration::seconds(calls::TOKEN_SECS) }))
+}
+
+#[derive(Serialize)]
+struct RingToken {
+    token: String,
+    identity: String,
+    expires_at: Ts,
+}
+
+/// A token the browser rings with for calls leads make to the organization's numbers, once calling is on. It can place calls
+/// too, since one grant has both, but /api/twilio/voice still checks each of those.
+async fn ring_token(State(state): State<AppState>, auth: Auth) -> AppResult<Json<RingToken>> {
+    let account: Option<(String, String, String, String)> =
+        sqlx::query_as("select account_sid, api_key_sid, api_secret_enc, twiml_app_sid from twilio_accounts where org_id = $1 and twiml_app_sid <> ''")
+            .bind(auth.org_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let (account_sid, key_sid, secret_enc, app_sid) =
+        account.ok_or_else(|| AppError::Conflict("Turn on calling in the Twilio card on the Integrations page first".into()))?;
+    let secret = crate::crypto::decrypt(&state.cfg.app_secret, &secret_enc)?;
+    let (now, identity) = (Utc::now(), calls::identity(auth.user_id));
+    let token = calls::access_token(&account_sid, &key_sid, &secret, &app_sid, &identity, true, now.timestamp());
+    Ok(Json(RingToken { token, identity, expires_at: now + chrono::Duration::seconds(calls::TOKEN_SECS) }))
 }
 
 #[derive(Deserialize)]
@@ -256,6 +284,10 @@ fn twiml(body: String) -> impl IntoResponse {
 /// Twilio's own "application error".
 async fn voice(State(state): State<AppState>, headers: HeaderMap, Form(params): Form<Vec<(String, String)>>) -> AppResult<impl IntoResponse> {
     let org_id = verified(&state, &headers, &params, &calls::voice_url(&state.cfg.public_url)).await?;
+    // A browser's From is its client identity, so anything else is someone calling one of the numbers.
+    if !param(&params, "From").starts_with("client:") {
+        return Ok(twiml(ring(&state, org_id, &params).await?));
+    }
     let (Some(user), Ok(call_id)) = (calls::caller(param(&params, "From")), param(&params, "call_id").parse::<Uuid>()) else {
         return Ok(twiml(calls::twiml_refuse("Start calls from the Calls page in Splee.")));
     };
@@ -278,6 +310,67 @@ async fn voice(State(state): State<AppState>, headers: HeaderMap, Form(params): 
         return Ok(twiml(calls::twiml_refuse("This call was already made. Log how it went on the Calls page first.")));
     }
     Ok(twiml(calls::twiml_dial(&state.cfg.public_url, &dial.from, &dial.lead.phone, dial.transcribe)))
+}
+
+/// A lead, or anyone, calling one of the organization's numbers: the browsers of whoever should take it ring with who it is
+/// (calls::incoming), or with nobody to ring, it's straight on to after_ringing.
+async fn ring(state: &AppState, org_id: Uuid, params: &[(String, String)]) -> AppResult<String> {
+    let sid = param(params, "CallSid");
+    let incoming = calls::incoming(&state.db, org_id, sid, param(params, "From")).await?;
+    if incoming.members.is_empty() {
+        return after_ringing(state, org_id, sid, "no-answer", None).await;
+    }
+    let (lead_id, project_id) = incoming.lead.as_ref().map(|l| (l.id.to_string(), l.project_id.to_string())).unwrap_or_default();
+    let caller = match &incoming.lead {
+        Some(l) => {
+            vec![("name", l.full_name.as_str()), ("company", l.company_name.as_str()), ("lead_id", lead_id.as_str()), ("project_id", project_id.as_str())]
+        }
+        None => vec![("name", param(params, "From"))],
+    };
+    Ok(calls::twiml_ring(&state.cfg.public_url, &incoming.members, &caller, incoming.transcribe))
+}
+
+/// Once the browsers stop ringing for a call to one of the numbers (calls::after_ringing): hung up after someone took it, or
+/// else a message is asked for. A number no lead has gets an apology, since a message would have nowhere to go.
+async fn after_ringing(state: &AppState, org_id: Uuid, sid: &str, status: &str, duration: Option<i32>) -> AppResult<String> {
+    Ok(match calls::after_ringing(state, org_id, sid, status, duration).await? {
+        calls::Dialed::Missed { .. } => calls::twiml_message(&state.cfg.public_url),
+        calls::Dialed::Unknown if !matches!(status, "completed" | "answered") => {
+            calls::twiml_refuse("Sorry, nobody could take your call. Please call again later.")
+        }
+        _ => calls::TWIML_HANGUP.into(),
+    })
+}
+
+/// A browser rung for a call to one of the numbers answered it, or its side of the call ended after it did. That ends the
+/// call when the lead hung up first, since Twilio then never asks dialed_url. The other browsers' ends change nothing.
+async fn client_callback(State(state): State<AppState>, headers: HeaderMap, Form(params): Form<Vec<(String, String)>>) -> AppResult<StatusCode> {
+    let org_id = verified(&state, &headers, &params, &calls::client_url(&state.cfg.public_url)).await?;
+    let (parent, to) = (param(&params, "ParentCallSid"), param(&params, "To"));
+    match param(&params, "CallStatus") {
+        "in-progress" => calls::on_answered(&state.db, org_id, parent, to).await?,
+        "completed" => {
+            calls::on_answered(&state.db, org_id, parent, to).await?;
+            calls::after_ringing(&state, org_id, parent, "completed", param(&params, "CallDuration").parse().ok()).await?;
+        }
+        _ => {}
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Twilio's <Dial> action for a call to one of the numbers, once the browsers stop ringing.
+async fn dialed(State(state): State<AppState>, headers: HeaderMap, Form(params): Form<Vec<(String, String)>>) -> AppResult<impl IntoResponse> {
+    let org_id = verified(&state, &headers, &params, &calls::dialed_url(&state.cfg.public_url)).await?;
+    let duration = param(&params, "DialCallDuration").parse().ok();
+    Ok(twiml(after_ringing(&state, org_id, param(&params, "CallSid"), param(&params, "DialCallStatus"), duration).await?))
+}
+
+/// Twilio's <Record> action once a lead nobody answered is done leaving a message. Then the call ends.
+async fn message(State(state): State<AppState>, headers: HeaderMap, Form(params): Form<Vec<(String, String)>>) -> AppResult<impl IntoResponse> {
+    let org_id = verified(&state, &headers, &params, &calls::message_url(&state.cfg.public_url)).await?;
+    let secs = param(&params, "RecordingDuration").parse().unwrap_or(0);
+    calls::on_message(&state.db, org_id, param(&params, "CallSid"), secs).await?;
+    Ok(twiml(calls::TWIML_HANGUP.into()))
 }
 
 async fn status_callback(State(state): State<AppState>, headers: HeaderMap, Form(params): Form<Vec<(String, String)>>) -> AppResult<StatusCode> {
@@ -481,6 +574,34 @@ pub(crate) mod tests {
             let call = call.to_string();
             let params = [("AccountSid", fake::ACCOUNT), ("ApplicationSid", fake::APP), ("CallSid", sid), ("From", from.as_str()), ("To", to), ("call_id", call.as_str())];
             self.webhook("voice", &params, "token").await
+        }
+
+        /// What Twilio asks when `from` calls Acme's number, which is set to the TwiML App.
+        async fn ring(&self, from: &str, sid: &str) -> (u16, String) {
+            let params = [("AccountSid", fake::ACCOUNT), ("CallSid", sid), ("From", from), ("To", "+14155550100"), ("Direction", "inbound")];
+            self.webhook("voice", &params, "token").await
+        }
+
+        /// Twilio's <Dial> action once the browsers stop ringing for call `sid`.
+        async fn dialed(&self, sid: &str, status: &str, secs: &str) -> String {
+            let params = [("AccountSid", fake::ACCOUNT), ("CallSid", sid), ("DialCallStatus", status), ("DialCallDuration", secs)];
+            let (code, twiml) = self.webhook("calls/dialed", &params, "token").await;
+            assert_eq!(code, 200, "{twiml}");
+            twiml
+        }
+
+        /// A rung browser's status callback for call `sid`: `to` answered, or its side ended with `status`.
+        async fn client(&self, sid: &str, to: &str, status: &str, secs: &str) -> u16 {
+            let params = [("AccountSid", fake::ACCOUNT), ("CallSid", "CAleg"), ("ParentCallSid", sid), ("To", to), ("CallStatus", status), ("CallDuration", secs)];
+            self.webhook("calls/client", &params, "token").await.0
+        }
+
+        async fn inbound(&self, sid: &str) -> Call {
+            sqlx::query_as("select * from calls where twilio_sid = $1").bind(sid).fetch_one(self.db()).await.unwrap()
+        }
+
+        async fn acme_owner(&self) -> Uuid {
+            sqlx::query_scalar("select id from users where email = 'acme@example.test'").fetch_one(self.db()).await.unwrap()
         }
 
         pub(crate) async fn open_call(&self, lead: Uuid) -> Uuid {
@@ -906,5 +1027,191 @@ pub(crate) mod tests {
 
         let (_, off) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(false)).await;
         assert_eq!(off["connection"]["local_numbers"], json!([]));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_lead_calling_back_rings_their_owner_and_a_missed_call_opens_a_call_back(db: PgPool) {
+        let s = Seeded::start(db).await;
+        assert_eq!(s.webhook("voice", &[("AccountSid", fake::ACCOUNT), ("CallSid", "CA1"), ("From", SAM)], "nope").await.0, 403);
+
+        // Sam is Jo's, so only Jo's browser rings, saying who it is. Beta's lead with the same number isn't Acme's.
+        let (status, twiml) = s.ring(SAM, "CA1").await;
+        assert_eq!(status, 200);
+        assert_eq!(twiml.matches("<Client ").count(), 1, "{twiml}");
+        assert!(twiml.contains(&format!("<Identity>{}</Identity>", calls::identity(s.jo))), "{twiml}");
+        let lead = format!("<Parameter name=\"lead_id\" value=\"{}\"/>", s.sam);
+        assert!(twiml.contains("<Parameter name=\"name\" value=\"Sam\"/><Parameter name=\"company\" value=\"Smile Dental\"/>") && twiml.contains(&lead), "{twiml}");
+        assert!(twiml.contains(&format!("action=\"{PUBLIC}/api/twilio/calls/dialed\"")) && twiml.contains("timeout=\"20\""), "{twiml}");
+        assert!(twiml.contains("inboundTrackLabel=\"Lead\" outboundTrackLabel=\"Us\""), "transcription is on, the lead inbound: {twiml}");
+        let row = s.inbound("CA1").await;
+        assert_eq!((row.lead_id, row.inbound, row.status.as_str(), row.call_status.as_str(), row.called_by), (s.sam, true, "done", "ringing", None));
+        assert_eq!((row.outcome.as_deref(), row.notes.as_str(), row.to_number.as_str()), (Some("no_answer"), "They called and nobody answered.", SAM));
+        assert_eq!(s.ring(SAM, "CA1").await.0, 200, "Twilio asking again");
+        let count = |sql: &'static str| sqlx::query_scalar::<_, i64>(sql).bind(s.sam).fetch_one(s.db());
+        assert_eq!(count("select count(*) from calls where lead_id = $1").await.unwrap(), 1);
+
+        // Nobody answered: they're asked for a message, and Sam gets a call back for Jo at the top of the page, once.
+        let twiml = s.dialed("CA1", "no-answer", "0").await;
+        assert!(twiml.contains("<Say>Sorry we missed your call. Leave a message after the tone"), "{twiml}");
+        assert!(twiml.contains(&format!("<Record maxLength=\"120\" timeout=\"5\" playBeep=\"true\" action=\"{PUBLIC}/api/twilio/calls/message\"")), "{twiml}");
+        assert_eq!(s.dialed("CA1", "no-answer", "0").await, twiml);
+        let back: Vec<Call> = sqlx::query_as("select * from calls where lead_id = $1 and status = 'open'").bind(s.sam).fetch_all(s.db()).await.unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!((back[0].kind.as_str(), back[0].owner_id, back[0].instructions.as_str()), ("manual", Some(s.jo), "They called and nobody answered. Call them back."));
+        assert!(back[0].due_at <= Utc::now());
+        assert_eq!(s.inbound("CA1").await.call_status, "no-answer");
+
+        // They left a message, and its recording is on their call.
+        let message = [("AccountSid", fake::ACCOUNT), ("CallSid", "CA1"), ("RecordingDuration", "12")];
+        let (status, twiml) = s.webhook("calls/message", &message, "token").await;
+        assert_eq!((status, twiml.as_str()), (200, calls::TWIML_HANGUP));
+        let url = format!("https://api.twilio.com/2010-04-01/Accounts/{}/Recordings/{}", fake::ACCOUNT, fake::RECORDING);
+        let recording = [("AccountSid", fake::ACCOUNT), ("CallSid", "CA1"), ("RecordingSid", fake::RECORDING), ("RecordingUrl", url.as_str()),
+                         ("RecordingDuration", "12"), ("RecordingStatus", "completed")];
+        assert_eq!(s.webhook("calls/recording", &recording, "token").await.0, 204);
+        let row = s.inbound("CA1").await;
+        assert_eq!((row.notes.as_str(), row.recording_secs), ("They called and left a voicemail.", Some(12)));
+
+        // Having replied before doesn't take the call back off. Calling the lead back logs it like any call.
+        sqlx::query("update leads set status = 'replied' where id = $1").bind(s.sam).execute(s.db()).await.unwrap();
+        let (_, open) = s.call("jo", Method::GET, &format!("/projects/{}/calls?status=open", s.project), json!({})).await;
+        assert_eq!(open.as_array().unwrap().len(), 1, "{open}");
+        assert_eq!(open[0]["id"], json!(back[0].id));
+        crate::routes::linkedin::stop_for_reply(s.db(), &s.lead(s.sam).await, "They replied by text").await.unwrap();
+        assert_eq!(s.row(back[0].id).await.status, "open");
+        assert_eq!(s.voice(back[0].id, s.jo, SAM, "CA2").await.0, 200);
+        assert!(!s.inbound("CA2").await.inbound);
+
+        // A call back is apart from a call step the lead has open, which a reply would cancel. Missing them again moves the
+        // call back up rather than opening another.
+        let ana = emailed_lead(s.db(), s.project, "Ana", "+14155550135", None).await;
+        let step = s.open_call(ana).await;
+        sqlx::query("update calls set due_at = now() + interval '2 days' where id = $1").bind(step).execute(s.db()).await.unwrap();
+        s.ring("+14155550135", "CA3").await;
+        s.dialed("CA3", "busy", "0").await;
+        assert!(s.row(step).await.due_at > Utc::now());
+        let open_for = |lead: Uuid| {
+            sqlx::query_as::<_, (String, Ts)>("select kind, due_at from calls where lead_id = $1 and status = 'open' order by kind").bind(lead).fetch_all(s.db())
+        };
+        let open = open_for(ana).await.unwrap();
+        assert_eq!(open.iter().map(|(kind, _)| kind.as_str()).collect::<Vec<_>>(), ["manual", "sequence"]);
+        sqlx::query("update calls set due_at = now() + interval '1 hour' where lead_id = $1 and kind = 'manual'").bind(ana).execute(s.db()).await.unwrap();
+        s.ring("+14155550135", "CA4").await;
+        s.dialed("CA4", "no-answer", "0").await;
+        let again = open_for(ana).await.unwrap();
+        assert_eq!(again.len(), 2);
+        assert!(again[0].1 <= Utc::now(), "moved up");
+        assert_eq!(count("select count(*) from calls where lead_id = $1 and status = 'open'").await.unwrap(), 1, "Sam's call back only");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn whoever_answers_a_leads_call_takes_it_with_its_transcript(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let owner = s.acme_owner().await;
+        // Ana has no owner, so the whole team rings, but nobody who's away.
+        let ana = emailed_lead(s.db(), s.project, "Ana", "+14155550135", None).await;
+        let (_, twiml) = s.ring("+14155550135", "CA1").await;
+        let rung = [s.jo, owner].map(|m| twiml.contains(&format!("<Identity>{}</Identity>", calls::identity(m))));
+        assert_eq!(rung, [true, true], "{twiml}");
+        sqlx::query("update memberships set away = true where user_id = $1").bind(owner).execute(s.db()).await.unwrap();
+        let (_, twiml) = s.ring("+14155550135", "CA2").await;
+        assert_eq!(twiml.matches("<Client ").count(), 1, "{twiml}");
+
+        // Jo answers. An identity from outside the team can't take it.
+        let jo = format!("client:{}", calls::identity(s.jo));
+        for to in [format!("client:{}", calls::identity(Uuid::new_v4())), jo.clone()] {
+            assert_eq!(s.client("CA1", &to, "in-progress", "").await, 204);
+        }
+        let row = s.inbound("CA1").await;
+        assert_eq!((row.called_by, row.outcome.as_deref(), row.notes.as_str()), (Some(s.jo), Some("connected"), "They called in."));
+        assert_eq!(row.call_status, "in-progress");
+        // The other browser stopping ringing changes nothing.
+        assert_eq!(s.client("CA1", &format!("client:{}", calls::identity(owner)), "canceled", "0").await, 204);
+        assert_eq!(s.inbound("CA1").await.call_status, "in-progress");
+
+        // The lead is the inbound track on their own call.
+        let part = |seq: &'static str, track: &'static str, text: &'static str| {
+            let data = json!({ "transcript": text }).to_string();
+            vec![("AccountSid", fake::ACCOUNT.to_string()), ("CallSid", "CA1".into()), ("TranscriptionEvent", "transcription-content".into()),
+                 ("SequenceId", seq.into()), ("Track", track.into()), ("TranscriptionData", data), ("Final", "true".into())]
+        };
+        let stopped = vec![("AccountSid", fake::ACCOUNT.to_string()), ("CallSid", "CA1".into()), ("TranscriptionEvent", "transcription-stopped".into())];
+        for params in [part("1", "inbound_track", "Hi, it's Ana returning your call."), part("2", "Us", "Thanks for calling back!"), stopped] {
+            let params: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            assert_eq!(s.webhook("calls/transcription", &params, "token").await.0, 204);
+        }
+
+        // Ana hangs up first, so Twilio never asks what next, and Jo's side ending finishes the call.
+        assert_eq!(s.client("CA1", &jo, "completed", "95").await, 204);
+        let row = s.inbound("CA1").await;
+        assert_eq!((row.call_status.as_str(), row.duration_secs, row.outcome.as_deref()), ("completed", Some(95), Some("connected")));
+        assert_eq!(row.transcript, "Lead: Hi, it's Ana returning your call.\nUs: Thanks for calling back!");
+        assert!(s.lead(ana).await.last_contacted_at.is_some());
+        assert_eq!(s.dialed("CA1", "completed", "95").await, calls::TWIML_HANGUP, "Jo hanging up first asks too");
+        let open: i64 = sqlx::query_scalar("select count(*) from calls where lead_id = $1 and status = 'open'").bind(ana).fetch_one(s.db()).await.unwrap();
+        assert_eq!(open, 0, "nothing to call back");
+
+        // Jo's answer arriving after the call ended keeps it ended.
+        s.ring("+14155550135", "CA3").await;
+        s.dialed("CA3", "completed", "30").await;
+        assert_eq!(s.client("CA3", &jo, "in-progress", "").await, 204);
+        let row = s.inbound("CA3").await;
+        assert_eq!((row.called_by, row.call_status.as_str(), row.duration_secs), (Some(s.jo), "completed", Some(30)));
+
+        // Hanging up while it rings is missed once the minute's tick sees it was given up on, with a call back.
+        s.ring("+14155550135", "CA4").await;
+        calls::tick(&s.state).await.unwrap();
+        assert_eq!(s.inbound("CA4").await.call_status, "ringing", "it may still be ringing");
+        sqlx::query("update calls set called_at = now() - interval '3 minutes' where twilio_sid = 'CA4'").execute(s.db()).await.unwrap();
+        calls::tick(&s.state).await.unwrap();
+        calls::tick(&s.state).await.unwrap();
+        let row = s.inbound("CA4").await;
+        assert_eq!((row.call_status.as_str(), row.outcome.as_deref()), ("canceled", Some("no_answer")));
+        // The tick opened Ana's call step too.
+        let back: Vec<String> =
+            sqlx::query_scalar("select instructions from calls where lead_id = $1 and status = 'open' and kind = 'manual'").bind(ana).fetch_all(s.db()).await.unwrap();
+        assert_eq!(back, ["They called and nobody answered. Call them back."]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_number_no_lead_has_rings_the_team_and_keeps_nothing(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let (_, twiml) = s.ring("+14155550999", "CA1").await;
+        assert_eq!(twiml.matches("<Client ").count(), 2, "{twiml}");
+        assert!(twiml.contains("<Parameter name=\"name\" value=\"+14155550999\"/>") && !twiml.contains("lead_id"), "{twiml}");
+        let twiml = s.dialed("CA1", "no-answer", "0").await;
+        assert!(twiml.contains("<Say>Sorry, nobody could take your call. Please call again later.</Say><Hangup/>"), "{twiml}");
+        assert_eq!(s.dialed("CA1", "completed", "30").await, calls::TWIML_HANGUP);
+        let kept: i64 = sqlx::query_scalar("select count(*) from calls where twilio_sid = 'CA1'").fetch_one(s.db()).await.unwrap();
+        assert_eq!(kept, 0);
+
+        // With everyone away nothing rings, and Sam goes straight to leaving a message.
+        sqlx::query("update memberships set away = true").execute(s.db()).await.unwrap();
+        let (_, twiml) = s.ring("anonymous", "CA2").await;
+        assert!(!twiml.contains("<Dial") && twiml.contains("Please call again later."), "{twiml}");
+        let (_, twiml) = s.ring(SAM, "CA3").await;
+        assert!(!twiml.contains("<Dial") && twiml.contains("<Record "), "{twiml}");
+        assert_eq!(s.inbound("CA3").await.call_status, "no-answer");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_browser_rings_with_a_token_that_takes_incoming_calls(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let (status, ring) = s.call("jo", Method::POST, "/calls/ring-token", json!({})).await;
+        assert_eq!(status, 200, "{ring}");
+        assert_eq!(ring["identity"].as_str(), Some(calls::identity(s.jo).as_str()));
+        let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(ring["token"].as_str().unwrap().split('.').nth(1).unwrap()).unwrap()).unwrap();
+        assert_eq!(claims["grants"]["voice"], json!({ "incoming": { "allow": true }, "outgoing": { "application_sid": fake::APP } }));
+        assert_eq!(s.call("beta", Method::POST, "/calls/ring-token", json!({})).await.0, 409, "Beta has no Twilio");
+        sqlx::query("update twilio_accounts set twiml_app_sid = ''").execute(s.db()).await.unwrap();
+        assert_eq!(s.call("jo", Method::POST, "/calls/ring-token", json!({})).await.0, 409);
     }
 }
