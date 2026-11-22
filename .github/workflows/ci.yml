@@ -6,6 +6,25 @@ on:
     branches: [main]
 
 jobs:
+  # Its own job, so lint and the tests run side by side instead of one after the other.
+  clippy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned so a new stable clippy lint can't turn CI red on its own. Bump it here and in the backend job on purpose.
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - run: cargo clippy --all-targets -- -D warnings
+      # The website chat script's pure functions. No packages needed.
+      - run: node --test src/chat/widget.test.mjs
+
   backend:
     runs-on: ubuntu-latest
     services:
@@ -26,14 +45,10 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      # Pinned so a new stable clippy lint can't turn CI red on its own. Bump it on purpose.
       - uses: dtolnay/rust-toolchain@1.93.0
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo clippy --all-targets -- -D warnings
       # Migrating template1 once saves each of the hundreds of test databases its own run of every migration.
       - run: cargo run -q --example migrate
         env:
@@ -44,8 +59,6 @@ jobs:
           DATABASE_URL: postgres://splee:splee@localhost:5432/postgres
       # Splee patches the vendored Claude SDK, and its own tests cover those patches.
       - run: cargo test -p claude-agent-sdk-rs --lib
-      # The website chat script's pure functions. No packages needed.
-      - run: node --test src/chat/widget.test.mjs
 
   frontend:
     runs-on: ubuntu-latest
