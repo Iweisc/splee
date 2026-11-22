@@ -32,7 +32,8 @@ impl Seeded {
     async fn start(db: PgPool) -> Self {
         let (fake_url, fake) = fake::start().await;
         let base_state = crate::autopilot::tests::state(db.clone());
-        let cfg = Config { app_secret: "test-secret".into(), dialpad_api_url: fake_url.clone(), public_url: "https://splee.example".into(), ..(*base_state.cfg).clone() };
+        let public_url = "https://splee.example".into();
+        let cfg = Config { app_secret: "test-secret".into(), dialpad_api_url: fake_url.clone(), public_url, ..(*base_state.cfg).clone() };
         let state = AppState { cfg: Arc::new(cfg), ..base_state };
         let mut orgs = vec![];
         for name in ["acme", "beta"] {
@@ -156,17 +157,20 @@ async fn connecting_registers_a_signed_webhook_and_disconnecting_deletes_it(db: 
     assert_eq!(s.post(&token, none).await.0, 401, "only HS256");
     assert_eq!(s.event("nope", 1, &json!({})).await.0, 404);
 
-    // Connecting again keeps the URL, registers a new webhook with a new secret and deletes the old one.
-    assert_eq!(s.connect().await.0, 200);
+    // Connecting again, here to another company, keeps the URL, registers a new webhook with a new secret and deletes the old
+    // one with the old key, the only one that reaches it.
+    assert_eq!(s.call("acme", Method::PUT, &path, json!({ "api_key": fake::OTHER_KEY })).await.0, 200);
     assert_eq!(s.path_token().await, token);
     assert_eq!(s.fake.webhooks.lock().unwrap()[1]["hook_url"], first["hook_url"]);
     assert_ne!(s.secret(2), secret);
     assert_eq!(*s.fake.deleted.lock().unwrap(), ["subscriptions/call/201", "webhooks/101"]);
+    assert_eq!(*s.fake.deleted_with.lock().unwrap(), [fake::API_KEY, fake::API_KEY]);
     assert_eq!(s.event(&token, 1, &json!({ "state": "hangup" })).await.0, 401, "the old secret is no good any more");
     assert_eq!(s.event(&token, 2, &json!({ "state": "ringing" })).await, (200, json!({ "matched": false })));
 
     assert_eq!(s.call("acme", Method::DELETE, &path, json!(null)).await, (200, Value::Null));
     assert_eq!(*s.fake.deleted.lock().unwrap(), ["subscriptions/call/201", "webhooks/101", "subscriptions/call/202", "webhooks/102"]);
+    assert_eq!(s.fake.deleted_with.lock().unwrap()[2..], [fake::OTHER_KEY, fake::OTHER_KEY]);
     assert_eq!(s.event(&token, 2, &json!({})).await.0, 404);
 }
 
@@ -190,11 +194,6 @@ async fn calls_with_leads_are_kept_once_with_their_recordings_and_transcripts(db
         (Some("sequence"), Some("done"), Some("connected"), Some(6001), Some(120), Some("completed"))
     );
     assert_eq!(c["called_by"].as_str(), Some(s.jo.to_string().as_str()));
-    // A leg of the same call after a transfer is the same call.
-    let mut leg = dialpad_call(6009, "+447700900123", "outbound", true, 300, 60);
-    leg["master_call_id"] = json!("6001");
-    assert_eq!(s.event(&token, 1, &leg).await.1, json!({ "matched": true }));
-    assert_eq!(s.calls_of(s.sarah).await.len(), 1);
 
     // The recording comes in its own event, and the player gets it from Dialpad with the API key.
     let mut recorded = to_sarah.clone();
@@ -226,6 +225,20 @@ async fn calls_with_leads_are_kept_once_with_their_recordings_and_transcripts(db
     let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'summarize_call'").fetch_all(&s.db).await.unwrap();
     assert_eq!(runs, [json!({ "call_id": c["id"] })]);
 
+    // Each leg of a transferred call is a call of its own, with its outcome and transcript.
+    let mut leg = dialpad_call(6009, "+447700900123", "outbound", true, 300, 60);
+    leg["master_call_id"] = json!("6001");
+    leg["state"] = json!("call_transcription");
+    let said = json!([{ "type": "transcript", "name": "Sam", "user_id": "5222", "content": "Sam here, I run onboarding.", "time": "2026-11-22T10:05:00" }]);
+    s.fake.transcripts.lock().unwrap().insert(6009, said);
+    assert_eq!(s.event(&token, 1, &leg).await.1, json!({ "matched": true }));
+    let sarahs = s.calls_of(s.sarah).await;
+    let leg = sarahs.iter().find(|c| c["dialpad_id"] == 6009).unwrap();
+    assert_eq!(
+        (sarahs.len(), leg["kind"].as_str(), leg["duration_secs"].as_i64(), leg["transcript"].as_str()),
+        (2, Some("manual"), Some(60), Some("Us: Sam here, I run onboarding."))
+    );
+
     // Numbers that aren't a lead's, hidden ones and states Splee doesn't read aren't kept.
     assert_eq!(s.event(&token, 1, &dialpad_call(6002, "+1 415 555 0100", "outbound", true, 60, 30)).await.1, json!({ "matched": false }));
     assert_eq!(s.event(&token, 1, &dialpad_call(6003, "", "inbound", true, 60, 30)).await.1, json!({ "matched": false }));
@@ -242,7 +255,7 @@ async fn calls_with_leads_are_kept_once_with_their_recordings_and_transcripts(db
     );
 
     let (_, row) = s.call("acme", Method::GET, &format!("/projects/{}/dialpad", s.project), json!(null)).await;
-    assert_eq!((row["calls"].as_i64(), row["error"].as_str(), row["last_event_at"].is_string()), (Some(2), Some(""), true), "{row}");
+    assert_eq!((row["calls"].as_i64(), row["error"].as_str(), row["last_event_at"].is_string()), (Some(3), Some(""), true), "{row}");
 }
 
 /// The fixed-offset zone where it's `hour` o'clock now, so calling hours don't depend on when the tests run.

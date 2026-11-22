@@ -73,11 +73,12 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
     client.ping().await?;
     let mut tx = state.db.begin().await?;
     lock(&mut tx, id).await?;
-    let old: Option<(String, String, String)> = sqlx::query_as("select path_token, webhook_id, subscription_id from dialpad_connections where project_id = $1")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, _, _)| token.clone());
+    let old: Option<(String, String, String, String)> =
+        sqlx::query_as("select path_token, webhook_id, subscription_id, api_key_enc from dialpad_connections where project_id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, ..)| token.clone());
     let url = format!("{}/api/dialpad-webhooks/{path_token}", state.cfg.public_url.trim_end_matches('/'));
     let secret = crypto::random_token();
     let (webhook_id, subscription_id) = client.hook(&url, &secret).await?;
@@ -103,9 +104,12 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
         client.unhook(&webhook_id, &subscription_id).await;
         return Err(e.into());
     }
-    // The old webhook may be in another Dialpad company, which this key can't reach. Its events then fail the old secret here.
-    if let Some((_, old_webhook, old_subscription)) = old.filter(|(_, w, _)| *w != webhook_id) {
-        client.unhook(&old_webhook, &old_subscription).await;
+    // The old webhook may be in another Dialpad company, which only the old key reaches.
+    if let Some((_, old_webhook, old_subscription, old_key)) = old.filter(|(_, w, ..)| *w != webhook_id) {
+        match crypto::decrypt(&state.cfg.app_secret, &old_key).map_err(AppError::from).and_then(|key| Client::new(&state.cfg.dialpad_api_url, &key)) {
+            Ok(old_client) => old_client.unhook(&old_webhook, &old_subscription).await,
+            Err(e) => tracing::warn!(error = ?e, "dialpad: the old key couldn't delete the old webhook"),
+        }
     }
     audit::integration(&state.db, &auth, Some(id), "Dialpad", true).await;
     load(&state.db, id).await

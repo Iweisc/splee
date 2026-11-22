@@ -4,13 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, Query, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
 pub const API_KEY: &str = "dialpad-key";
+/// Another company's key, which the fake takes too.
+pub const OTHER_KEY: &str = "other-dialpad-key";
 
 #[derive(Clone, Default)]
 pub struct Fake {
@@ -18,8 +20,9 @@ pub struct Fake {
     pub webhooks: Arc<Mutex<Vec<Value>>>,
     /// The call subscriptions, as sent. The nth gets id 200 + n.
     pub subscriptions: Arc<Mutex<Vec<Value>>>,
-    /// The paths Splee deleted, like "webhooks/101".
+    /// The paths Splee deleted, like "webhooks/101", and the key it used for each.
     pub deleted: Arc<Mutex<Vec<String>>>,
+    pub deleted_with: Arc<Mutex<Vec<String>>>,
     /// Dialpad's users by email, and who has no Dialpad app open to ring, by id.
     pub users: Arc<Mutex<HashMap<String, Value>>>,
     pub no_app: Arc<Mutex<HashSet<i64>>>,
@@ -36,10 +39,13 @@ pub async fn start() -> (String, Fake) {
         .route("/dialpad/api/v2/company", get(|| async { Json(json!({ "id": "6456332278300672", "name": "Acme" })) }))
         .route("/dialpad/api/v2/webhooks", post(create_webhook))
         .route("/dialpad/api/v2/subscriptions/call", post(subscribe))
-        .route("/dialpad/api/v2/webhooks/{id}", delete(|State(f): State<Fake>, Path(id): Path<String>| async move { deleted(&f, format!("webhooks/{id}")) }))
+        .route(
+            "/dialpad/api/v2/webhooks/{id}",
+            delete(|State(f): State<Fake>, Path(id): Path<String>, headers: HeaderMap| async move { deleted(&f, format!("webhooks/{id}"), &headers) }),
+        )
         .route(
             "/dialpad/api/v2/subscriptions/call/{id}",
-            delete(|State(f): State<Fake>, Path(id): Path<String>| async move { deleted(&f, format!("subscriptions/call/{id}")) }),
+            delete(|State(f): State<Fake>, Path(id): Path<String>, headers: HeaderMap| async move { deleted(&f, format!("subscriptions/call/{id}"), &headers) }),
         )
         .route("/dialpad/api/v2/users", get(users))
         .route("/dialpad/api/v2/users/{id}/initiate_call", post(initiate_call))
@@ -66,15 +72,20 @@ pub fn sign(secret: &str, event: &Value) -> String {
     crate::crypto::hs256_jwt(secret.as_bytes(), &json!({ "alg": "HS256", "typ": "JWT" }), event)
 }
 
+fn key(headers: &HeaderMap) -> &str {
+    headers.get("authorization").and_then(|v| v.to_str().ok()?.strip_prefix("Bearer ")).unwrap_or_default()
+}
+
 async fn gate(req: Request, next: axum::middleware::Next) -> Response {
-    if req.headers().get("authorization").and_then(|v| v.to_str().ok()) != Some(format!("Bearer {API_KEY}").as_str()) {
+    if ![API_KEY, OTHER_KEY].contains(&key(req.headers())) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": { "code": 401, "message": "Invalid API key" } }))).into_response();
     }
     next.run(req).await
 }
 
-fn deleted(fake: &Fake, path: String) -> Response {
+fn deleted(fake: &Fake, path: String, headers: &HeaderMap) -> Response {
     fake.deleted.lock().unwrap().push(path);
+    fake.deleted_with.lock().unwrap().push(key(headers).to_string());
     Json(json!({})).into_response()
 }
 

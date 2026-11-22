@@ -79,7 +79,9 @@ impl Client {
         let body = res.text().await.unwrap_or_default();
         match status {
             200..=299 => Ok(serde_json::from_str(&body).unwrap_or(Value::Null)),
-            401 | 403 => Err(AppError::BadRequest("Dialpad didn't accept that API key. Make a company API key in Dialpad's admin settings and paste it here.".into())),
+            401 | 403 => {
+                Err(AppError::BadRequest("Dialpad didn't accept that API key. Make a company API key in Dialpad's admin settings and paste it here.".into()))
+            }
             404 => Ok(Value::Null),
             429 => Err(AppError::BadRequest("Dialpad asked Splee to slow down. Try again in a minute.".into())),
             _ => Err(AppError::BadRequest(format!("Dialpad answered {status}. Try again in a few minutes."))),
@@ -156,7 +158,8 @@ impl Client {
         if !url.starts_with(&format!("{}/", self.base)) {
             return Err(AppError::NotFound);
         }
-        let res = self.http.get(url).header("authorization", &self.auth).send().await.map_err(|_| AppError::BadRequest("Couldn't reach Dialpad. Try again in a moment.".into()))?;
+        let unreachable = |_| AppError::BadRequest("Couldn't reach Dialpad. Try again in a moment.".into());
+        let res = self.http.get(url).header("authorization", &self.auth).send().await.map_err(unreachable)?;
         match res.status().as_u16() {
             200 => Ok(res.bytes().await.map_err(|_| AppError::BadRequest("Dialpad's recording didn't come through. Try again.".into()))?.to_vec()),
             404 => Err(AppError::NotFound),
@@ -181,8 +184,9 @@ pub fn parse(event: &Value) -> Option<Ended> {
     let recordings = event["recording_details"].as_array().into_iter().flatten();
     let recording = recordings.filter(|r| r["recording_type"] == "callrecording" || r["recording_type"] == "voicemail").find_map(|r| text(&r["url"]));
     Some(Ended {
-        // A transferred call has a leg for each person, and each leg's master_call_id is the first one's.
-        id: id(&event["master_call_id"]).or_else(|| id(&event["call_id"]))?,
+        // Each leg of a transferred call is a call of its own, as it's a conversation with someone else on the team, with
+        // its own outcome and transcript.
+        id: id(&event["call_id"])?,
         number: text(&event["external_number"]).or_else(|| text(&event["contact"]["phone"])).and_then(|n| crate::phone::normalize(&n, ""))?,
         inbound: event["direction"] == "inbound",
         started_at: at(&event["date_started"])?,
@@ -202,10 +206,8 @@ pub async fn handle(state: &AppState, c: &Connection, event: &Value) -> AppResul
     }
     let Some(e) = parse(event) else { return Ok(false) };
     let Some(call) = cloud_phone::record(state, Phone::Dialpad, c.project(), &e).await? else { return Ok(false) };
-    if event["state"] == "call_transcription"
-        && let Some(leg) = id(&event["call_id"])
-    {
-        cloud_phone::transcribed(state, c.project(), call, &c.client(state)?.transcript(leg).await?).await?;
+    if event["state"] == "call_transcription" {
+        cloud_phone::transcribed(state, c.project(), call, &c.client(state)?.transcript(e.id).await?).await?;
     }
     Ok(true)
 }
