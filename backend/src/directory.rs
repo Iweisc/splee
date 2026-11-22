@@ -389,6 +389,40 @@ pub async fn add(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, 
     Ok(done.rows_affected())
 }
 
+/// The project's companies at these domains, for a find-people run on them, adding the ones it hasn't got to the campaign:
+/// from the database where they're in it, and as the bare domain where they aren't. Excluded companies and ones whose domain,
+/// or the email the database lists for it, is on a do-not-contact list are left out, as `add` leaves them out. The caller checks
+/// that the campaign belongs to the project.
+pub async fn companies_at(db: &PgPool, org_id: Uuid, project_id: Uuid, segment_id: Uuid, domains: &[String]) -> sqlx::Result<Vec<Uuid>> {
+    let picks: Vec<Pick> = domains.iter().map(|d| Pick { domain: d.clone(), fit_score: 0, fit_reason: "Asked for by domain".into() }).collect();
+    add(db, org_id, project_id, segment_id, &picks).await?;
+    let listed = crate::routes::suppression_lists::listed("$3", "$1", "coalesce(d.email, '')", "w.domain");
+    let wanted = format!(
+        "select w.domain from unnest($2::citext[]) w(domain) left join directory_companies d on d.domain = w.domain
+         where not exists (select 1 from suppressions s where s.org_id = $3 and s.value in (w.domain, d.email, split_part(d.email, '@', 2)))
+           and not {listed}"
+    );
+    // The ones the database hasn't got. Its own statement, so the select below sees a company another request added at the same
+    // moment, whose insert this one waited on.
+    sqlx::query(&format!(
+        "insert into companies (project_id, segment_id, domain, name)
+         select $1, $4, w.domain, w.domain from ({wanted}) w where not exists (select 1 from directory_companies d where d.domain = w.domain)
+         on conflict (project_id, domain) do nothing"
+    ))
+    .bind(project_id)
+    .bind(domains)
+    .bind(org_id)
+    .bind(segment_id)
+    .execute(db)
+    .await?;
+    sqlx::query_scalar(&format!("select c.id from companies c join ({wanted}) w on w.domain = c.domain where c.project_id = $1 and c.status <> 'excluded'"))
+        .bind(project_id)
+        .bind(domains)
+        .bind(org_id)
+        .fetch_all(db)
+        .await
+}
+
 /// Every word as a prefix, so "dent" finds dental_clinic and general_dentistry, as a tsquery. Only letters and digits get
 /// through, so a query can't hold tsquery syntax.
 fn prefixes(q: &str) -> Option<String> {

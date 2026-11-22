@@ -3660,4 +3660,118 @@ mod tests {
 
         assert_eq!(api.send(Method::GET, KEYS[1], &path, None, None).await.0, 404);
     }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn people_are_found_at_companies_picked_by_domain_in_the_titles_asked_for(db: PgPool) {
+        let [project, _] = seed(&db).await;
+        let api = Api::start(&db, LIMITS).await;
+        let (segment, _) = campaign(&db, project, "working").await;
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(project).fetch_one(&db).await.unwrap();
+        // Two the database lists with an email on a do-not-contact list, one of the organization's and one of a list for the project.
+        sqlx::query(
+            "insert into directory_companies (domain, name, website, email, city, country_code, source_id, release)
+             values ('smile.example', 'Smile Dental', 'https://smile.example', null, 'Leeds', 'GB', 'x', 'r'),
+                    ('mailed.example', 'Mailed', 'https://mailed.example', 'hi@mailed.example', 'Leeds', 'GB', 'x', 'r'),
+                    ('listed.example', 'Listed', 'https://listed.example', 'hi@listed.example', 'Leeds', 'GB', 'x', 'r')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'hi@mailed.example', 'email', 'manual')").bind(org).execute(&db).await.unwrap();
+        sqlx::query(
+            "with l as (insert into suppression_lists (org_id, name, kind, project_ids) values ($1, 'Customers', 'people', array[$2]) returning id)
+             insert into suppression_list_entries (list_id, org_id, value) select id, $1, 'hi@listed.example' from l",
+        )
+        .bind(org)
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        // One the project has, one it excluded, and one on the do-not-contact list.
+        sqlx::query("insert into companies (project_id, domain, name, status) values ($1, 'known.example', 'Known', 'people_found'), ($1, 'gone.example', 'Gone', 'excluded')")
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'blocked.example', 'domain', 'manual')").bind(org).execute(&db).await.unwrap();
+
+        let path = format!("/v1/segments/{segment}/find-people");
+        let domains =
+            ["https://Smile.example/team", "bare.example", "known.example", "gone.example", "blocked.example", "smile.example", "mailed.example", "listed.example"];
+        let body = json!({ "domains": domains, "titles": [" Practice Manager ", "Owner", ""], "per_company": 1 });
+        let (status, _, body) = api.post(KEYS[0], &path, None, body).await;
+        assert_eq!(status, 200, "{body}");
+        let run: Uuid = body["run_id"].as_str().unwrap().parse().unwrap();
+        let input: Value = sqlx::query_scalar("select input from agent_runs where id = $1").bind(run).fetch_one(&db).await.unwrap();
+        assert_eq!((input["roles"].clone(), input["max_per_company"].clone()), (json!("Practice Manager, Owner"), json!(1)));
+        let ids: Vec<Uuid> = serde_json::from_value(input["company_ids"].clone()).unwrap();
+        let searched: Vec<(String, String, bool)> =
+            sqlx::query_as("select domain::text, name, segment_id is not distinct from $2 from companies where id = any($1) order by domain")
+                .bind(&ids)
+                .bind(segment)
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        let searched: Vec<_> = searched.iter().map(|(d, n, here)| (d.as_str(), n.as_str(), *here)).collect();
+        assert_eq!(searched, [("bare.example", "bare.example", true), ("known.example", "Known", false), ("smile.example", "Smile Dental", true)]);
+        assert_eq!(count(&db, "select count(*) from companies where domain in ('mailed.example', 'listed.example')").await, 0, "not even bare");
+
+        crate::agent::fake::answer_with(run, |_| json!({ "people": [] }));
+        crate::agent::start_now(&crate::autopilot::tests::state(db.clone()), run).await.unwrap();
+        let mut status = String::new();
+        for _ in 0..250 {
+            status = sqlx::query_scalar("select status from agent_runs where id = $1").bind(run).fetch_one(&db).await.unwrap();
+            if status != "running" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(status, "succeeded");
+        let prompt = crate::agent::fake::prompts(run).concat();
+        assert!(prompt.contains("Only people in these roles: Practice Manager, Owner.") && prompt.contains("bare.example"), "{prompt}");
+
+        for (body, why) in [
+            (json!({ "domains": ["blocked.example", "gone.example"] }), "every one left out"),
+            (json!({ "domains": ["not a domain"] }), "not a domain"),
+            (json!({ "domains": [] }), "no domains"),
+            (json!({ "domains": ["bare.example"], "company_ids": [] }), "both"),
+            (json!({ "per_company": 6 }), "too many a company"),
+            (json!({ "titles": vec!["CEO"; 21] }), "too many titles"),
+        ] {
+            assert_eq!(api.post(KEYS[0], &path, None, body).await.0, 400, "{why}");
+        }
+        assert_eq!(api.post(KEYS[1], &path, None, json!({ "domains": ["bare.example"] })).await.0, 404, "another organization's campaign");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_company_another_request_adds_at_the_same_moment_is_searched_too(db: PgPool) {
+        let [project, _] = seed(&db).await;
+        let (segment, _) = campaign(&db, project, "working").await;
+        let org: Uuid = sqlx::query_scalar("select org_id from projects where id = $1").bind(project).fetch_one(&db).await.unwrap();
+        // The other request's insert, not committed yet, which this one's waits on.
+        let mut other = db.begin().await.unwrap();
+        sqlx::query("insert into companies (project_id, segment_id, domain, name) values ($1, $2, 'race.example', 'race.example')")
+            .bind(project)
+            .bind(segment)
+            .execute(&mut *other)
+            .await
+            .unwrap();
+        let ask = {
+            let db = db.clone();
+            tokio::spawn(async move { crate::directory::companies_at(&db, org, project, segment, &["race.example".to_string()]).await })
+        };
+        let mut waiting = 0;
+        for _ in 0..250 {
+            waiting = count(&db, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").await;
+            if waiting == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(waiting, 1, "the request waits on the other's insert, so the test races them");
+        other.commit().await.unwrap();
+        assert_eq!(ask.await.unwrap().unwrap().len(), 1, "the company the other request added");
+    }
 }

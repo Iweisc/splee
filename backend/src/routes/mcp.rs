@@ -1172,11 +1172,17 @@ fn tools() -> Vec<Value> {
         tool(
             "find_people",
             "Find people",
-            "Starts an agent run that finds decision makers and their emails at the campaign's new companies, or only at company_ids. \
-             Returns run_id. Poll get_run until it's done, then list_leads.",
+            "Starts an agent run that finds decision makers and their emails at the campaign's new companies, or only at company_ids or \
+             domains, in the campaign's roles or the titles given. Returns run_id. Poll get_run until it's done, then list_leads.",
             json!({
                 "campaign_id": campaign,
                 "company_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Optional. Only these companies" },
+                "domains": {
+                    "type": "array", "items": { "type": "string" },
+                    "description": "Optional, in place of company_ids. Up to 100 company domains, added to the campaign when the project hasn't got them"
+                },
+                "titles": { "type": "array", "items": { "type": "string" }, "description": "Optional. Up to 20 job titles to look for instead of the campaign's roles" },
+                "per_company": { "type": "integer", "minimum": 1, "maximum": 5, "description": "Optional. People to find at each company, 2 by default" },
             }),
             &["campaign_id"],
             adds.clone(),

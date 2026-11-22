@@ -552,6 +552,8 @@ struct FindPeopleInput {
     segment_id: Uuid,
     company_ids: Option<Vec<Uuid>>,
     max_per_company: Option<usize>,
+    /// Job titles from the API, in place of the campaign's roles.
+    roles: Option<String>,
 }
 
 pub async fn find_people_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
@@ -572,7 +574,7 @@ pub async fn find_people_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         None => (best_companies(ctx.db(), segment.id, 20).await?, 20),
     };
     anyhow::ensure!(!companies.is_empty(), "there are no new companies in this campaign to search");
-    let saved = find_people(ctx, &project, &profile, &segment, companies, max_per, cap, None).await?;
+    let saved = find_people(ctx, &project, &profile, &segment, companies, max_per, cap, input.roles.as_deref()).await?;
     Ok(Outcome::new(format!("Found {saved} decision makers")))
 }
 
