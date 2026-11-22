@@ -35,10 +35,11 @@ export default function DailyLimitPage() {
   // Without a price on any mailbox, sent emails cost nothing here and a cap never stops anything.
   const unpriced = mailboxes !== undefined && mailboxes.every((m) => m.cost_per_email_micros === 0);
   const families = new Set(mailboxes?.filter((m) => m.status === "active").map(mailboxFamily));
-  const missing = mailboxes === undefined ? [] : (["google", "microsoft"] as const).filter((f) => !families.has(f));
+  // When nothing can send, the Emails per day card already says so, so this stays quiet.
+  const missing = !capacity ? [] : (["google", "microsoft"] as const).filter((f) => !families.has(f));
 
   return (
-    <ProjectSettingsPage title="Daily limit" description="How many emails this project may send per day." problem={problem}>
+    <ProjectSettingsPage title="Daily limit" description="How much this project sends, and from which mailboxes." problem={problem}>
       {(s, update) => (
         <>
           <Section
@@ -153,8 +154,8 @@ export default function DailyLimitPage() {
             {s.match_provider && missing.length > 0 && (
               <p className="text-sm text-muted-foreground">
                 {missing.length === 2
-                  ? "None of your active mailboxes are on Google or Microsoft, so first emails go out as before until you "
-                  : `None of your active mailboxes are on ${SIGN_IN_LABEL[missing[0]]}, so leads there get first emails as before until you `}
+                  ? "None of your active mailboxes are on Google or Microsoft, so this changes nothing until you "
+                  : `None of your active mailboxes are on ${SIGN_IN_LABEL[missing[0]]}, so leads on ${SIGN_IN_LABEL[missing[0]]} get first emails from whichever mailbox has room until you `}
                 <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
                   connect one
                 </Link>
