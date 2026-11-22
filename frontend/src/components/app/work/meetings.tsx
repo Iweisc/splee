@@ -15,7 +15,8 @@ function length(secs: number) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-const FOLLOW_UP: Record<string, string> = {
+/** What became of the follow-up email the agent drafted after a meeting or call, by its status. */
+export const FOLLOW_UP: Record<string, string> = {
   draft: "Follow-up drafted and waiting for your approval.",
   approved: "Follow-up approved and on its way.",
   scheduled: "Follow-up approved and on its way.",

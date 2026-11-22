@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Phone, PhoneIncoming, PhoneMissed, Sparkles } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Mail, Phone, PhoneIncoming, PhoneMissed, Sparkles } from "lucide-react";
+import { Button, LinkButton } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
 import { Badge, type BadgeTone } from "@/components/ui/misc";
 import type { Call, CallOutcome } from "@/lib/types";
 import { cn, dateTime } from "@/lib/utils";
+import { FOLLOW_UP } from "./meetings";
 
 export const OUTCOMES: Record<CallOutcome, { label: string; tone: BadgeTone }> = {
   connected: { label: "Connected", tone: "green" },
@@ -103,8 +104,9 @@ export function OutcomeForm({
   );
 }
 
-/** A call in a lead's timeline: what happened, how long, the recording, the notes and the agent's summary. */
-export function CallCard({ call: c, className }: { call: Call; className?: string }) {
+/** A call in a lead's timeline: what happened, how long, the recording, the notes and the agent's summary, and with
+ *  `followUp`, where the follow-up email the agent drafted from it is. */
+export function CallCard({ call: c, followUp, className }: { call: Call; followUp?: string | null; className?: string }) {
   const outcome = c.outcome ? OUTCOMES[c.outcome] : null;
   const missed = c.status === "skipped" || c.status === "cancelled";
   return (
@@ -138,6 +140,18 @@ export function CallCard({ call: c, className }: { call: Call; className?: strin
               <span className="font-medium">Next: </span>
               {c.next_step}
             </p>
+          )}
+        </div>
+      )}
+      {followUp && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Mail className="size-3.5 shrink-0" /> {FOLLOW_UP[followUp] ?? "Follow-up written."}
+          </span>
+          {followUp === "draft" && (
+            <LinkButton href={`/app/p/${c.project_id}/emails`} size="sm" variant="outline">
+              Review
+            </LinkButton>
           )}
         </div>
       )}

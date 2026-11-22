@@ -929,6 +929,8 @@ pub struct Call {
     pub dialpad_id: Option<i64>,
     /// A call the lead made to the team, rather than one the team made to them.
     pub inbound: bool,
+    /// The follow-up email the agent drafted from the transcript, when someone talked with the lead (agent/calls.rs).
+    pub follow_up_email_id: Option<Uuid>,
 }
 
 /// A sales meeting with a lead, from Fireflies, Fathom, Gong, Zoom or tl;dv, and the agent's notes on it. See meetings/. The

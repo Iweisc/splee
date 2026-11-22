@@ -394,7 +394,7 @@ function DoneRow({ row: r, onOpen }: { row: CallRow; onOpen: () => void }) {
         <Who row={r} onOpen={onOpen} />
         {r.called_by_name && <span className="text-sm text-muted-foreground">{r.inbound ? "Taken by" : "By"} {r.called_by_name}</span>}
       </div>
-      <CallCard call={r} />
+      <CallCard call={r} followUp={r.follow_up_status} />
     </div>
   );
 }

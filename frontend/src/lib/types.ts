@@ -1694,8 +1694,8 @@ export interface EmailMessage {
   segment_id: UUID | null;
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
-  /** meeting_follow_up is the email the agent drafts after a sales meeting. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask" | "feature_shipped";
+  /** meeting_follow_up and call_follow_up are the emails the agent drafts after a sales meeting or call. */
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "call_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask" | "feature_shipped";
   step: number;
   subject: string;
   body: string;
@@ -1817,6 +1817,8 @@ export interface Call {
   dialpad_id: number | null;
   /** A call the lead made to the team. */
   inbound: boolean;
+  /** The follow-up email the agent drafted from the transcript, when someone talked with the lead. */
+  follow_up_email_id: string | null;
 }
 
 /** GET /projects/{id}/calls. */
@@ -1835,6 +1837,8 @@ export interface CallRow extends Call {
   outside_hours: string | null;
   /** The talk track, or null before one was asked for. See backend/src/agent/call_prep.rs. */
   prep: { prep: CallPrep | null; created_at: Ts; status: "ready" | "writing" | "failed" } | null;
+  /** The status of the follow-up email the agent drafted, or null without one. */
+  follow_up_status: string | null;
 }
 
 export interface CallPrep {
