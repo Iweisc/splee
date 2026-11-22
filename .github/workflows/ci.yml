@@ -34,6 +34,10 @@ jobs:
         with:
           workspaces: backend
       - run: cargo clippy --all-targets -- -D warnings
+      # Migrating template1 once saves each of the hundreds of test databases its own run of every migration.
+      - run: cargo run -q --example migrate
+        env:
+          DATABASE_URL: postgres://splee:splee@localhost:5432/template1
       # Includes the tests that need Postgres. They create and drop their own databases on this service.
       - run: cargo test -- --include-ignored
         env:
