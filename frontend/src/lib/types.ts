@@ -3503,6 +3503,73 @@ export interface FeedbackView {
   requests: FeedbackRequest[];
 }
 
+/** One thing the product is worth to the buyer: quantity units, each worth unit_value, every per, for count count_units. */
+export interface CaseLine {
+  label: string;
+  quantity: number;
+  unit: string;
+  unit_value: number;
+  per: "week" | "month" | "year";
+  count: number;
+  count_unit: string;
+  /** said when the buyer gave the number, estimate when the agent did. */
+  basis: "said" | "estimate";
+  source: string;
+}
+
+export type CaseNumbers = Pick<CaseLine, "quantity" | "unit_value" | "count">;
+
+export interface BusinessCaseContent {
+  title: string;
+  summary: string;
+  problem: string;
+  lines: CaseLine[];
+  outcomes: string[];
+  waiting: string;
+}
+
+/** The first year of the proposal once the buyer can read it, else the deal's value. */
+export interface CaseInvestment {
+  amount: number;
+  currency: string;
+  from: "proposal" | "deal";
+}
+
+export interface BusinessCase {
+  id: string;
+  deal_id: string;
+  token: string;
+  url: string;
+  /** ready can carry `skipped` when the agent declined to write it again. */
+  status: "writing" | "ready" | "skipped" | "failed";
+  business_case: BusinessCaseContent | null;
+  skipped: string;
+  /** The buyer's own numbers, one per line. */
+  numbers: CaseNumbers[] | null;
+  edited_by: string;
+  edited_at: string | null;
+  views: number;
+  first_viewed_at: string | null;
+  last_viewed_at: string | null;
+  investment: CaseInvestment | null;
+}
+
+export interface PublicBusinessCase {
+  business_case: BusinessCaseContent;
+  /** Which writing of the case this is. Saving numbers sends it back. */
+  revision: string;
+  numbers: CaseNumbers[] | null;
+  edited_by: string;
+  edited_at: string | null;
+  first_name: string;
+  company: string;
+  company_domain: string | null;
+  from_name: string;
+  from_domain: string | null;
+  sender_name: string;
+  investment: CaseInvestment | null;
+}
+
 /** A case study the agent drafted from a won deal. The sections never name the customer. See backend/src/agent/stories.rs. */
 export interface StoryDraft {
   title: string;
