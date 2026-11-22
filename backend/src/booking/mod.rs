@@ -316,31 +316,26 @@ struct Due {
     token_enc: String,
 }
 
-/// Emails each guest whose reminder is due, from the page's mailbox. Claiming one clears its `remind_at` first, so it goes
-/// once however many workers run. A failed send is tried again in 5 minutes, until the call is that close.
+/// Emails each guest whose reminder is due, from the page's mailbox, one booking at a time. Each holds its row from the
+/// claim until the outcome is saved, so a cancel or move waits for the email, a second worker skips it, and a crash
+/// before the commit leaves it due. A failed send is tried again in 5 minutes, until the call is that close.
 pub async fn remind_due(state: &AppState) -> anyhow::Result<()> {
-    let due: Vec<Due> = sqlx::query_as(
-        "update bookings set remind_at = null
-         where id in (select id from bookings where remind_at <= now() order by remind_at limit 50 for update skip locked)
-         returning *",
-    )
-    .fetch_all(&state.db)
-    .await?;
-    for Due { booking, token_enc } in due {
-        if booking.cancelled_at.is_some() || booking.starts_at <= Utc::now() {
-            continue;
-        }
-        if let Err(e) = remind(state, &booking, &token_enc).await {
-            tracing::error!(error = %e, booking = %booking.id, "couldn't send a booking reminder");
-            // A move since the claim set its own time, which stays.
-            sqlx::query(
-                "update bookings set remind_at = now() + interval '5 minutes'
-                 where id = $1 and remind_at is null and cancelled_at is null and starts_at > now() + interval '5 minutes'",
-            )
-            .bind(booking.id)
-            .execute(&state.db)
+    for _ in 0..50 {
+        let mut tx = state.db.begin().await?;
+        let due: Option<Due> = sqlx::query_as("select * from bookings where remind_at <= now() order by remind_at limit 1 for update skip locked")
+            .fetch_optional(&mut *tx)
             .await?;
+        let Some(Due { booking, token_enc }) = due else { return Ok(()) };
+        let mut next = None;
+        if booking.cancelled_at.is_none()
+            && booking.starts_at > Utc::now()
+            && let Err(e) = remind(state, &booking, &token_enc).await
+        {
+            tracing::error!(error = %e, booking = %booking.id, "couldn't send a booking reminder");
+            next = Some(Utc::now() + Duration::minutes(5)).filter(|at| *at < booking.starts_at);
         }
+        sqlx::query("update bookings set remind_at = $2 where id = $1").bind(booking.id).bind(next).execute(&mut *tx).await?;
+        tx.commit().await?;
     }
     Ok(())
 }

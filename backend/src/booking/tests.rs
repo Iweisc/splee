@@ -485,10 +485,10 @@ async fn the_guest_is_reminded_once_the_pages_hours_before_the_call(db: PgPool) 
     let now = Utc::now();
     let slots = open_slots(&state, &page, None).await.unwrap();
     let far: Vec<Ts> = slots.iter().copied().filter(|s| *s > now + Duration::days(2)).collect();
-    let soon = *slots.iter().find(|s| **s < now + Duration::hours(23)).unwrap();
+    let soon: Vec<Ts> = slots.iter().copied().filter(|s| *s < now + Duration::hours(23)).take(2).collect();
     let (booking, token) = book(&state, &page, far[0], &guest("sarah@brightline.example"), "10.0.0.1").await.unwrap();
     assert_eq!(remind_at(booking.id).await.unwrap(), Some(far[0] - Duration::hours(24)));
-    let (late, _) = book(&state, &page, soon, &guest("jo@brightline.example"), "10.0.0.2").await.unwrap();
+    let (late, _) = book(&state, &page, soon[0], &guest("jo@brightline.example"), "10.0.0.2").await.unwrap();
     assert_eq!(remind_at(late.id).await.unwrap(), None, "booked less than a day ahead, so the booking email is the reminder");
     // Moving the call moves its reminder.
     let moved = reschedule(&state, &token, far[1]).await.unwrap();
@@ -498,6 +498,12 @@ async fn the_guest_is_reminded_once_the_pages_hours_before_the_call(db: PgPool) 
     remind_due(&state).await.unwrap();
     assert!(sent.lock().unwrap().is_empty());
     make_due(booking.id).await.unwrap();
+    // A worker sending it holds its row, so a second one skips it, and one that dies before saving leaves it due.
+    let mut held = db.begin().await.unwrap();
+    sqlx::query("select 1 from bookings where id = $1 for update").bind(booking.id).execute(&mut *held).await.unwrap();
+    remind_due(&state).await.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    held.rollback().await.unwrap();
     remind_due(&state).await.unwrap();
     remind_due(&state).await.unwrap();
     let messages = sent.lock().unwrap().clone();
@@ -517,10 +523,13 @@ async fn the_guest_is_reminded_once_the_pages_hours_before_the_call(db: PgPool) 
     // A send that fails is tried again in 5 minutes.
     let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
     point_at(closed.into()).execute(&db).await.unwrap();
-    let (fourth, _) = book(&state, &page, far[3], &guest("lee@brightline.example"), "10.0.0.4").await.unwrap();
+    let (fourth, fourth_token) = book(&state, &page, far[3], &guest("lee@brightline.example"), "10.0.0.4").await.unwrap();
     make_due(fourth.id).await.unwrap();
     remind_due(&state).await.unwrap();
     let retry = remind_at(fourth.id).await.unwrap().unwrap() - Utc::now();
     assert!(retry > Duration::minutes(4) && retry <= Duration::minutes(5), "{retry}");
     assert_eq!(sent.lock().unwrap().len(), 1);
+    // Moved inside the reminder window, it no longer gets one.
+    reschedule(&state, &fourth_token, soon[1]).await.unwrap();
+    assert_eq!(remind_at(fourth.id).await.unwrap(), None);
 }
