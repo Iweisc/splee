@@ -128,7 +128,8 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const log = async (row: CallRow, outcome: CallOutcome, notes: string) => {
     try {
       await api(`/calls/${row.id}/log`, { body: { outcome, notes } });
-      const next = run && callable(await mutate()).find((r) => !run.includes(r.id));
+      const fresh = await mutate();
+      const next = run && callable(fresh).find((r) => !run.includes(r.id));
       // No toast here: it would sit over the panel's buttons, and the panel says it was logged.
       if (next) {
         setActive({ row: next, phase: "next", at: Date.now() + NEXT_SECS * 1000 });
