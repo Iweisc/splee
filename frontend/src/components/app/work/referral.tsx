@@ -11,7 +11,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, Referral, ReferralView } from "@/lib/types";
 import { plural } from "@/lib/utils";
-import { LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const ready = (r: Referral) => r.status === "drafted";
@@ -121,8 +121,8 @@ export function ReferralSection({ deal }: { deal: Deal }) {
 
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <HeartHandshake className="size-3.5" />{" "}
             {r && ready(r) ? "Ready to ask for introductions" : r?.status === "sent" ? "Asked for introductions" : "Ask for introductions"}
@@ -137,7 +137,7 @@ export function ReferralSection({ deal }: { deal: Deal }) {
               </p>
             )}
           </div>
-        </div>
+        </CardHeaderText>
         {r?.status === "writing" ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -147,7 +147,7 @@ export function ReferralSection({ deal }: { deal: Deal }) {
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
       {r && ready(r) && <Draft r={r} actions={actions} projectId={deal.project_id} />}
       {r && (ready(r) || r.status === "sent") && (
         <div className="flex flex-wrap items-center justify-between gap-2">

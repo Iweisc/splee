@@ -9,7 +9,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Battlecard, BattlecardItem, Deal } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, MicroLabel, toastError } from "./states";
 
 export const competitorName = (i: BattlecardItem) => i.name || i.domain;
 export const writing = (items?: BattlecardItem[]) => !!items?.some((i) => i.status === "writing");
@@ -105,8 +105,8 @@ function UpAgainst({ item, projectId }: { item: BattlecardItem; projectId: strin
   const card = item.card;
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <Swords className="size-3.5" /> Up against {competitorName(item)}
           </p>
@@ -121,7 +121,7 @@ function UpAgainst({ item, projectId }: { item: BattlecardItem; projectId: strin
           ) : (
             <p className="mt-1 text-sm text-muted-foreground">This deal mentions them. The agent can write how to sell against them.</p>
           )}
-        </div>
+        </CardHeaderText>
         {item.status === "writing" ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -131,7 +131,7 @@ function UpAgainst({ item, projectId }: { item: BattlecardItem; projectId: strin
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
       {card && (
         <>
           <List title="Ask the buyer" items={card.landmines} />

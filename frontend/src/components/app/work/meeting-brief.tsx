@@ -8,7 +8,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { MeetingBrief } from "@/lib/types";
 import { dayTime, isPast, timeAgo } from "@/lib/utils";
-import { MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, MicroLabel, toastError } from "./states";
 
 /** The brief the agent writes before a lead's call: on its own a day ahead, or now from the button. */
 export function MeetingBriefCard({ leadId, meetingAt }: { leadId: string; meetingAt: string | null }) {
@@ -32,9 +32,8 @@ export function MeetingBriefCard({ leadId, meetingAt }: { leadId: string; meetin
 
   return (
     <section className="rounded-xl border border-border p-4">
-      {/* The button drops under the text in a narrow lead window rather than squeezing it into a column a few words wide. */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 basis-56">
+      <CardHeader>
+        <CardHeaderText>
           <MicroLabel className="flex items-center gap-1.5">
             <NotebookText className="size-3.5" /> Meeting brief
           </MicroLabel>
@@ -47,14 +46,14 @@ export function MeetingBriefCard({ leadId, meetingAt }: { leadId: string; meetin
                   : "Who they are, what was said so far and what to ask, from what Splee knows."}
             </p>
           )}
-        </div>
+        </CardHeaderText>
         {!writing && (
           <Button size="sm" variant={brief ? "ghost" : "outline"} onClick={write} loading={asking}>
             {brief ? <RefreshCw className="size-3.5" /> : <NotebookText className="size-3.5" />}
             {brief ? "Write again" : "Write it now"}
           </Button>
         )}
-      </div>
+      </CardHeader>
 
       {writing && (
         <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">

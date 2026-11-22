@@ -11,7 +11,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, Expansion, ExpansionView } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
-import { LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const ready = (x: Expansion) => x.status === "drafted";
@@ -98,8 +98,8 @@ export function ExpansionSection({ deal }: { deal: Deal }) {
 
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <TrendingUp className="size-3.5" /> {x && ready(x) ? "Room to grow" : x?.status === "sent" ? "Expansion email sent" : "Grow this account"}
           </p>
@@ -113,7 +113,7 @@ export function ExpansionSection({ deal }: { deal: Deal }) {
               </p>
             )}
           </div>
-        </div>
+        </CardHeaderText>
         {x?.status === "writing" ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -123,7 +123,7 @@ export function ExpansionSection({ deal }: { deal: Deal }) {
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
       {x && ready(x) && (
         <>
           <Draft x={x} actions={actions} projectId={deal.project_id} />

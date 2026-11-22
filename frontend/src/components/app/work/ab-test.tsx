@@ -12,7 +12,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { AbTest, VariantStats } from "@/lib/types";
 import { cn, dateTime, num } from "@/lib/utils";
-import { MicroLabel, Td, Th, toastError } from "./states";
+import { CardHeader, CardHeaderText, MicroLabel, Td, Th, toastError } from "./states";
 
 /** The backend's limits: up to 4 variants, and auto-pick waits for at least 30 sends each. */
 const MAX_VARIANTS = 4;
@@ -54,8 +54,8 @@ export function AbTestCard({ segmentId }: { segmentId: string }) {
 
   return (
     <Card className="flex flex-col gap-4 p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <MicroLabel>A/B test</MicroLabel>
           <p className="mt-1 text-sm text-muted-foreground">
             {data.picked_at
@@ -64,11 +64,11 @@ export function AbTestCard({ segmentId }: { segmentId: string }) {
                 ? `Keeps the winner after ${num(data.pick_after)} sends per variant.`
                 : "Each new lead gets the next variant in turn."}
           </p>
-        </div>
+        </CardHeaderText>
         <Button variant="outline" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
           Edit variants
         </Button>
-      </div>
+      </CardHeader>
       {data.picked_at && <Picked test={data} segmentId={segmentId} onChange={(t) => mutate(t, { revalidate: false })} />}
       <Results test={data} />
       {data.variants.length > 1 && !data.picked_at && (

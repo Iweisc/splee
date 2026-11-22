@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import type { Deal, WinBack, WinBackView } from "@/lib/types";
 import { cn, dealMoney, plural } from "@/lib/utils";
 import { reasonLabel } from "./deal-review";
-import { LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
 
 const busyStatus = (w: WinBack) => w.status === "planning" || w.status === "writing";
 const day = (d: string, year = false) =>
@@ -163,8 +163,8 @@ export function WinBackSection({ deal }: { deal: Deal }) {
         : "Win it back";
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <RotateCcw className="size-3.5" /> {heading}
           </p>
@@ -189,7 +189,7 @@ export function WinBackSection({ deal }: { deal: Deal }) {
               <Reasons w={w} />
             )}
           </div>
-        </div>
+        </CardHeaderText>
         {w && busyStatus(w) ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -199,7 +199,7 @@ export function WinBackSection({ deal }: { deal: Deal }) {
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
       {w?.status === "drafted" && w.email_status === "draft" && <Draft w={w} actions={actions} projectId={deal.project_id} />}
       {w && !busyStatus(w) && w.status !== "drafted" && (
         <div className="flex flex-wrap items-center justify-between gap-2">

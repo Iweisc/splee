@@ -10,7 +10,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, DealRoom, DealRoomQuestion } from "@/lib/types";
 import { timeAgo } from "@/lib/utils";
-import { toastError } from "./states";
+import { CardHeader, CardHeaderText, toastError } from "./states";
 
 /** In an open deal's window: the buyer's deal room, and their questions with the agent's draft answers to publish. */
 export function DealRoomSection({ deal }: { deal: Deal }) {
@@ -38,26 +38,28 @@ export function DealRoomSection({ deal }: { deal: Deal }) {
 
   if (!room?.room) {
     return (
-      <section className="flex items-start justify-between gap-3 rounded-xl border border-dashed border-border-strong p-4">
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-sm font-medium">
-            <DoorOpen className="size-3.5" /> Deal room
-          </p>
-          <p className="mt-1 text-xs text-pretty text-muted-foreground">
-            {writing
-              ? "The agent is writing the welcome and picking the case studies closest to them…"
-              : room?.status === "failed"
-                ? "Couldn't write the room. Try again."
-                : `One page for ${them} with a welcome, the close plan and proposal, the case studies from Materials closest to them, and a place to ask anything. The agent drafts an answer to each question for you to publish.`}
-          </p>
-        </div>
-        {writing ? (
-          <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-        ) : (
-          <Button type="button" size="sm" variant="outline" onClick={write} loading={busy === "write"}>
-            <PenLine className="size-3.5" /> Make a deal room
-          </Button>
-        )}
+      <section className="rounded-xl border border-dashed border-border-strong p-4">
+        <CardHeader>
+          <CardHeaderText>
+            <p className="flex items-center gap-1.5 text-sm font-medium">
+              <DoorOpen className="size-3.5" /> Deal room
+            </p>
+            <p className="mt-1 text-xs text-pretty text-muted-foreground">
+              {writing
+                ? "The agent is writing the welcome and picking the case studies closest to them…"
+                : room?.status === "failed"
+                  ? "Couldn't write the room. Try again."
+                  : `One page for ${them} with a welcome, the close plan and proposal, the case studies from Materials closest to them, and a place to ask anything. The agent drafts an answer to each question for you to publish.`}
+            </p>
+          </CardHeaderText>
+          {writing ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <Button type="button" size="sm" variant="outline" onClick={write} loading={busy === "write"}>
+              <PenLine className="size-3.5" /> Make a deal room
+            </Button>
+          )}
+        </CardHeader>
       </section>
     );
   }
