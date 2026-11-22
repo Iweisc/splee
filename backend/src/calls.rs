@@ -19,6 +19,8 @@ use crate::state::AppState;
 pub const FIRST_HOUR: u32 = 8;
 pub const LAST_HOUR: u32 = 20;
 pub const OUTCOMES: &[&str] = &["connected", "voicemail", "no_answer", "wrong_number", "not_interested", "meeting_booked"];
+/// The outcomes where someone picked up and talked, which make the connect rate.
+pub const CONNECTED: [&str; 3] = ["connected", "not_interested", "meeting_booked"];
 /// How long a browser's token to place calls lasts. The page asks for a new one for each call.
 pub const TOKEN_SECS: i64 = 600;
 
