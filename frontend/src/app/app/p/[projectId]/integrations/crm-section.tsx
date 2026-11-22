@@ -235,7 +235,7 @@ export function CrmSection({ projectId, settings }: { projectId: string; setting
           <Contact className="size-4" /> CRM
         </span>
       }
-      description="Adds hot and booked leads to each CRM you connect, with a note holding their reply. Splee matches by email, so people already there get updated, not duplicated."
+      description="Adds leads to each CRM you connect once they reply hot, book or talk with you, with a note holding their reply or the call or meeting notes. Splee matches by email, so people already there get updated, not duplicated."
     >
       {!!connected.length && (
         <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
