@@ -875,6 +875,13 @@ pub fn announce_cancelled(state: &AppState, lead: &Lead, was: Option<Ts>) {
     });
 }
 
+/// Tells the CRMs a lead missed the meeting they booked. Whoever marked it already knows, so chat doesn't hear.
+pub fn announce_no_show(state: &AppState, lead: &Lead) {
+    let (state, lead, project_id) = (state.clone(), lead.clone(), lead.project_id);
+    let link = lead_url(&state.cfg.public_url, project_id, lead.id);
+    tokio::spawn(async move { crate::crm::sync(&state, project_id, &lead, &format!("Missed the meeting they booked.\n{link}")).await });
+}
+
 /// Tells each project's chat and webhook, and the browsers of whoever the lead belongs to, about inbox reminders that just came
 /// due. A reminder more than a day overdue is skipped, so one set before this ran, or while the server was down, doesn't page anyone.
 pub async fn announce_due_reminders(state: &AppState) -> anyhow::Result<()> {

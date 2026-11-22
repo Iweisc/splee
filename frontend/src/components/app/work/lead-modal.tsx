@@ -50,6 +50,8 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
   // Editing and deleting replace the whole window's content, which dropped keyboard focus on the page. Coming back, the
   // button that opened them takes it again.
   const [back, setBack] = useState<"edit" | "remove" | null>(null);
+  const meetingPassed = usePassed(lead?.meeting_at ?? null);
+  const [markingMissed, setMarkingMissed] = useState(false);
 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
   if (!lead) return <ListSkeleton rows={5} />;
@@ -82,6 +84,20 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
       toastError(e);
     }
   };
+
+  const markMissed = async () => {
+    setMarkingMissed(true);
+    try {
+      await mutate(api<LeadDetail>(`/leads/${leadId}/no-show`, { method: "POST" }), { revalidate: false });
+      mutateAll((k) => typeof k === "string" && (k.includes("/leads") || k.startsWith("/pipeline") || k.startsWith("/emails")));
+      toast.success(lead.email ? "Back to Hot. An email offering another time is being written for your approval." : "Back to Hot");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setMarkingMissed(false);
+    }
+  };
+  const missed = lead.status === "meeting_booked" && meetingPassed;
 
   if (editing) {
     return (
@@ -215,8 +231,13 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
           </p>
         </Detail>
         {lead.meeting_at && (
-          <Detail label="Meeting" icon={<CalendarCheck className="size-3.5" />}>
+          <Detail label="Meeting" icon={<CalendarCheck className="size-3.5" />} wide={missed}>
             Meeting on {dayTime(lead.meeting_at)}
+            {missed && (
+              <Button size="sm" variant="outline" className="mt-1.5 flex" onClick={markMissed} disabled={markingMissed}>
+                They didn&apos;t show
+              </Button>
+            )}
           </Detail>
         )}
       </dl>
@@ -549,6 +570,19 @@ function JobChangeNote({ change }: { change: JobChangeFrom }) {
       </div>
     </div>
   );
+}
+
+/** Whether `at` has passed, turning true at that moment while the window stays open. */
+function usePassed(at: string | null): boolean {
+  const [now, setNow] = useState(Date.now);
+  const when = at ? new Date(at).getTime() : null;
+  useEffect(() => {
+    if (when === null || when <= now) return;
+    // setTimeout can't wait longer than about 24.8 days. It wakes then and waits again.
+    const t = setTimeout(() => setNow(Date.now()), Math.min(when - Date.now(), 2 ** 31 - 1));
+    return () => clearTimeout(t);
+  }, [when, now]);
+  return when !== null && when <= now;
 }
 
 function Detail({ label, icon, wide, children }: { label: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {

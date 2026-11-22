@@ -39,6 +39,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/meetings", get(upcoming_meetings))
         .route("/leads/{id}", get(get_lead).patch(update_lead).delete(remove_lead))
         .route("/leads/{id}/owner", put(set_owner))
+        .route("/leads/{id}/no-show", post(no_show))
 }
 
 #[derive(Deserialize)]
@@ -616,6 +617,30 @@ async fn upcoming_meetings(State(state): State<AppState>, auth: Auth, Path(id): 
     .fetch_all(&state.db)
     .await?;
     Ok(Json(leads))
+}
+
+/// The lead missed the call they booked: back to Hot without the stale time, like a cancellation, a note in the CRMs, and
+/// an email offering another time for someone to approve (agent/no_shows.rs).
+async fn no_show(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {
+    let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
+    let mut tx = state.db.begin().await?;
+    // Read under the row's lock, so a click twice queues one email and a move in the meantime can't change which meeting
+    // was missed.
+    let missed_at: Option<Ts> =
+        sqlx::query_scalar("select meeting_at from leads where id = $1 and status = 'meeting_booked' and meeting_at <= now() for update")
+            .bind(lead.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+    let Some(missed_at) = missed_at else {
+        return Err(AppError::Conflict("Only a booked meeting whose time has come can be missed".into()));
+    };
+    let moved: Lead = sqlx::query_as("update leads set status = 'hot', meeting_at = null where id = $1 returning *").bind(lead.id).fetch_one(&mut *tx).await?;
+    let input = json!({ "lead_id": lead.id, "missed_at": missed_at });
+    agent::enqueue(&mut *tx, agent::kind::NO_SHOW, Some(lead.project_id), Some(auth.org_id), input).await?;
+    tx.commit().await?;
+    crate::hooks::announce_no_show(&state, &moved);
+    Ok(Json(detail(&state.db, moved).await?))
 }
 
 #[derive(Deserialize)]

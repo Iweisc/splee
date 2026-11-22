@@ -1694,8 +1694,8 @@ export interface EmailMessage {
   segment_id: UUID | null;
   mailbox_id: UUID | null;
   direction: "outbound" | "inbound";
-  /** meeting_follow_up and call_follow_up are the emails the agent drafts after a sales meeting or call. */
-  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "call_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask" | "feature_shipped";
+  /** meeting_follow_up, call_follow_up and no_show_follow_up are the emails the agent drafts after a sales meeting, a call or a missed one. */
+  kind: "initial" | "follow_up" | "auto_reply" | "manual_reply" | "inbound" | "meeting_follow_up" | "call_follow_up" | "no_show_follow_up" | "deal_nudge" | "win_back" | "expansion" | "referral_ask" | "retention" | "story_ask" | "feature_shipped";
   step: number;
   subject: string;
   body: string;
@@ -2418,7 +2418,8 @@ export type RunKind =
   | "practice"
   | "one_on_one"
   | "renewal"
-  | "playbook";
+  | "playbook"
+  | "no_show_follow_up";
 
 export interface TumblrBlog {
   name: string;

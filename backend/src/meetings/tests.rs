@@ -780,3 +780,82 @@ async fn the_api_and_mcp_list_a_leads_meetings_for_the_keys_organization(db: PgP
     let (error, _) = mcp(json!({ "lead_id": s.beta_sarah })).await;
     assert!(error, "another organization's lead");
 }
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn a_missed_meeting_puts_the_lead_back_and_drafts_an_offer_of_another_time(db: PgPool) {
+    let s = Seeded::start(db).await;
+    sqlx::query(
+        "insert into project_settings (project_id, booking_link, timezone, sender_name) values ($1, 'https://cal.example/jo', 'Europe/London', 'Jo')
+         on conflict (project_id) do update set booking_link = excluded.booking_link, timezone = excluded.timezone, sender_name = excluded.sender_name",
+    )
+    .bind(s.project)
+    .execute(s.db())
+    .await
+    .unwrap();
+    let crm = CrmFake::start().await;
+    connect_fake(&s.state, &crm, s.project, Crm::Zoho, LIVE, "good", 3600).await;
+    let book = |lead: Uuid, minutes: i32| {
+        sqlx::query("update leads set status = 'meeting_booked', meeting_at = now() + make_interval(mins => $2) where id = $1").bind(lead).bind(minutes)
+    };
+    let seeded = &s;
+    let no_show = move |lead: Uuid, session: &'static str| async move {
+        seeded.call(session, Method::POST, &format!("/leads/{lead}/no-show"), json!({})).await
+    };
+
+    // A meeting still to come can't be missed, and Beta can't mark Acme's lead.
+    book(s.sarah, 60).execute(s.db()).await.unwrap();
+    assert_eq!(no_show(s.sarah, "acme").await.0, 409);
+    book(s.sarah, -30).execute(s.db()).await.unwrap();
+    assert_eq!(no_show(s.sarah, "beta").await.0, 404);
+
+    // Sarah goes back to Hot without the old time, once, and one email is queued. A move that lands while she's being
+    // marked decides which meeting she missed.
+    let mut moving = s.db().begin().await.unwrap();
+    let missed_at: DateTime<Utc> = sqlx::query_scalar("update leads set meeting_at = now() - interval '10 minutes' where id = $1 returning meeting_at")
+        .bind(s.sarah)
+        .fetch_one(&mut *moving)
+        .await
+        .unwrap();
+    let ((code, lead), ()) = tokio::join!(no_show(s.sarah, "acme"), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        moving.commit().await.unwrap();
+    });
+    assert_eq!((code, lead["status"].as_str(), &lead["meeting_at"]), (200, Some("hot"), &Value::Null), "{lead}");
+    assert_eq!(no_show(s.sarah, "acme").await.0, 409, "a second click finds it done");
+    let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'no_show_follow_up'").fetch_all(s.db()).await.unwrap();
+    assert_eq!(runs, [json!({ "lead_id": s.sarah, "missed_at": missed_at })]);
+
+    // The CRM hears about it in the background.
+    let link = format!("{}/app/p/{}/inbox?lead={}", s.state.cfg.public_url, s.project, s.sarah);
+    let note = || crm.records("zoho:Note").iter().map(|n| n["Note_Content"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    for _ in 0..50 {
+        if !note().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(note(), [format!("Missed the meeting they booked.\n{link}\n\nDeal in Splee: Interested, 0 USD")]);
+
+    // The email offers the booking link, waits for approval with the drafts, and goes in Sarah's thread.
+    let (outcome, prompt) = crate::agent::no_shows::tests::run(&s.state, s.sarah, ("Another time?", "Hi Sarah, sorry we missed each other.")).await;
+    assert_eq!(outcome.message, "Drafted an email offering another time");
+    let day = missed_at.with_timezone(&chrono_tz::Europe::London).format("%A %-d %B").to_string();
+    assert!(prompt.contains(&format!("booked a call with Fieldnote for {day} and didn't join it")), "{prompt}");
+    assert!(prompt.contains("the booking link https://cal.example/jo on its own line") && prompt.contains("to Sarah from Jo at Fieldnote"), "{prompt}");
+    let (_, drafts) = s.call("acme", Method::GET, &format!("/emails?project_id={}&status=draft", s.project), json!({})).await;
+    let draft = &drafts["items"][0];
+    assert_eq!((draft["kind"].as_str(), draft["subject"].as_str()), (Some("no_show_follow_up"), Some("Re: Quick idea")), "{drafts}");
+    assert_eq!(draft["body"], "Hi Sarah, sorry we missed each other.\n\nJo");
+    assert_eq!(draft["mailbox_id"].as_str(), Some(s.mailbox.to_string().as_str()));
+
+    // Tom missed his too, then unsubscribed before the email was written, so he gets none.
+    book(s.tom, -5).execute(s.db()).await.unwrap();
+    assert_eq!(no_show(s.tom, "acme").await.0, 200);
+    sqlx::query("update leads set status = 'unsubscribed' where id = $1").bind(s.tom).execute(s.db()).await.unwrap();
+    let (outcome, _) = crate::agent::no_shows::tests::run(&s.state, s.tom, ("Another time?", "Hi Tom.")).await;
+    assert_eq!(outcome.message, "No email: the lead has no address or asked not to be contacted");
+    let toms = sqlx::query_scalar::<_, i64>("select count(*) from email_messages where lead_id = $1 and kind = 'no_show_follow_up'").bind(s.tom);
+    assert_eq!(toms.fetch_one(s.db()).await.unwrap(), 0);
+}
