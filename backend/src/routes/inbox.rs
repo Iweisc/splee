@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, TimeZone, Utc, Weekday};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::FromRow;
@@ -207,6 +208,46 @@ struct Thread {
     draft_run: Option<Uuid>,
     /// Who a reply copies in unless you change it. See reply_all_cc.
     reply_cc: Vec<String>,
+    /// The time Send later offers first.
+    send_later: SendLater,
+}
+
+/// 08:00 on the next weekday in the lead's time zone, from their number or country, else in the project's, the one sequence
+/// emails keep to then too.
+#[derive(Serialize)]
+struct SendLater {
+    at: Ts,
+    time_zone: String,
+    /// The time zone is the lead's.
+    theirs: bool,
+}
+
+const SEND_LATER_HOUR: u32 = 8;
+/// How far ahead a reply can wait. Further out, what it answers has gone stale.
+const SEND_LATER_DAYS: i64 = 30;
+
+/// The first weekday SEND_LATER_HOUR in `tz` after `now`.
+fn next_morning(tz: Tz, now: Ts) -> Ts {
+    let today = now.with_timezone(&tz).date_naive();
+    (0..10)
+        .map(|d| today + Duration::days(d))
+        .filter(|day| !matches!(day.weekday(), Weekday::Sat | Weekday::Sun))
+        .filter_map(|day| tz.from_local_datetime(&day.and_hms_opt(SEND_LATER_HOUR, 0, 0)?).earliest())
+        .map(|at| at.with_timezone(&Utc))
+        .find(|at| *at > now)
+        .expect("a weekday morning comes within 10 days")
+}
+
+async fn send_later(db: &sqlx::PgPool, lead: &Lead) -> sqlx::Result<SendLater> {
+    let (tz, theirs) = match crate::phone::time_zone(&lead.phone, &lead.country_code) {
+        Some(tz) => (tz, true),
+        None => {
+            let project: Option<String> =
+                sqlx::query_scalar("select timezone from project_settings where project_id = $1").bind(lead.project_id).fetch_optional(db).await?;
+            (project.and_then(|z| z.parse().ok()).unwrap_or(Tz::UTC), false)
+        }
+    };
+    Ok(SendLater { at: next_morning(tz, Utc::now()), time_zone: tz.name().to_string(), theirs })
 }
 
 /// An email with its files, without their bytes.
@@ -229,9 +270,10 @@ async fn thread(State(state): State<AppState>, auth: Auth, Path(lead_id): Path<U
         Some(inbound) => reply_all_cc(&state.db, auth.org_id, &lead, &inbound).await?,
         None => vec![],
     };
+    let send_later = send_later(&state.db, &lead).await?;
     let lead = leads::detail(&state.db, lead).await?;
     let messages = with_attachments(&state.db, lead.emails.clone()).await?;
-    Ok(Json(Thread { messages, lead, draft_run, reply_cc }))
+    Ok(Json(Thread { messages, lead, draft_run, reply_cc, send_later }))
 }
 
 async fn last_inbound(db: &sqlx::PgPool, lead_id: Uuid) -> sqlx::Result<Option<EmailMessage>> {
@@ -309,6 +351,8 @@ pub(crate) struct ReplyExtras {
     pub reply_all: Option<bool>,
     #[serde(default)]
     pub attachment_ids: Vec<Uuid>,
+    /// Sends it then instead of right away, within SEND_LATER_DAYS. Until then it can be cancelled like any scheduled email.
+    pub send_at: Option<Ts>,
 }
 
 async fn reply(
@@ -326,6 +370,10 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     let text = text.trim();
     if text.is_empty() {
         return Err(AppError::BadRequest("Write a reply first".into()));
+    }
+    let now = Utc::now();
+    if extras.send_at.is_some_and(|at| at <= now || at > now + Duration::days(SEND_LATER_DAYS)) {
+        return Err(AppError::BadRequest(format!("Pick a time to send it in the next {SEND_LATER_DAYS} days")));
     }
     let inbound = last_inbound(db, lead.id).await?.ok_or_else(|| AppError::BadRequest("This lead hasn't replied yet".into()))?;
 
@@ -347,7 +395,7 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     let message = sqlx::query_as::<_, EmailMessage>(
         "insert into email_messages
            (project_id, lead_id, segment_id, mailbox_id, direction, kind, subject, body, status, scheduled_for, in_reply_to, to_email, cc_emails)
-         values ($1, $2, $3, $4, 'outbound', 'manual_reply', $5, $6, 'scheduled', now(), $7, $8, $9)
+         values ($1, $2, $3, $4, 'outbound', 'manual_reply', $5, $6, 'scheduled', coalesce($10, now()), $7, $8, $9)
          returning *",
     )
     .bind(lead.project_id)
@@ -359,6 +407,7 @@ pub(crate) async fn send_reply(db: &sqlx::PgPool, org_id: Uuid, lead_id: Uuid, t
     .bind(inbound.message_id)
     .bind(to_email)
     .bind(&cc)
+    .bind(extras.send_at)
     .fetch_one(&mut *tx)
     .await?;
     // In the same transaction, so the sender never sees the reply without its files.
@@ -545,7 +594,10 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{ApproveBody, ReplyExtras, approve_reply, reply_all_cc, send_reply, threads};
+    use chrono::{Duration, Utc};
+    use chrono_tz::Tz;
+
+    use super::{ApproveBody, ReplyExtras, approve_reply, next_morning, reply_all_cc, send_later, send_reply, threads};
     use crate::error::AppError;
     use crate::models::{EmailMessage, Lead};
 
@@ -554,6 +606,76 @@ mod tests {
             Err(AppError::BadRequest(why)) => why,
             other => panic!("expected a 400, got {:?}", other.map(|m| m.id)),
         }
+    }
+
+    #[test]
+    fn send_later_offers_the_next_weekday_morning() {
+        let at = |s: &str| s.parse::<crate::models::Ts>().unwrap();
+        let london: Tz = "Europe/London".parse().unwrap();
+        // Wednesday 25 November 2026: before 8:00 it's that morning, after it the next one. Friday afternoon waits for Monday.
+        assert_eq!(next_morning(london, at("2026-11-25T07:30:00Z")), at("2026-11-25T08:00:00Z"));
+        assert_eq!(next_morning(london, at("2026-11-25T08:00:00Z")), at("2026-11-26T08:00:00Z"));
+        assert_eq!(next_morning(london, at("2026-11-27T15:00:00Z")), at("2026-11-30T08:00:00Z"));
+        assert_eq!(next_morning(london, at("2026-11-28T09:00:00Z")), at("2026-11-30T08:00:00Z"));
+        // In New York it's 8:00 there, 13:00 UTC in winter, and summer time moves it.
+        let new_york: Tz = "America/New_York".parse().unwrap();
+        assert_eq!(next_morning(new_york, at("2026-11-25T12:00:00Z")), at("2026-11-25T13:00:00Z"));
+        assert_eq!(next_morning(new_york, at("2026-07-01T12:30:00Z")), at("2026-07-02T12:00:00Z"));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_can_wait_until_a_time_within_30_days(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id, timezone) values ($1, 'America/Chicago')").bind(project).execute(&db).await.unwrap();
+        let lead = |email: &'static str, phone: &'static str| {
+            sqlx::query_as::<_, Lead>("insert into leads (project_id, email, phone, status) values ($1, $2, $3, 'replied') returning *")
+                .bind(project)
+                .bind(email)
+                .bind(phone)
+                .fetch_one(&db)
+        };
+        let (sam, kim) = (lead("sam@beta.test", "+447700900123").await.unwrap(), lead("kim@beta.test", "").await.unwrap());
+        sqlx::query(
+            "insert into email_messages (project_id, lead_id, direction, kind, status, subject, message_id, from_email)
+             values ($1, $2, 'inbound', 'inbound', 'received', 'Pricing?', 'r1@beta.test', 'sam@beta.test')",
+        )
+        .bind(project)
+        .bind(sam.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Send later offers 8:00 their time from Sam's UK number, and the project's time zone for Kim, who has no number.
+        let offered = send_later(&db, &sam).await.unwrap();
+        assert_eq!((offered.time_zone.as_str(), offered.theirs), ("Europe/London", true));
+        assert_eq!(offered.at, next_morning("Europe/London".parse().unwrap(), Utc::now()));
+        let offered = send_later(&db, &kim).await.unwrap();
+        assert_eq!((offered.time_zone.as_str(), offered.theirs), ("America/Chicago", false));
+
+        let reply = |send_at: Option<crate::models::Ts>| {
+            let db = db.clone();
+            async move { send_reply(&db, org, sam.id, "Here's the pricing.", &ReplyExtras { send_at, ..Default::default() }).await }
+        };
+        let at = Utc::now() + Duration::days(2);
+        let later = reply(Some(at)).await.unwrap();
+        assert_eq!((later.status.as_str(), later.scheduled_for.map(|s| s.timestamp_micros())), ("scheduled", Some(at.timestamp_micros())));
+        let now = reply(None).await.unwrap();
+        assert!(now.scheduled_for.unwrap() <= Utc::now());
+        assert!(refused(reply(Some(Utc::now() - Duration::minutes(1))).await).contains("in the next 30 days"));
+        assert!(refused(reply(Some(Utc::now() + Duration::days(31))).await).contains("in the next 30 days"));
+
+        // Cancelled before it goes, it stays. Once the sender has taken a reply, it can't be cancelled.
+        let cancel = |id: Uuid| {
+            let body = crate::routes::emails::UpdateBody { status: Some("cancelled".into()), ..Default::default() };
+            crate::routes::emails::update_one(&db, org, id, body)
+        };
+        assert_eq!(cancel(later.id).await.unwrap().email.status, "cancelled");
+        sqlx::query("update email_messages set status = 'sending' where id = $1").bind(now.id).execute(&db).await.unwrap();
+        assert!(cancel(now.id).await.is_err());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

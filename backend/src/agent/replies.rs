@@ -315,10 +315,13 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let subject = if t.inbound.subject.to_lowercase().starts_with("re:") { t.inbound.subject.clone() } else { format!("Re: {}", t.inbound.subject) };
     let auto = mode == "auto" && !manual;
     // Writing takes a few seconds. If someone answered the lead by hand meanwhile, this draft would be a second answer.
-    // The lead lock makes this check and the manual reply's cancelling of drafts take turns.
+    // The lead lock makes this check and the manual reply's cancelling of drafts take turns. A reply cancelled before it went,
+    // like one sent later, answered nothing.
     let mut tx = ctx.db().begin().await?;
     sqlx::query("select 1 from leads where id = $1 for update").bind(t.lead.id).execute(&mut *tx).await?;
-    let answered: bool = sqlx::query_scalar("select exists (select 1 from email_messages where lead_id = $1 and kind = 'manual_reply' and created_at >= $2)")
+    let answered: bool = sqlx::query_scalar(
+        "select exists (select 1 from email_messages where lead_id = $1 and kind = 'manual_reply' and status <> 'cancelled' and created_at >= $2)",
+    )
         .bind(t.lead.id)
         .bind(ctx.run.created_at)
         .fetch_one(&mut *tx)
@@ -422,6 +425,33 @@ mod tests {
         let drafts: Vec<String> =
             sqlx::query_scalar("select language from email_messages where kind = 'auto_reply' order by created_at").fetch_all(&db).await.unwrap();
         assert_eq!(drafts, ["fr", "de"]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_by_hand_meanwhile_stops_the_draft_unless_it_was_cancelled(db: PgPool) {
+        let c = seed(&db, 0).await;
+        let lead = add_leads(&db, &c, 1).await.remove(0);
+        let asked = reply(&db, c.project, lead.id, "Can you send pricing?").await;
+        let by_hand = |status: &'static str| {
+            sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, status, subject, body) values ($1, $2, 'outbound', 'manual_reply', $3, 'Re', 'Hi')")
+                .bind(c.project)
+                .bind(lead.id)
+                .bind(status)
+                .execute(&db)
+        };
+
+        // A reply sent later and then cancelled went nowhere, so the draft is still written.
+        let ctx = run(&db, c.project, "draft_reply", asked, json!({ "body": "Hi Anna, here's our pricing." })).await;
+        by_hand("cancelled").await.unwrap();
+        assert_eq!(draft_run(&ctx).await.unwrap().message, "Reply drafted for approval");
+
+        // One still waiting to go answers them.
+        let again = reply(&db, c.project, lead.id, "And a case study?").await;
+        let ctx = run(&db, c.project, "draft_reply", again, json!({ "body": "Hi Anna, here's one." })).await;
+        by_hand("scheduled").await.unwrap();
+        assert_eq!(draft_run(&ctx).await.unwrap().message, "Not drafted: the lead was answered by hand meanwhile");
     }
 
     #[sqlx::test]

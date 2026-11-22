@@ -2,7 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bell, CalendarCheck, Check, FileText, Flame, Inbox, MessageSquareText, Paperclip, Pencil, Search, Send, Sparkles, ThumbsDown, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Bell,
+  CalendarCheck,
+  Check,
+  Clock,
+  FileText,
+  Flame,
+  Inbox,
+  MessageSquareText,
+  Paperclip,
+  Pencil,
+  Search,
+  Send,
+  Sparkles,
+  ThumbsDown,
+  X,
+} from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, buttonClass } from "@/components/ui/button";
@@ -334,10 +351,13 @@ function ThreadSkeleton() {
 /** `onDone` runs when e marks the thread done, to move on to the next one. */
 function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) {
   const { mutate: mutateAll } = useSWRConfig();
-  const { data, error, mutate } = useSWR<{ lead: LeadDetail; messages: ThreadMessage[]; draft_run: string | null; reply_cc: string[] }>(
-    `/inbox/threads/${leadId}`,
-    fetcher,
-  );
+  const { data, error, mutate } = useSWR<{
+    lead: LeadDetail;
+    messages: ThreadMessage[];
+    draft_run: string | null;
+    reply_cc: string[];
+    send_later: SendLaterOffer;
+  }>(`/inbox/threads/${leadId}`, fetcher);
   // An unsent reply stays with its lead in this tab, so opening another thread or leaving the inbox doesn't throw it away.
   const draftKey = `splee:reply:${leadId}`;
   const [reply, setReply] = useState(() => (typeof window === "undefined" ? "" : (sessionStorage.getItem(draftKey) ?? "")));
@@ -354,6 +374,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const [draftRun, setDraftRun] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [pickingSend, setPickingSend] = useState(false);
   const refresh = () => mutateAll((k) => typeof k === "string" && (k.startsWith("/inbox") || k.includes("/leads")));
 
   // A run started before this thread was opened, by the button or by a reply coming in, is picked up from the thread.
@@ -472,21 +493,23 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
   const canDraft = !byText && !pendingDraft && !activeRun && messages.some((m) => m.direction === "inbound" && m.classification !== "bounce");
 
   const canSend = !!reply.trim() && !uploads.uploading && !sending;
-  const send = async () => {
+  /** `at` sends an email reply then instead of right away. */
+  const send = async (at?: string) => {
     if (!canSend) return;
     setSending(true);
     try {
       const body = byText
         ? { body: reply.trim() }
-        : { body: reply.trim(), cc_emails: cc, attachment_ids: uploads.files.flatMap((f) => (f.id ? [f.id] : [])) };
+        : { body: reply.trim(), cc_emails: cc, attachment_ids: uploads.files.flatMap((f) => (f.id ? [f.id] : [])), send_at: at };
       await api(`/inbox/threads/${leadId}/${byText ? "text" : "reply"}`, { body });
       // Cleared here too: if you opened another thread while it sent, this pane is gone and its effect won't run.
       sessionStorage.removeItem(draftKey);
       setReply("");
       setCc(null);
       uploads.clear();
+      setPickingSend(false);
       await refresh();
-      toast.success("Reply queued");
+      toast.success(at ? `Reply scheduled for ${dateTime(at)}` : "Reply queued");
     } catch (e) {
       toastError(e);
     } finally {
@@ -586,7 +609,26 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
           )}
         </div>
       </div>
-      {picking && <ReminderPicker current={lead.remind_at} onPick={(at) => remind({ at })} onClose={() => setPicking(false)} />}
+      {picking && (
+        <TimePicker
+          title="Remind me"
+          action="Set reminder"
+          initial={lead.remind_at && !isPast(lead.remind_at) ? new Date(lead.remind_at) : tomorrowMorning()}
+          days={365}
+          onPick={(at) => remind({ at })}
+          onClose={() => setPicking(false)}
+        />
+      )}
+      {pickingSend && (
+        <TimePicker
+          title="Send later"
+          action="Schedule reply"
+          initial={new Date(data.send_later.at)}
+          days={SEND_LATER_DAYS}
+          onPick={(at) => send(at)}
+          onClose={() => setPickingSend(false)}
+        />
+      )}
       <div className="border-b border-border px-5 py-2">
         <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
@@ -601,7 +643,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       >
         {conversation.map((m) =>
           "direction" in m ? (
-            <Bubble key={m.id} message={m} />
+            <Bubble key={m.id} message={m} onChange={refresh} />
           ) : "outcome" in m ? (
             <li key={m.id} className="w-[min(80%,36rem)] self-end">
               <CallCard call={m} />
@@ -630,7 +672,8 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
       )}
       {/* The buttons drop their labels when the row is narrow, not just on phones: on a tablet or small laptop the thread
           sits beside the list, and the labels squeezed the reply box to a third of the row. On a small phone even the icons
-          left it 100px wide, so there the box takes the whole row and the buttons go under it. */}
+          left it 100px wide, and with Send later too a 390px phone left it 130px, so up to 24rem the box takes the whole row and the
+          buttons go under it. */}
       <div className={cn("@container flex flex-wrap items-end justify-end gap-2 p-3", byText ? "border-t border-border" : "pt-2")}>
         {/* Grows with the reply from two lines up to eight whole lines, then scrolls. 1.125rem is the padding plus border. */}
         <Textarea
@@ -645,7 +688,7 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             if (e.key === "Escape") e.currentTarget.blur();
           }}
           placeholder={`${byText === "whatsapp" ? "Reply on WhatsApp to" : byText ? "Text" : "Reply to"} ${lead.first_name || lead.full_name || "lead"}…`}
-          className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @xs:flex-1"
+          className="max-h-[calc(8lh+1.125rem)] min-h-[calc(2lh+1.125rem)] resize-none field-sizing-content @sm:flex-1"
         />
         <SavedReplyMenu
           lead={lead}
@@ -660,7 +703,8 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
             <Sparkles className="size-4" /> <span className="@max-lg:hidden">Draft reply</span>
           </Button>
         )}
-        <Button onClick={send} loading={sending} disabled={!canSend} aria-label="Send reply">
+        {!byText && <SendLaterMenu offer={data.send_later} disabled={!canSend} onPick={(at) => (at ? send(at) : setPickingSend(true))} />}
+        <Button onClick={() => send()} loading={sending} disabled={!canSend} aria-label="Send reply">
           <Send className="size-4" /> <span className="@max-lg:hidden">Send</span>
         </Button>
       </div>
@@ -710,28 +754,96 @@ function SavedReplyMenu({ lead, onPick }: { lead: Lead; onPick: (text: string) =
   );
 }
 
+/** How far ahead a reply can wait, as SEND_LATER_DAYS in routes/inbox.rs. */
+const SEND_LATER_DAYS = 30;
+
+/** The time Send later offers first: 8:00 on the next weekday in the lead's time zone, or the project's. */
+type SendLaterOffer = { at: string; time_zone: string; theirs: boolean };
+
+/** "Tomorrow at 8:00 AM their time", or the weekday when it's further, read in the offer's time zone. */
+function offerLabel({ at, time_zone, theirs }: SendLaterOffer) {
+  const day = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: time_zone });
+  const when = new Date(at);
+  const now = new Date();
+  const name =
+    day(when) === day(now)
+      ? "Today"
+      : day(when) === day(new Date(now.getTime() + 86_400_000))
+        ? "Tomorrow"
+        : when.toLocaleDateString("en-US", { timeZone: time_zone, weekday: "long" });
+  const time = when.toLocaleTimeString("en-US", { timeZone: time_zone, hour: "numeric", minute: "2-digit" });
+  const zone = theirs ? "their time" : `${time_zone.split("/").pop()?.replaceAll("_", " ")} time`;
+  return `${name} at ${time} ${zone}`;
+}
+
+/** A clock button that opens a native menu like the saved replies: the offered time, or a picker for another. */
+function SendLaterMenu({ offer, disabled, onPick }: { offer: SendLaterOffer; disabled: boolean; onPick: (at: string | null) => void }) {
+  return (
+    <label
+      title="Send later"
+      className={buttonClass(
+        "outline",
+        "md",
+        "relative shrink-0 px-3 has-[select:disabled]:opacity-50 has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-brand-600",
+      )}
+    >
+      <Clock className="size-4" />
+      <select
+        aria-label="Send later"
+        value=""
+        disabled={disabled}
+        onChange={(e) => onPick(e.target.value === "pick" ? null : e.target.value)}
+        className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-default"
+      >
+        <option value="" disabled>
+          Send later
+        </option>
+        <option value={offer.at}>{offerLabel(offer)}</option>
+        <option value="pick">Pick a date and time…</option>
+      </select>
+    </label>
+  );
+}
+
 /** A Date as a datetime-local input's value, in the browser's time zone. */
 function localInput(d: Date) {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
-/** Picks an exact reminder time. It starts on the current reminder, or tomorrow at 9 in the morning. */
-function ReminderPicker({ current, onPick, onClose }: { current: string | null; onPick: (at: string) => Promise<void>; onClose: () => void }) {
-  const [value, setValue] = useState(() => {
-    if (current && !isPast(current)) return localInput(new Date(current));
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    return localInput(tomorrow);
-  });
+/** Tomorrow at 9 in the morning, where a reminder's picker starts without one set. */
+function tomorrowMorning() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(9, 0, 0, 0);
+  return tomorrow;
+}
+
+/** Picks an exact time in the next `days`, for a reminder or a reply sent later. It starts on `initial`. */
+function TimePicker({
+  title,
+  action,
+  initial,
+  days,
+  onPick,
+  onClose,
+}: {
+  title: string;
+  action: string;
+  initial: Date;
+  days: number;
+  onPick: (at: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(() => localInput(initial));
   const [saving, setSaving] = useState(false);
   const [left, setLeft] = useState(false);
   // When the picker opened. The server turns away a time that has passed since.
   const [now] = useState(() => Date.now());
   const at = value ? new Date(value) : null;
-  const valid = !!at && !Number.isNaN(at.getTime()) && at.getTime() > now;
+  const latest = now + days * 86_400_000;
+  const valid = !!at && !Number.isNaN(at.getTime()) && at.getTime() > now && at.getTime() <= latest;
   return (
-    <Modal open onClose={onClose} title="Remind me" className="max-w-sm">
+    <Modal open onClose={onClose} title={title} className="max-w-sm">
       <form
         className="grid gap-4"
         onSubmit={async (e) => {
@@ -743,11 +855,12 @@ function ReminderPicker({ current, onPick, onClose }: { current: string | null; 
         }}
       >
         {/* Only after leaving the field: typing a date passes through past ones, like 01/10 on the way to 11/10. */}
-        <Field label="When" error={left && !valid ? "Pick a time in the future" : null}>
+        <Field label="When" error={left && !valid ? `Pick a time in the next ${days} days` : null}>
           <Input
             type="datetime-local"
             value={value}
             min={localInput(new Date(now))}
+            max={localInput(new Date(latest))}
             onChange={(e) => setValue(e.target.value)}
             onBlur={() => setLeft(true)}
             required
@@ -758,7 +871,7 @@ function ReminderPicker({ current, onPick, onClose }: { current: string | null; 
             Cancel
           </Button>
           <Button type="submit" disabled={!valid} loading={saving}>
-            Set reminder
+            {action}
           </Button>
         </div>
       </form>
@@ -802,8 +915,22 @@ function TextBubble({ text: t }: { text: TextMessage }) {
   );
 }
 
-function Bubble({ message: m }: { message: ThreadMessage }) {
+function Bubble({ message: m, onChange }: { message: ThreadMessage; onChange: () => Promise<unknown> }) {
   const inbound = m.direction === "inbound";
+  // A reply sent later, still waiting. One sent right away is scheduled for now and goes within the minute.
+  const waiting = !inbound && m.status === "scheduled" && !!m.scheduled_for && !isPast(m.scheduled_for);
+  const [cancelling, setCancelling] = useState(false);
+  const cancel = async () => {
+    setCancelling(true);
+    try {
+      await api(`/emails/${m.id}`, { method: "PATCH", body: { status: "cancelled" } });
+      await onChange();
+      toast.success("Scheduled reply cancelled");
+    } catch (e) {
+      toastError(e);
+      setCancelling(false);
+    }
+  };
   return (
     // 36rem caps a line at about 85 characters. At 80% alone, a wide screen ran lines to 150 and more.
     <li className={cn("flex max-w-[min(80%,36rem)] flex-col gap-1", inbound ? "self-start" : "self-end items-end")}>
@@ -820,6 +947,11 @@ function Bubble({ message: m }: { message: ThreadMessage }) {
         {!inbound && m.kind === "auto_reply" && "Auto-reply · "}
         {!inbound && m.status !== "sent" && <EmailStatusBadge status={m.status} />}
         {dateTime(m.sent_at ?? m.scheduled_for ?? m.created_at)}
+        {waiting && (
+          <button onClick={cancel} disabled={cancelling} className="font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60">
+            Cancel
+          </button>
+        )}
       </span>
     </li>
   );
