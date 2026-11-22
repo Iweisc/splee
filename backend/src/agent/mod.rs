@@ -34,6 +34,7 @@ mod mastodon;
 pub(crate) mod meetings;
 mod meta;
 mod nostr;
+pub mod no_shows;
 pub mod nudges;
 pub mod proposals;
 pub mod qualify;
@@ -129,6 +130,7 @@ pub mod kind {
     pub const BUSINESS_CASE: &str = "business_case";
     pub const QUESTIONNAIRE: &str = "questionnaire";
     pub const HANDOFF: &str = "handoff";
+    pub const NO_SHOW: &str = "no_show_follow_up";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -406,6 +408,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::WRITE_TEXTS => write::texts_run(ctx).await,
         kind::SUMMARIZE_CALL => calls::summarize_run(ctx).await,
         kind::MEETING_NOTES => meetings::notes_run(ctx).await,
+        kind::NO_SHOW => no_shows::follow_up_run(ctx).await,
         kind::RESEARCH_COMPANIES => research::run(ctx).await,
         kind::MEETING_BRIEF => briefs::run(ctx).await,
         kind::CAMPAIGN_INSIGHTS => insights::run(ctx).await,
