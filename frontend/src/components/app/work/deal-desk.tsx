@@ -4,7 +4,7 @@ import { useState } from "react";
 import { BadgeCheck, Loader2, Pencil, Plus, ShieldAlert, Trash2 } from "lucide-react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
-import { Input, NumberInput, Select, Textarea } from "@/components/ui/form";
+import { Input, NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Badge } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
@@ -269,33 +269,38 @@ export function PriceListSection({ admin }: { admin: boolean }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-sm leading-9 text-pretty">
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={data.discount_limit_pct !== null}
-            disabled={!admin || saving}
-            onChange={(e) => setLimit(e.target.checked)}
-          />
-          Proposals more than
-        </label>{" "}
-        <NumberInput
-          min={0}
-          max={100}
-          step={1}
-          value={limit ?? data.discount_limit_pct ?? 15}
-          disabled={!admin || data.discount_limit_pct === null}
-          onValueChange={setLimitDraft}
-          className="inline-block h-8 w-16 align-middle"
-          aria-label="Discount limit in percent"
-        />
-        % off the price list need an owner or admin&apos;s approval before the buyer can accept.{" "}
-        {limit !== null && limit !== data.discount_limit_pct && (
-          <Button type="button" size="sm" loading={saving} onClick={async () => (await setLimit(true, limit)) && setLimitDraft(null)}>
-            Save
-          </Button>
+      <div className="flex flex-col gap-3 text-sm">
+        <div className="flex items-start justify-between gap-4">
+          <span>
+            <span className="block font-medium">Approve big discounts</span>
+            <span className="block text-pretty text-muted-foreground">
+              A discount past the limit needs an owner or admin&apos;s approval before the buyer can accept.
+            </span>
+          </span>
+          <Switch checked={data.discount_limit_pct !== null} disabled={!admin || saving} onChange={(on) => setLimit(on)} label="Approve big discounts" />
+        </div>
+        {data.discount_limit_pct !== null && (
+          <div className="flex flex-wrap items-center gap-2">
+            More than
+            <NumberInput
+              min={0}
+              max={100}
+              step={1}
+              value={limit ?? data.discount_limit_pct}
+              disabled={!admin}
+              onValueChange={setLimitDraft}
+              className="w-20"
+              aria-label="Discount limit in percent"
+            />
+            % off
+            {limit !== null && limit !== data.discount_limit_pct && (
+              <Button type="button" size="sm" loading={saving} onClick={async () => (await setLimit(true, limit)) && setLimitDraft(null)}>
+                Save
+              </Button>
+            )}
+          </div>
         )}
-      </p>
+      </div>
       {data.products.length > 0 ? (
         <ul className="divide-y divide-border rounded-xl border border-border text-sm">
           {data.products.map((p) => (
