@@ -73,12 +73,11 @@ export default function AssignmentPage() {
 
 type Update = (patch: Partial<ProjectSettings>) => void;
 
-/** Each member and the countries they cover. Saving drops the territories of people who left the team, which the backend
- *  would refuse. */
+/** Each member and the countries they cover. Saving drops the territory of someone who left the team. */
 function Territories({ settings: s, update }: { settings: ProjectSettings; update: Update }) {
   const members = useMembers();
   const set = (owner: string, countries: string[]) => {
-    const others = s.assign_territories.filter((t) => t.owner !== owner && members?.some((m) => m.user_id === t.owner));
+    const others = s.assign_territories.filter((t) => t.owner !== owner);
     // A country moves to whoever was given it last, since it can only be in one territory.
     const kept = others.map((t) => ({ ...t, countries: t.countries.filter((c) => !countries.includes(c)) })).filter((t) => t.countries.length);
     update({ assign_territories: countries.length ? [...kept, { owner, countries }] : kept });

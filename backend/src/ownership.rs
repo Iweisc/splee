@@ -116,11 +116,44 @@ async fn lead_country(conn: &mut PgConnection, lead_id: Uuid) -> sqlx::Result<Op
     Ok(Some(own.to_ascii_uppercase()).filter(|c| !c.is_empty()).or_else(|| crate::phone::country(&phone).map(str::to_string)))
 }
 
+/// Who the project's settings give leads to now, before a save.
+#[derive(sqlx::FromRow)]
+pub struct Assignment {
+    pub assign_members: Vec<Uuid>,
+    pub assign_territories: Json<Vec<Territory>>,
+}
+
+/// Those among `users` who left the team. Someone who was never on it fails the save. The settings drop someone they named
+/// before who left since, because every settings page sends the whole form back and it would fail otherwise.
+async fn departed(db: &PgPool, org_id: Uuid, users: &[Uuid], saved: &Assignment) -> AppResult<HashSet<Uuid>> {
+    let off: Vec<Uuid> =
+        sqlx::query_scalar("select u from unnest($2::uuid[]) u where not exists (select 1 from memberships m where m.org_id = $1 and m.user_id = u)")
+            .bind(org_id)
+            .bind(users)
+            .fetch_all(db)
+            .await?;
+    let named = |u: &Uuid| saved.assign_members.contains(u) || saved.assign_territories.iter().any(|t| t.owner == *u);
+    if !off.iter().all(named) {
+        return Err(AppError::BadRequest("The owner has to be on your team".into()));
+    }
+    Ok(off.into_iter().collect())
+}
+
+/// Round robin's members as settings save them: on the team, each once, in the order given.
+pub async fn check_members(db: &PgPool, org_id: Uuid, mut members: Vec<Uuid>, saved: &Assignment) -> AppResult<Vec<Uuid>> {
+    let mut seen = HashSet::new();
+    members.retain(|m| seen.insert(*m));
+    let gone = departed(db, org_id, &members, saved).await?;
+    members.retain(|m| !gone.contains(m));
+    Ok(members)
+}
+
 /// Territories as settings save them: codes in upper case, each owner on the team and in one territory, and each country in
 /// one territory, so a lead never has two people who cover it. A territory without countries is dropped.
-pub async fn check_territories(db: &PgPool, org_id: Uuid, territories: Vec<Territory>) -> AppResult<Vec<Territory>> {
+pub async fn check_territories(db: &PgPool, org_id: Uuid, territories: Vec<Territory>, before: &Assignment) -> AppResult<Vec<Territory>> {
+    let gone = departed(db, org_id, &territories.iter().map(|t| t.owner).collect::<Vec<_>>(), before).await?;
     let (mut owners, mut taken, mut saved) = (HashSet::new(), HashSet::new(), vec![]);
-    for t in territories {
+    for t in territories.into_iter().filter(|t| !gone.contains(&t.owner)) {
         let mut countries: Vec<String> = vec![];
         for code in t.countries.iter().map(|c| c.trim().to_ascii_uppercase()).filter(|c| !c.is_empty()) {
             if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()) {
@@ -136,7 +169,6 @@ pub async fn check_territories(db: &PgPool, org_id: Uuid, territories: Vec<Terri
         if !owners.insert(t.owner) {
             return Err(AppError::BadRequest("Give each person one territory, with all their countries in it".into()));
         }
-        check_member(db, org_id, Some(t.owner)).await?;
         if let Some(code) = countries.iter().find(|c| !taken.insert((*c).clone())) {
             return Err(AppError::BadRequest(format!("{code} is in two territories. Give each country to one person")));
         }
@@ -821,5 +853,14 @@ mod tests {
         let (status, _) = api.send("ana", reqwest::Method::DELETE, &format!("/organization/users/{ben}"), None).await;
         assert_eq!(status, 200);
         assert_eq!((t.owner(nobodys).await, t.owner(mine).await), (None, Some(ana)));
+        // The settings still name him, and any settings page sends them back on save, which drops him. Someone who was never
+        // on the team is still refused.
+        let draft = api.get("ana", &settings).await;
+        let resend = json!({ "assign_members": draft["assign_members"], "assign_territories": draft["assign_territories"], "daily_email_limit": 40 });
+        let (status, saved) = api.send("ana", put.clone(), &settings, Some(resend)).await;
+        assert_eq!((status, saved["assign_members"].clone(), saved["assign_territories"].clone()), (200, json!([ana]), json!([])));
+        assert_eq!(api.send("ana", put.clone(), &settings, Some(json!({ "assign_members": [ana, t.eve] }))).await.0, 400);
+        let territory = json!([{ "owner": t.eve, "countries": ["FR"] }]);
+        assert_eq!(api.send("ana", put, &settings, Some(json!({ "assign_territories": territory }))).await.0, 400);
     }
 }
