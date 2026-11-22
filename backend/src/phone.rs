@@ -106,6 +106,30 @@ pub fn country(e164: &str) -> Option<&'static str> {
     known.first().map(|(iso, ..)| *iso)
 }
 
+/// Canada's area codes, which share +1 with the US.
+const CANADA: [&str; 57] = [
+    "204", "226", "236", "249", "250", "257", "263", "289", "306", "343", "354", "365", "367", "368", "382", "387", "403", "416", "418", "428",
+    "431", "437", "438", "450", "460", "468", "474", "506", "514", "519", "548", "579", "581", "584", "587", "604", "613", "639", "647", "672",
+    "683", "705", "709", "742", "753", "778", "780", "782", "807", "819", "825", "867", "873", "879", "902", "905", "942",
+];
+
+/// The rest of +1 outside the US: the Caribbean and the Pacific territories, each under area codes of its own.
+const NANP_ELSEWHERE: [(&str, &str); 27] = [
+    ("242", "BS"), ("246", "BB"), ("264", "AI"), ("268", "AG"), ("284", "VG"), ("340", "VI"), ("345", "KY"), ("441", "BM"), ("473", "GD"),
+    ("649", "TC"), ("658", "JM"), ("664", "MS"), ("670", "MP"), ("671", "GU"), ("684", "AS"), ("721", "SX"), ("758", "LC"), ("767", "DM"),
+    ("784", "VC"), ("787", "PR"), ("809", "DO"), ("829", "DO"), ("849", "DO"), ("868", "TT"), ("869", "KN"), ("876", "JM"), ("939", "PR"),
+];
+
+/// The country of a +1 number by its area code: Canada, a Caribbean or Pacific one, else the US. None for other numbers.
+/// country() keeps reading +1 as the US, since texting rules follow the US there.
+pub fn nanp_country(e164: &str) -> Option<&'static str> {
+    let area = e164.strip_prefix("+1")?.get(..3)?;
+    if CANADA.contains(&area) {
+        return Some("CA");
+    }
+    Some(NANP_ELSEWHERE.iter().find(|(code, _)| *code == area).map_or("US", |(_, iso)| *iso))
+}
+
 /// The lead's time zone, from their number, else their country, when that country keeps one time zone.
 pub fn time_zone(e164: &str, country_code: &str) -> Option<Tz> {
     let zone = |iso: &str| COUNTRIES.iter().find(|(c, ..)| c.eq_ignore_ascii_case(iso)).and_then(|(.., tz)| *tz);
@@ -119,6 +143,17 @@ pub fn needs_stop_line(e164: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plus_one_numbers_belong_to_the_country_of_their_area_code() {
+        assert_eq!(nanp_country("+14155550134"), Some("US"));
+        assert_eq!(nanp_country("+14165550134"), Some("CA"));
+        assert_eq!(nanp_country("+18765550134"), Some("JM"));
+        assert_eq!(nanp_country("+17875550134"), Some("PR"));
+        assert_eq!(nanp_country("+447700900123"), None);
+        assert_eq!(nanp_country("+1"), None);
+        assert_eq!(country("+14165550134"), Some("US"), "texting keeps the US rules");
+    }
 
     #[test]
     fn numbers_come_out_in_e164() {
