@@ -1842,6 +1842,12 @@ export interface CallPrep {
   reminder: string;
 }
 
+/** GET /voicemail: the voicemail you leave in calls from the Calls page. */
+export interface Voicemail {
+  secs: number;
+  created_at: Ts;
+}
+
 /** POST /calls/{id}/dial. */
 export interface DialToken {
   token: string;

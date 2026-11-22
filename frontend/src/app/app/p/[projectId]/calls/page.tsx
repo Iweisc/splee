@@ -2,7 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, Play, SkipForward } from "lucide-react";
+import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, Play, SkipForward, Voicemail } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -10,6 +10,7 @@ import { CallCard, OutcomeForm, clock, likelyOutcome } from "@/components/app/wo
 import { LeadModal } from "@/components/app/work/lead-modal";
 import { TalkTrack, TalkTrackRow } from "@/components/app/work/talk-track";
 import { LoadError, MicroLabel, toastError } from "@/components/app/work/states";
+import { VoicemailCard, useVoicemail } from "@/components/app/work/voicemail";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Avatar, Card, EmptyState, Skeleton } from "@/components/ui/misc";
@@ -30,7 +31,7 @@ const PHONES = [
 type CloudPhone = (typeof PHONES)[number];
 
 /** The call on screen: being placed or on, ended and waiting for its outcome, logged by hand without dialing, or the next one
- *  in a row, which dials itself at `at`. */
+ *  in a row, which dials itself at `at`. `voicemail` is set once they asked to leave theirs in it. */
 type Active = {
   row: CallRow;
   phase: "connecting" | "ringing" | "connected" | "ended" | "log" | "next";
@@ -38,6 +39,7 @@ type Active = {
   ended?: number;
   muted?: boolean;
   at?: number;
+  voicemail?: boolean;
 };
 
 /** The pause after logging a call in a row, to read the next lead's talk track before it rings. */
@@ -65,6 +67,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const [run, setRun] = useState<string[] | null>(null);
   const call = useRef<{ device: VoiceDevice; call?: VoiceCall } | null>(null);
   const calling = !!twilio?.connection?.twiml_app_sid;
+  const { data: voicemail } = useVoicemail();
 
   const hangUp = () => call.current?.call?.disconnect();
   const tearDown = () => {
@@ -99,6 +102,17 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
       tearDown();
       setActive(null);
       setRun(null);
+      toastError(e);
+    }
+  };
+
+  /** Twilio plays it on their side and hangs up, which ends the call here too, so they can log it and move on. */
+  const leaveVoicemail = async (row: CallRow) => {
+    setActive((a) => (a?.row.id === row.id ? { ...a, voicemail: true } : a));
+    try {
+      await api(`/calls/${row.id}/voicemail`, { method: "POST" });
+    } catch (e) {
+      setActive((a) => (a?.row.id === row.id ? { ...a, voicemail: false } : a));
       toastError(e);
     }
   };
@@ -203,6 +217,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
             . You can still log calls you make from your phone.
           </p>
         )}
+        {calling && <VoicemailCard />}
         {error ? (
           <Card>
             <LoadError error={error} retry={() => mutate()} />
@@ -275,6 +290,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
           onLog={(outcome, notes) => log(active.row, outcome, notes)}
           onClose={stop}
           onCallNow={() => callNext(active.row)}
+          onVoicemail={voicemail ? () => leaveVoicemail(active.row) : undefined}
           inRow={!!run}
           more={!!run && queue.some((r) => r.id !== active.row.id && !run.includes(r.id))}
         />
@@ -392,6 +408,7 @@ function CallPanel({
   onLog,
   onClose,
   onCallNow,
+  onVoicemail,
   inRow,
   more,
 }: {
@@ -403,6 +420,8 @@ function CallPanel({
   onLog: (outcome: CallOutcome, notes: string) => Promise<void>;
   onClose: () => void;
   onCallNow: () => void;
+  /** When they recorded a voicemail to leave. */
+  onVoicemail?: () => void;
   /** Calling in a row, where a logged call moves on to the next one. */
   inRow: boolean;
   /** Whether the row has another call after this one. */
@@ -425,8 +444,8 @@ function CallPanel({
   const status = {
     connecting: "Connecting…",
     ringing: "Ringing…",
-    connected: `On the call · ${clock(elapsed)}`,
-    ended: a.started ? `Call ended · ${clock(elapsed)}` : "They didn't pick up",
+    connected: a.voicemail ? "Leaving your voicemail…" : `On the call · ${clock(elapsed)}`,
+    ended: a.voicemail ? "Your voicemail is playing to them" : a.started ? `Call ended · ${clock(elapsed)}` : "They didn't pick up",
     log: "What happened on the call?",
     next: `Logged. Next call in ${Math.min(NEXT_SECS, Math.max(0, Math.ceil(((a.at ?? now) - now) / 1000)))}s`,
   }[a.phase];
@@ -465,6 +484,11 @@ function CallPanel({
           </div>
         ) : on ? (
           <div className="grid grid-cols-2 gap-2">
+            {a.phase === "connected" && onVoicemail && (
+              <Button variant="outline" onClick={onVoicemail} loading={a.voicemail} className="col-span-2">
+                <Voicemail className="size-4" /> Leave your voicemail
+              </Button>
+            )}
             <Button variant="outline" onClick={onMute} disabled={a.phase !== "connected"}>
               {a.muted ? <MicOff className="size-4" /> : <Mic className="size-4" />} {a.muted ? "Unmute" : "Mute"}
             </Button>
@@ -474,7 +498,7 @@ function CallPanel({
           </div>
         ) : (
           <OutcomeForm
-            initial={a.started ? null : likelyOutcome(a.row.call_status) ?? (a.phase === "ended" ? "no_answer" : null)}
+            initial={a.voicemail ? "voicemail" : a.started ? null : likelyOutcome(a.row.call_status) ?? (a.phase === "ended" ? "no_answer" : null)}
             onSave={onLog}
             onCancel={onClose}
             cancelLabel={a.phase === "log" ? "Cancel" : inRow ? "Stop" : "Later"}

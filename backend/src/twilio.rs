@@ -170,6 +170,22 @@ impl Client {
         res.bytes().await.map(|b| b.to_vec()).map_err(|e| Failure::Unanswered(format!("Twilio stopped sending the recording: {}", e.without_url())))
     }
 
+    /// Plays `twiml` to whoever the browser's call `parent` is through to, which takes them off the call, and the browser's
+    /// side ends with it. False when nobody picked up yet.
+    pub async fn play_to_callee(&self, parent: &str, twiml: &str) -> Result<bool, Failure> {
+        let calls = format!("{}/2010-04-01/Accounts/{}/Calls", self.api, self.account_sid);
+        let mut url = reqwest::Url::parse(&format!("{calls}.json")).map_err(|e| Failure::Message(format!("Bad Twilio URL: {e}")))?;
+        url.query_pairs_mut().append_pair("ParentCallSid", parent).append_pair("Status", "in-progress");
+        let found = self.call(self.http.get(url)).await?;
+        let child = found["calls"].as_array().and_then(|c| c.first()).and_then(|c| c["sid"].as_str()).unwrap_or_default();
+        // The SID goes in a path, so only what Twilio's SIDs look like.
+        if !child.starts_with("CA") || !child.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Ok(false);
+        }
+        self.call(self.http.post(format!("{calls}/{child}.json")).form(&[("Twiml", twiml)])).await?;
+        Ok(true)
+    }
+
     /// Sends from the account's SMS sender or WhatsApp number and returns the MessageSid.
     pub async fn send(&self, account: &Account, channel: &str, to: &str, content: &Content<'_>, status_url: &str) -> Result<String, Failure> {
         let mut form = vec![("StatusCallback", status_url.to_string())];
@@ -684,7 +700,7 @@ pub(crate) mod fake {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use axum::extract::{Path, State};
+    use axum::extract::{Path, Query, State};
     use axum::http::{HeaderMap, StatusCode};
     use axum::routing::{get, post};
     use axum::{Form, Json, Router};
@@ -698,6 +714,8 @@ pub(crate) mod fake {
     pub const TEMPLATE: &str = concat!("HX", "0123456789abcdef", "0123456789abcdef");
     pub const APP: &str = concat!("AP", "0123456789abcdef", "0123456789abcdef");
     pub const RECORDING: &str = concat!("RE", "0123456789abcdef", "0123456789abcdef");
+    /// A browser call still ringing: nobody is through on the other end.
+    pub const RINGING: &str = "CAringing";
 
     pub type Sent = Arc<Mutex<Vec<HashMap<String, String>>>>;
 
@@ -767,12 +785,38 @@ pub(crate) mod fake {
             }
             (StatusCode::OK, b"ID3 fake mp3".to_vec())
         }
+        // Every browser call but RINGING is through to someone, on a call whose SID is the parent's with "x" on the end.
+        async fn calls(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> (StatusCode, Json<Value>) {
+            if !authed(&headers) {
+                return refused();
+            }
+            let parent = q.get("ParentCallSid").cloned().unwrap_or_default();
+            let through = q.get("Status").is_some_and(|s| s == "in-progress") && !parent.is_empty() && parent != RINGING;
+            let found: Vec<Value> = if through { vec![json!({ "sid": format!("{parent}x"), "status": "in-progress" })] } else { vec![] };
+            (StatusCode::OK, Json(json!({ "calls": found })))
+        }
+        // Updates land in `sent` like messages do, with the call's SID as "Call".
+        async fn update_call(
+            State(sent): State<Sent>,
+            headers: HeaderMap,
+            Path((_, file)): Path<(String, String)>,
+            Form(mut form): Form<HashMap<String, String>>,
+        ) -> (StatusCode, Json<Value>) {
+            if !authed(&headers) {
+                return refused();
+            }
+            form.insert("Call".into(), file.trim_end_matches(".json").into());
+            sent.lock().unwrap().push(form);
+            (StatusCode::OK, Json(json!({ "status": "in-progress" })))
+        }
         let sent = Sent::default();
         let app = Router::new()
             .route("/2010-04-01/Accounts/{file}", get(account))
             .route("/2010-04-01/Accounts/{sid}/Messages.json", post(message))
             .route("/2010-04-01/Accounts/{sid}/Applications/{file}", get(application).post(update_application))
             .route("/2010-04-01/Accounts/{sid}/Recordings/{file}", get(recording))
+            .route("/2010-04-01/Accounts/{sid}/Calls.json", get(calls))
+            .route("/2010-04-01/Accounts/{sid}/Calls/{file}", post(update_call))
             .route("/v1/Content/{sid}", get(content))
             .with_state(sent.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

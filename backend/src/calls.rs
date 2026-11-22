@@ -109,6 +109,11 @@ pub fn twiml_refuse(reason: &str) -> String {
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Say>{}</Say><Hangup/></Response>", xml(reason))
 }
 
+/// Plays the audio at `url`, then hangs up: a recorded voicemail left on the lead's side of a call.
+pub fn twiml_play(url: &str) -> String {
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Play>{}</Play><Hangup/></Response>", xml(url))
+}
+
 /// Dials the lead from the organization's number, recording both sides from when they answer. With transcription on, Twilio
 /// transcribes the call too: the inbound track is the caller in the browser, the outbound one the lead.
 pub fn twiml_dial(public_url: &str, from: &str, to: &str, transcribe: bool) -> String {
