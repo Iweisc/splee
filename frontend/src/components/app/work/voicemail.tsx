@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Mic, Square, Voicemail as VoicemailIcon } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -31,20 +31,37 @@ export function VoicemailCard() {
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   useEffect(() => () => (take ? URL.revokeObjectURL(take.url) : undefined), [take]);
+  // The microphone prompt and the WAV conversion both finish on their own time, maybe after the page is gone, and the
+  // effect below can't let go of a recording it never saw.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const starting = useRef(false);
 
-  /** Runs until Stop, Cancel or the minute is up, then keeps the take to play back. */
+  /** Runs until Stop, Cancel or the minute is up, then keeps the take to play back. One at a time. */
   const start = async () => {
+    if (starting.current) return;
+    starting.current = true;
     try {
       const recording = await startRecording(MAX_SECS);
+      if (!mounted.current) return recording.cancel();
       setTake(null);
       setNow(Date.now());
       setTaking({ recording, started: Date.now() });
       const wav = await recording.wav;
+      if (!mounted.current) return;
       setTaking(null);
       if (wav) setTake({ wav, url: URL.createObjectURL(wav) });
     } catch (e) {
+      if (!mounted.current) return;
       setTaking(null);
       toastError(e instanceof DOMException && e.name === "NotAllowedError" ? new Error("Allow Splee to use your microphone to record it") : e);
+    } finally {
+      starting.current = false;
     }
   };
 
