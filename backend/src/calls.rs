@@ -666,16 +666,17 @@ pub enum Dialed {
 /// Keeps how a lead's call went once the browsers stop ringing, with Twilio's DialCallStatus. Answered, it's connected and the
 /// lead was just contacted. Missed, the lead gets a call back on the Calls page: one opens for their owner due now, or the one
 /// already open moves up to now. It's a manual call apart from any call step, so a reply that ends the sequence leaves it.
-/// Done once, while the call is still ringing or on, so asking again changes nothing.
+/// They also get the organization's missed-call text (text_back). Done once, while the call is still ringing or on, so asking
+/// again changes nothing.
 pub async fn on_dialed(db: &PgPool, org_id: Uuid, call_sid: &str, status: &str, duration: Option<i32>) -> sqlx::Result<Dialed> {
     let answered = matches!(status, "completed" | "answered");
     let mut tx = db.begin().await?;
-    let changed: Option<Uuid> = sqlx::query_scalar(
+    let changed: Option<(Uuid, String)> = sqlx::query_as(
         "update calls c set call_status = $3, duration_secs = case when $4 then $5 end, outcome = case when $4 then 'connected' else c.outcome end,
                             notes = case when $4 then $6 else c.notes end
          from projects p
          where p.id = c.project_id and p.org_id = $1 and c.twilio_sid = $2 and c.inbound and c.call_status in ('ringing', 'in-progress')
-         returning c.lead_id",
+         returning c.lead_id, c.to_number",
     )
     .bind(org_id)
     .bind(call_sid)
@@ -685,18 +686,18 @@ pub async fn on_dialed(db: &PgPool, org_id: Uuid, call_sid: &str, status: &str, 
     .bind(CALLED_IN)
     .fetch_optional(&mut *tx)
     .await?;
-    let lead_id = match changed {
-        Some(id) => Some((id, true)),
-        None => sqlx::query_scalar::<_, Uuid>(
-            "select c.lead_id from calls c join projects p on p.id = c.project_id where p.org_id = $1 and c.twilio_sid = $2 and c.inbound",
+    let call = match changed {
+        Some(call) => Some((call, true)),
+        None => sqlx::query_as::<_, (Uuid, String)>(
+            "select c.lead_id, c.to_number from calls c join projects p on p.id = c.project_id where p.org_id = $1 and c.twilio_sid = $2 and c.inbound",
         )
         .bind(org_id)
         .bind(call_sid)
         .fetch_optional(&mut *tx)
         .await?
-        .map(|id| (id, false)),
+        .map(|call| (call, false)),
     };
-    let Some((lead_id, first)) = lead_id else { return Ok(Dialed::Unknown) };
+    let Some(((lead_id, number), first)) = call else { return Ok(Dialed::Unknown) };
     if answered {
         if first {
             sqlx::query("update leads set last_contacted_at = now() where id = $1").bind(lead_id).execute(&mut *tx).await?;
@@ -705,6 +706,9 @@ pub async fn on_dialed(db: &PgPool, org_id: Uuid, call_sid: &str, status: &str, 
         return Ok(Dialed::Answered);
     }
     if first {
+        // Two of the lead's calls missed at once would each find no call back or text yet and add one. Waiting on the lead's
+        // row here lets the second see what the first added, since each statement below reads what's committed when it starts.
+        sqlx::query("select 1 from leads where id = $1 for update").bind(lead_id).execute(&mut *tx).await?;
         sqlx::query(
             "with moved as (update calls set due_at = least(due_at, now()) where lead_id = $1 and status = 'open' and kind = 'manual' returning id)
              insert into calls (project_id, lead_id, segment_id, kind, owner_id, status, due_at, to_number, instructions)
@@ -715,10 +719,47 @@ pub async fn on_dialed(db: &PgPool, org_id: Uuid, call_sid: &str, status: &str, 
         .bind(CALL_BACK)
         .execute(&mut *tx)
         .await?;
+        text_back(&mut tx, lead_id, &number).await?;
     }
     let lead: Lead = sqlx::query_as("select * from leads where id = $1").bind(lead_id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(Dialed::Missed { lead: Box::new(lead), first })
+}
+
+/// Queues the organization's missed-call text to `to`, the number a lead nobody answered called from, when it has one and an
+/// SMS sender. The sender's tick sends it like a reply. A lead who opted out, a number on the do-not-contact list, or a lead
+/// texted back in the last day gets none.
+async fn text_back(conn: &mut sqlx::PgConnection, lead_id: Uuid, to: &str) -> sqlx::Result<()> {
+    if to.is_empty() {
+        return Ok(());
+    }
+    let found: Option<(String, String, String, bool)> = sqlx::query_as(
+        "select a.missed_call_text, coalesce(ps.sender_name, ''), coalesce(p.company ->> 'name', ''),
+                not exists (select 1 from text_messages o join projects op on op.id = o.project_id
+                            where op.org_id = p.org_id and o.to_number = $2 and o.status in ('sent', 'delivered'))
+         from leads l
+         join projects p on p.id = l.project_id
+         join twilio_accounts a on a.org_id = p.org_id
+         left join project_settings ps on ps.project_id = l.project_id
+         where l.id = $1 and a.missed_call_text <> '' and a.sms_from <> '' and l.status not in ('unsubscribed', 'do_not_contact')
+           and not exists (select 1 from suppressions x where x.org_id = p.org_id and x.kind = 'phone' and x.value = $2)
+           and not exists (select 1 from text_messages t where t.lead_id = l.id and t.kind = 'missed_call' and t.created_at > now() - interval '1 day')",
+    )
+    .bind(lead_id)
+    .bind(to)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((text, sender, company, first)) = found else { return Ok(()) };
+    sqlx::query(
+        "insert into text_messages (project_id, lead_id, segment_id, channel, kind, to_number, body, status, due_at)
+         select project_id, id, segment_id, 'sms', 'missed_call', $2, $3, 'approved', now() from leads where id = $1",
+    )
+    .bind(lead_id)
+    .bind(to)
+    .bind(crate::twilio::finish_sms(&text, &sender, &company, to, first))
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// on_dialed, and a push to whoever hears about the lead the first time it says they missed the call.
