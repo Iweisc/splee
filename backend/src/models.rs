@@ -729,13 +729,15 @@ pub struct BookingPage {
     pub notice_minutes: i32,
     pub days_ahead: i32,
     pub location: String,
+    /// How long before a call the guest gets a reminder, 0 for none.
+    pub reminder_hours: i32,
     #[serde(skip)]
     pub calendar_url_enc: String,
     pub calendar_error: String,
     pub created_at: Ts,
 }
 
-/// A call booked on a booking page. Its token_hash and ip columns are left out.
+/// A call booked on a booking page. Its token_hash, token_enc, ip and remind_at columns are left out.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Booking {
     pub id: Uuid,

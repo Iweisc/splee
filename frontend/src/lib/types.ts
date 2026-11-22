@@ -2190,6 +2190,8 @@ export interface BookingPage {
   days_ahead: number;
   /** A video link or where to meet. */
   location: string;
+  /** How long before a call the guest gets a reminder email, 0 for none. */
+  reminder_hours: number;
   /** Why the calendar couldn't be read the last time, or empty. */
   calendar_error: string;
   created_at: Ts;
@@ -2203,7 +2205,10 @@ export interface BookingPage {
 
 /** PATCH /booking-pages/{id}. `calendar_url` "" removes the calendar, left out keeps it. */
 export type BookingPageInput = Partial<
-  Pick<BookingPage, "slug" | "name" | "duration_minutes" | "timezone" | "hours" | "buffer_minutes" | "notice_minutes" | "days_ahead" | "location">
+  Pick<
+    BookingPage,
+    "slug" | "name" | "duration_minutes" | "timezone" | "hours" | "buffer_minutes" | "notice_minutes" | "days_ahead" | "location" | "reminder_hours"
+  >
 > & { calendar_url?: string };
 
 /** GET /book/{slug}: what a visitor sees. `location` says "Video call" for a link, which only the invite holds. */

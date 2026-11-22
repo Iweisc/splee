@@ -1,6 +1,6 @@
 //! The emails a booking sends both sides, from the page's mailbox, each carrying the call as a calendar invite. A
 //! REQUEST puts it in their calendars and a later one with the same UID and a higher SEQUENCE moves it there. A CANCEL
-//! takes it out.
+//! takes it out. The guest's reminder before the call is a plain email, since the invite is already in their calendar.
 
 use chrono::Utc;
 use chrono_tz::Tz;
@@ -124,6 +124,23 @@ pub fn to_guest(page: &BookingPage, host: &Host, booking: &Booking, change: Chan
             links.manage,
             links.cancel()
         ));
+    }
+    (subject, body)
+}
+
+/// The guest's reminder, in their time zone. Without `links`, for a call booked before tokens were kept, it asks for a reply.
+pub fn reminder(page: &BookingPage, host: &Host, booking: &Booking, links: Option<&Links>) -> (String, String) {
+    let tz: Tz = booking.timezone.parse().unwrap_or(chrono_tz::UTC);
+    let (host, call) = (host.name, page.name.as_str());
+    let first = booking.name.split_whitespace().next().unwrap_or(&booking.name);
+    let subject = format!("Reminder: {call} with {host}, {}", short(booking.starts_at, tz));
+    let mut body = format!("Hi {first},\n\nA reminder of your {call} with {host} on {}.", when(booking.starts_at, booking.ends_at, tz));
+    if !page.location.is_empty() {
+        body.push_str(&format!("\n\nWhere: {}", page.location));
+    }
+    match links {
+        Some(links) => body.push_str(&format!("\n\nNeed another time? {}\nCan't make it? {}", links.manage, links.cancel())),
+        None => body.push_str("\n\nNeed another time? Reply to this email."),
     }
     (subject, body)
 }

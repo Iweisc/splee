@@ -149,6 +149,7 @@ struct PageBody {
     notice_minutes: Option<i32>,
     days_ahead: Option<i32>,
     location: Option<String>,
+    reminder_hours: Option<i32>,
     /// Empty removes the saved address. Left out keeps it.
     calendar_url: Option<String>,
 }
@@ -191,6 +192,9 @@ impl PageBody {
         if self.days_ahead.is_some_and(|d| !(1..=90).contains(&d)) {
             return bad("Show between 1 and 90 days ahead");
         }
+        if self.reminder_hours.is_some_and(|h| !(0..=168).contains(&h)) {
+            return bad("Send the reminder at most a week before the call");
+        }
         if let Some(location) = &mut self.location {
             *location = location.trim().to_string();
             if location.chars().count() > 500 {
@@ -220,7 +224,8 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
            slug = coalesce($3, slug), name = coalesce($4, name), duration_minutes = coalesce($5, duration_minutes),
            timezone = coalesce($6, timezone), hours = coalesce($7, hours), buffer_minutes = coalesce($8, buffer_minutes),
            notice_minutes = coalesce($9, notice_minutes), days_ahead = coalesce($10, days_ahead), location = coalesce($11, location),
-           calendar_url_enc = coalesce($12, calendar_url_enc), calendar_error = case when $12 is null then calendar_error else '' end
+           calendar_url_enc = coalesce($12, calendar_url_enc), calendar_error = case when $12 is null then calendar_error else '' end,
+           reminder_hours = coalesce($13, reminder_hours)
          where id = $1 and org_id = $2",
     )
     .bind(id)
@@ -235,6 +240,7 @@ async fn update(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>,
     .bind(body.days_ahead)
     .bind(&body.location)
     .bind(&calendar)
+    .bind(body.reminder_hours)
     .execute(&state.db)
     .await
     .map_err(|e| match &e {
