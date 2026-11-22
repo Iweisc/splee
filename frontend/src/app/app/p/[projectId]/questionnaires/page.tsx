@@ -4,16 +4,16 @@ import { use, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ChevronRight, ClipboardCheck, Loader2, Upload } from "lucide-react";
+import { ChevronRight, ClipboardCheck, FileSpreadsheet, Loader2, Upload } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { LoadError, toastError } from "@/components/app/work/states";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/form";
 import { Card, EmptyState, Skeleton, Tabs } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { QuestionnaireList, QuestionnaireSummary } from "@/lib/types";
-import { plural, timeAgo } from "@/lib/utils";
+import { cn, plural, timeAgo } from "@/lib/utils";
 
 export default function QuestionnairesPage({ params }: PageProps<"/app/p/[projectId]/questionnaires">) {
   const { projectId } = use(params);
@@ -136,11 +136,34 @@ function NewQuestionnaire({ projectId, path }: { projectId: string; path: string
           <Field label="Name">
             <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={200} placeholder="Like Northpine security review" />
           </Field>
-          {mode === "file" ? (
-            <Field label="CSV or Excel file" hint="The questions can be in any column. The download keeps every column and fills in the answers.">
-              <Input type="file" accept=".csv,.xlsx,.xlsm,.xls,.ods,text/csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            </Field>
-          ) : (
+          {/* Hidden rather than unmounted on the Paste tab, so the input keeps its file and never says none is chosen. */}
+          <Field
+            label="CSV or Excel file"
+            className={cn("min-w-0", mode !== "file" && "hidden")}
+            hint="The questions can be in any column. The download keeps every column and fills in the answers."
+          >
+            <span className="flex h-10 min-w-0 items-center gap-3">
+              <span
+                className={buttonClass(
+                  "outline",
+                  "md",
+                  "shrink-0 cursor-pointer has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600",
+                )}
+              >
+                <FileSpreadsheet className="size-4" /> {file ? "Choose another" : "Choose a file"}
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xlsm,.xls,.ods,text/csv"
+                  className="sr-only"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+              </span>
+              <span aria-hidden title={file?.name} className={cn("min-w-0 truncate text-sm", file ? "text-foreground" : "text-muted-foreground")}>
+                {file?.name ?? "No file chosen"}
+              </span>
+            </span>
+          </Field>
+          {mode === "paste" && (
             <Field label="One question a line">
               <Textarea
                 value={text}
