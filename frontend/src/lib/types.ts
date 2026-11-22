@@ -1755,7 +1755,8 @@ export interface TextMessage {
   lead_id: UUID;
   segment_id: UUID | null;
   channel: TextChannel;
-  kind: "sequence" | "reply";
+  /** "missed_call" is the text a lead who called gets when nobody answered. */
+  kind: "sequence" | "reply" | "missed_call";
   step: number;
   to_number: string;
   /** For a WhatsApp template, its text with the lead's details filled in. */
@@ -1882,6 +1883,8 @@ export interface TwilioStatus {
     call_transcription: boolean;
     /** With local presence on, the numbers calls go out from, nearest the lead first. Empty is off. */
     local_numbers: string[];
+    /** Texted to a lead who called when nobody answered. Empty is off. */
+    missed_call_text: string;
     error: string | null;
     failed_at: Ts | null;
     created_at: Ts;

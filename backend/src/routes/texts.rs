@@ -55,6 +55,8 @@ struct Connection {
     call_transcription: bool,
     /// With local presence on, the numbers calls go out from. Empty is off.
     local_numbers: Vec<String>,
+    /// What a lead who called and got nobody is texted, or empty for nothing.
+    missed_call_text: String,
     error: Option<String>,
     failed_at: Option<Ts>,
     created_at: Ts,
@@ -229,7 +231,13 @@ struct CallingBody {
     /// Calls each lead from the account's number nearest them. Saving reads the numbers from Twilio again.
     #[serde(default)]
     local_presence: bool,
+    /// Texted from the SMS sender to a lead who called when nobody answered. Empty sends nothing.
+    #[serde(default)]
+    missed_call_text: String,
 }
+
+/// Room left in SMS_MAX_CHARS for the sender's name and the STOP line finish_sms adds to it.
+const MISSED_CALL_TEXT_CHARS: usize = 240;
 
 /// Turns on calling from the browser with a TwiML App, which Splee points at /api/twilio/voice so the account's calls ask it
 /// what to dial.
@@ -241,6 +249,13 @@ async fn set_calling(State(state): State<AppState>, auth: Auth, Json(body): Json
         "" => String::new(),
         raw => sender_number(raw).ok_or_else(|| bad("Enter the calling number with its country code, like +14155550100"))?,
     };
+    let text_back = body.missed_call_text.trim();
+    if !text_back.is_empty() && account.sms_from.is_empty() {
+        return Err(bad("Add an SMS sender to the Twilio connection to text leads back"));
+    }
+    if text_back.chars().count() > MISSED_CALL_TEXT_CHARS {
+        return Err(bad(&format!("Keep the missed-call text under {MISSED_CALL_TEXT_CHARS} characters")));
+    }
     let mut local = vec![];
     let app = match body.twiml_app_sid.trim() {
         "" => String::new(),
@@ -261,14 +276,18 @@ async fn set_calling(State(state): State<AppState>, auth: Auth, Json(body): Json
             app
         }
     };
-    sqlx::query("update twilio_accounts set twiml_app_sid = $2, voice_from = $3, call_transcription = $4, local_numbers = $5 where org_id = $1")
-        .bind(auth.org_id)
-        .bind(app)
-        .bind(voice_from)
-        .bind(body.transcribe)
-        .bind(local)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "update twilio_accounts set twiml_app_sid = $2, voice_from = $3, call_transcription = $4, local_numbers = $5, missed_call_text = $6
+         where org_id = $1",
+    )
+    .bind(auth.org_id)
+    .bind(app)
+    .bind(voice_from)
+    .bind(body.transcribe)
+    .bind(local)
+    .bind(text_back)
+    .execute(&state.db)
+    .await?;
     status(State(state), auth).await
 }
 

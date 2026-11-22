@@ -795,7 +795,7 @@ function TextBubble({ text: t }: { text: TextMessage }) {
         <Message text={t.body} />
       </div>
       <span className="flex flex-wrap items-center justify-end gap-1.5 px-1 text-[11px] text-muted-foreground">
-        {CHANNEL[t.channel]} ·{failed ? <span className="text-red-700">{t.error || "Failed"}</span> : t.status === "approved" || t.status === "sending" ? " Sending ·" : ""}{" "}
+        {t.kind === "missed_call" ? "Missed-call text" : CHANNEL[t.channel]} ·{failed ? <span className="text-red-700">{t.error || "Failed"}</span> : t.status === "approved" || t.status === "sending" ? " Sending ·" : ""}{" "}
         {dateTime(at(t))}
       </span>
     </li>

@@ -8,7 +8,7 @@ import { CopyField } from "@/components/app/settings/copy-button";
 import { Section } from "@/components/app/settings/layout";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select, Switch } from "@/components/ui/form";
+import { Field, Input, Select, Switch, Textarea } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { ProjectSettings, TwilioStatus } from "@/lib/types";
@@ -141,6 +141,7 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
     voice_from: c.voice_from,
     transcribe: c.call_transcription,
     local_presence: local,
+    missed_call_text: c.missed_call_text,
   });
   const [busy, setBusy] = useState(false);
   // With local presence on, saving reads the numbers from Twilio again, so it's never a no-op.
@@ -149,6 +150,7 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
     form.voice_from !== c.voice_from ||
     form.transcribe !== c.call_transcription ||
     form.local_presence !== local ||
+    form.missed_call_text.trim() !== c.missed_call_text ||
     form.local_presence;
   const save = async (body: typeof form) => {
     setBusy(true);
@@ -197,6 +199,25 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
           )}
         </span>
       </span>
+      {c.twiml_app_sid && (
+        <Field
+          label="Text leads you miss"
+          hint={
+            c.sms_from
+              ? "Goes from your SMS sender to a lead who called and got nobody, once a day at most. Leave it empty to send none."
+              : "Add an SMS sender to text back leads who called and got nobody."
+          }
+        >
+          <Textarea
+            maxLength={240}
+            disabled={!c.sms_from}
+            className="min-h-10 field-sizing-content"
+            placeholder="Sorry we missed your call. We'll call you back soon, or reply here with a good time."
+            value={form.missed_call_text}
+            onChange={(e) => setForm({ ...form, missed_call_text: e.target.value })}
+          />
+        </Field>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="flex items-center gap-2.5 text-sm">
           <Switch checked={form.transcribe} onChange={(transcribe) => setForm({ ...form, transcribe })} label="Transcribe calls" />
@@ -208,7 +229,9 @@ function CallingSettings({ status, onSaved }: { status: TwilioStatus; onSaved: (
               type="button"
               variant="ghost"
               loading={busy}
-              onClick={() => save({ twiml_app_sid: "", voice_from: form.voice_from, transcribe: false, local_presence: false })}
+              onClick={() =>
+                save({ twiml_app_sid: "", voice_from: form.voice_from, transcribe: false, local_presence: false, missed_call_text: c.missed_call_text })
+              }
             >
               Turn off
             </Button>

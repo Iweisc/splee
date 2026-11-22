@@ -1113,6 +1113,75 @@ pub(crate) mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
+    async fn a_lead_nobody_answered_gets_the_missed_call_text_once_a_day(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let text = "Sorry we missed your call. We'll call you back soon.";
+        let body = |missed: &str| json!({ "twiml_app_sid": fake::APP, "transcribe": true, "missed_call_text": missed });
+        let (status, saved) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(&format!(" {text} "))).await;
+        assert_eq!((status, saved["connection"]["missed_call_text"].as_str()), (200, Some(text)), "{saved}");
+        let (status, err) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(&"a".repeat(241))).await;
+        assert!(status == 400 && err["error"].as_str().unwrap().starts_with("Keep the missed-call text under 240"), "{err}");
+
+        // Nobody answered Sam: one text from the SMS sender, with Twilio asking again and Sam calling a second time the same day.
+        s.ring(SAM, "CA1").await;
+        s.dialed("CA1", "no-answer", "0").await;
+        s.dialed("CA1", "no-answer", "0").await;
+        s.ring(SAM, "CA2").await;
+        s.dialed("CA2", "busy", "0").await;
+        let texts = |lead: Uuid| sqlx::query_as::<_, crate::models::TextMessage>("select * from text_messages where lead_id = $1").bind(lead).fetch_all(s.db());
+        let queued = texts(s.sam).await.unwrap();
+        assert_eq!(queued.len(), 1);
+        let t = &queued[0];
+        let expected = format!("{text}\n{}", crate::phone::STOP_LINE);
+        assert_eq!((t.kind.as_str(), t.channel.as_str(), t.status.as_str(), t.to_number.as_str(), t.body.as_str()), ("missed_call", "sms", "approved", SAM, expected.as_str()));
+
+        // It goes out on the sender's next pass like a reply.
+        s.sent.lock().unwrap().clear();
+        twilio::tick(&s.state).await.unwrap();
+        let sent = s.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!((sent[0]["To"].as_str(), sent[0]["From"].as_str(), sent[0]["Body"].as_str()), (SAM, "+14155550100", expected.as_str()));
+        assert_eq!(texts(s.sam).await.unwrap()[0].status, "sent");
+
+        // Two of Mo's calls missed at once add one call back and one text.
+        let mo = emailed_lead(s.db(), s.project, "Mo", "+14155550137", None).await;
+        s.ring("+14155550137", "CA6").await;
+        s.ring("+14155550137", "CA7").await;
+        tokio::join!(s.dialed("CA6", "no-answer", "0"), s.dialed("CA7", "busy", "0"));
+        assert_eq!(texts(mo).await.unwrap().len(), 1);
+        let backs: i64 = sqlx::query_scalar("select count(*) from calls where lead_id = $1 and status = 'open'").bind(mo).fetch_one(s.db()).await.unwrap();
+        assert_eq!(backs, 1);
+
+        // The text goes to the number that called, even when the lead's number changed while it rang.
+        let kai = emailed_lead(s.db(), s.project, "Kai", "+14155550138", None).await;
+        s.ring("+14155550138", "CA8").await;
+        sqlx::query("update leads set phone = '+14155550139' where id = $1").bind(kai).execute(s.db()).await.unwrap();
+        s.dialed("CA8", "no-answer", "0").await;
+        assert_eq!(texts(kai).await.unwrap()[0].to_number, "+14155550138");
+
+        // An answered call, a lead who opted out and a text turned off send nothing.
+        let ana = emailed_lead(s.db(), s.project, "Ana", "+14155550135", None).await;
+        s.ring("+14155550135", "CA3").await;
+        s.dialed("CA3", "completed", "42").await;
+        sqlx::query("update leads set status = 'unsubscribed' where id = $1").bind(ana).execute(s.db()).await.unwrap();
+        s.ring("+14155550135", "CA4").await;
+        s.dialed("CA4", "no-answer", "0").await;
+        assert!(texts(ana).await.unwrap().is_empty());
+        assert_eq!(s.call("acme", Method::PUT, "/organization/twilio/calling", body("")).await.0, 200);
+        let lu = emailed_lead(s.db(), s.project, "Lu", "+14155550136", None).await;
+        s.ring("+14155550136", "CA5").await;
+        s.dialed("CA5", "no-answer", "0").await;
+        assert!(texts(lu).await.unwrap().is_empty());
+
+        // Without an SMS sender there's nothing to text from.
+        sqlx::query("update twilio_accounts set sms_from = '', voice_from = '+14155550100' where org_id = $1").bind(s.acme_org).execute(s.db()).await.unwrap();
+        let (status, err) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(text)).await;
+        assert!(status == 400 && err["error"].as_str().unwrap().starts_with("Add an SMS sender"), "{err}");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn whoever_answers_a_leads_call_takes_it_with_its_transcript(db: PgPool) {
         let s = Seeded::start(db).await;
         let owner = s.acme_owner().await;

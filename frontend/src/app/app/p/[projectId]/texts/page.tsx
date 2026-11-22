@@ -151,7 +151,7 @@ function TextCard({ text: m, onChange }: { text: TextMessage; onChange: () => Pr
   };
   const status = STATUS[m.status];
   const when = m.sent_at ?? m.due_at;
-  const name = m.kind === "reply" ? "Your reply" : `Text ${m.step}`;
+  const name = m.kind === "reply" ? "Your reply" : m.kind === "missed_call" ? "Missed-call text" : `Text ${m.step}`;
   return (
     <li className={cn("flex flex-col gap-2 rounded-xl border border-border p-3 wrap-anywhere", !open && "bg-muted/60")}>
       <div className="flex min-h-6 flex-wrap items-center justify-between gap-2">
