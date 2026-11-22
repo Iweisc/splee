@@ -457,6 +457,7 @@ struct Outgoing {
     paused: bool,
     timezone: String,
     send_days: Vec<i32>,
+    days_off: Vec<chrono::NaiveDate>,
     send_start_hour: i32,
     send_end_hour: i32,
     daily_text_limit: i32,
@@ -485,7 +486,7 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
     }
     let listed = crate::routes::suppression_lists::listed("p.org_id", "p.id", "l.email::text", "l.company_domain::text");
     let due = sqlx::query_as::<_, Outgoing>(&format!(
-        "select t.*, p.org_id, s.paused, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.daily_text_limit,
+        "select t.*, p.org_id, s.paused, s.timezone, s.send_days, s.days_off, s.send_start_hour, s.send_end_hour, s.daily_text_limit,
                 l.country_code as lead_country,
                 case when exists (select 1 from suppressions x where x.org_id = p.org_id
                                   and ((x.kind = 'phone' and x.value = t.to_number) or x.value = l.email or x.value = split_part(l.email::text, '@', 2)))
@@ -518,7 +519,7 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
         }
         if t.kind == "sequence" {
             let tz = phone::time_zone(&t.to_number, &row.lead_country).unwrap_or(row.timezone.parse().unwrap_or(Tz::UTC));
-            if row.paused || !crate::mail::in_window(tz, &row.send_days, row.send_start_hour, row.send_end_hour, now) {
+            if row.paused || !crate::mail::in_window(tz, &row.send_days, &row.days_off, row.send_start_hour, row.send_end_hour, now) {
                 continue;
             }
         }

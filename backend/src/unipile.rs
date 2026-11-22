@@ -467,6 +467,7 @@ struct Sender {
     unipile_account_id: String,
     timezone: String,
     send_days: Vec<i32>,
+    days_off: Vec<chrono::NaiveDate>,
     send_start_hour: i32,
     send_end_hour: i32,
 }
@@ -538,8 +539,8 @@ async fn find_lead(db: &PgPool, project: Uuid, provider_id: &str, public_id: Opt
 /// Connected, unpaused projects whose LinkedIn account hasn't had a Unipile failure in the last hour.
 async fn senders(db: &PgPool) -> sqlx::Result<Vec<Sender>> {
     sqlx::query_as::<_, Sender>(
-        "select s.project_id, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id, s.timezone, s.send_days, s.send_start_hour,
-                s.send_end_hour
+        "select s.project_id, s.unipile_dsn, s.unipile_token_enc, s.unipile_account_id, s.timezone, s.send_days, s.days_off,
+                s.send_start_hour, s.send_end_hour
          from project_settings s join projects p on p.id = s.project_id
          where s.unipile_token_enc <> '' and not s.paused and p.org_id is not null
            and not exists (select 1 from project_settings o where o.unipile_account_id = s.unipile_account_id
@@ -558,7 +559,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         if failed.contains(&s.unipile_account_id) {
             continue;
         }
-        if !crate::mail::in_window(s.timezone.parse().unwrap_or(Tz::UTC), &s.send_days, s.send_start_hour, s.send_end_hour, Utc::now()) {
+        if !crate::mail::in_window(s.timezone.parse().unwrap_or(Tz::UTC), &s.send_days, &s.days_off, s.send_start_hour, s.send_end_hour, Utc::now()) {
             continue;
         }
         let token = match crate::crypto::decrypt(&state.cfg.app_secret, &s.unipile_token_enc) {

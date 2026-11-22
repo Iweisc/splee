@@ -131,6 +131,8 @@ pub struct ProjectSettings {
     pub send_days: Vec<i32>,
     pub send_start_hour: i32,
     pub send_end_hour: i32,
+    /// Dates nothing cold goes out on, like holidays, in the time zone the send window is counted in.
+    pub days_off: Vec<chrono::NaiveDate>,
     pub follow_ups: Value,
     pub booking_link: String,
     pub auto_reply_mode: String,

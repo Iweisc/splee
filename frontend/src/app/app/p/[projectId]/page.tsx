@@ -214,20 +214,22 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/** Start of the next sending window, or null while inside one. Mirrors in_window in backend/src/mail/sender.rs. */
+/** Start of the next sending window, or null while inside one. Mirrors in_window and window_opens in backend/src/mail/sender.rs. */
 function nextSendWindow(s: ProjectSettings, now: Date): Date | null {
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: s.timezone, weekday: "short", hour: "numeric", hourCycle: "h23" });
+  // en-CA writes dates as 2026-12-25, as days_off has them.
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: s.timezone, year: "numeric", month: "2-digit", day: "2-digit" });
   const inWindow = (t: Date) => {
     const parts = Object.fromEntries(fmt.formatToParts(t).map((p) => [p.type, p.value]));
     const day = WEEKDAYS.indexOf(parts.weekday ?? "") + 1;
     const hour = Number(parts.hour);
-    return s.send_days.includes(day) && hour >= s.send_start_hour && hour < s.send_end_hour;
+    return s.send_days.includes(day) && hour >= s.send_start_hour && hour < s.send_end_hour && !s.days_off.includes(date.format(t));
   };
   if (inWindow(now)) return null;
   // Quarter-hour steps, because some timezones are offset by 30 or 45 minutes.
   const t = new Date(now);
   t.setUTCMinutes(Math.floor(t.getUTCMinutes() / 15) * 15, 0, 0);
-  for (let i = 0; i < 8 * 24 * 4; i++) {
+  for (let i = 0; i < (8 + 7 * s.days_off.length) * 24 * 4; i++) {
     t.setUTCMinutes(t.getUTCMinutes() + 15);
     if (inWindow(t)) return t;
   }

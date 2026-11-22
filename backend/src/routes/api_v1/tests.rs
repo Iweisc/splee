@@ -587,6 +587,10 @@ async fn project_controls_take_only_fields_they_know(db: PgPool) {
     assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": null })).await.1["monthly_cap_micros"], Value::Null);
     assert_eq!(api.patch(&project, json!({ "match_provider": true })).await.1["match_provider"], true);
     assert_eq!(api.patch(&project, json!({ "lead_time_zone": true })).await.1["lead_time_zone"], true);
+    let days_off = json!({ "days_off": ["2026-12-26", "2026-12-25", "2026-12-26"] });
+    assert_eq!(api.patch(&project, days_off).await.1["days_off"], json!(["2026-12-25", "2026-12-26"]), "sorted, each once");
+    let too_many: Vec<String> = (0..101).map(|d| (chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap() + chrono::Days::new(d)).to_string()).collect();
+    assert_eq!(api.patch(&project, json!({ "days_off": too_many })).await.0, 400);
 
     // The campaign PATCH refuses fields it doesn't take too, rather than ignoring them.
     let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "sequence": [] })).await;
