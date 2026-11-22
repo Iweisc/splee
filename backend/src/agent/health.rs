@@ -127,7 +127,7 @@ pub(super) async fn shared(db: &PgPool, deal_id: Uuid) -> sqlx::Result<String> {
     let plan: Option<(i64, i64, i64, Option<Ts>)> = sqlx::query_as(
         "select count(s.id), count(s.id) filter (where s.done_at is not null),
                 count(s.id) filter (where s.done_at is null and s.due_date < current_date), p.last_viewed_at
-         from close_plans p left join close_plan_steps s on s.plan_id = p.id where p.deal_id = $1 and p.goal is not null group by p.id",
+         from close_plans p left join close_plan_steps s on s.plan_id = p.id and s.phase = 'close' where p.deal_id = $1 and p.goal is not null group by p.id",
     )
     .bind(deal_id)
     .fetch_optional(db)

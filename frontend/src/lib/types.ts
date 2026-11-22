@@ -3068,6 +3068,8 @@ export interface ClosePlanStep {
   due_date: string | null;
   done_at: Ts | null;
   done_by: "us" | "them" | null;
+  /** Onboarding steps come after the win, from the handoff. */
+  phase: "close" | "onboarding";
 }
 
 /** GET /deals/:id/plan. The buyer's page is `url`. Views don't count the team's own previews. */
@@ -3076,11 +3078,37 @@ export interface ClosePlan {
   token: string;
   url: string;
   goal: string | null;
+  /** Set once the deal is won, when the plan carries on as the onboarding plan. */
+  onboarding_goal: string | null;
   status: "writing" | "ready" | "failed";
+  /** The plan the buyer sees: onboarding while the deal is won and the handoff wrote one. */
+  phase: "close" | "onboarding";
   views: number;
   first_viewed_at: Ts | null;
   last_viewed_at: Ts | null;
   steps: ClosePlanStep[];
+}
+
+/** What the agent writes for whoever takes a won customer on. A promise's `quote` is word for word from the sale, or empty. */
+export interface HandoffContent {
+  summary: string;
+  bought: string;
+  promises: { promise: string; quote: string }[];
+  people: { name: string; role: string; note: string }[];
+  success: string[];
+  risks: string[];
+}
+
+/** GET /deals/:id/handoff. */
+export interface Handoff {
+  id: UUID;
+  status: "writing" | "ready" | "failed";
+  handoff: HandoffContent | null;
+  owner_id: UUID | null;
+  owner_name: string | null;
+  handed_by: string | null;
+  handed_at: Ts | null;
+  created_at: Ts;
 }
 
 /** A priced line of a proposal. `unit_price` is in the deal's currency's main unit. */
@@ -3145,7 +3173,11 @@ export interface PublicProposal {
 
 /** GET /plans/:token, what the buyer sees. */
 export interface PublicClosePlan {
+  /** Empty when the plan only ever had an onboarding goal. */
   goal: string;
+  onboarding_goal: string | null;
+  /** The plan to show: onboarding while the deal is won, with the close steps as titles only. */
+  phase: "close" | "onboarding";
   first_name: string;
   company: string;
   company_domain: string | null;

@@ -18,6 +18,7 @@ import { DealHealthSection } from "./deal-health";
 import { BusinessCaseSection } from "./business-case";
 import { DealRoomSection } from "./deal-room";
 import { DealReviewSection } from "./deal-review";
+import { HandoffSection } from "./handoff";
 import { ChurnSection } from "./churn-risk";
 import { RenewalSection } from "./renewals";
 import { ExpansionSection } from "./expansion";
@@ -209,6 +210,13 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
                 <DealHealthSection deal={deal} />
                 <PracticeSection deal={deal} />
                 <DealReviewSection deal={deal} />
+                {/* A won deal's plan is its onboarding plan, which the handoff writes, so the two sit together. */}
+                {deal.status === "won" && (
+                  <>
+                    <HandoffSection deal={deal} />
+                    <ClosePlanSection deal={deal} />
+                  </>
+                )}
                 <WinBackSection deal={deal} />
                 <RenewalSection deal={deal} />
                 <ChurnSection deal={deal} />
@@ -218,7 +226,7 @@ export function DealDialog({ deal, leadId, onClose, onSaved }: { deal?: Deal; le
                 <DealBattlecards deal={deal} />
                 <QualificationSection deal={deal} />
                 <QuietDeal deal={deal} />
-                <ClosePlanSection deal={deal} />
+                {deal.status !== "won" && <ClosePlanSection deal={deal} />}
                 <ProposalSection deal={deal} />
                 <DealRoomSection deal={deal} />
                 <BusinessCaseSection deal={deal} />

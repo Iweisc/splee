@@ -15,17 +15,20 @@ import { toastError } from "./states";
 const dueLabel = (date: string) => new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const overdue = (step: ClosePlanStep) => !step.done_at && !!step.due_date && new Date(`${step.due_date}T23:59:59`).getTime() < Date.now();
 
-/** On the pipeline card: how far the close plan got. */
+/** On the pipeline card: how far the close plan got, or the onboarding plan once it's won. */
 export function PlanProgress({ deal }: { deal: Deal }) {
-  if (!deal.plan || deal.status !== "open") return null;
+  if (!deal.plan || deal.status === "lost") return null;
   return (
     <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
-      <ListChecks className="size-3 shrink-0" /> Plan {deal.plan.done} of {deal.plan.total} done
+      <ListChecks className="size-3 shrink-0" /> {deal.status === "won" ? "Onboarding" : "Plan"} {deal.plan.done} of {deal.plan.total} done
     </p>
   );
 }
 
-/** In the deal's window: the steps both sides take to a signed deal, shared with the buyer. See backend/src/close_plans.rs. */
+/**
+ * In the deal's window: the steps both sides take to a signed deal, shared with the buyer. Once it's won, the same plan
+ * and link carry on as the onboarding plan, which the handoff writes. See backend/src/close_plans.rs.
+ */
 export function ClosePlanSection({ deal }: { deal: Deal }) {
   const key = `/deals/${deal.id}/plan`;
   const { mutate: mutateAll } = useSWRConfig();
@@ -59,19 +62,25 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
     if (await act("add", () => api<ClosePlan | null>(`${key}/steps`, { body }))) setAdding((a) => ({ ...a, title: "" }));
   };
 
-  if (plan === undefined || deal.status !== "open") return null;
+  const onboarding = deal.status === "won";
+  if (plan === undefined || deal.status === "lost" || (onboarding && !plan?.onboarding_goal && plan?.status !== "writing")) return null;
   const writing = plan?.status === "writing";
-  if (!plan || (!plan.goal && !plan.steps.length)) {
+  const goal = onboarding ? plan?.onboarding_goal : plan?.goal;
+  const steps = plan?.steps.filter((s) => s.phase === (onboarding ? "onboarding" : "close")) ?? [];
+  const title = onboarding ? "Onboarding plan" : "Close plan";
+  if (!plan || (!goal && !steps.length)) {
     return (
       // The button wraps under the text on a phone rather than squeezing it into a narrow column.
       <section className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 rounded-xl border border-dashed border-border-strong p-4">
         <div className="min-w-0 flex-1 basis-56">
           <p className="flex items-center gap-1.5 text-sm font-medium">
-            <ListChecks className="size-3.5" /> Close plan
+            <ListChecks className="size-3.5" /> {title}
           </p>
           <p className="mt-1 text-xs text-pretty text-muted-foreground">
             {writing
-              ? "The agent is reading the deal and writing the steps to a signed deal…"
+              ? onboarding
+                ? `The agent is writing the steps to get ${them} going, on the plan they already have…`
+                : "The agent is reading the deal and writing the steps to a signed deal…"
               : plan?.status === "failed"
                 ? "Couldn't write the plan. Try again."
                 : `The steps to a signed deal, ${them}'s and yours, with dates. Share it with them and they tick off their own.`}
@@ -88,15 +97,15 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
     );
   }
 
-  const done = plan.steps.filter((s) => s.done_at).length;
+  const done = steps.filter((s) => s.done_at).length;
   return (
     <section className="@container rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <p className="flex items-center gap-1.5 text-sm font-medium">
-          <ListChecks className="size-3.5" /> Close plan
+          <ListChecks className="size-3.5" /> {title}
         </p>
         <span className="text-xs text-muted-foreground tabular-nums">
-          {done} of {plan.steps.length} done
+          {done} of {steps.length} done
         </span>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {writing ? (
@@ -104,9 +113,12 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
               <Loader2 className="size-3.5 animate-spin" /> Writing…
             </span>
           ) : (
-            <Button type="button" size="sm" variant="ghost" onClick={write} loading={busy === "write"} title="Keeps the steps already done">
-              <RefreshCw className="size-3.5" /> Write again
-            </Button>
+            // Once it's won the handoff writes the onboarding steps, and writes them again from its own section.
+            !onboarding && (
+              <Button type="button" size="sm" variant="ghost" onClick={write} loading={busy === "write"} title="Keeps the steps already done">
+                <RefreshCw className="size-3.5" /> Write again
+              </Button>
+            )
           )}
           <a
             href={`${plan.url}?preview=1`}
@@ -119,21 +131,18 @@ export function ClosePlanSection({ deal }: { deal: Deal }) {
           <CopyButton value={plan.url} label="Copy link" />
         </div>
       </div>
-      {plan.goal && <p className="mt-2 text-sm text-pretty">{plan.goal}</p>}
+      {goal && <p className="mt-2 text-sm text-pretty">{goal}</p>}
       <p className="mt-1 text-xs text-muted-foreground">
         {plan.last_viewed_at
           ? `${deal.lead_name || them} last looked ${timeAgo(plan.last_viewed_at)}, ${plan.views === 1 ? "once" : `${plan.views} times`}.`
           : `Not opened yet. Send ${deal.lead_name || them} the link and they can tick off their steps.`}
       </p>
       <div className="mt-3 h-1 overflow-hidden rounded-full bg-black/5">
-        <div
-          className="h-full rounded-full bg-brand-500 transition-all"
-          style={{ width: `${plan.steps.length ? (done / plan.steps.length) * 100 : 0}%` }}
-        />
+        <div className="h-full rounded-full bg-brand-500 transition-all" style={{ width: `${steps.length ? (done / steps.length) * 100 : 0}%` }} />
       </div>
 
       <ol className="mt-3 flex flex-col">
-        {plan.steps.map((step) => (
+        {steps.map((step) => (
           <li key={step.id} className="group flex items-start gap-2.5 border-b border-border py-2 last:border-0">
             <button
               type="button"

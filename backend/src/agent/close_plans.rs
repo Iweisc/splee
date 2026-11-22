@@ -19,7 +19,7 @@ use crate::models::Lead;
 const PLANNER: &str = "You write mutual close plans for B2B deals, for Splee, an outbound sales tool. The buyer reads the plan, \
 so write to them plainly. Use only what you're given. Never invent facts, names, people or commitments.";
 /// Steps the agent writes. The team can add more, up to close_plans::MAX_STEPS.
-const MAX_WRITTEN: usize = 8;
+pub(super) const MAX_WRITTEN: usize = 8;
 /// How far ahead a plan reaches when the deal has no expected close date, or one that has passed.
 const DEFAULT_DAYS: i64 = 30;
 
@@ -56,7 +56,7 @@ struct Draft {
 }
 
 #[derive(Deserialize)]
-struct DraftStep {
+pub(super) struct DraftStep {
     title: String,
     #[serde(default)]
     detail: String,
@@ -65,23 +65,25 @@ struct DraftStep {
     due: String,
 }
 
+/// A step the agent writes, for its schema.
+pub(super) fn step_schema() -> Value {
+    json!({ "type": "object", "properties": {
+        "title": { "type": "string" }, "detail": { "type": "string" },
+        "side": { "type": "string", "enum": ["us", "them"] }, "due": { "type": "string" }
+    }, "required": ["title", "detail", "side", "due"] })
+}
+
 fn schema() -> Value {
     json!({
         "type": "object",
-        "properties": {
-            "goal": { "type": "string" },
-            "steps": { "type": "array", "items": { "type": "object", "properties": {
-                "title": { "type": "string" }, "detail": { "type": "string" },
-                "side": { "type": "string", "enum": ["us", "them"] }, "due": { "type": "string" }
-            }, "required": ["title", "detail", "side", "due"] } }
-        },
+        "properties": { "goal": { "type": "string" }, "steps": { "type": "array", "items": step_schema() } },
         "required": ["goal", "steps"]
     })
 }
 
 /// The steps worth saving, in date order: titled, on a known side, at most MAX_WRITTEN, with dates kept between `from` and
 /// `to`. A date that doesn't parse is dropped rather than guessed.
-fn tidy(steps: Vec<DraftStep>, from: NaiveDate, to: NaiveDate) -> Vec<(String, String, &'static str, Option<NaiveDate>)> {
+pub(super) fn tidy(steps: Vec<DraftStep>, from: NaiveDate, to: NaiveDate) -> Vec<(String, String, &'static str, Option<NaiveDate>)> {
     let mut out: Vec<_> = steps
         .into_iter()
         .filter_map(|s| {
@@ -127,7 +129,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let about = lead_brief(&lead, &signals);
     let context = briefs::gather(db, &lead, org_id).await?;
     let materials = materials(ctx, lead.project_id).await?;
-    let done: Vec<String> = sqlx::query_scalar("select title from close_plan_steps where plan_id = $1 and done_at is not null order by position")
+    let done: Vec<String> = sqlx::query_scalar("select title from close_plan_steps where plan_id = $1 and phase = 'close' and done_at is not null order by position")
         .bind(input.plan_id)
         .fetch_all(db)
         .await?;
@@ -172,7 +174,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     anyhow::ensure!(!draft.goal.trim().is_empty() && !steps.is_empty(), "the agent wrote an empty plan");
 
     let mut tx = db.begin().await?;
-    sqlx::query("delete from close_plan_steps where plan_id = $1 and done_at is null").bind(input.plan_id).execute(&mut *tx).await?;
+    sqlx::query("delete from close_plan_steps where plan_id = $1 and phase = 'close' and done_at is null").bind(input.plan_id).execute(&mut *tx).await?;
     let after: i32 = sqlx::query_scalar("select coalesce(max(position) + 1, 0) from close_plan_steps where plan_id = $1").bind(input.plan_id).fetch_one(&mut *tx).await?;
     for (i, (title, detail, side, due)) in steps.iter().enumerate() {
         sqlx::query("insert into close_plan_steps (plan_id, position, title, detail, side, due_date) values ($1, $2, $3, $4, $5, $6)")

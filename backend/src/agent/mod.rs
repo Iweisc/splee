@@ -21,6 +21,7 @@ mod places;
 mod discourse;
 pub mod expansions;
 pub mod feedback;
+pub mod handoffs;
 mod explore;
 mod hashnode;
 pub mod forecast;
@@ -127,6 +128,7 @@ pub mod kind {
     pub const FEATURE_SHIPPED: &str = "feature_shipped";
     pub const BUSINESS_CASE: &str = "business_case";
     pub const QUESTIONNAIRE: &str = "questionnaire";
+    pub const HANDOFF: &str = "handoff";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -438,6 +440,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::FEATURE_SHIPPED => feedback::announce(ctx).await,
         kind::BUSINESS_CASE => business_cases::write(ctx).await,
         kind::QUESTIONNAIRE => questionnaires::run(ctx).await,
+        kind::HANDOFF => handoffs::write(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

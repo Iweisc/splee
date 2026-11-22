@@ -55,7 +55,7 @@ async fn write(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
 
 async fn add_step(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<NewStep>) -> AppResult<Json<Option<Plan>>> {
     let deal = deals::get(&state.db, auth.org_id, id).await?;
-    close_plans::add_step(&state.db, deal.project_id, deal.id, body).await?;
+    close_plans::add_step(&state.db, deal.project_id, deal.id, close_plans::phase_for(&deal.status), body).await?;
     plan(&state, deal.id).await
 }
 

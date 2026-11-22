@@ -88,7 +88,7 @@ pub struct Deal {
     /// The latest nudge the agent wrote while the deal was quiet: {id, why, created_at, email_id, email_status, subject, body,
     /// status}, where status is writing, done or failed. See agent/nudges.rs.
     pub nudge: Option<Value>,
-    /// How far the close plan got, {done, total}, when it has steps. See close_plans.rs.
+    /// How far the close plan got, {done, total}, when it has steps, or the onboarding plan once it's won. See close_plans.rs.
     pub plan: Option<Value>,
     /// The agent's latest finished rating, {health, likelihood, why, next_step, created_at}. See agent/health.rs.
     pub health: Option<Value>,
@@ -128,7 +128,9 @@ const DEAL_SELECT: &str = concat!("select d.id, d.project_id, p.name as project_
           from deal_nudges n left join email_messages e on e.id = n.email_id left join agent_runs r on r.id = n.run_id
           where n.deal_id = d.id order by n.created_at desc limit 1) as nudge,
        (select json_build_object('done', count(*) filter (where st.done_at is not null), 'total', count(*))
-          from close_plans cp join close_plan_steps st on st.plan_id = cp.id where cp.deal_id = d.id having count(*) > 0) as plan,
+          from close_plans cp join close_plan_steps st on st.plan_id = cp.id
+          where cp.deal_id = d.id and st.phase = case when d.status = 'won' and cp.onboarding_goal is not null then 'onboarding' else 'close' end
+          having count(*) > 0) as plan,
        (select json_build_object('health', h.health, 'likelihood', h.likelihood, 'why', h.why, 'next_step', h.next_step, 'created_at', h.created_at)
           from deal_health h where h.deal_id = d.id and h.health is not null order by h.created_at desc limit 1) as health,
        exists (select 1 from deal_health w join agent_runs r on r.id = w.run_id
@@ -752,8 +754,12 @@ pub async fn announce_all(state: &AppState, events: Vec<Announcement>) {
     }
 }
 
-/// Sends a deal event to the project's webhooks, with the lead like the lead events and the deal under "deal".
+/// Sends a deal event to the project's webhooks, with the lead like the lead events and the deal under "deal". A win also
+/// starts the deal's handoff.
 async fn announce(state: &AppState, deal: &Deal, event: &'static str, previous_stage: Option<&str>) {
+    if event == "deal.won" {
+        crate::handoffs::on_win(state, deal.id, deal.project_id).await;
+    }
     let lead: Option<Lead> = sqlx::query_as("select * from leads where id = $1").bind(deal.lead_id).fetch_optional(&state.db).await.unwrap_or_default();
     let Some(lead) = lead else { return };
     hooks::send_lead_event(state, deal.project_id, event, &lead, Some(("deal", payload(&state.cfg.public_url, deal, previous_stage)))).await;

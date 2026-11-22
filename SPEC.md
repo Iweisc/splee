@@ -632,18 +632,18 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 ### Close plans
 
-`close_plans.rs`, `agent/close_plans.rs`, `routes/close_plans.rs`, migration 0147, the Close plan section in an open deal's window, its progress on pipeline cards, and the buyer's page at PUBLIC_URL/plan/{token}. A deal has at most one plan (`close_plans`), made the first time it's written or a step is added, with a 20-character token that stays the same when it's written again. Its steps (`close_plan_steps`, up to 20) have a title, a detail, a side, an optional due date, and `done_at` and `done_by` (`us` from the app, `them` from the page). The buyer's page shows nothing until the plan has a goal, and then only the goal, the steps, both companies and the booking link or mailbox of the last email sent to the lead. The buyer can tick their own steps only. The page reports a load from the browser, except with `?preview=1`, which the app's Open link adds. The first load and each step the buyer finishes post to the project's chats. Loads and ticks are limited to 30 a minute per address. Deals carry `plan` (`{done, total}`, null without steps).
+`close_plans.rs`, `agent/close_plans.rs`, `routes/close_plans.rs`, migration 0147, the Close plan section in an open deal's window, its progress on pipeline cards, and the buyer's page at PUBLIC_URL/plan/{token}. A deal has at most one plan (`close_plans`), made the first time it's written or a step is added, with a 20-character token that stays the same when it's written again. Its steps (`close_plan_steps`, up to 20) have a title, a detail, a side, an optional due date, and `done_at` and `done_by` (`us` from the app, `them` from the page). The buyer's page shows nothing until the plan has a goal, and then only the goal, the steps, both companies and the booking link or mailbox of the last email sent to the lead. The buyer can tick their own steps only. The page reports a load from the browser, except with `?preview=1`, which the app's Open link adds. The first load and each step the buyer finishes post to the project's chats. Loads and ticks are limited to 30 a minute per address. Each step has a `phase`, `close` or `onboarding` (migration 0177). Once the handoff gives the plan an `onboarding_goal`, the buyer's page and the deal room show it and the onboarding steps, with the close steps folded away as done, and steps added to a won deal go in the onboarding phase. Each phase holds up to 20 steps. Deals carry `plan` (`{done, total}`, null without steps), counting the onboarding steps for a won deal with an onboarding goal and the close steps otherwise.
 
 | method | path | body | returns |
 |---|---|---|---|
-| GET | /deals/:id/plan | | `{id, token, url, goal, status, views, first_viewed_at, last_viewed_at, steps: [{id, title, detail, side, due_date, done_at, done_by}]}` or null. `status` is `writing`, `ready` or `failed` |
+| GET | /deals/:id/plan | | `{id, token, url, goal, onboarding_goal, status, views, first_viewed_at, last_viewed_at, steps: [{id, title, detail, side, due_date, done_at, done_by, phase}]}` or null. `status` is `writing`, `ready` or `failed` |
 | POST | /deals/:id/plan | | the same, with the agent writing it now. 400 for a closed deal or while it's being written |
 | POST | /deals/:id/plan/steps | `{title, detail?, side, due_date?}` | the same, with the step added at the end. 400 without a title, for another side or past 20 steps |
 | PATCH | /plan-steps/:id | `{title?, side?, due_date?, done?}` | the deal's plan. A null `due_date` clears it, and `done` ticks it as done by `us` |
 | DELETE | /plan-steps/:id | | the deal's plan |
-| GET | /plans/:token | | public: `{goal, first_name, company, company_domain, from_name, from_domain, sender_name, booking_url, reply_to, steps}`. 404 before the plan has a goal |
+| GET | /plans/:token | | public: `{goal, onboarding_goal, phase, first_name, company, company_domain, from_name, from_domain, sender_name, booking_url, reply_to, steps}`. `phase` is `onboarding` while the deal is won with an onboarding goal, else `close`, and `steps` are that phase's, with the close steps as titles only in the onboarding plan. 404 when there's no plan of that phase to show. `goal` is empty when it only has the onboarding one |
 | POST | /plans/:token/view | | public: 204 |
-| POST | /plans/:token/steps/:id | `{done}` | public: the page. Changes only the buyer's own steps. 429 past the limit |
+| POST | /plans/:token/steps/:id | `{done}` | public: the page. Changes only the buyer's own steps in the phase shown. 429 past the limit |
 
 ### Proposals
 
@@ -714,6 +714,16 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 | method | path | body | returns |
 |---|---|---|---|
 | POST | /deals/:id/review | | the deal, with a review being written now. 400 for an open deal or while one is being written |
+
+### Handoffs
+
+`handoffs.rs`, `agent/handoffs.rs`, `routes/handoffs.rs`, migration 0196, and the Handoff and Onboarding plan sections in a won deal's window. When a deal is first won, by hand, through a proposal or by a payment, `deals::announce` queues a `handoff` run, once per deal (`handoffs`, one row per deal). The agent reads the conversation, the accepted proposal, answered deal room questions, the win/loss review, the close plan and other leads at the company, and writes `{summary, bought, promises: [{promise, quote}], people: [{name, role, note}], success, risks}`. A quote is kept only when its words are in what the agent read, compared by `text::plain`. The same run writes the plan's `onboarding_goal` and up to 8 onboarding steps due in the next 60 days, making the plan if the deal had none, and points the plan's `run_id` at itself, so the plan reads as writing. Writing it again keeps the onboarding steps already done and replaces the rest, unless the team changed the onboarding steps while it wrote, when it keeps theirs and saves only the handoff. It saves nothing once the deal isn't won anymore, checked under a lock on the deal. The first time it's written it posts to the project's chats. The buyer sees the onboarding plan while the deal is won and has an onboarding goal, on the plan's page and in the deal room, and the close plan again if it's reopened or lost. Handing the customer to a teammate sets `owner_id`, posts who has it to the chats and emails them the handoff, unless they picked themselves.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /deals/:id/handoff | | `{id, status, handoff, owner_id, owner_name, handed_by, handed_at, created_at}` or null. `status` is `writing`, `ready` or `failed` |
+| POST | /deals/:id/handoff | | the same, with the agent writing it now, or the run already writing it. 400 unless the deal is won |
+| POST | /deals/:id/handoff/owner | `{owner_id}` | the same. 400 for someone outside the organization or before it's written |
 
 ### Deal qualification
 
