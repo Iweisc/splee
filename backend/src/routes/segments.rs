@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(rows[0].bounced, 1);
     }
 
-    // The states themselves are tested through GET /v1/campaigns/{id}/send-state in api_v1.rs, which shares send_state_of.
+    // The states themselves are tested through GET /v1/campaigns/{id}/send-state in api_v1/tests.rs, which shares send_state_of.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
     async fn the_campaign_page_reads_its_send_state_only_in_its_organization(db: PgPool) {

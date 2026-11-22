@@ -1,5 +1,5 @@
 //! The first email editor's routes: My copy for a campaign and the project's default, for the app here and the public API in
-//! api_v1.rs. The text itself lives in crate::my_copy.
+//! api_v1/campaigns.rs and api_v1/projects.rs. The text itself lives in crate::my_copy.
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
