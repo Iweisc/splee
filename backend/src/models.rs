@@ -397,9 +397,11 @@ pub struct ProjectSettings {
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.
     pub daily_text_limit: i32,
-    /// "off", "round_robin" among assign_members in their order, or "mailbox". See ownership.rs.
+    /// "off", "round_robin" among assign_members in their order, "mailbox" or "territory". See ownership.rs.
     pub assign_rule: String,
     pub assign_members: Vec<Uuid>,
+    /// Who covers which countries, for "territory". A lead from anywhere else takes its turn among assign_members.
+    pub assign_territories: sqlx::types::Json<Vec<crate::ownership::Territory>>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

@@ -437,9 +437,17 @@ export interface ProjectSettings extends CrmStatus {
   assign_rule: AssignRule;
   /** Round robin's members, in the order it goes through them. */
   assign_members: UUID[];
+  /** Who covers which countries, for the territory rule. A lead from anywhere else takes its turn among assign_members. */
+  assign_territories: Territory[];
 }
 
-export type AssignRule = "off" | "round_robin" | "mailbox";
+export type AssignRule = "off" | "round_robin" | "mailbox" | "territory";
+
+/** A member and the countries whose leads they get, as ISO 3166-1 alpha-2 codes. */
+export interface Territory {
+  owner: UUID;
+  countries: string[];
+}
 
 /** GET /projects/:id/autopilot. Spend and leads count the current calendar month (UTC). */
 /** GET /projects/:id/monthly-cap: the cap, what the month's sent emails cost, and whether cold emails wait for `resumes_at`. */
