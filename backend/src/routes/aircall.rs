@@ -68,14 +68,16 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
     let credentials = format!("{api_id}:{api_token}");
     let client = Client::new(&state.cfg.aircall_api_url, &credentials)?;
     client.ping().await?;
+    let mut tx = state.db.begin().await?;
+    lock(&mut tx, id).await?;
     let old: Option<(String, String)> = sqlx::query_as("select path_token, webhook_id from aircall_connections where project_id = $1")
         .bind(id)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await?;
     let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, _)| token.clone());
     let url = format!("{}/api/aircall-webhooks/{path_token}", state.cfg.public_url.trim_end_matches('/'));
     let (webhook_id, token) = client.create_webhook(&url).await?;
-    sqlx::query(
+    let upsert = sqlx::query(
         "insert into aircall_connections (project_id, org_id, credentials_enc, webhook_id, webhook_token_hash, path_token) values ($1, $2, $3, $4, $5, $6)
          on conflict (project_id) do update set credentials_enc = excluded.credentials_enc, webhook_id = excluded.webhook_id,
            webhook_token_hash = excluded.webhook_token_hash, error = ''",
@@ -85,9 +87,16 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
     .bind(crypto::encrypt(&state.cfg.app_secret, &credentials))
     .bind(&webhook_id)
     .bind(crypto::keyed_hash(&state.cfg.app_secret, TOKEN_PURPOSE, &token))
-    .bind(&path_token)
-    .execute(&state.db)
-    .await?;
+    .bind(&path_token);
+    let saved = match upsert.execute(&mut *tx).await {
+        Ok(_) => tx.commit().await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = saved {
+        // Otherwise Aircall would keep sending this webhook's events, with a token Splee doesn't have.
+        client.delete_webhook(&webhook_id).await;
+        return Err(e.into());
+    }
     // The old webhook may be in another Aircall company, which these details can't reach. Aircall turns it off on its own
     // once its events keep failing here.
     if let Some((_, old_webhook)) = old.filter(|(_, w)| *w != webhook_id) {
@@ -100,13 +109,23 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
 /// Calls already kept stay, with their notes.
 async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Option<AircallStatus>>> {
     auth.project(&state.db, id).await?;
+    let mut tx = state.db.begin().await?;
+    lock(&mut tx, id).await?;
     let connection: Option<Connection> =
-        sqlx::query_as(&format!("delete from aircall_connections where project_id = $1 returning {CONNECTION_COLUMNS}")).bind(id).fetch_optional(&state.db).await?;
+        sqlx::query_as(&format!("delete from aircall_connections where project_id = $1 returning {CONNECTION_COLUMNS}")).bind(id).fetch_optional(&mut *tx).await?;
+    tx.commit().await?;
     if let Some(c) = connection {
         c.client(&state)?.delete_webhook(&c.webhook_id).await;
         audit::integration(&state.db, &auth, Some(id), "Aircall", false).await;
     }
     load(&state.db, id).await
+}
+
+/// Connecting and disconnecting a project's Aircall go one at a time. Two connects at once would each make a webhook, and the
+/// row could end up with one's URL and the other's token, which no event matches. Held while Aircall makes the webhook.
+async fn lock(tx: &mut sqlx::PgConnection, project_id: Uuid) -> AppResult<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('aircall:' || $1::text, 0))").bind(project_id).execute(tx).await?;
+    Ok(())
 }
 
 /// An event from Aircall. Aircall delivers at least once, and a repeated event changes nothing. One that fails keeps why on

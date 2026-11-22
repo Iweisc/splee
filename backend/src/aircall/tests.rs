@@ -157,6 +157,20 @@ async fn connecting_registers_splees_webhook_and_disconnecting_deletes_it(db: Pg
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn two_connects_at_once_leave_one_webhook_that_works(db: PgPool) {
+    let s = Seeded::start(db).await;
+    let (a, b) = tokio::join!(s.connect(), s.connect());
+    assert_eq!((a.0, b.0), (200, 200));
+    let token = s.path_token().await;
+    let hooks = s.fake.webhooks.lock().unwrap().clone();
+    assert!(hooks.len() == 2 && hooks.iter().all(|h| h["url"].as_str().unwrap().ends_with(&token)), "the second waits and keeps the URL: {hooks:?}");
+    assert_eq!(*s.fake.deleted.lock().unwrap(), ["wh-1"]);
+    assert_eq!(s.event(&token, 2, "call.created", json!({})).await, (200, json!({ "matched": false })));
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn calls_with_leads_are_kept_once_and_their_transcripts_go_to_the_agent(db: PgPool) {
     let s = Seeded::start(db).await;
     assert_eq!(s.connect().await.0, 200);

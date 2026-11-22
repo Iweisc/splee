@@ -182,31 +182,35 @@ impl Ended {
 /// Keeps a call with one of the project's leads, once: it closes the lead's open call step, like one logged on the Calls page,
 /// or is kept as a call of its own. A repeated event, or the recording arriving later, only adds a recording the call didn't
 /// have. Returns the call, or None when no lead in the project has that number.
+///
+/// The call and what it does to the lead are kept together, since a retry finds the call and goes no further. Aircall's calls
+/// are only connected or not answered, and of what calls::apply_outcome does, that only moves last_contacted_at.
 pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Option<Uuid>> {
-    let db = &state.db;
+    let mut tx = state.db.begin().await?;
     let kept: Option<Uuid> = sqlx::query_scalar(
         "update calls set recording_url = case when $3 <> '' then $3 else recording_url end where project_id = $1 and aircall_id = $2 returning id",
     )
     .bind(c.project_id)
     .bind(e.id)
     .bind(&e.asset)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await?;
     if kept.is_some() {
+        tx.commit().await?;
         return Ok(kept);
     }
     let lead: Option<Lead> =
         sqlx::query_as("select * from leads where project_id = $1 and phone = $2 order by last_contacted_at desc nulls last, created_at desc limit 1")
             .bind(c.project_id)
             .bind(&e.number)
-            .fetch_optional(db)
+            .fetch_optional(&mut *tx)
             .await?;
     let Some(lead) = lead else { return Ok(None) };
     let user: Option<Uuid> =
         sqlx::query_scalar("select u.id from users u join memberships m on m.user_id = u.id where m.org_id = $1 and lower(u.email::text) = $2")
             .bind(c.org_id)
             .bind(&e.user_email)
-            .fetch_optional(db)
+            .fetch_optional(&mut *tx)
             .await?;
     let (outcome, notes) = e.outcome();
     let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
@@ -226,7 +230,7 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
     .bind(call_status)
     .bind(e.talk_secs())
     .bind(&e.asset)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await?;
     let call: Option<Call> = match open {
         Some(call) => Some(call),
@@ -251,16 +255,23 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
         .bind(call_status)
         .bind(e.talk_secs())
         .bind(&e.asset)
-        .fetch_optional(db)
+        .fetch_optional(&mut *tx)
         .await?,
     };
-    match call {
-        Some(call) => {
-            crate::calls::apply_outcome(state, lead.id, outcome).await?;
-            Ok(Some(call.id))
-        }
-        None => Ok(sqlx::query_scalar("select id from calls where project_id = $1 and aircall_id = $2").bind(c.project_id).bind(e.id).fetch_optional(db).await?),
+    let Some(call) = call else {
+        tx.commit().await?;
+        let kept = sqlx::query_scalar("select id from calls where project_id = $1 and aircall_id = $2").bind(c.project_id).bind(e.id);
+        return Ok(kept.fetch_optional(&state.db).await?);
+    };
+    if outcome == "connected" {
+        sqlx::query("update leads set last_contacted_at = greatest(last_contacted_at, $2) where id = $1")
+            .bind(lead.id)
+            .bind(ended)
+            .execute(&mut *tx)
+            .await?;
     }
+    tx.commit().await?;
+    Ok(Some(call.id))
 }
 
 /// Puts Aircall's transcript on the call and asks the agent for a summary, once. A transcript can come before the call's own
@@ -279,14 +290,17 @@ pub async fn transcribe(state: &AppState, c: &Connection, client: &Client, airca
     if transcript.is_empty() {
         return Ok(true);
     }
+    // Saved with its summary run, since a retry finds the transcript and doesn't ask again.
+    let mut tx = db.begin().await?;
     let saved: Option<Uuid> = sqlx::query_scalar("update calls set transcript = $2, transcribed_at = now() where id = $1 and transcribed_at is null returning id")
         .bind(call)
         .bind(&transcript)
-        .fetch_optional(db)
+        .fetch_optional(&mut *tx)
         .await?;
     if saved.is_some() {
-        agent::enqueue(db, kind::SUMMARIZE_CALL, Some(c.project_id), Some(c.org_id), json!({ "call_id": call })).await?;
+        agent::enqueue(&mut *tx, kind::SUMMARIZE_CALL, Some(c.project_id), Some(c.org_id), json!({ "call_id": call })).await?;
     }
+    tx.commit().await?;
     Ok(true)
 }
 
