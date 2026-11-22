@@ -478,6 +478,7 @@ pub(crate) mod tests {
                 crm_api_url: self.base.clone(),
                 payments_api_url: String::new(),
                 meetings_api_url: String::new(),
+                aircall_api_url: String::new(),
                 webflow_api_url: String::new(),
                 ..config(&unused)
             }

@@ -921,6 +921,8 @@ pub struct Call {
     pub summary: String,
     pub next_step: String,
     pub created_at: Ts,
+    /// The call's id in Aircall, for one made or taken there (aircall/).
+    pub aircall_id: Option<i64>,
 }
 
 /// A sales meeting with a lead, from Fireflies, Fathom, Gong, Zoom or tl;dv, and the agent's notes on it. See meetings/. The

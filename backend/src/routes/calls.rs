@@ -4,7 +4,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use chrono::{TimeZone, Utc};
@@ -215,15 +215,26 @@ async fn skip(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     Ok(Json(skipped.ok_or_else(|| AppError::Conflict("This call was already logged, skipped or cancelled".into()))?))
 }
 
-/// The call's recording, fetched from Twilio with the organization's API key.
-async fn recording(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<impl IntoResponse> {
+/// The call's recording: fetched from Twilio with the organization's API key, or for an Aircall call, a fresh link from Aircall.
+async fn recording(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Response> {
     let call: Call = util_scope::load(&state.db, "calls", id, auth.org_id).await?;
+    // Aircall's recording links last an hour, so each play asks it for a fresh one and the player follows it there.
+    if let Some(aircall_id) = call.aircall_id.filter(|_| !call.recording_url.is_empty()) {
+        let connection: Option<crate::aircall::Connection> =
+            sqlx::query_as(&format!("select {} from aircall_connections where project_id = $1", crate::aircall::CONNECTION_COLUMNS))
+                .bind(call.project_id)
+                .fetch_optional(&state.db)
+                .await?;
+        let connection = connection.ok_or_else(|| AppError::BadRequest("Connect Aircall to play its recordings".into()))?;
+        let url = connection.client(&state)?.recording(aircall_id).await?.ok_or(AppError::NotFound)?;
+        return Ok(Redirect::temporary(&url).into_response());
+    }
     if call.recording_sid.is_empty() {
         return Err(AppError::NotFound);
     }
     let account = Account::of_org(&state.db, auth.org_id).await?.ok_or_else(|| AppError::BadRequest("Connect Twilio to play recordings".into()))?;
     let audio = Client::for_account(&state, &account)?.recording(&call.recording_sid).await.map_err(|e| AppError::BadRequest(e.reason().into()))?;
-    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "private, max-age=3600")], audio))
+    Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "private, max-age=3600")], audio).into_response())
 }
 
 fn twiml(body: String) -> impl IntoResponse {
