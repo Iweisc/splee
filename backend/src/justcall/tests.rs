@@ -1,17 +1,14 @@
-use std::sync::Arc;
+use std::ops::Deref;
 
-use axum::Router;
 use chrono::{Duration, Utc};
 use reqwest::Method;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use super::fake::{self, Fake};
 use super::{EVENTS, parse, signed, transcript};
+use crate::cloud_phone::tests::Team;
 use crate::config::Config;
-use crate::crypto::sha256_hex;
-use crate::state::AppState;
 
 const AT: &str = "2026-11-22 10:00:00";
 
@@ -67,72 +64,24 @@ fn justcall_call(id: i64, number: &str, direction: &str, kind: &str, secs: i64) 
 }
 
 struct Seeded {
-    base: String,
-    http: reqwest::Client,
+    team: Team,
     fake: Fake,
-    db: PgPool,
-    project: Uuid,
-    /// Sarah, +44 7700 900123, with an open call step. Tom, +33 6 12 34 56 78, without one.
-    sarah: Uuid,
-    tom: Uuid,
-    jo: Uuid,
+}
+
+/// Seeded reads as the team it wraps, so the tests say s.sarah and s.call(…).
+impl Deref for Seeded {
+    type Target = Team;
+
+    fn deref(&self) -> &Team {
+        &self.team
+    }
 }
 
 impl Seeded {
-    /// Acme and Beta, each with an owner signed in as session "acme" or "beta", and Acme's project. Jo is on Acme's team and
-    /// calls from JustCall as jo@acme.example.
     async fn start(db: PgPool) -> Self {
         let (fake_url, fake) = fake::start().await;
-        let base_state = crate::autopilot::tests::state(db.clone());
-        let public_url = "https://splee.example".into();
-        let cfg = Config { app_secret: "test-secret".into(), justcall_api_url: fake_url, public_url, ..(*base_state.cfg).clone() };
-        let state = AppState { cfg: Arc::new(cfg), ..base_state };
-        let mut orgs = vec![];
-        for name in ["acme", "beta"] {
-            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(&db).await.unwrap();
-            let user: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ($1, 'x') returning id")
-                .bind(format!("{name}@{name}.example"))
-                .fetch_one(&db)
-                .await
-                .unwrap();
-            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(&db).await.unwrap();
-            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                .bind(sha256_hex(name))
-                .bind(user)
-                .bind(org)
-                .execute(&db)
-                .await
-                .unwrap();
-            orgs.push(org);
-        }
-        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(orgs[0]).fetch_one(&db).await.unwrap();
-        let jo: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('jo@acme.example', 'x') returning id").fetch_one(&db).await.unwrap();
-        sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(orgs[0]).bind(jo).execute(&db).await.unwrap();
-        let lead = |name: &'static str, phone: &'static str| {
-            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, full_name, phone, status) values ($1, $2, $3, 'contacted') returning id")
-                .bind(project)
-                .bind(name)
-                .bind(phone)
-                .fetch_one(&db)
-        };
-        let (sarah, tom) = (lead("Sarah Kim", "+447700900123").await.unwrap(), lead("Tom Ruiz", "+33612345678").await.unwrap());
-        sqlx::query("insert into calls (project_id, lead_id, kind, step, status, to_number) values ($1, $2, 'sequence', 2, 'open', '+447700900123')")
-            .bind(project)
-            .bind(sarah)
-            .execute(&db)
-            .await
-            .unwrap();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
-        tokio::spawn(async move { axum::serve(listener, app).await });
-        Self { base, http: reqwest::Client::new(), fake, db, project, sarah, tom, jo }
-    }
-
-    async fn call(&self, session: &str, method: Method, path: &str, body: Value) -> (u16, Value) {
-        let res = self.http.request(method, format!("{}{path}", self.base)).header("cookie", format!("splee_session={session}")).json(&body).send().await.unwrap();
-        (res.status().as_u16(), res.json().await.unwrap_or_default())
+        let team = Team::start(db, |cfg| Config { justcall_api_url: fake_url, ..cfg }).await;
+        Self { team, fake }
     }
 
     async fn connect(&self, key: &str, secret: &str) -> (u16, Value) {
@@ -162,9 +111,6 @@ impl Seeded {
         self.event_with(token, fake::API_SECRET, kind, data).await
     }
 
-    async fn calls_of(&self, lead: Uuid) -> Vec<Value> {
-        sqlx::query_scalar("select to_jsonb(c) from calls c where lead_id = $1 order by created_at").bind(lead).fetch_all(&self.db).await.unwrap()
-    }
 }
 
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

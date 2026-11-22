@@ -1,6 +1,5 @@
-use std::sync::Arc;
+use std::ops::Deref;
 
-use axum::Router;
 use chrono::{Timelike, Utc};
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -9,82 +8,28 @@ use uuid::Uuid;
 
 use super::EVENTS;
 use super::fake::{self, Fake};
+use crate::cloud_phone::tests::Team;
 use crate::config::Config;
-use crate::crypto::sha256_hex;
-use crate::state::AppState;
 
 struct Seeded {
-    state: AppState,
-    base: String,
-    http: reqwest::Client,
+    team: Team,
     fake: Fake,
-    project: Uuid,
-    /// Sarah, +44 7700 900123, with an open call step. Tom, +33 6 12 34 56 78, without one.
-    sarah: Uuid,
-    tom: Uuid,
-    jo: Uuid,
+}
+
+/// Seeded reads as the team it wraps, so the tests say s.sarah and s.call(…).
+impl Deref for Seeded {
+    type Target = Team;
+
+    fn deref(&self) -> &Team {
+        &self.team
+    }
 }
 
 impl Seeded {
-    /// Acme and Beta, each with an owner signed in as session "acme" or "beta", and Acme's project. Jo is on Acme's team and
-    /// calls from Aircall as jo@acme.example.
     async fn start(db: PgPool) -> Self {
         let (fake_url, fake) = fake::start().await;
-        let base_state = crate::autopilot::tests::state(db.clone());
-        let cfg = Config { app_secret: "test-secret".into(), aircall_api_url: fake_url, public_url: "https://splee.example".into(), ..(*base_state.cfg).clone() };
-        let state = AppState { cfg: Arc::new(cfg), ..base_state };
-        let mut orgs = vec![];
-        for name in ["acme", "beta"] {
-            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(&db).await.unwrap();
-            let user: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ($1, 'x') returning id")
-                .bind(format!("{name}@{name}.example"))
-                .fetch_one(&db)
-                .await
-                .unwrap();
-            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(&db).await.unwrap();
-            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                .bind(sha256_hex(name))
-                .bind(user)
-                .bind(org)
-                .execute(&db)
-                .await
-                .unwrap();
-            orgs.push(org);
-        }
-        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(orgs[0]).fetch_one(&db).await.unwrap();
-        let jo: Uuid = sqlx::query_scalar("insert into users (email, password_hash) values ('jo@acme.example', 'x') returning id").fetch_one(&db).await.unwrap();
-        sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(orgs[0]).bind(jo).execute(&db).await.unwrap();
-        let lead = |name: &'static str, phone: &'static str| {
-            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, full_name, phone, status) values ($1, $2, $3, 'contacted') returning id")
-                .bind(project)
-                .bind(name)
-                .bind(phone)
-                .fetch_one(&db)
-        };
-        let (sarah, tom) = (lead("Sarah Kim", "+447700900123").await.unwrap(), lead("Tom Ruiz", "+33612345678").await.unwrap());
-        sqlx::query("insert into calls (project_id, lead_id, kind, step, status, to_number) values ($1, $2, 'sequence', 2, 'open', '+447700900123')")
-            .bind(project)
-            .bind(sarah)
-            .execute(&db)
-            .await
-            .unwrap();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/api", listener.local_addr().unwrap());
-        let app = Router::new().nest("/api", crate::routes::router(&state)).with_state(state.clone());
-        tokio::spawn(async move { axum::serve(listener, app).await });
-        // Not following redirects, so a test sees where the recording sends the player.
-        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
-        Self { state, base, http, fake, project, sarah, tom, jo }
-    }
-
-    fn db(&self) -> &PgPool {
-        &self.state.db
-    }
-
-    async fn call(&self, session: &str, method: Method, path: &str, body: Value) -> (u16, Value) {
-        let res = self.http.request(method, format!("{}{path}", self.base)).header("cookie", format!("splee_session={session}")).json(&body).send().await.unwrap();
-        (res.status().as_u16(), res.json().await.unwrap_or_default())
+        let team = Team::start(db, |cfg| Config { aircall_api_url: fake_url, ..cfg }).await;
+        Self { team, fake }
     }
 
     async fn connect(&self) -> (u16, Value) {
@@ -93,7 +38,7 @@ impl Seeded {
     }
 
     async fn path_token(&self) -> String {
-        sqlx::query_scalar("select path_token from aircall_connections").fetch_one(self.db()).await.unwrap()
+        sqlx::query_scalar("select path_token from aircall_connections").fetch_one(&self.db).await.unwrap()
     }
 
     /// Posts an event to the webhook, signed with the token Aircall gave the nth webhook.
@@ -103,9 +48,6 @@ impl Seeded {
         (res.status().as_u16(), res.json().await.unwrap_or_default())
     }
 
-    async fn calls_of(&self, lead: Uuid) -> Vec<Value> {
-        sqlx::query_scalar("select to_jsonb(c) from calls c where lead_id = $1 order by created_at").bind(lead).fetch_all(self.db()).await.unwrap()
-    }
 }
 
 /// An Aircall call between Jo and `digits`, `secs` long once answered, starting `ago` seconds ago.
@@ -136,7 +78,7 @@ async fn connecting_registers_splees_webhook_and_disconnecting_deletes_it(db: Pg
     let first = s.fake.webhooks.lock().unwrap()[0].clone();
     assert_eq!(first, json!({ "custom_name": "Splee", "url": format!("https://splee.example/api/aircall-webhooks/{token}"), "events": EVENTS }));
     let stored: (String, String, String) =
-        sqlx::query_as("select webhook_id, webhook_token_hash, credentials_enc from aircall_connections").fetch_one(s.db()).await.unwrap();
+        sqlx::query_as("select webhook_id, webhook_token_hash, credentials_enc from aircall_connections").fetch_one(&s.db).await.unwrap();
     assert_eq!(stored.0, "wh-1");
     assert!(!stored.1.contains("token-1") && !stored.2.contains(fake::API_TOKEN), "neither the webhook token nor the API token is stored as it is");
     assert_eq!(s.call("beta", Method::GET, &path, json!(null)).await.0, 404, "another organization's project");
@@ -196,7 +138,7 @@ async fn calls_with_leads_are_kept_once_and_their_transcripts_go_to_the_agent(db
         (Some("sequence"), Some("done"), Some("connected"), Some(101), Some(120), Some("completed"))
     );
     assert_eq!((c["called_by"].as_str(), c["recording_url"].as_str()), (Some(s.jo.to_string().as_str()), Some("https://assets.aircall.io/recording/101")));
-    let contacted: bool = sqlx::query_scalar("select last_contacted_at is not null from leads where id = $1").bind(s.sarah).fetch_one(s.db()).await.unwrap();
+    let contacted: bool = sqlx::query_scalar("select last_contacted_at is not null from leads where id = $1").bind(s.sarah).fetch_one(&s.db).await.unwrap();
     assert!(contacted);
 
     // Numbers that aren't a lead's, or that Aircall hides, aren't kept.
@@ -230,7 +172,7 @@ async fn calls_with_leads_are_kept_once_and_their_transcripts_go_to_the_agent(db
     let sarahs = s.calls_of(s.sarah).await;
     let transcribed = sarahs.iter().find(|c| c["aircall_id"] == 105).unwrap();
     assert_eq!((transcribed["kind"].as_str(), transcribed["transcript"].as_str()), (Some("manual"), Some("Us: Hi Sarah.\nLead: Hi!")));
-    let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'summarize_call'").fetch_all(s.db()).await.unwrap();
+    let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'summarize_call'").fetch_all(&s.db).await.unwrap();
     assert_eq!(runs, [json!({ "call_id": transcribed["id"] })]);
     // A call without a transcript in Aircall stays without one.
     assert_eq!(s.event(&token, 1, "transcription.created", json!({ "call_id": 101 })).await.1, json!({ "matched": true }));
@@ -266,18 +208,18 @@ async fn a_call_starts_in_the_callers_aircall_workspace_after_the_usual_checks(d
     // A US number, which keeps several time zones, so the project's decides the calling hours.
     let dan: Uuid = sqlx::query_scalar("insert into leads (project_id, full_name, phone, status) values ($1, 'Dan Ross', '+14155550134', 'contacted') returning id")
         .bind(s.project)
-        .fetch_one(s.db())
+        .fetch_one(&s.db)
         .await
         .unwrap();
     let call: Uuid = sqlx::query_scalar("insert into calls (project_id, lead_id, kind, step, status, to_number) values ($1, $2, 'sequence', 2, 'open', '+14155550134') returning id")
         .bind(s.project)
         .bind(dan)
-        .fetch_one(s.db())
+        .fetch_one(&s.db)
         .await
         .unwrap();
     let zone = |hour: i64| {
         let upsert = "insert into project_settings (project_id, timezone) values ($1, $2) on conflict (project_id) do update set timezone = excluded.timezone";
-        sqlx::query(upsert).bind(s.project).bind(zone_at(hour)).execute(s.db())
+        sqlx::query(upsert).bind(s.project).bind(zone_at(hour)).execute(&s.db)
     };
     zone(12).await.unwrap();
     let path = format!("/calls/{call}/aircall-dial");
@@ -306,9 +248,9 @@ async fn a_call_starts_in_the_callers_aircall_workspace_after_the_usual_checks(d
 
     // Marked once Aircall took it, so the call it sends back closes this step. See the next test.
     let marked = "select u.email::text, c.aircall_dialed_at is not null from calls c left join users u on u.id = c.aircall_dialed_by where c.id = $1";
-    let marked: (Option<String>, bool) = sqlx::query_as(marked).bind(call).fetch_one(s.db()).await.unwrap();
+    let marked: (Option<String>, bool) = sqlx::query_as(marked).bind(call).fetch_one(&s.db).await.unwrap();
     assert_eq!(marked, (Some("acme@acme.example".into()), true));
-    sqlx::query("update calls set status = 'done' where id = $1").bind(call).execute(s.db()).await.unwrap();
+    sqlx::query("update calls set status = 'done' where id = $1").bind(call).execute(&s.db).await.unwrap();
     assert_eq!(dial().await.1["error"], "This call was already logged, skipped or cancelled.");
     assert_eq!(s.fake.dialed.lock().unwrap().len(), 1, "nothing else reached Aircall");
 }
@@ -329,7 +271,7 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
         .bind(s.project)
         .bind(name)
         .bind(contacted)
-        .fetch_one(s.db())
+        .fetch_one(&s.db)
     };
     let (dan, dana) = (lead("Dan Ross", false).await.unwrap(), lead("Dana Ross", true).await.unwrap());
     // An open step due `due` minutes from now, which Jo put in Aircall `dialed` minutes ago.
@@ -343,7 +285,7 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
         .bind(due)
         .bind(dialed.map(|_| s.jo))
         .bind(dialed)
-        .fetch_one(s.db())
+        .fetch_one(&s.db)
     };
     let dans_first = step(dan, -1440, None).await.unwrap();
     let dans_second = step(dan, 0, Some(20)).await.unwrap();
@@ -356,11 +298,11 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
     )
         .bind(danas_first)
         .bind(s.jo)
-        .execute(s.db())
+        .execute(&s.db)
         .await
         .unwrap();
     let ended = |id: i64, ago: i64| aircall_call(id, "+1 415-555-0134", "outbound", false, ago, 30);
-    let status = |id: Uuid| sqlx::query_as::<_, (String, Option<i64>)>("select status, aircall_id from calls where id = $1").bind(id).fetch_one(s.db());
+    let status = |id: Uuid| sqlx::query_as::<_, (String, Option<i64>)>("select status, aircall_id from calls where id = $1").bind(id).fetch_one(&s.db);
 
     // A call that started 15 minutes ago, arriving late, closes the step put in Aircall before it, not the newer one.
     assert_eq!(s.event(&token, 1, "call.ended", ended(201, 900)).await.1, json!({ "matched": true }));
@@ -375,12 +317,12 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
     sqlx::query("update calls set aircall_dialed_by = $2, aircall_dialed_at = now() - interval '2 hours' where id = $1")
         .bind(dans_first)
         .bind(s.jo)
-        .execute(s.db())
+        .execute(&s.db)
         .await
         .unwrap();
     assert_eq!(s.event(&token, 1, "call.ended", ended(203, 60)).await.1, json!({ "matched": true }));
     assert_eq!(status(dans_first).await.unwrap(), ("open".into(), None));
     assert_eq!(status(danas_first).await.unwrap(), ("open".into(), None));
-    let kept: (Uuid, String) = sqlx::query_as("select lead_id, kind from calls where aircall_id = 203").fetch_one(s.db()).await.unwrap();
+    let kept: (Uuid, String) = sqlx::query_as("select lead_id, kind from calls where aircall_id = 203").fetch_one(&s.db).await.unwrap();
     assert_eq!(kept, (dana, "manual".into()));
 }
