@@ -2,7 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, Clock, Mic, MicOff, Phone, PhoneOff, SkipForward } from "lucide-react";
+import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, SkipForward } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -15,7 +15,7 @@ import { Select } from "@/components/ui/form";
 import { Avatar, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
-import type { CallOutcome, CallRow, DialToken, TwilioStatus } from "@/lib/types";
+import type { AircallConnection, CallOutcome, CallRow, DialToken, TwilioStatus } from "@/lib/types";
 import { loadVoiceSdk, type VoiceCall, type VoiceDevice } from "@/lib/twilio-voice";
 import { cn, timeAgo } from "@/lib/utils";
 
@@ -32,7 +32,9 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
     refreshInterval: (rows) => (rows?.some((r) => r.prep?.status === "writing") ? 4000 : 0),
   });
   const { data: twilio } = useSWR<TwilioStatus>("/organization/twilio", fetcher);
+  const { data: aircall } = useSWR<AircallConnection | null>(`/projects/${projectId}/aircall`, fetcher);
   const [active, setActive] = useState<Active | null>(null);
+  const [pushing, setPushing] = useState<string | null>(null);
   const [leadId, setLeadId] = useState<string | null>(null);
   const call = useRef<{ device: VoiceDevice; call?: VoiceCall } | null>(null);
   const calling = !!twilio?.connection?.twiml_app_sid;
@@ -70,6 +72,20 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
       tearDown();
       setActive(null);
       toastError(e);
+    }
+  };
+
+  // The call comes back through Aircall's webhook when it ends, and closes this one. The list reloads when they come back to
+  // the tab from Aircall.
+  const dialInAircall = async (row: CallRow) => {
+    setPushing(row.id);
+    try {
+      await api(`/calls/${row.id}/aircall-dial`, { method: "POST" });
+      toast.success("Ready to call in Aircall Workspace. It's logged here when it ends");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setPushing(null);
     }
   };
 
@@ -115,9 +131,9 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
         }
       />
       <PageBody className={cn(active && "pb-[28rem] sm:pb-6")}>
-        {twilio && !calling && (
+        {twilio && aircall === null && !calling && (
           <p className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-pretty text-amber-800">
-            To call from Splee, turn on calling in the Twilio card on the{" "}
+            To call from Splee, turn on calling in the Twilio card or connect Aircall on the{" "}
             <Link href={`/app/p/${projectId}/integrations`} className="font-medium underline underline-offset-2">
               Integrations page
             </Link>
@@ -165,9 +181,12 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
                         key={r.id}
                         row={r}
                         calling={calling}
-                        busy={!!active}
+                        aircall={!!aircall}
+                        busy={!!active || !!pushing}
+                        pushing={pushing === r.id}
                         onOpen={() => setLeadId(r.lead_id)}
                         onDial={() => dial(r)}
+                        onAircall={() => dialInAircall(r)}
                         onLog={() => setActive({ row: r, phase: "log" })}
                         onSkip={() => skip(r)}
                         onChanged={() => mutate()}
@@ -217,18 +236,25 @@ function Who({ row: r, onOpen }: { row: CallRow; onOpen: () => void }) {
 function TaskRow({
   row: r,
   calling,
+  aircall,
   busy,
+  pushing,
   onOpen,
   onDial,
+  onAircall,
   onLog,
   onSkip,
   onChanged,
 }: {
   row: CallRow;
   calling: boolean;
+  aircall: boolean;
   busy: boolean;
+  /** Its number is on its way to Aircall. */
+  pushing: boolean;
   onOpen: () => void;
   onDial: () => void;
+  onAircall: () => void;
   onLog: () => void;
   onSkip: () => void;
   onChanged: () => Promise<unknown>;
@@ -244,6 +270,17 @@ function TaskRow({
           <Button size="sm" variant="outline" onClick={onLog} disabled={busy}>
             <Check className="size-3.5" /> Log call
           </Button>
+          {aircall && (
+            <Button
+              size="sm"
+              variant={calling ? "outline" : "primary"}
+              onClick={onAircall}
+              loading={pushing}
+              disabled={busy || !!r.outside_hours || !r.lead_phone}
+            >
+              <Headset className="size-3.5" /> Call in Aircall
+            </Button>
+          )}
           {calling && (
             <Button size="sm" onClick={onDial} disabled={busy || !!r.outside_hours || !r.lead_phone}>
               <Phone className="size-3.5" /> Call

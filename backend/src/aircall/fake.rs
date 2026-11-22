@@ -1,6 +1,6 @@
-//! A local stand-in for Aircall's API under /aircall/v1 that checks the API ID and token.
+//! A local stand-in for Aircall's API, V1 and V2, under /aircall, that checks the API ID and token.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, Request, State};
@@ -23,6 +23,11 @@ pub struct Fake {
     /// Calls by id, as GET /calls/{id} answers them, and each one's utterances.
     pub calls: Arc<Mutex<HashMap<i64, Value>>>,
     pub transcripts: Arc<Mutex<HashMap<i64, Value>>>,
+    /// Aircall's users by email, as GET /v2/users/{email} answers them, and who's on a call or unavailable by id.
+    pub users: Arc<Mutex<HashMap<String, Value>>>,
+    pub unavailable: Arc<Mutex<HashSet<i64>>>,
+    /// Each dial, as the user's id and the body.
+    pub dialed: Arc<Mutex<Vec<(i64, Value)>>>,
 }
 
 /// Starts the fake and returns the base URL to use as Config::aircall_api_url.
@@ -46,6 +51,11 @@ pub async fn start() -> (String, Fake) {
                 found(utterances.map(|u| json!({ "transcription": { "id": 1, "call_id": id, "type": "call", "content": { "language": "en", "utterances": u } } })))
             }),
         )
+        .route(
+            "/aircall/v2/users/{id}",
+            get(|State(f): State<Fake>, Path(id): Path<String>| async move { found(f.users.lock().unwrap().get(&id).map(|u| json!({ "user": u }))) }),
+        )
+        .route("/aircall/v1/users/{id}/dial", post(dial))
         .layer(axum::middleware::from_fn(gate))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -68,6 +78,18 @@ async fn gate(req: Request, next: axum::middleware::Next) -> Response {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "Forbidden", "troubleshoot": "Check your API key" }))).into_response();
     }
     next.run(req).await
+}
+
+/// Aircall answers 405 for someone unavailable or on a call, and 400 for a number that isn't E.164.
+async fn dial(State(fake): State<Fake>, Path(id): Path<i64>, Json(body): Json<Value>) -> Response {
+    if fake.unavailable.lock().unwrap().contains(&id) {
+        return (StatusCode::METHOD_NOT_ALLOWED, Json(json!({ "error": "User not available" }))).into_response();
+    }
+    if !body["to"].as_str().is_some_and(|to| to.starts_with('+')) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Invalid number to dial" }))).into_response();
+    }
+    fake.dialed.lock().unwrap().push((id, body));
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn create_webhook(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {

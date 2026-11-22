@@ -151,10 +151,10 @@ pub struct Dial {
     pub twiml_app_sid: String,
 }
 
-/// Checks that `user_id` may call the lead of call `call_id` now: they're on the lead's organization, `to` (when given) is the
-/// lead's number, the lead isn't on the do-not-contact list, it's within their calling hours, and the organization's Twilio
-/// is set up for calls. Err is the reason, in words for the caller.
-pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, to: Option<&str>, now: Ts) -> sqlx::Result<Result<Dial, String>> {
+/// Checks that `user_id` may call the lead of call `call_id` now, from any phone: they're on the lead's organization, the call
+/// is open, `to` (when given) is the lead's number, the lead isn't on the do-not-contact list and it's within their calling
+/// hours. Err is the reason, in words for the caller.
+pub async fn check(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, to: Option<&str>, now: Ts) -> sqlx::Result<Result<(Call, Lead), String>> {
     let call = sqlx::query_as::<_, Call>("select c.* from calls c join projects p on p.id = c.project_id where c.id = $1 and p.org_id = $2")
         .bind(call_id)
         .bind(org_id)
@@ -193,6 +193,15 @@ pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, 
     if let Some(why) = outside_hours(zone(&lead.phone, &lead.country_code, &project_tz), now) {
         return Ok(Err(why));
     }
+    Ok(Ok((call, lead)))
+}
+
+/// `check`, and that the organization's Twilio is set up for calls, with what Twilio needs to place the call.
+pub async fn authorize(db: &PgPool, org_id: Uuid, user_id: Uuid, call_id: Uuid, to: Option<&str>, now: Ts) -> sqlx::Result<Result<Dial, String>> {
+    let (call, lead) = match check(db, org_id, user_id, call_id, to, now).await? {
+        Ok(checked) => checked,
+        Err(why) => return Ok(Err(why)),
+    };
     let account: Option<(String, String, String, String, String, String, bool)> = sqlx::query_as(
         "select account_sid, api_key_sid, api_secret_enc, twiml_app_sid, voice_from, sms_from, call_transcription from twilio_accounts where org_id = $1",
     )
