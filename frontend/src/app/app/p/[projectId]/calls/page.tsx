@@ -2,7 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, SkipForward } from "lucide-react";
+import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, Play, SkipForward } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -21,7 +21,6 @@ import { cn, timeAgo } from "@/lib/utils";
 
 type Owner = "mine_or_unassigned" | "everyone";
 
-/** The call on screen: being placed or on, ended and waiting for its outcome, or logged by hand without dialing. */
 /** The cloud phones a call step can start in. The call comes back through the phone's webhook when it ends and closes the
  *  step, and the list reloads when they come back to this tab. */
 const PHONES = [
@@ -30,7 +29,23 @@ const PHONES = [
 ] as const;
 type CloudPhone = (typeof PHONES)[number];
 
-type Active = { row: CallRow; phase: "connecting" | "ringing" | "connected" | "ended" | "log"; started?: number; ended?: number; muted?: boolean };
+/** The call on screen: being placed or on, ended and waiting for its outcome, logged by hand without dialing, or the next one
+ *  in a row, which dials itself at `at`. */
+type Active = {
+  row: CallRow;
+  phase: "connecting" | "ringing" | "connected" | "ended" | "log" | "next";
+  started?: number;
+  ended?: number;
+  muted?: boolean;
+  at?: number;
+};
+
+/** The pause after logging a call in a row, to read the next lead's talk track before it rings. */
+const NEXT_SECS = 5;
+
+/** The calls that can be dialed now, in the order the page lists them. */
+const callable = (rows: CallRow[] | undefined) =>
+  ["overdue", "today"].flatMap((b) => (rows ?? []).filter((r) => r.bucket === b && !r.outside_hours && r.lead_phone));
 
 export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/calls">) {
   const { projectId } = use(params);
@@ -46,6 +61,8 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const [active, setActive] = useState<Active | null>(null);
   const [pushing, setPushing] = useState<{ row: string; phone: CloudPhone["key"] } | null>(null);
   const [leadId, setLeadId] = useState<string | null>(null);
+  /** Calling in a row: the calls it dialed so far, so none comes round twice. */
+  const [run, setRun] = useState<string[] | null>(null);
   const call = useRef<{ device: VoiceDevice; call?: VoiceCall } | null>(null);
   const calling = !!twilio?.connection?.twiml_app_sid;
 
@@ -81,8 +98,19 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
     } catch (e) {
       tearDown();
       setActive(null);
+      setRun(null);
       toastError(e);
     }
+  };
+
+  const callNext = (row: CallRow) => {
+    setRun((r) => r && [...r, row.id]);
+    dial(row);
+  };
+
+  const stop = () => {
+    setActive(null);
+    setRun(null);
   };
 
   const dialIn = async (row: CallRow, phone: CloudPhone) => {
@@ -100,9 +128,21 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const log = async (row: CallRow, outcome: CallOutcome, notes: string) => {
     try {
       await api(`/calls/${row.id}/log`, { body: { outcome, notes } });
-      setActive(null);
-      await mutate();
-      toast.success(outcome === "meeting_booked" ? "Logged. They're marked as meeting booked" : "Logged. Their sequence goes on");
+      const fresh = await mutate();
+      const next = run && callable(fresh).find((r) => !run.includes(r.id));
+      // No toast here: it would sit over the panel's buttons, and the panel says it was logged.
+      if (next) {
+        setActive({ row: next, phase: "next", at: Date.now() + NEXT_SECS * 1000 });
+        return;
+      }
+      stop();
+      toast.success(
+        run
+          ? "Logged. That's everyone you can call right now"
+          : outcome === "meeting_booked"
+            ? "Logged. They're marked as meeting booked"
+            : "Logged. Their sequence goes on",
+      );
     } catch (e) {
       toastError(e);
     }
@@ -125,6 +165,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
     { key: "done", title: "Done in the last 14 days", rows: rows.filter((r) => r.bucket === "done") },
   ].filter((g) => g.rows.length > 0);
   const open = rows.some((r) => r.bucket !== "done");
+  const queue = callable(data);
 
   return (
     <>
@@ -132,10 +173,24 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
         title="Calls"
         description="The call steps of your sequences come due here for each lead's owner. Log what happened, or skip it, and the sequence goes on."
         actions={
-          <Select value={owner} onChange={(e) => setOwner(e.target.value as Owner)} className="w-auto flex-auto" aria-label="Show">
-            <option value="mine_or_unassigned">Mine and unassigned</option>
-            <option value="everyone">Everyone&apos;s</option>
-          </Select>
+          <>
+            {calling && !run && queue.length > 1 && (
+              <Button
+                onClick={() => {
+                  setRun([queue[0].id]);
+                  dial(queue[0]);
+                }}
+                disabled={!!active || !!pushing}
+                className="flex-auto"
+              >
+                <Play className="size-4" /> Call {queue.length} in a row
+              </Button>
+            )}
+            <Select value={owner} onChange={(e) => setOwner(e.target.value as Owner)} className="w-auto flex-auto" aria-label="Show">
+              <option value="mine_or_unassigned">Mine and unassigned</option>
+              <option value="everyone">Everyone&apos;s</option>
+            </Select>
+          </>
         }
       />
       <PageBody className={cn(active && "pb-[28rem] sm:pb-6")}>
@@ -218,7 +273,10 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
             setActive({ ...active, muted });
           }}
           onLog={(outcome, notes) => log(active.row, outcome, notes)}
-          onClose={() => setActive(null)}
+          onClose={stop}
+          onCallNow={() => callNext(active.row)}
+          inRow={!!run}
+          more={!!run && queue.some((r) => r.id !== active.row.id && !run.includes(r.id))}
         />
       )}
       <LeadModal leadId={leadId} onClose={() => setLeadId(null)} />
@@ -333,6 +391,9 @@ function CallPanel({
   onMute,
   onLog,
   onClose,
+  onCallNow,
+  inRow,
+  more,
 }: {
   active: Active;
   /** From the polled list, so a track that lands while it rings shows up. */
@@ -341,14 +402,25 @@ function CallPanel({
   onMute: () => void;
   onLog: (outcome: CallOutcome, notes: string) => Promise<void>;
   onClose: () => void;
+  onCallNow: () => void;
+  /** Calling in a row, where a logged call moves on to the next one. */
+  inRow: boolean;
+  /** Whether the row has another call after this one. */
+  more: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (a.phase !== "connected") return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    if (a.phase !== "connected" && a.phase !== "next") return;
+    const id = setInterval(() => setNow(Date.now()), a.phase === "next" ? 250 : 1000);
     return () => clearInterval(id);
   }, [a.phase]);
+  useEffect(() => {
+    if (a.phase !== "next" || !a.at) return;
+    const id = setTimeout(onCallNow, Math.max(0, a.at - Date.now()));
+    return () => clearTimeout(id);
+  }, [a.phase, a.at, onCallNow]);
   const on = a.phase === "connecting" || a.phase === "ringing" || a.phase === "connected";
+  const next = a.phase === "next";
   const elapsed = a.started ? Math.max(0, Math.round(((a.ended ?? now) - a.started) / 1000)) : 0;
   const status = {
     connecting: "Connecting…",
@@ -356,6 +428,7 @@ function CallPanel({
     connected: `On the call · ${clock(elapsed)}`,
     ended: a.started ? `Call ended · ${clock(elapsed)}` : "They didn't pick up",
     log: "What happened on the call?",
+    next: `Logged. Next call in ${Math.min(NEXT_SECS, Math.max(0, Math.ceil(((a.at ?? now) - now) / 1000)))}s`,
   }[a.phase];
   return (
     <div
@@ -375,13 +448,22 @@ function CallPanel({
         <p className={cn("text-sm", a.phase === "connected" ? "font-medium text-brand-700" : "text-muted-foreground")} aria-live="polite">
           {status}
         </p>
-        {a.row.instructions && on && <p className="rounded-lg bg-muted px-3 py-2 text-sm text-pretty">{a.row.instructions}</p>}
-        {prep?.prep && on && (
+        {a.row.instructions && (on || next) && <p className="rounded-lg bg-muted px-3 py-2 text-sm text-pretty">{a.row.instructions}</p>}
+        {prep?.prep && (on || next) && (
           <div className="max-h-[45vh] overflow-y-auto border-t border-border pt-3">
             <TalkTrack prep={prep.prep} ringing={a.phase !== "connected"} />
           </div>
         )}
-        {on ? (
+        {next ? (
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" onClick={onClose}>
+              Stop
+            </Button>
+            <Button onClick={onCallNow}>
+              <Phone className="size-4" /> Call now
+            </Button>
+          </div>
+        ) : on ? (
           <div className="grid grid-cols-2 gap-2">
             <Button variant="outline" onClick={onMute} disabled={a.phase !== "connected"}>
               {a.muted ? <MicOff className="size-4" /> : <Mic className="size-4" />} {a.muted ? "Unmute" : "Mute"}
@@ -395,7 +477,8 @@ function CallPanel({
             initial={a.started ? null : likelyOutcome(a.row.call_status) ?? (a.phase === "ended" ? "no_answer" : null)}
             onSave={onLog}
             onCancel={onClose}
-            cancelLabel={a.phase === "log" ? "Cancel" : "Later"}
+            cancelLabel={a.phase === "log" ? "Cancel" : inRow ? "Stop" : "Later"}
+            saveLabel={inRow && more ? "Save and call next" : "Save"}
           />
         )}
       </Card>
