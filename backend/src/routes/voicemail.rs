@@ -260,6 +260,7 @@ mod tests {
     }
 
     #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn each_member_keeps_one_recording_that_twilio_fetches_by_its_link(db: PgPool) {
         let s = Seeded::start(db).await;
         assert_eq!(s.call("jo", Method::GET, "/voicemail", json!(null)).await, (200, Value::Null));
@@ -292,6 +293,7 @@ mod tests {
     }
 
     #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn the_caller_leaves_their_voicemail_on_the_leads_side_of_their_call(db: PgPool) {
         let s = Seeded::start(db).await;
         let call = s.open_call(s.sam).await;
