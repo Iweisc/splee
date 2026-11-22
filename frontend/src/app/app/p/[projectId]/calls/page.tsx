@@ -3,8 +3,9 @@
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, Play, SkipForward, Voicemail } from "lucide-react";
-import useSWR from "swr";
+import useSWR, { mutate as revalidate } from "swr";
 import { toast } from "sonner";
+import { callsDue } from "@/components/app/nav";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { CallCard, OutcomeForm, clock, likelyOutcome } from "@/components/app/work/calls";
 import { LeadModal } from "@/components/app/work/lead-modal";
@@ -60,6 +61,11 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const { data: aircall } = useSWR<CloudPhoneConnection | null>(`/projects/${projectId}/aircall`, fetcher);
   const { data: dialpad } = useSWR<CloudPhoneConnection | null>(`/projects/${projectId}/dialpad`, fetcher);
   const phones = PHONES.filter((p) => ({ aircall, dialpad })[p.key]);
+  // The count beside Calls in the nav goes down with each call logged or skipped.
+  const reload = () => {
+    void revalidate(callsDue(projectId).path);
+    return mutate();
+  };
   const [active, setActive] = useState<Active | null>(null);
   const [pushing, setPushing] = useState<{ row: string; phone: CloudPhone["key"] } | null>(null);
   const [leadId, setLeadId] = useState<string | null>(null);
@@ -142,7 +148,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const log = async (row: CallRow, outcome: CallOutcome, notes: string) => {
     try {
       await api(`/calls/${row.id}/log`, { body: { outcome, notes } });
-      const fresh = await mutate();
+      const fresh = await reload();
       const next = run && callable(fresh).find((r) => !run.includes(r.id));
       // No toast here: it would sit over the panel's buttons, and the panel says it was logged.
       if (next) {
@@ -165,7 +171,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
   const skip = async (row: CallRow) => {
     try {
       await api(`/calls/${row.id}/skip`, { method: "POST" });
-      await mutate();
+      await reload();
       toast.success("Skipped. Their sequence goes on");
     } catch (e) {
       toastError(e);

@@ -44,12 +44,29 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
+import { qs } from "@/lib/api";
+
+/** The count beside a nav link: an endpoint answering `{total}`, and what it counts, for screen readers. */
+export interface NavCount {
+  path: string;
+  what: string;
+}
 
 export interface NavItem {
   label: string;
   href: (projectId: string) => string;
   icon: LucideIcon;
+  count?: (projectId: string) => NavCount;
 }
+
+/** Inbox threads in "Needs reply" that are yours or nobody's, so a new reply shows from any page without counting a teammate's. */
+export const needsReply = (projectId?: string): NavCount => ({
+  path: `/inbox${qs({ project_id: projectId, filter: "needs_reply", owner: "mine_or_unassigned", per_page: 1 })}`,
+  what: "need a reply",
+});
+
+/** The open calls the Calls page lists first, yours and nobody's. The page refreshes it as calls are logged or skipped. */
+export const callsDue = (projectId: string): NavCount => ({ path: `/projects/${projectId}/calls/due`, what: "calls to make" });
 
 // Explee's app routes (/app-auto-gtm/...) mapped to ours. Owners: D1 = campaign work pages, D2 = settings + org pages.
 export const projectNav: { title: string; items: NavItem[] }[] = [
@@ -62,10 +79,10 @@ export const projectNav: { title: string; items: NavItem[] }[] = [
       { label: "Companies", href: (p) => `/app/p/${p}/companies`, icon: Building2 },
       { label: "Leads", href: (p) => `/app/p/${p}/leads`, icon: Users }, // D1
       { label: "Emails", href: (p) => `/app/p/${p}/emails`, icon: Mail }, // D1
-      { label: "Inbox", href: (p) => `/app/p/${p}/inbox`, icon: Inbox }, // D1
+      { label: "Inbox", href: (p) => `/app/p/${p}/inbox`, icon: Inbox, count: needsReply }, // D1
       { label: "LinkedIn", href: (p) => `/app/p/${p}/linkedin-sequence`, icon: UserPlus }, // D1
       { label: "Texts", href: (p) => `/app/p/${p}/texts`, icon: Smartphone },
-      { label: "Calls", href: (p) => `/app/p/${p}/calls`, icon: Phone },
+      { label: "Calls", href: (p) => `/app/p/${p}/calls`, icon: Phone, count: callsDue },
       { label: "Coaching", href: (p) => `/app/p/${p}/coaching`, icon: GraduationCap },
       { label: "Playbook", href: (p) => `/app/p/${p}/playbook`, icon: BookMarked },
       { label: "Feedback", href: (p) => `/app/p/${p}/feedback`, icon: Lightbulb },

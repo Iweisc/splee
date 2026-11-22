@@ -29,6 +29,7 @@ use crate::twilio::{Account, Client};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/calls", get(list))
+        .route("/projects/{id}/calls/due", get(due))
         .route("/calls/{id}/dial", post(dial))
         .route("/calls/{id}/log", post(log))
         .route("/calls/{id}/skip", post(skip))
@@ -157,6 +158,25 @@ pub async fn rows(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: &ListQuery
 async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Query(q): Query<ListQuery>) -> AppResult<Json<Vec<CallRow>>> {
     auth.project(&state.db, id).await?;
     Ok(Json(rows(&state.db, id, Some(auth.user_id), &q).await?))
+}
+
+#[derive(Serialize)]
+struct Due {
+    total: i64,
+}
+
+/// How many open calls the Calls page lists by default, the signed-in member's and nobody's, for the count beside Calls in the
+/// nav. The calls tick cancels the ones of leads who replied, so this doesn't run cancel_stale on every poll like the list does.
+async fn due(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Due>> {
+    auth.project(&state.db, id).await?;
+    let owner = OwnerFilter::IsOrUnassigned(auth.user_id);
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from calls c where c.project_id = $1 and c.status = 'open' and {}", ownership::sql("c", 2, 3)))
+        .bind(id)
+        .bind(owner.mode())
+        .bind(owner.user())
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(Due { total }))
 }
 
 #[derive(Serialize)]
@@ -710,6 +730,35 @@ pub(crate) mod tests {
         assert_eq!(s.call("acme", Method::POST, &format!("/calls/{}/skip", ana.id), json!({})).await.1["status"], "skipped");
         assert_eq!(s.call("acme", Method::POST, &format!("/calls/{}/skip", ana.id), json!({})).await.0, 409);
         assert_eq!(s.call("beta", Method::POST, &format!("/calls/{}/log", ana.id), json!({ "outcome": "connected" })).await.0, 404);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_nav_counts_the_open_calls_that_are_yours_or_nobodys(db: PgPool) {
+        let s = Seeded::start(db).await;
+        let path = format!("/projects/{}/calls/due", s.project);
+        let due = |who: &'static str| {
+            let path = path.clone();
+            let s = &s;
+            async move { s.call(who, Method::GET, &path, json!({})).await }
+        };
+        assert_eq!(due("jo").await, (200, json!({ "total": 0 })));
+
+        // Sam's call is Jo's, Ana's nobody's, and a call that's done or the owner's doesn't count for Jo.
+        let sams = s.open_call(s.sam).await;
+        sqlx::query("update calls set owner_id = $2 where id = $1").bind(sams).bind(s.jo).execute(s.db()).await.unwrap();
+        let ana = emailed_lead(s.db(), s.project, "Ana", "+14155550135", None).await;
+        s.open_call(ana).await;
+        let kai = emailed_lead(s.db(), s.project, "Kai", "+14155550136", None).await;
+        let owners = s.open_call(kai).await;
+        sqlx::query("update calls set owner_id = $2 where id = $1").bind(owners).bind(s.acme_owner().await).execute(s.db()).await.unwrap();
+        let lu = emailed_lead(s.db(), s.project, "Lu", "+14155550137", None).await;
+        let done = s.open_call(lu).await;
+        sqlx::query("update calls set status = 'done', closed_at = now() where id = $1").bind(done).execute(s.db()).await.unwrap();
+        assert_eq!(due("jo").await, (200, json!({ "total": 2 })));
+        assert_eq!(due("acme").await, (200, json!({ "total": 2 })));
+        assert_eq!(due("beta").await.0, 404, "another organization's project");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

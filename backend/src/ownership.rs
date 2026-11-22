@@ -254,7 +254,7 @@ pub enum OwnerFilter {
     Everyone,
     Is(Uuid),
     Unassigned,
-    /// The sidebar's Inbox count: yours and the ones nobody has.
+    /// The sidebar's Inbox and Calls counts: yours and the ones nobody has.
     IsOrUnassigned(Uuid),
 }
 

@@ -8,7 +8,7 @@ import { ArrowUpRight, ChevronsUpDown, HeartHandshake, Inbox, LogOut, Mail, Menu
 import { SupportChat } from "@/components/support-chat";
 import { Logo } from "@/components/ui/logo";
 import { Address, Favicon, Spinner, Toasts } from "@/components/ui/misc";
-import { api, qs } from "@/lib/api";
+import { api } from "@/lib/api";
 import { dropPushHere, keepPushFor } from "@/lib/push";
 import { SOURCE_URL } from "@/lib/source";
 import type { ProjectSummary } from "@/lib/types";
@@ -19,7 +19,7 @@ import { AskSplee } from "./ask-splee";
 import { IncomingCalls } from "./incoming-calls";
 import { ShortcutsDialog } from "./work/shortcuts-dialog";
 import { LoadError } from "./work/states";
-import { orgNav, projectNav } from "./nav";
+import { needsReply, orgNav, projectNav, type NavCount } from "./nav";
 
 const LAST_PROJECT_KEY = "splee:last-project";
 
@@ -103,7 +103,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     params.projectId ?? (projects ? (projects.find((p) => p.id === lastProject)?.id ?? projects[0]?.id ?? null) : lastProject);
   const project = projects?.find((p) => p.id === projectId);
   const pageTitle = titleFor(pathname, projectId, project);
-  const projectInbox = projectId ? `/app/p/${projectId}/inbox` : null;
 
   const logout = async () => {
     await dropPushHere();
@@ -156,7 +155,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {group.items.map((item) => {
                   const href = item.href(projectId);
                   const active = href === `/app/p/${projectId}` ? pathname === href : pathname.startsWith(href);
-                  const count = href === projectInbox ? <NeedsReplyCount projectId={projectId} /> : null;
+                  const count = item.count && <Count {...item.count(projectId)} />;
                   return <NavLink key={item.label} href={href} icon={item.icon} label={item.label} active={active} count={count} />;
                 })}
               </div>
@@ -165,7 +164,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mt-4">
             <p className="px-2 pb-1 font-mono text-[11px] tracking-wide text-muted-foreground uppercase">All projects</p>
             <NavLink href="/app/today" icon={Sun} label="Today" active={pathname === "/app/today"} />
-            <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<NeedsReplyCount />} />
+            <NavLink href="/app/inbox" icon={Inbox} label="Inbox" active={pathname === "/app/inbox"} count={<Count {...needsReply()} />} />
             <NavLink href="/app/emails" icon={Mail} label="Emails" active={pathname === "/app/emails"} />
             <NavLink href="/app/pipeline" icon={SquareKanban} label="Pipeline" active={pathname === "/app/pipeline"} />
             <NavLink href="/app/customers" icon={HeartHandshake} label="Customers" active={pathname === "/app/customers"} />
@@ -276,20 +275,16 @@ function NavLink({
   );
 }
 
-/**
- * Threads in the inbox's "Needs reply" filter that are yours or nobody's, so a new reply is visible from any page without
- * counting a teammate's. Polled like the mailboxes.
- */
-function NeedsReplyCount({ projectId }: { projectId?: string }) {
-  const key = `/inbox${qs({ project_id: projectId, filter: "needs_reply", owner: "mine_or_unassigned", per_page: 1 })}`;
-  const { data } = useSWR<{ total: number }>(key, fetcher, {
+/** A nav link's count, like the Inbox's replies to answer. Polled like the mailboxes. */
+function Count({ path, what }: NavCount) {
+  const { data } = useSWR<{ total: number }>(path, fetcher, {
     refreshInterval: 60_000,
   });
   if (!data?.total) return null;
   return (
     <span className="ml-auto rounded-full bg-foreground px-1.5 text-[11px] leading-[18px] font-medium text-background tabular-nums">
       {data.total > 99 ? "99+" : data.total}
-      <span className="sr-only"> need a reply</span>
+      <span className="sr-only"> {what}</span>
     </span>
   );
 }
