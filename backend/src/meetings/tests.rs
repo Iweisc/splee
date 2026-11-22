@@ -746,6 +746,7 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     let toms: Uuid = sqlx::query_scalar("select id from meetings where external_id = 'ff4'").fetch_one(s.db()).await.unwrap();
     let (outcome, _) = run_notes(&s.state, toms, answer("Meeting booked")).await;
     assert!(outcome.message.contains("No follow-up"), "{}", outcome.message);
+    assert_eq!(notes().len(), 3, "Sarah's three meetings, and nothing for Tom");
     assert_eq!(s.call("acme", Method::POST, &format!("/meetings/{toms}/stage"), json!({ "accept": true })).await.0, 200);
     let tom_stage: String = sqlx::query_scalar("select s.name from deals d join deal_stages s on s.id = d.stage_id where d.lead_id = $1").bind(s.tom).fetch_one(s.db()).await.unwrap();
     assert_eq!(tom_stage, "Meeting booked");

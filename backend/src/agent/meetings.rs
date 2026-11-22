@@ -130,12 +130,14 @@ where
     });
 
     let mut tx = db.begin().await?;
-    let draft = match follow_up_blocker(&mut tx, org_id, &lead).await? {
-        Some(_) => None,
-        None => {
-            let body = settings.sign(notes.follow_up_body.trim());
-            Some(draft_in_thread(&mut tx, &lead, "meeting_follow_up", &notes.follow_up_subject, &body, lang.code).await?)
-        }
+    // The lead may have opted out while the model was writing.
+    let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead.id).fetch_one(&mut *tx).await?;
+    let blocked = follow_up_blocker(&mut tx, org_id, &lead).await?.is_some();
+    let draft = if blocked {
+        None
+    } else {
+        let body = settings.sign(notes.follow_up_body.trim());
+        Some(draft_in_thread(&mut tx, &lead, "meeting_follow_up", &notes.follow_up_subject, &body, lang.code).await?)
     };
     // A run started twice for the meeting writes its notes once.
     let saved = sqlx::query(
@@ -155,8 +157,11 @@ where
         return Ok(Outcome::new("The meeting already has notes"));
     }
     tx.commit().await?;
-    let link = crate::hooks::lead_url(&ctx.state.cfg.public_url, meeting.project_id, lead.id);
-    crate::crm::sync(&ctx.state, meeting.project_id, &lead, &crm_note(&meeting, notes.summary.trim(), &next_steps, &link)).await;
+    // A lead we wouldn't email isn't copied into the CRMs either.
+    if !blocked {
+        let link = crate::hooks::lead_url(&ctx.state.cfg.public_url, meeting.project_id, lead.id);
+        crate::crm::sync(&ctx.state, meeting.project_id, &lead, &crm_note(&meeting, notes.summary.trim(), &next_steps, &link)).await;
+    }
     let message = match (draft, stage) {
         (Some(_), Some(s)) => format!("Wrote the meeting notes, drafted the follow-up and suggested {}", s.name),
         (Some(_), None) => "Wrote the meeting notes and drafted the follow-up".to_string(),

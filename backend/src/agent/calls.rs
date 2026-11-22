@@ -101,7 +101,10 @@ where
     // A run started twice for the call drafts once and tells the CRMs once.
     let (drafted, summarized): (Option<Uuid>, String) =
         sqlx::query_as("select follow_up_email_id, summary from calls where id = $1 for update").bind(call.id).fetch_one(&mut *tx).await?;
-    let draft = if drafted.is_some() || !talked || follow_up_blocker(&mut tx, org_id, &lead).await?.is_some() {
+    // The lead may have opted out while the model was writing.
+    let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead.id).fetch_one(&mut *tx).await?;
+    let blocked = follow_up_blocker(&mut tx, org_id, &lead).await?.is_some();
+    let draft = if drafted.is_some() || !talked || blocked {
         None
     } else {
         Some(draft_in_thread(&mut tx, &lead, "call_follow_up", subject, &settings.sign(body), lang.code).await?)
@@ -114,8 +117,9 @@ where
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    // Like a hot reply, only a conversation goes to the CRMs, not a voicemail or a gatekeeper.
-    if talked && summarized.is_empty() {
+    // Like a hot reply, only a conversation goes to the CRMs, not a voicemail or a gatekeeper, and only with a lead we'd
+    // still email.
+    if talked && !blocked && summarized.is_empty() {
         let link = crate::hooks::lead_url(&ctx.state.cfg.public_url, call.project_id, lead.id);
         crate::crm::sync(&ctx.state, call.project_id, &lead, &crm_note(&call, answer.summary.trim(), answer.next_step.trim(), &link)).await;
     }
@@ -220,13 +224,17 @@ mod tests {
         let notes = || crm.records("zoho:Note").iter().map(|n| n["Note_Content"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         let note = |who: &str| format!("Call notes from Splee. {who}.\n\nSam wants to see results first.\n\nNext step: Send the case study.\n{link}");
         assert_eq!(notes(), [note("We called them, 4 min")], "the CRM gets the call");
+        // One the lead made says so, and without a length when Twilio gave none.
+        let called_us = call("Lead: Hi, it's Sam.\nUs: Hi Sam!", true).await.unwrap();
+        summarize_with(&db, called_us, ("Thanks", "Hi Sam, thanks.")).await;
+        assert_eq!(notes()[1], note("They called us"));
 
         // A second run for the call doesn't draft again or tell the CRM twice.
         let (outcome, _) = summarize_with(&db, talked, ("Again", "Hi Sam, again.")).await;
         assert_eq!(outcome.message, "Summarized the call");
         let drafts: i64 = sqlx::query_scalar("select count(*) from email_messages where lead_id = $1").bind(lead).fetch_one(&db).await.unwrap();
-        assert_eq!(drafts, 1);
-        assert_eq!(notes().len(), 1);
+        assert_eq!(drafts, 2);
+        assert_eq!(notes().len(), 2);
 
         // A voicemail gets no follow-up or note, and a call the lead made is told the right way round.
         let voicemail = call("Lead: You've reached Sam, leave a message.", true).await.unwrap();
@@ -235,12 +243,12 @@ mod tests {
         assert!(prompt.contains("a sales call a lead (Sam Lee, Smile Dental) made to Fieldnote. \"Lead\" is the caller"), "{prompt}");
         let email: Option<Uuid> = sqlx::query_scalar("select follow_up_email_id from calls where id = $1").bind(voicemail).fetch_one(&db).await.unwrap();
         assert_eq!(email, None);
-        assert_eq!(notes().len(), 1);
+        assert_eq!(notes().len(), 2);
 
-        // Nor does a lead who opted out, though the CRM still hears about the conversation.
+        // Nor does a lead who opted out, and the CRM doesn't hear about them.
         sqlx::query("update leads set status = 'unsubscribed' where id = $1").bind(lead).execute(&db).await.unwrap();
-        let after = call("Lead: Hi, it's Sam.\nUs: Hi Sam!", true).await.unwrap();
+        let after = call("Us: Hi Sam.\nLead: Hi!", false).await.unwrap();
         assert_eq!(summarize_with(&db, after, ("Thanks", "Hi Sam, thanks.")).await.0.message, "Summarized the call");
-        assert_eq!(notes()[1], note("They called us"));
+        assert_eq!(notes().len(), 2);
     }
 }
