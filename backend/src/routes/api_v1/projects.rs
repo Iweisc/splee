@@ -78,6 +78,8 @@ pub(in crate::routes) struct ProjectControls {
     monthly_cap_micros: Option<i64>,
     /// A first email to a lead on Google or Microsoft mail goes out from a mailbox on the same provider when one has room.
     match_provider: bool,
+    /// Send days and hours apply in each lead's time zone, from their number or country, else the project's.
+    lead_time_zone: bool,
     /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
     sender_name: String,
 }
@@ -100,6 +102,7 @@ impl From<ProjectSettings> for ProjectControls {
             review_window_hours: s.review_window_hours,
             monthly_cap_micros: s.monthly_cap_micros,
             match_provider: s.match_provider,
+            lead_time_zone: s.lead_time_zone,
             sender_name: s.sender_name,
         }
     }

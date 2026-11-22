@@ -395,6 +395,8 @@ pub struct ProjectSettings {
     pub monthly_cap_micros: Option<i64>,
     /// A first email to a lead on Google or Microsoft mail goes out from a mailbox on the same provider when one has room.
     pub match_provider: bool,
+    /// First emails and follow-ups keep to the send days and hours in the lead's time zone, when their number or country has one.
+    pub lead_time_zone: bool,
     /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.

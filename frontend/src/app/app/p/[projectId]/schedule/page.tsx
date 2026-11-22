@@ -4,7 +4,7 @@ import { CalendarClock } from "lucide-react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
-import { Field, Select } from "@/components/ui/form";
+import { Field, Select, Switch } from "@/components/ui/form";
 import type { HourStats, WeekdayStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +57,15 @@ export default function SchedulePage() {
                     Use {browserZone.replaceAll("_", " ")}
                   </Button>
                 )}
+              </div>
+              <div className="mt-5 flex items-start justify-between gap-4">
+                <div className="text-sm">
+                  <p className="font-medium">In each lead&apos;s own time zone</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    From their phone number or country. Leads in a country with several time zones, or with neither, use the one above.
+                  </p>
+                </div>
+                <Switch checked={s.lead_time_zone} onChange={(on) => update({ lead_time_zone: on })} label="In each lead's own time zone" />
               </div>
             </Section>
 
@@ -112,7 +121,8 @@ export default function SchedulePage() {
               {valid && (
                 <p className="mt-5 flex items-center gap-2 rounded-xl bg-muted px-4 py-3 text-sm">
                   <CalendarClock className="size-4 text-muted-foreground" />
-                  Sends {formatDays(s.send_days)}, {hour(s.send_start_hour)}–{hour(s.send_end_hour)} {s.timezone}
+                  Sends {formatDays(s.send_days)}, {hour(s.send_start_hour)}–{hour(s.send_end_hour)}{" "}
+                  {s.lead_time_zone ? `in each lead's time zone, else ${s.timezone}` : s.timezone}
                 </p>
               )}
             </Section>
