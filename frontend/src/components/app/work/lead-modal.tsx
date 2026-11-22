@@ -50,7 +50,7 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
   // Editing and deleting replace the whole window's content, which dropped keyboard focus on the page. Coming back, the
   // button that opened them takes it again.
   const [back, setBack] = useState<"edit" | "remove" | null>(null);
-  const [now] = useState(Date.now);
+  const meetingPassed = usePassed(lead?.meeting_at ?? null);
   const [markingMissed, setMarkingMissed] = useState(false);
 
   if (error) return <LoadError error={error} retry={() => mutate()} />;
@@ -97,7 +97,7 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
       setMarkingMissed(false);
     }
   };
-  const missed = lead.status === "meeting_booked" && !!lead.meeting_at && new Date(lead.meeting_at).getTime() <= now;
+  const missed = lead.status === "meeting_booked" && meetingPassed;
 
   if (editing) {
     return (
@@ -570,6 +570,19 @@ function JobChangeNote({ change }: { change: JobChangeFrom }) {
       </div>
     </div>
   );
+}
+
+/** Whether `at` has passed, turning true at that moment while the window stays open. */
+function usePassed(at: string | null): boolean {
+  const [now, setNow] = useState(Date.now);
+  const when = at ? new Date(at).getTime() : null;
+  useEffect(() => {
+    if (when === null || when <= now) return;
+    // setTimeout can't wait longer than about 24.8 days. It wakes then and waits again.
+    const t = setTimeout(() => setNow(Date.now()), Math.min(when - Date.now(), 2 ** 31 - 1));
+    return () => clearTimeout(t);
+  }, [when, now]);
+  return when !== null && when <= now;
 }
 
 function Detail({ label, icon, wide, children }: { label: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {

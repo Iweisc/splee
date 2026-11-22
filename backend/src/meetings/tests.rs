@@ -808,15 +808,24 @@ async fn a_missed_meeting_puts_the_lead_back_and_drafts_an_offer_of_another_time
     book(s.sarah, 60).execute(s.db()).await.unwrap();
     assert_eq!(no_show(s.sarah, "acme").await.0, 409);
     book(s.sarah, -30).execute(s.db()).await.unwrap();
-    let missed_at: DateTime<Utc> = sqlx::query_scalar("select meeting_at from leads where id = $1").bind(s.sarah).fetch_one(s.db()).await.unwrap();
     assert_eq!(no_show(s.sarah, "beta").await.0, 404);
 
-    // Sarah goes back to Hot without the old time, once, and one email is queued.
-    let (code, lead) = no_show(s.sarah, "acme").await;
+    // Sarah goes back to Hot without the old time, once, and one email is queued. A move that lands while she's being
+    // marked decides which meeting she missed.
+    let mut moving = s.db().begin().await.unwrap();
+    let missed_at: DateTime<Utc> = sqlx::query_scalar("update leads set meeting_at = now() - interval '10 minutes' where id = $1 returning meeting_at")
+        .bind(s.sarah)
+        .fetch_one(&mut *moving)
+        .await
+        .unwrap();
+    let ((code, lead), ()) = tokio::join!(no_show(s.sarah, "acme"), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        moving.commit().await.unwrap();
+    });
     assert_eq!((code, lead["status"].as_str(), &lead["meeting_at"]), (200, Some("hot"), &Value::Null), "{lead}");
     assert_eq!(no_show(s.sarah, "acme").await.0, 409, "a second click finds it done");
-    let runs: i64 = sqlx::query_scalar("select count(*) from agent_runs where kind = 'no_show_follow_up'").fetch_one(s.db()).await.unwrap();
-    assert_eq!(runs, 1);
+    let runs: Vec<Value> = sqlx::query_scalar("select input from agent_runs where kind = 'no_show_follow_up'").fetch_all(s.db()).await.unwrap();
+    assert_eq!(runs, [json!({ "lead_id": s.sarah, "missed_at": missed_at })]);
 
     // The CRM hears about it in the background.
     let link = format!("{}/app/p/{}/inbox?lead={}", s.state.cfg.public_url, s.project, s.sarah);

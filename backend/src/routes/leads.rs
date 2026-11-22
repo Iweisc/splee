@@ -624,17 +624,19 @@ async fn upcoming_meetings(State(state): State<AppState>, auth: Auth, Path(id): 
 async fn no_show(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<LeadDetail>> {
     let lead: Lead = util_scope::load(&state.db, "leads", id, auth.org_id).await?;
     let mut tx = state.db.begin().await?;
-    // Only the request that moves the lead queues the email, if someone clicks twice.
-    let moved: Option<Lead> = sqlx::query_as(
-        "update leads set status = 'hot', meeting_at = null where id = $1 and status = 'meeting_booked' and meeting_at <= now() returning *",
-    )
-    .bind(lead.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(moved) = moved else {
+    // Read under the row's lock, so a click twice queues one email and a move in the meantime can't change which meeting
+    // was missed.
+    let missed_at: Option<Ts> =
+        sqlx::query_scalar("select meeting_at from leads where id = $1 and status = 'meeting_booked' and meeting_at <= now() for update")
+            .bind(lead.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+    let Some(missed_at) = missed_at else {
         return Err(AppError::Conflict("Only a booked meeting whose time has come can be missed".into()));
     };
-    let input = json!({ "lead_id": lead.id, "missed_at": lead.meeting_at });
+    let moved: Lead = sqlx::query_as("update leads set status = 'hot', meeting_at = null where id = $1 returning *").bind(lead.id).fetch_one(&mut *tx).await?;
+    let input = json!({ "lead_id": lead.id, "missed_at": missed_at });
     agent::enqueue(&mut *tx, agent::kind::NO_SHOW, Some(lead.project_id), Some(auth.org_id), input).await?;
     tx.commit().await?;
     crate::hooks::announce_no_show(&state, &moved);
