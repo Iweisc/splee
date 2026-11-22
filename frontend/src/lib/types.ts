@@ -259,6 +259,8 @@ export interface ProjectSettings extends CrmStatus {
   send_days: number[]; // 1 = Monday ... 7 = Sunday
   send_start_hour: number;
   send_end_hour: number;
+  /** Dates like "2026-12-25" when no first emails, follow-ups, texts or LinkedIn steps go out, in the send window's time zone. */
+  days_off: string[];
   follow_ups: FollowUp[];
   booking_link: string;
   auto_reply_mode: "off" | "approve" | "auto";

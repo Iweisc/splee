@@ -961,6 +961,8 @@ pub(super) fn tools() -> Vec<Value> {
                                     "description": "Optional. First emails to Gmail or Outlook leads go from a mailbox on the same provider" },
                 "lead_time_zone": { "type": "boolean",
                                     "description": "Optional. Send days and hours apply in each lead's time zone, from their phone or country" },
+                "days_off": { "type": "array", "maxItems": 100, "items": { "type": "string", "format": "date" },
+                              "description": "Optional. Dates like 2026-12-25 when no first emails, follow-ups, texts or LinkedIn steps go out" },
                 "sender_name": { "type": "string", "maxLength": 100,
                                  "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),

@@ -1,10 +1,11 @@
 "use client";
 
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, X } from "lucide-react";
+import { useState } from "react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
-import { Field, Select, Switch } from "@/components/ui/form";
+import { Field, Input, Select, Switch } from "@/components/ui/form";
 import type { HourStats, WeekdayStats } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -12,6 +13,12 @@ const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const TIMEZONES = Intl.supportedValuesOf("timeZone");
 
 const hour = (h: number) => `${String(h).padStart(2, "0")}:00`;
+// Keep in sync with MAX_DAYS_OFF in backend/src/routes/settings.rs.
+const MAX_DAYS_OFF = 100;
+
+/** "Fri, Dec 25, 2026" for "2026-12-25", read as a calendar date in UTC so the viewer's time zone can't move it a day. */
+const dayLabel = (d: string) =>
+  new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 /** [1,2,3,4,5] -> "Mon–Fri", [1,3,5] -> "Mon, Wed, Fri", [1,2,3,6,7] -> "Mon–Wed, Sat, Sun" */
 function formatDays(days: number[]): string {
@@ -126,6 +133,7 @@ export default function SchedulePage() {
                 </p>
               )}
             </Section>
+            <DaysOff days={s.days_off} onChange={(days_off) => update({ days_off })} />
             <RepliesSection<WeekdayStats> stat="weekdays" title="Replies by send day" column="Day" label={(r) => DAYS[r.weekday - 1]!} />
             <RepliesSection<HourStats>
               stat="hours"
@@ -137,5 +145,43 @@ export default function SchedulePage() {
         );
       }}
     </ProjectSettingsPage>
+  );
+}
+
+function DaysOff({ days, onChange }: { days: string[]; onChange: (days: string[]) => void }) {
+  const [picked, setPicked] = useState("");
+  const add = () => {
+    onChange([...days, picked].sort());
+    setPicked("");
+  };
+  return (
+    <Section
+      title="Days off"
+      description="No first emails, follow-ups, texts or LinkedIn steps go out on these dates, like holidays. Replies still do."
+    >
+      <div className="flex max-w-sm gap-2">
+        <Input type="date" value={picked} onChange={(e) => setPicked(e.target.value)} aria-label="Day off" className="flex-1" />
+        <Button variant="outline" onClick={add} disabled={!picked || days.includes(picked) || days.length >= MAX_DAYS_OFF}>
+          Add
+        </Button>
+      </div>
+      {days.length > 0 && (
+        <ul className="mt-4 flex flex-wrap gap-2">
+          {days.map((d) => (
+            <li key={d} className="flex items-center gap-1 rounded-lg border border-border-strong bg-card py-1 pr-1 pl-3 text-sm">
+              {dayLabel(d)}
+              <button
+                type="button"
+                onClick={() => onChange(days.filter((x) => x !== d))}
+                aria-label={`Remove ${dayLabel(d)}`}
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
   );
 }

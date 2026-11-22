@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Datelike, TimeZone, Timelike, Utc};
+use chrono::{Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use serde_json::json;
 use uuid::Uuid;
@@ -46,6 +46,7 @@ struct SendingProject {
     daily_email_limit: i32,
     timezone: String,
     send_days: Vec<i32>,
+    days_off: Vec<NaiveDate>,
     send_start_hour: i32,
     send_end_hour: i32,
     paused: bool,
@@ -62,7 +63,7 @@ impl SendingProject {
     }
 
     fn in_window(&self, now: Ts) -> bool {
-        in_window(self.tz(), &self.send_days, self.send_start_hour, self.send_end_hour, now)
+        in_window(self.tz(), &self.send_days, &self.days_off, self.send_start_hour, self.send_end_hour, now)
     }
 
     fn day_start(&self, now: Ts) -> Ts {
@@ -76,26 +77,28 @@ pub fn day_start(tz: Tz, now: Ts) -> Ts {
     tz.from_local_datetime(&midnight).earliest().map(|d| d.with_timezone(&Utc)).unwrap_or(now)
 }
 
-/// Whether a project's send days and hours, in its timezone, include now. LinkedIn sends keep to the same window.
-pub fn in_window(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, now: Ts) -> bool {
+/// Whether a project's send days and hours, in its timezone, include now, and it isn't one of its days off there. LinkedIn
+/// sends keep to the same window.
+pub fn in_window(tz: Tz, days: &[i32], days_off: &[NaiveDate], start_hour: i32, end_hour: i32, now: Ts) -> bool {
     let local = now.with_timezone(&tz);
     let day = local.weekday().number_from_monday() as i32;
     let hour = local.hour() as i32;
-    days.contains(&day) && hour >= start_hour && hour < end_hour
+    days.contains(&day) && hour >= start_hour && hour < end_hour && !days_off.contains(&local.date_naive())
 }
 
-/// `from` when it's in the send window, else the start of the next one within a week, or None for a window that never opens.
-/// Mirrors nextSendWindow on the project page.
-pub fn window_opens(tz: Tz, days: &[i32], start_hour: i32, end_hour: i32, from: Ts) -> Option<Ts> {
-    if in_window(tz, days, start_hour, end_hour, from) {
+/// `from` when it's in the send window, else the start of the next one within a week, plus a week for each day off, or None for a window
+/// that never opens. Mirrors nextSendWindow on the project page.
+pub fn window_opens(tz: Tz, days: &[i32], days_off: &[NaiveDate], start_hour: i32, end_hour: i32, from: Ts) -> Option<Ts> {
+    if in_window(tz, days, days_off, start_hour, end_hour, from) {
         return Some(from);
     }
     // Quarter-hour steps, because some timezones are offset by 30 or 45 minutes.
     let quarter = chrono::Duration::minutes(15);
     let mut t = from.with_minute(from.minute() / 15 * 15).and_then(|t| t.with_second(0)).and_then(|t| t.with_nanosecond(0)).unwrap_or(from);
-    for _ in 0..8 * 24 * 4 {
+    // A day off can take a whole week's only send day, so each adds a week to how far it looks.
+    for _ in 0..(8 + 7 * days_off.len()) * 24 * 4 {
         t += quarter;
-        if in_window(tz, days, start_hour, end_hour, t) {
+        if in_window(tz, days, days_off, start_hour, end_hour, t) {
             return Some(t);
         }
     }
@@ -109,7 +112,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     }
     schedule_follow_ups(state).await?;
     let projects = sqlx::query_as::<_, SendingProject>(
-        "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.send_start_hour, s.send_end_hour, s.paused,
+        "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.days_off, s.send_start_hour, s.send_end_hour, s.paused,
                 s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros, s.match_provider,
                 s.lead_time_zone
          from projects p join project_settings s on s.project_id = p.id
@@ -251,7 +254,7 @@ async fn closed_zones(db: &sqlx::PgPool, p: &SendingProject, now: Ts) -> anyhow:
     let mut closed = Zones::default();
     for (prefix, country) in pairs {
         let tz = crate::phone::time_zone(&prefix, &country).unwrap_or(p.tz());
-        if !in_window(tz, &p.send_days, p.send_start_hour, p.send_end_hour, now) {
+        if !in_window(tz, &p.send_days, &p.days_off, p.send_start_hour, p.send_end_hour, now) {
             closed.phone_prefixes.push(prefix);
             closed.countries.push(country);
         }

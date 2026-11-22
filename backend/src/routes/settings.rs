@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -106,6 +106,8 @@ pub(super) struct SettingsBody {
     monthly_cap_micros: Option<Option<i64>>,
     match_provider: Option<bool>,
     lead_time_zone: Option<bool>,
+    /// Sorted and deduplicated on save.
+    days_off: Option<Vec<NaiveDate>>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -165,6 +167,7 @@ pub(super) struct Controls {
     monthly_cap_micros: Option<Option<i64>>,
     match_provider: Option<bool>,
     lead_time_zone: Option<bool>,
+    days_off: Option<Vec<NaiveDate>>,
     sender_name: Option<String>,
 }
 
@@ -185,6 +188,7 @@ impl From<Controls> for SettingsBody {
             monthly_cap_micros: c.monthly_cap_micros,
             match_provider: c.match_provider,
             lead_time_zone: c.lead_time_zone,
+            days_off: c.days_off,
             sender_name: c.sender_name,
             ..Default::default()
         }
@@ -200,6 +204,9 @@ async fn update_settings(
     auth.project(&state.db, id).await?;
     Ok(Json(apply(&state.db, auth.org_id, id, body).await?))
 }
+
+/// Each one stretches how far ahead mail::window_opens looks, so keep it to a few years of holidays.
+const MAX_DAYS_OFF: usize = 100;
 
 /// Saves the fields the body fills in, with the settings page's checks, for a project the caller already checked.
 pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBody) -> AppResult<ProjectSettings> {
@@ -258,6 +265,14 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     }
     if body.monthly_cap_micros.flatten().is_some_and(|m| !(1_000_000..=1_000_000_000_000).contains(&m)) {
         return bad("The monthly cap must be between $1 and $1,000,000");
+    }
+    let days_off = body.days_off.clone().map(|mut days| {
+        days.sort();
+        days.dedup();
+        days
+    });
+    if days_off.as_ref().is_some_and(|days| days.len() > MAX_DAYS_OFF) {
+        return bad("A project can have up to 100 days off");
     }
     let sender_name = body.sender_name.as_deref().map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "));
     // Checked on what was sent, since collapsing the spaces would hide a newline or a tab.
@@ -344,7 +359,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end,
            assign_territories = coalesce($48, assign_territories),
            match_provider = coalesce($49, match_provider),
-           lead_time_zone = coalesce($50, lead_time_zone)
+           lead_time_zone = coalesce($50, lead_time_zone),
+           days_off = coalesce($51, days_off)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -397,6 +413,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(assign_territories)
     .bind(body.match_provider)
     .bind(body.lead_time_zone)
+    .bind(days_off)
     .fetch_one(db)
     .await?;
     Ok(settings)

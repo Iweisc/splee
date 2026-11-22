@@ -80,6 +80,8 @@ pub(in crate::routes) struct ProjectControls {
     match_provider: bool,
     /// Send days and hours apply in each lead's time zone, from their number or country, else the project's.
     lead_time_zone: bool,
+    /// Dates nothing cold goes out on, like holidays, as "2026-12-25".
+    days_off: Vec<chrono::NaiveDate>,
     /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
     sender_name: String,
 }
@@ -103,6 +105,7 @@ impl From<ProjectSettings> for ProjectControls {
             monthly_cap_micros: s.monthly_cap_micros,
             match_provider: s.match_provider,
             lead_time_zone: s.lead_time_zone,
+            days_off: s.days_off,
             sender_name: s.sender_name,
         }
     }
