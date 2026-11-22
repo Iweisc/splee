@@ -301,27 +301,77 @@ async fn a_call_starts_in_the_callers_aircall_workspace_after_the_usual_checks(d
     assert!(code == 409 && body["error"].as_str().unwrap().contains("Call between 8:00 and 20:00 their time"), "{body}");
     zone(12).await.unwrap();
 
-    // It comes back when it ends and closes the step it started from, though Dan has an earlier step open and Dana, whom the
-    // team spoke to more recently, has his number.
-    let insert = "insert into calls (project_id, lead_id, kind, step, status, to_number, due_at) values ($1, $2, $3, 1, 'open', '+14155550134', $4) returning id";
-    let earlier: Uuid =
-        sqlx::query_scalar(insert).bind(s.project).bind(dan).bind("sequence").bind(Utc::now() - chrono::Duration::days(1)).fetch_one(s.db()).await.unwrap();
-    let dana: Uuid = sqlx::query_scalar(
-        "insert into leads (project_id, full_name, phone, status, last_contacted_at) values ($1, 'Dana Ross', '+14155550134', 'contacted', now()) returning id",
-    )
-    .bind(s.project)
-    .fetch_one(s.db())
-    .await
-    .unwrap();
-    let danas: Uuid = sqlx::query_scalar(insert).bind(s.project).bind(dana).bind("manual").bind(Utc::now()).fetch_one(s.db()).await.unwrap();
-    let mut ended = aircall_call(201, "+1 415-555-0134", "outbound", true, 300, 90);
-    ended["user"]["email"] = json!("ACME@acme.example");
-    assert_eq!(s.event(&s.path_token().await, 1, "call.ended", ended).await, (200, json!({ "matched": true })));
-    let closed: (String, Option<i64>) = sqlx::query_as("select status, aircall_id from calls where id = $1").bind(call).fetch_one(s.db()).await.unwrap();
-    assert_eq!(closed, ("done".into(), Some(201)));
-    let open = "select id from calls where status = 'open' and lead_id in ($1, $2) order by due_at";
-    let open: Vec<Uuid> = sqlx::query_scalar(open).bind(dan).bind(dana).fetch_all(s.db()).await.unwrap();
-    assert_eq!(open, [earlier, danas]);
+    // Marked once Aircall took it, so the call it sends back closes this step. See the next test.
+    let marked = "select u.email::text, c.aircall_dialed_at is not null from calls c left join users u on u.id = c.aircall_dialed_by where c.id = $1";
+    let marked: (Option<String>, bool) = sqlx::query_as(marked).bind(call).fetch_one(s.db()).await.unwrap();
+    assert_eq!(marked, (Some("acme@acme.example".into()), true));
+    sqlx::query("update calls set status = 'done' where id = $1").bind(call).execute(s.db()).await.unwrap();
     assert_eq!(dial().await.1["error"], "This call was already logged, skipped or cancelled.");
     assert_eq!(s.fake.dialed.lock().unwrap().len(), 1, "nothing else reached Aircall");
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool) {
+    let s = Seeded::start(db).await;
+    assert_eq!(s.connect().await.0, 200);
+    let token = s.path_token().await;
+    // Dan and Dana share a number, and the team spoke to Dana last, so a call nobody started from Splee goes to her.
+    let lead = |name: &'static str, contacted: bool| {
+        sqlx::query_scalar::<_, Uuid>(
+            "insert into leads (project_id, full_name, phone, status, last_contacted_at)
+             values ($1, $2, '+14155550134', 'contacted', case when $3 then now() end) returning id",
+        )
+        .bind(s.project)
+        .bind(name)
+        .bind(contacted)
+        .fetch_one(s.db())
+    };
+    let (dan, dana) = (lead("Dan Ross", false).await.unwrap(), lead("Dana Ross", true).await.unwrap());
+    // An open step due `due` minutes from now, which Jo put in Aircall `dialed` minutes ago.
+    let step = |lead: Uuid, due: i32, dialed: Option<i32>| {
+        sqlx::query_scalar::<_, Uuid>(
+            "insert into calls (project_id, lead_id, kind, status, due_at, aircall_dialed_by, aircall_dialed_at)
+             values ($1, $2, 'manual', 'open', now() + make_interval(mins => $3), $4, now() - make_interval(mins => $5)) returning id",
+        )
+        .bind(s.project)
+        .bind(lead)
+        .bind(due)
+        .bind(dialed.map(|_| s.jo))
+        .bind(dialed)
+        .fetch_one(s.db())
+    };
+    let dans_first = step(dan, -1440, None).await.unwrap();
+    let dans_second = step(dan, 0, Some(20)).await.unwrap();
+    let danas_first = step(dana, -1440, None).await.unwrap();
+    let danas_second = step(dana, 0, Some(5)).await.unwrap();
+    // Jo is calling Dana's first step from the browser, which marks it the way Twilio's dial does.
+    sqlx::query("update calls set called_by = $2, called_at = now(), to_number = '+14155550134', twilio_sid = 'CA1', call_status = 'in-progress' where id = $1")
+        .bind(danas_first)
+        .bind(s.jo)
+        .execute(s.db())
+        .await
+        .unwrap();
+    let ended = |id: i64, ago: i64| aircall_call(id, "+1 415-555-0134", "outbound", false, ago, 30);
+    let status = |id: Uuid| sqlx::query_as::<_, (String, Option<i64>)>("select status, aircall_id from calls where id = $1").bind(id).fetch_one(s.db());
+
+    // A call that started 15 minutes ago, arriving late, closes the step put in Aircall before it, not the newer one.
+    assert_eq!(s.event(&token, 1, "call.ended", ended(201, 900)).await.1, json!({ "matched": true }));
+    assert_eq!(status(dans_second).await.unwrap(), ("done".into(), Some(201)));
+    // One that started a minute ago closes Dana's step put in Aircall, not the earlier one Jo is calling through Twilio.
+    assert_eq!(s.event(&token, 1, "call.ended", ended(202, 60)).await.1, json!({ "matched": true }));
+    assert_eq!(status(danas_second).await.unwrap(), ("done".into(), Some(202)));
+    assert_eq!(status(danas_first).await.unwrap(), ("open".into(), None));
+
+    // A step put in Aircall two hours ago and never called doesn't take a call now, which goes to Dana.
+    sqlx::query("update calls set aircall_dialed_by = $2, aircall_dialed_at = now() - interval '2 hours' where id = $1")
+        .bind(dans_first)
+        .bind(s.jo)
+        .execute(s.db())
+        .await
+        .unwrap();
+    assert_eq!(s.event(&token, 1, "call.ended", ended(203, 60)).await.1, json!({ "matched": true }));
+    assert_eq!(status(dans_first).await.unwrap(), ("open".into(), None));
+    assert_eq!(status(danas_first).await.unwrap(), ("done".into(), Some(203)));
 }

@@ -233,15 +233,20 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
             .bind(&e.user_email)
             .fetch_optional(&mut *tx)
             .await?;
-    // The step they started in Aircall from the Calls page, which the routes' dial marks with who and the number.
+    // The step they put in Aircall from the Calls page, if the call started within half an hour of that. The latest one put
+    // there before the call started wins, so a late event doesn't take a newer step's place. The minute after allows for Aircall's
+    // clock running behind.
     let dialed: Option<(Uuid, Uuid)> = match user.filter(|_| !e.inbound) {
         Some(user) => sqlx::query_as(
-            "select id, lead_id from calls where project_id = $1 and status = 'open' and called_by = $2 and to_number = $3
-             order by called_at desc limit 1",
+            "select c.id, c.lead_id from calls c join leads l on l.id = c.lead_id
+             where c.project_id = $1 and c.status = 'open' and c.aircall_dialed_by = $2 and l.phone = $3
+               and c.aircall_dialed_at between $4 - interval '30 minutes' and $4 + interval '1 minute'
+             order by c.aircall_dialed_at desc limit 1",
         )
         .bind(c.project_id)
         .bind(user)
         .bind(&e.number)
+        .bind(e.started_at)
         .fetch_optional(&mut *tx)
         .await?,
         None => None,
