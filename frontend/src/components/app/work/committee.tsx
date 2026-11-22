@@ -9,7 +9,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { BuyingCommitteeView, CommitteeRole } from "@/lib/types";
 import { plural, timeAgo } from "@/lib/utils";
-import { MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, MicroLabel, toastError } from "./states";
 import { LEAD_STATUS } from "./status";
 
 const ROLES: Record<CommitteeRole, { label: string; tone: BadgeTone }> = {
@@ -66,9 +66,8 @@ export function BuyingCommitteeCard({
 
   return (
     <section className="rounded-xl border border-border p-4">
-      {/* The button drops under the text in a narrow lead window rather than squeezing it into a column a few words wide. */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 basis-56">
+      <CardHeader>
+        <CardHeaderText>
           {/* Top-aligned: a long company name wraps the label, and centring would put the icon beside its second line. */}
           <MicroLabel className="flex items-start gap-1.5">
             <Users className="mt-px size-3.5 shrink-0" /> Buying committee at {company}
@@ -80,7 +79,7 @@ export function BuyingCommitteeCard({
                 ? `${committee.summary} Mapped ${timeAgo(latest.created_at)}.`
                 : `${plural(data.people.length, "person", "people")} here so far. The agent can say who decides and find who's missing.`}
           </p>
-        </div>
+        </CardHeaderText>
         {working ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -91,7 +90,7 @@ export function BuyingCommitteeCard({
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
 
       <ul className="mt-3 flex flex-col divide-y divide-border">
         {data.people.map((p) => {

@@ -10,7 +10,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal } from "@/lib/types";
 import { plural } from "@/lib/utils";
-import { toastError } from "./states";
+import { CardHeader, CardHeaderText, toastError } from "./states";
 
 /** Keep in sync with QUIET_DAYS in backend/src/agent/nudges.rs. */
 export const QUIET_DAYS = 14;
@@ -83,8 +83,8 @@ export function QuietDeal({ deal: initial }: { deal: Deal }) {
 
   return (
     <section className="rounded-xl border border-amber-200 bg-amber-50/50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium text-amber-800">
             <Hourglass className="size-3.5" /> {days === null ? "Nudged while quiet" : `Quiet for ${plural(days, "day")}`}
           </p>
@@ -95,7 +95,7 @@ export function QuietDeal({ deal: initial }: { deal: Deal }) {
                 ? `No nudge: ${nudge.why}.`
                 : nudge?.why || "No email either way, call or stage change since. The agent can write a nudge with a reason to answer now."}
           </p>
-        </div>
+        </CardHeaderText>
         {writing ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -106,7 +106,7 @@ export function QuietDeal({ deal: initial }: { deal: Deal }) {
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
 
       {draft && (
         <div className="mt-3 rounded-lg border border-border bg-card p-3">

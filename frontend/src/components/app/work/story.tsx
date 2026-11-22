@@ -10,7 +10,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { CustomerStory, Deal } from "@/lib/types";
 import { plural, timeAgo } from "@/lib/utils";
-import { toastError } from "./states";
+import { CardHeader, CardHeaderText, toastError } from "./states";
 import { ThreadDraft } from "./win-back";
 
 const pageUrl = (s: CustomerStory) => `${window.location.origin}/story/${s.token}`;
@@ -98,8 +98,8 @@ export function StorySection({ deal }: { deal: Deal }) {
 
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <CardHeader>
+        <CardHeaderText>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <BookOpenText className="size-3.5" /> {heading(s, company)}
           </p>
@@ -119,7 +119,7 @@ export function StorySection({ deal }: { deal: Deal }) {
               </p>
             )}
           </div>
-        </div>
+        </CardHeaderText>
         {s?.status === "writing" ? (
           <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
@@ -129,7 +129,7 @@ export function StorySection({ deal }: { deal: Deal }) {
             </Button>
           )
         )}
-      </div>
+      </CardHeader>
       {s?.story && out(s) && (
         <div className="rounded-lg bg-muted/60 p-3">
           <p className="text-sm font-medium text-balance">{s.story.title}</p>

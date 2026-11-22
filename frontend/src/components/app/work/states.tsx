@@ -18,6 +18,16 @@ export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLPar
   return <p className={cn("font-mono text-[11px] tracking-wide text-balance text-muted-foreground uppercase", className)} {...props} />;
 }
 
+/** A card's heading and text in a CardHeaderText, with its buttons beside them. In a narrow lead window the buttons drop
+ * under the text rather than squeezing it into a column a few words wide. */
+export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("flex flex-wrap items-start justify-between gap-3", className)} {...props} />;
+}
+
+export function CardHeaderText({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("min-w-0 flex-1 basis-56", className)} {...props} />;
+}
+
 export function LoadError({ error, retry, what = "this", className }: { error: unknown; retry?: () => void; what?: string; className?: string }) {
   // A deleted project or campaign, or an old link to one. Trying again can't help, so offer a way back instead.
   const notFound = error instanceof ApiError && error.status === 404;
