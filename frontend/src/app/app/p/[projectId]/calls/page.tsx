@@ -220,7 +220,7 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
             <Link href={`/app/p/${projectId}/integrations`} className="font-medium underline underline-offset-2">
               Integrations page
             </Link>
-            . You can still log calls you make from your phone.
+            . Or tap a number to call from your phone and log it here.
           </p>
         )}
         {calling && <VoicemailCard />}
@@ -379,7 +379,19 @@ function TaskRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-        <span className="font-mono text-foreground tabular-nums">{r.lead_phone || "No number"}</span>
+        {r.lead_phone ? (
+          // Underlined rather than hover-only, since on a phone there's no hover to show it can be tapped.
+          <a
+            href={`tel:${r.lead_phone}`}
+            className="flex items-center gap-1 text-foreground underline decoration-muted-foreground/40 underline-offset-4 hover:decoration-current"
+          >
+            <Phone className="size-3.5" /> <span className="font-mono tabular-nums">{r.lead_phone}</span>
+          </a>
+        ) : (
+          <span className="flex items-center gap-1">
+            <Phone className="size-3.5" /> No number
+          </span>
+        )}
         <span className="flex items-center gap-1">
           <Clock className="size-3.5" /> {r.local_time} their time
         </span>
