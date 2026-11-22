@@ -233,13 +233,14 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
             .bind(&e.user_email)
             .fetch_optional(&mut *tx)
             .await?;
-    // The step they put in Aircall from the Calls page, if the call started within half an hour of that. The latest one put
-    // there before the call started wins, so a late event doesn't take a newer step's place. The minute after allows for Aircall's
-    // clock running behind.
+    // A step with a call through Twilio is left for whoever made it to log in the browser, which a closed step would refuse.
+    // Otherwise the step they put in Aircall from the Calls page, if the call started within half an hour of that. The latest
+    // one put there before the call started wins, so a late event doesn't take a newer step's place. The minute after allows
+    // for Aircall's clock running behind.
     let dialed: Option<(Uuid, Uuid)> = match user.filter(|_| !e.inbound) {
         Some(user) => sqlx::query_as(
             "select c.id, c.lead_id from calls c join leads l on l.id = c.lead_id
-             where c.project_id = $1 and c.status = 'open' and c.aircall_dialed_by = $2 and l.phone = $3
+             where c.project_id = $1 and c.status = 'open' and c.aircall_dialed_by = $2 and l.phone = $3 and c.twilio_sid is null
                and c.aircall_dialed_at between $4 - interval '30 minutes' and $4 + interval '1 minute'
              order by c.aircall_dialed_at desc limit 1",
         )
@@ -263,7 +264,6 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
     let Some(lead) = lead else { return Ok(None) };
     let (outcome, notes) = e.outcome();
     let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
-    // A step with a call through Twilio is left for whoever made it to log in the browser, which a closed step would refuse.
     let open: Option<Call> = sqlx::query_as(
         "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
            aircall_id = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11

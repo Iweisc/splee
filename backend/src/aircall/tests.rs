@@ -346,8 +346,11 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
     let dans_second = step(dan, 0, Some(20)).await.unwrap();
     let danas_first = step(dana, -1440, None).await.unwrap();
     let danas_second = step(dana, 0, Some(5)).await.unwrap();
-    // Jo is calling Dana's first step from the browser, which marks it the way Twilio's dial does.
-    sqlx::query("update calls set called_by = $2, called_at = now(), to_number = '+14155550134', twilio_sid = 'CA1', call_status = 'in-progress' where id = $1")
+    // Jo is calling Dana's first step from the browser, which marks it the way Twilio's dial does, after putting it in Aircall.
+    sqlx::query(
+        "update calls set called_by = $2, called_at = now(), to_number = '+14155550134', twilio_sid = 'CA1', call_status = 'in-progress',
+           aircall_dialed_by = $2, aircall_dialed_at = now() - interval '1 minute' where id = $1",
+    )
         .bind(danas_first)
         .bind(s.jo)
         .execute(s.db())
@@ -359,7 +362,7 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
     // A call that started 15 minutes ago, arriving late, closes the step put in Aircall before it, not the newer one.
     assert_eq!(s.event(&token, 1, "call.ended", ended(201, 900)).await.1, json!({ "matched": true }));
     assert_eq!(status(dans_second).await.unwrap(), ("done".into(), Some(201)));
-    // One that started a minute ago closes Dana's step put in Aircall, not the earlier one Jo is calling through Twilio.
+    // One that started a minute ago closes Dana's step put in Aircall, not the one Jo put there since and is calling through Twilio.
     assert_eq!(s.event(&token, 1, "call.ended", ended(202, 60)).await.1, json!({ "matched": true }));
     assert_eq!(status(danas_second).await.unwrap(), ("done".into(), Some(202)));
     assert_eq!(status(danas_first).await.unwrap(), ("open".into(), None));
