@@ -59,7 +59,12 @@ fn wav_secs(bytes: &[u8]) -> Result<f64, &'static str> {
         let head = bytes.get(at..at.saturating_add(8)).ok_or(NOT_WAV)?;
         let len = u32_at(head, 4) as usize;
         let body = bytes.get(at + 8..(at + 8).saturating_add(len)).ok_or(NOT_WAV)?;
-        match &head[0..4] {
+        let id = &head[0..4];
+        // One of each, or the length would come from one chunk while another holds the audio.
+        if (id == b"fmt " && byte_rate.is_some()) || (id == b"data" && data.is_some()) {
+            return Err(NOT_WAV);
+        }
+        match id {
             b"fmt " => {
                 if body.len() < 16 || u16_at(body, 0) != 1 {
                     return Err(NOT_PCM);
@@ -242,6 +247,13 @@ mod tests {
         let mut stereo = recording(3);
         stereo[22] = 2;
         assert_eq!(wav_secs(&stereo), Err("The recording has to be plain PCM audio"));
+        // A second data or format chunk.
+        let mut twice = recording(120);
+        twice.extend_from_slice(&recording(3)[36..]);
+        assert_eq!(wav_secs(&twice), Err("That isn't a WAV recording"));
+        let mut twice = recording(3);
+        twice.splice(36..36, recording(3)[12..36].to_vec());
+        assert_eq!(wav_secs(&twice), Err("That isn't a WAV recording"));
         // Cut short, in the data or in the format.
         assert_eq!(wav_secs(&recording(3)[..1000]), Err("That isn't a WAV recording"));
         assert_eq!(wav_secs(&recording(3)[..30]), Err("That isn't a WAV recording"));
