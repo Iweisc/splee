@@ -300,7 +300,28 @@ async fn a_call_starts_in_the_callers_aircall_workspace_after_the_usual_checks(d
     let (code, body) = dial().await;
     assert!(code == 409 && body["error"].as_str().unwrap().contains("Call between 8:00 and 20:00 their time"), "{body}");
     zone(12).await.unwrap();
-    sqlx::query("update calls set status = 'done' where id = $1").bind(call).execute(s.db()).await.unwrap();
+
+    // It comes back when it ends and closes the step it started from, though Dan has an earlier step open and Dana, whom the
+    // team spoke to more recently, has his number.
+    let insert = "insert into calls (project_id, lead_id, kind, step, status, to_number, due_at) values ($1, $2, $3, 1, 'open', '+14155550134', $4) returning id";
+    let earlier: Uuid =
+        sqlx::query_scalar(insert).bind(s.project).bind(dan).bind("sequence").bind(Utc::now() - chrono::Duration::days(1)).fetch_one(s.db()).await.unwrap();
+    let dana: Uuid = sqlx::query_scalar(
+        "insert into leads (project_id, full_name, phone, status, last_contacted_at) values ($1, 'Dana Ross', '+14155550134', 'contacted', now()) returning id",
+    )
+    .bind(s.project)
+    .fetch_one(s.db())
+    .await
+    .unwrap();
+    let danas: Uuid = sqlx::query_scalar(insert).bind(s.project).bind(dana).bind("manual").bind(Utc::now()).fetch_one(s.db()).await.unwrap();
+    let mut ended = aircall_call(201, "+1 415-555-0134", "outbound", true, 300, 90);
+    ended["user"]["email"] = json!("ACME@acme.example");
+    assert_eq!(s.event(&s.path_token().await, 1, "call.ended", ended).await, (200, json!({ "matched": true })));
+    let closed: (String, Option<i64>) = sqlx::query_as("select status, aircall_id from calls where id = $1").bind(call).fetch_one(s.db()).await.unwrap();
+    assert_eq!(closed, ("done".into(), Some(201)));
+    let open = "select id from calls where status = 'open' and lead_id in ($1, $2) order by due_at";
+    let open: Vec<Uuid> = sqlx::query_scalar(open).bind(dan).bind(dana).fetch_all(s.db()).await.unwrap();
+    assert_eq!(open, [earlier, danas]);
     assert_eq!(dial().await.1["error"], "This call was already logged, skipped or cancelled.");
     assert_eq!(s.fake.dialed.lock().unwrap().len(), 1, "nothing else reached Aircall");
 }

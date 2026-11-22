@@ -206,9 +206,10 @@ impl Ended {
     }
 }
 
-/// Keeps a call with one of the project's leads, once: it closes the lead's open call step, like one logged on the Calls page,
-/// or is kept as a call of its own. A repeated event, or the recording arriving later, only adds a recording the call didn't
-/// have. Returns the call, or None when no lead in the project has that number.
+/// Keeps a call with one of the project's leads, once: it closes the step its caller started in Aircall from the Calls page,
+/// or else the lead's first open call step, like one logged on the Calls page, or is kept as a call of its own. A repeated
+/// event, or the recording arriving later, only adds a recording the call didn't have. Returns the call, or None when no
+/// lead in the project has that number.
 ///
 /// The call and what it does to the lead are kept together, since a retry finds the call and goes no further. Aircall's calls
 /// are only connected or not answered, and of what calls::apply_outcome does, that only moves last_contacted_at.
@@ -226,25 +227,42 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
         tx.commit().await?;
         return Ok(kept);
     }
-    let lead: Option<Lead> =
-        sqlx::query_as("select * from leads where project_id = $1 and phone = $2 order by last_contacted_at desc nulls last, created_at desc limit 1")
-            .bind(c.project_id)
-            .bind(&e.number)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let Some(lead) = lead else { return Ok(None) };
     let user: Option<Uuid> =
         sqlx::query_scalar("select u.id from users u join memberships m on m.user_id = u.id where m.org_id = $1 and lower(u.email::text) = $2")
             .bind(c.org_id)
             .bind(&e.user_email)
             .fetch_optional(&mut *tx)
             .await?;
+    // The step they started in Aircall from the Calls page, which the routes' dial marks with who and the number.
+    let dialed: Option<(Uuid, Uuid)> = match user.filter(|_| !e.inbound) {
+        Some(user) => sqlx::query_as(
+            "select id, lead_id from calls where project_id = $1 and status = 'open' and called_by = $2 and to_number = $3
+             order by called_at desc limit 1",
+        )
+        .bind(c.project_id)
+        .bind(user)
+        .bind(&e.number)
+        .fetch_optional(&mut *tx)
+        .await?,
+        None => None,
+    };
+    let lead: Option<Lead> = sqlx::query_as(
+        "select * from leads where project_id = $1 and (id = $3 or $3::uuid is null and phone = $2)
+         order by last_contacted_at desc nulls last, created_at desc limit 1",
+    )
+    .bind(c.project_id)
+    .bind(&e.number)
+    .bind(dialed.map(|(_, lead)| lead))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(lead) = lead else { return Ok(None) };
     let (outcome, notes) = e.outcome();
     let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
     let open: Option<Call> = sqlx::query_as(
         "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
            aircall_id = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11
-         where id = (select id from calls where lead_id = $1 and status = 'open' order by due_at limit 1) and status = 'open' returning *",
+         where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' order by due_at limit 1)) and status = 'open'
+         returning *",
     )
     .bind(lead.id)
     .bind(outcome)
@@ -257,6 +275,7 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
     .bind(call_status)
     .bind(e.talk_secs())
     .bind(&e.asset)
+    .bind(dialed.map(|(call, _)| call))
     .fetch_optional(&mut *tx)
     .await?;
     let call: Option<Call> = match open {
