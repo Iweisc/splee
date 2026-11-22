@@ -32,8 +32,9 @@ export function MeetingBriefCard({ leadId, meetingAt }: { leadId: string; meetin
 
   return (
     <section className="rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      {/* The button drops under the text in a narrow lead window rather than squeezing it into a column a few words wide. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 basis-56">
           <MicroLabel className="flex items-center gap-1.5">
             <NotebookText className="size-3.5" /> Meeting brief
           </MicroLabel>
