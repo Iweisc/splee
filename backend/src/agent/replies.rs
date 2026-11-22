@@ -297,7 +297,7 @@ pub async fn draft_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
          About us:\n{brief}\n{faq_block}\n\
          Answer what they asked in a sentence or two using only the facts above, then move toward a meeting. {next_step} \
          At most 80 words. Start with a greeting and their first name. Tone: {tone}. No sign-off.{extra}\n{language}",
-        sender = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) },
+        sender = settings.sender_at(&profile.name),
         thread = transcript(&t),
         brief = profile.brief(t.project.domain.as_deref()),
         faq_block = if faq.is_empty() { String::new() } else { format!("Facts and FAQ:\n{faq}\n") },

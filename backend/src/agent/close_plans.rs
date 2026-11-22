@@ -143,7 +143,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     };
     let notes = if deal.notes.trim().is_empty() { String::new() } else { format!("\nThe deal's notes: {}", deal.notes.trim()) };
     let done = if done.is_empty() { String::new() } else { format!("\n\nSteps already done, so leave them out: {}.", done.join("; ")) };
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let prompt = format!(
         "{us} has an open deal with this lead in the {stage} stage{value}. {close}{notes}\n\n\
          What we sell: {name}. {description}\nOur materials:\n{materials}\n\n\

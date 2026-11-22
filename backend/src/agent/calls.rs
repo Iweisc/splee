@@ -67,7 +67,7 @@ where
     } else {
         format!("a sales call from {us} to a lead ({who}). \"Us\" is the caller, \"Lead\" the person called")
     };
-    let sender = if settings.sender_name.is_empty() { us.clone() } else { format!("{} at {us}", settings.sender_name) };
+    let sender = settings.sender_at(us);
     let prompt = format!(
         "Here is the transcript of {call_was}. The transcript comes from speech recognition, so expect small errors.\n\n{transcript}\n\n\
          1. Write a summary of 2 or 3 sentences: what they said about their situation, interest and any objection.\n\

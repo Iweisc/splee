@@ -63,7 +63,7 @@ where
 
     let who = [lead.full_name.trim(), lead.title.trim(), lead.company_name.trim()];
     let who = who.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(", ");
-    let sender = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let sender = settings.sender_at(&profile.name);
     let next_step = if settings.booking_link.trim().is_empty() {
         "Ask which day and time would suit them instead.".to_string()
     } else {

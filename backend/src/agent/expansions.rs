@@ -281,7 +281,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     let about = lead_brief(&lead, &signals);
     let context = briefs::gather(db, &lead, org_id).await?;
     let materials = materials(ctx, lead.project_id).await?;
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let mut deal = vec![format!(
         "They became a customer on {}{}, after {} days.",
         won_at.format("%-d %b %Y"),

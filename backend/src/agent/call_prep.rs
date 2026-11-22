@@ -199,7 +199,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<Outcome> {
         None => vec![],
     };
 
-    let us = if settings.sender_name.is_empty() { profile.name.clone() } else { format!("{} at {}", settings.sender_name, profile.name) };
+    let us = settings.sender_at(&profile.name);
     let step = if row.instructions.trim().is_empty() { String::new() } else { format!("\nWhat this call is for: {}", row.instructions.trim()) };
     let mut extra = String::new();
     if !earlier.is_empty() {
