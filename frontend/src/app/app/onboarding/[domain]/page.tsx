@@ -1,15 +1,15 @@
 "use client";
 
-import { use } from "react";
-import { ArrowRight } from "lucide-react";
+import { use, useState } from "react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
-import { CompanyProfile } from "@/components/app/work/company-profile";
+import { CompanyProfile, RerunModal } from "@/components/app/work/company-profile";
 import { RunProgress } from "@/components/app/work/run-progress";
 import { SetupChecklist } from "@/components/app/work/setup-checklist";
 import { ListSkeleton, LoadError, MicroLabel } from "@/components/app/work/states";
 import { SegmentIcon } from "@/components/app/work/status";
-import { LinkButton } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import type { ProjectDetail, ProjectSummary, SegmentWithStats } from "@/lib/types";
 import { compact } from "@/lib/utils";
@@ -20,6 +20,7 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
   const { domain } = use(params);
   const slug = decodeURIComponent(domain);
   const byId = slug.startsWith("p-") ? slug.slice(2) : null;
+  const [rerunning, setRerunning] = useState(false);
 
   const { data: projects, error: listError, mutate: retryList } = useSWR<ProjectSummary[]>(byId ? null : "/projects", fetcher);
   const projectId =
@@ -73,17 +74,26 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
         }
         description={
           failed
-            ? "Re-run the research from the company profile."
+            ? "Run it again. You can tell the agent what it got wrong."
             : done
               ? "Review the campaigns, connect a mailbox and start sending."
               : "Splee is researching your company and market. You can leave this page, the agent keeps working."
         }
         actions={
-          <LinkButton href={`/app/p/${project.id}`} variant={done ? "primary" : "outline"}>
-            Project overview <ArrowRight className="size-4" />
-          </LinkButton>
+          <>
+            {/* Up here because on a phone the company profile's own Re-run button is below the fold. */}
+            {failed && (
+              <Button onClick={() => setRerunning(true)}>
+                <RefreshCw className="size-4" /> Re-run research
+              </Button>
+            )}
+            <LinkButton href={`/app/p/${project.id}`} variant={done ? "primary" : "outline"}>
+              Project overview <ArrowRight className="size-4" />
+            </LinkButton>
+          </>
         }
       />
+      <RerunModal projectId={project.id} open={rerunning} onClose={() => setRerunning(false)} />
       {/* Side by side only from xl. At lg the sidebar leaves 720px, so the run log and campaigns got less room than the profile. */}
       <PageBody className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex flex-col gap-4">

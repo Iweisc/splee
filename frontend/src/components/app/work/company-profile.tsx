@@ -97,7 +97,7 @@ function ProfileList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-function RerunModal({ projectId, open, onClose }: { projectId: string; open: boolean; onClose: () => void }) {
+export function RerunModal({ projectId, open, onClose }: { projectId: string; open: boolean; onClose: () => void }) {
   const { mutate } = useSWRConfig();
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
