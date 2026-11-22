@@ -1,4 +1,4 @@
-//! Notes on a sales meeting from Fireflies, Fathom, Gong or Zoom (meetings/): a short summary, the next steps, a follow-up
+//! Notes on a sales meeting from Fireflies, Fathom, Gong, Zoom or tl;dv (meetings/): a short summary, the next steps, a follow-up
 //! email to the lead that waits for approval like any draft, and the deal stage the meeting suggests. The stage is only a
 //! suggestion. Someone accepts it with a click (routes/meetings.rs).
 

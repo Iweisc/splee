@@ -106,7 +106,7 @@ export default function CoachingPage({ params }: PageProps<"/app/p/[projectId]/c
                 ? `The agent is listening to ${plural(writing, "call")}. Scores show up here in a minute.`
                 : failedNote
                   ? `${failedNote} New calls are coached once they're summarized.`
-                  : "Connect a call recorder like Fireflies, Fathom, Gong or Zoom on the Integrations page, or turn on transcription for calls made from Splee. Each one is coached after it's summarized."}
+                  : "Connect a call recorder like Fireflies, Fathom, Gong, Zoom or tl;dv on the Integrations page, or turn on transcription for calls made from Splee. Each one is coached after it's summarized."}
             </EmptyState>
           </Card>
         ) : (

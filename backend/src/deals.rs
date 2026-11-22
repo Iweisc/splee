@@ -79,7 +79,7 @@ pub struct Deal {
     pub stage_changed_at: Ts,
     pub closed_at: Option<Ts>,
     pub created_at: Ts,
-    /// The lead's latest sales meeting, from Fireflies, Fathom, Gong or Zoom (meetings/), and the agent's summary of it.
+    /// The lead's latest sales meeting, from Fireflies, Fathom, Gong, Zoom or tl;dv (meetings/), and the agent's summary of it.
     pub meeting_id: Option<Uuid>,
     pub meeting_title: Option<String>,
     pub meeting_at: Option<Ts>,

@@ -1712,7 +1712,7 @@ fn tools() -> Vec<Value> {
         tool(
             "list_meetings",
             "List meetings",
-            "A lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first: the title, when, who from their side, the \
+            "A lead's sales meetings from Fireflies, Fathom, Gong, Zoom or tl;dv, oldest first: the title, when, who from their side, the \
              agent's summary and next steps, and the deal stage it suggested. stage_status is pending until someone accepts or \
              dismisses that stage in Splee. follow_up_status is the status of the follow-up email drafted after it, draft while it \
              waits for approval.",

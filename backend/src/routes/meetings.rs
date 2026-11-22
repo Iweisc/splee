@@ -1,4 +1,4 @@
-//! Connecting Fireflies, Fathom, Gong and Zoom (meetings/), their webhooks, a lead's meetings, and accepting or dismissing
+//! Connecting Fireflies, Fathom, Gong, Zoom and tl;dv (meetings/), their webhooks, a lead's meetings, and accepting or dismissing
 //! the deal stage the agent suggested after one. The webhook URL has a per-connection token, and a delivery is only read
 //! once its signature matches the connection's secret.
 
@@ -19,7 +19,7 @@ use crate::auth::Auth;
 use crate::crypto;
 use crate::deals::{self, Move, NewDeal};
 use crate::error::{AppError, AppResult};
-use crate::meetings::{self, CONNECTION_COLUMNS, Connection, Found, Provider, fathom, fireflies, gong, zoom};
+use crate::meetings::{self, CONNECTION_COLUMNS, Connection, Found, Provider, fathom, fireflies, gong, tldv, zoom};
 use crate::models::{Lead, MEETING_COLUMNS, Meeting, Ts};
 use crate::state::AppState;
 
@@ -37,11 +37,11 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Serialize, FromRow)]
 pub struct MeetingConnection {
     pub provider: String,
-    /// The secret in the webhook URL, /api/meeting-webhooks/{provider}/{webhook_token}. Gong has no webhook.
+    /// The secret in the webhook URL, /api/meeting-webhooks/{provider}/{webhook_token}. Gong and tl;dv have no webhook.
     pub webhook_token: String,
     pub has_secret: bool,
     pub last_event_at: Option<Ts>,
-    /// Gong's last read, and why it failed.
+    /// Gong's or tl;dv's last read, and why it failed.
     pub synced_at: Option<Ts>,
     pub error: String,
     pub meetings: i64,
@@ -61,7 +61,7 @@ async fn connections(db: &PgPool, project_id: Uuid) -> AppResult<Json<Vec<Meetin
 }
 
 fn provider(name: &str) -> AppResult<Provider> {
-    Provider::parse(name).ok_or_else(|| AppError::BadRequest("Pick Fireflies, Fathom, Gong or Zoom".into()))
+    Provider::parse(name).ok_or_else(|| AppError::BadRequest("Pick Fireflies, Fathom, Gong, Zoom or tl;dv".into()))
 }
 
 async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<MeetingConnection>>> {
@@ -71,7 +71,7 @@ async fn list(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
 
 #[derive(Deserialize, Default)]
 struct ConnectBody {
-    /// Fireflies and Fathom.
+    /// Fireflies, Fathom and tl;dv.
     api_key: Option<String>,
     /// Gong.
     access_key: Option<String>,
@@ -118,6 +118,11 @@ async fn connect(
             gong::check(&gong::api(fake)?, &credentials).await?;
             (credentials, None)
         }
+        Provider::Tldv => {
+            let key = required(&body.api_key, "tl;dv API key")?;
+            tldv::check(&tldv::api(fake)?, &key).await?;
+            (key, None)
+        }
         Provider::Zoom => {
             let app = zoom::App {
                 account_id: required(&body.account_id, "Zoom account ID")?,
@@ -160,8 +165,8 @@ async fn save_secret(
     auth.project(&state.db, id).await?;
     let provider = provider(&name)?;
     let secret = body.secret.trim();
-    if provider == Provider::Gong {
-        return Err(AppError::BadRequest("Gong has no webhook. Splee reads its calls every 15 minutes".into()));
+    if provider.polled() {
+        return Err(AppError::BadRequest(format!("{} has no webhook. Splee reads its meetings every 15 minutes", provider.label())));
     }
     if secret.is_empty() {
         return Err(AppError::BadRequest("Paste the webhook's secret".into()));
@@ -197,7 +202,7 @@ struct Hooked {
 /// A provider's webhook. Zoom's URL check is answered once it's signed. A delivery seen before is answered without doing
 /// anything, and one that fails is not marked seen, so the provider's retry gets another go.
 async fn webhook(State(state): State<AppState>, Path((name, token)): Path<(String, String)>, headers: HeaderMap, body: Bytes) -> AppResult<Json<Value>> {
-    let provider = Provider::parse(&name).filter(|p| *p != Provider::Gong).ok_or(AppError::NotFound)?;
+    let provider = Provider::parse(&name).filter(|p| !p.polled()).ok_or(AppError::NotFound)?;
     let hooked: Hooked = sqlx::query_as(&format!(
         "select {CONNECTION_COLUMNS}, signing_secret_enc from meeting_connections where webhook_token = $1 and provider = $2"
     ))
@@ -252,7 +257,7 @@ async fn fetch(state: &AppState, provider: Provider, c: &Connection, event: &Val
             let app: zoom::App = serde_json::from_str(&credentials).map_err(|e| AppError::Internal(e.into()))?;
             zoom::client(fake)?.meeting(&app, event).await
         }
-        Provider::Zoom | Provider::Gong => Ok(None),
+        Provider::Zoom | Provider::Gong | Provider::Tldv => Ok(None),
     }
 }
 
