@@ -896,6 +896,14 @@ pub(crate) mod tests {
         let (_, twiml) = s.voice(call, s.jo, "+12125550134", "CA7").await;
         assert!(twiml.contains("<Dial callerId=\"+12125550100\""), "{twiml}");
 
+        // Reconnecting the same account keeps them, and connecting another account drops them, since it doesn't own them.
+        let account =
+            json!({ "account_sid": fake::ACCOUNT, "api_key_sid": fake::KEY, "api_secret": "secret", "auth_token": "token", "sms_from": "+14155550100" });
+        let kept = |status: Value| status["connection"]["local_numbers"].as_array().map_or(0, Vec::len);
+        assert_eq!(kept(s.call("acme", Method::PUT, "/organization/twilio", account.clone()).await.1), 3);
+        sqlx::query("update twilio_accounts set account_sid = 'ACbefore' where org_id = $1").bind(s.acme_org).execute(s.db()).await.unwrap();
+        assert_eq!(kept(s.call("acme", Method::PUT, "/organization/twilio", account).await.1), 0);
+
         let (_, off) = s.call("acme", Method::PUT, "/organization/twilio/calling", body(false)).await;
         assert_eq!(off["connection"]["local_numbers"], json!([]));
     }

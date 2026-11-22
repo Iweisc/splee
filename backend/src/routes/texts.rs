@@ -142,6 +142,7 @@ async fn connect(State(state): State<AppState>, auth: Auth, Json(body): Json<Con
            whatsapp_template_sid = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_sid else '' end,
            whatsapp_template_body = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_body else '' end,
            whatsapp_template_vars = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.whatsapp_template_vars else '{}' end,
+           local_numbers = case when twilio_accounts.account_sid = excluded.account_sid then twilio_accounts.local_numbers else '{}' end,
            account_sid = excluded.account_sid, account_name = excluded.account_name, api_key_sid = excluded.api_key_sid,
            api_secret_enc = excluded.api_secret_enc, auth_token_enc = excluded.auth_token_enc, sms_from = excluded.sms_from,
            whatsapp_from = excluded.whatsapp_from, error = null, failed_at = null",
