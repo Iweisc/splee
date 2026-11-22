@@ -138,7 +138,7 @@ async fn dial(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     let c = connection.ok_or_else(|| AppError::Conflict("Connect Aircall on the Integrations page to call from it.".into()))?;
     let email: String = sqlx::query_scalar("select email::text from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
     c.client(&state)?.dial(&email, &lead.phone).await?;
-    // So the call Aircall sends back closes this step, not another lead's with the number or an earlier one. See aircall::record.
+    // So the call Aircall sends back closes this step, not another lead's with the number or an earlier one. See cloud_phone::record.
     sqlx::query("update calls set aircall_dialed_by = $2, aircall_dialed_at = now() where id = $1 and status = 'open'")
         .bind(call.id)
         .bind(auth.user_id)

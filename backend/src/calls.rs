@@ -4,13 +4,9 @@
 //! /api/twilio/voice what to do, which dials the lead only after the checks in `authorize`. Twilio's callbacks then bring
 //! the length, the recording and, with transcription on, the transcript the agent summarizes.
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Timelike;
 use chrono_tz::Tz;
-use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
-use sha2::Sha256;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -101,10 +97,7 @@ pub fn access_token(account_sid: &str, key_sid: &str, key_secret: &str, app_sid:
         "exp": now + TOKEN_SECS,
         "grants": { "identity": identity, "voice": { "incoming": { "allow": false }, "outgoing": { "application_sid": app_sid } } },
     });
-    let input = format!("{}.{}", URL_SAFE_NO_PAD.encode(header.to_string()), URL_SAFE_NO_PAD.encode(claims.to_string()));
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key_secret.as_bytes()).expect("HMAC takes a key of any length");
-    mac.update(input.as_bytes());
-    format!("{input}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    crate::crypto::hs256_jwt(key_secret.as_bytes(), &header, &claims)
 }
 
 fn xml(text: &str) -> String {
@@ -452,6 +445,11 @@ pub async fn on_transcription(db: &PgPool, org_id: Uuid, call_sid: &str, event: 
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
     use super::*;
 
     #[test]

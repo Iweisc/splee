@@ -43,6 +43,7 @@ fn config(fake_url: &str) -> Config {
         payments_api_url: String::new(),
         meetings_api_url: String::new(),
         aircall_api_url: String::new(),
+        dialpad_api_url: String::new(),
         webflow_api_url: String::new(),
         linkedin_ads: None,
         google_ads_developer_token: None,

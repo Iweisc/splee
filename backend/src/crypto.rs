@@ -1,7 +1,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -31,6 +31,29 @@ pub fn verify_keyed_hash(secret: &str, purpose: &str, input: &str, sig: &str) ->
     let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
     mac.update(format!("{purpose}.{input}").as_bytes());
     mac.verify_slice(&sig).is_ok()
+}
+
+/// A JWT of `claims` signed with HMAC-SHA256, with `header` as given, which says "alg": "HS256" and any extras a service wants.
+pub fn hs256_jwt(key: &[u8], header: &serde_json::Value, claims: &serde_json::Value) -> String {
+    let input = format!("{}.{}", URL_SAFE_NO_PAD.encode(header.to_string()), URL_SAFE_NO_PAD.encode(claims.to_string()));
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(input.as_bytes());
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+/// The claims of a JWT whose header says HS256 and whose signature is `key`'s, compared in constant time. None for anything
+/// else, including another algorithm, so a token can't pick a weaker one.
+pub fn verify_hs256_jwt(key: &[u8], token: &str) -> Option<serde_json::Value> {
+    let [header, claims, sig] = token.trim().split('.').collect::<Vec<_>>().try_into().ok()?;
+    let decode = |part: &str| URL_SAFE_NO_PAD.decode(part.trim_end_matches('=')).ok();
+    let alg: serde_json::Value = serde_json::from_slice(&decode(header)?).ok()?;
+    if alg["alg"] != "HS256" {
+        return None;
+    }
+    let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(format!("{header}.{claims}").as_bytes());
+    mac.verify_slice(&decode(sig)?).ok()?;
+    serde_json::from_slice(&decode(claims)?).ok()
 }
 
 fn cipher(secret: &str) -> Aes256Gcm {

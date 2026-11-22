@@ -93,6 +93,7 @@ mod crm_oauth;
 mod bots;
 mod calls;
 mod aircall;
+mod dialpad;
 mod proposals;
 mod questionnaires;
 pub mod meetings;
@@ -237,6 +238,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(texts::router())
         .merge(calls::router())
         .merge(aircall::router())
+        .merge(dialpad::router())
         .merge(meetings::router())
         .merge(deals::router())
         .merge(close_plans::router())

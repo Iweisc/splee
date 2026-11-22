@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { AircallConnection } from "@/lib/types";
+import type { CloudPhoneConnection } from "@/lib/types";
 import { dateTime, plural, timeAgo } from "@/lib/utils";
 import { LastFailure, submit } from "./shared";
 
@@ -20,12 +20,12 @@ const EMPTY = { api_id: "", api_token: "" };
  *  no URL to paste. The token is write-only. */
 export function AircallSection({ projectId }: { projectId: string }) {
   const key = `/projects/${projectId}/aircall`;
-  const { data, error, mutate } = useSWR<AircallConnection | null>(key, fetcher);
+  const { data, error, mutate } = useSWR<CloudPhoneConnection | null>(key, fetcher);
   const [form, setForm] = useState(EMPTY);
   const set = (field: keyof typeof EMPTY) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [field]: e.target.value.trim() });
   const { pending, run } = useAction();
   const call = async (method: "PUT" | "DELETE", body?: typeof EMPTY) => {
-    await mutate(await api<AircallConnection | null>(key, { method, body }), { revalidate: false });
+    await mutate(await api<CloudPhoneConnection | null>(key, { method, body }), { revalidate: false });
   };
   const connect = async () => {
     if (await run("connect", () => call("PUT", form), "Connected to Aircall")) setForm(EMPTY);

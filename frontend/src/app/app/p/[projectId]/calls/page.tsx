@@ -2,7 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, SkipForward } from "lucide-react";
+import { Check, Clock, Headset, Mic, MicOff, Phone, PhoneOff, PhoneOutgoing, SkipForward } from "lucide-react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/app/page-header";
@@ -15,13 +15,21 @@ import { Select } from "@/components/ui/form";
 import { Avatar, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
-import type { AircallConnection, CallOutcome, CallRow, DialToken, TwilioStatus } from "@/lib/types";
+import type { CallOutcome, CallRow, CloudPhoneConnection, DialToken, TwilioStatus } from "@/lib/types";
 import { loadVoiceSdk, type VoiceCall, type VoiceDevice } from "@/lib/twilio-voice";
 import { cn, timeAgo } from "@/lib/utils";
 
 type Owner = "mine_or_unassigned" | "everyone";
 
 /** The call on screen: being placed or on, ended and waiting for its outcome, or logged by hand without dialing. */
+/** The cloud phones a call step can start in. The call comes back through the phone's webhook when it ends and closes the
+ *  step, and the list reloads when they come back to this tab. */
+const PHONES = [
+  { key: "aircall", name: "Aircall", icon: Headset, started: "Ready to call in Aircall Workspace. It's logged here when it ends" },
+  { key: "dialpad", name: "Dialpad", icon: PhoneOutgoing, started: "Dialpad is ringing your app. It's logged here when the call ends" },
+] as const;
+type CloudPhone = (typeof PHONES)[number];
+
 type Active = { row: CallRow; phase: "connecting" | "ringing" | "connected" | "ended" | "log"; started?: number; ended?: number; muted?: boolean };
 
 export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/calls">) {
@@ -32,9 +40,11 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
     refreshInterval: (rows) => (rows?.some((r) => r.prep?.status === "writing") ? 4000 : 0),
   });
   const { data: twilio } = useSWR<TwilioStatus>("/organization/twilio", fetcher);
-  const { data: aircall } = useSWR<AircallConnection | null>(`/projects/${projectId}/aircall`, fetcher);
+  const { data: aircall } = useSWR<CloudPhoneConnection | null>(`/projects/${projectId}/aircall`, fetcher);
+  const { data: dialpad } = useSWR<CloudPhoneConnection | null>(`/projects/${projectId}/dialpad`, fetcher);
+  const phones = PHONES.filter((p) => ({ aircall, dialpad })[p.key]);
   const [active, setActive] = useState<Active | null>(null);
-  const [pushing, setPushing] = useState<string | null>(null);
+  const [pushing, setPushing] = useState<{ row: string; phone: CloudPhone["key"] } | null>(null);
   const [leadId, setLeadId] = useState<string | null>(null);
   const call = useRef<{ device: VoiceDevice; call?: VoiceCall } | null>(null);
   const calling = !!twilio?.connection?.twiml_app_sid;
@@ -75,13 +85,11 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
     }
   };
 
-  // The call comes back through Aircall's webhook when it ends, and closes this one. The list reloads when they come back to
-  // the tab from Aircall.
-  const dialInAircall = async (row: CallRow) => {
-    setPushing(row.id);
+  const dialIn = async (row: CallRow, phone: CloudPhone) => {
+    setPushing({ row: row.id, phone: phone.key });
     try {
-      await api(`/calls/${row.id}/aircall-dial`, { method: "POST" });
-      toast.success("Ready to call in Aircall Workspace. It's logged here when it ends");
+      await api(`/calls/${row.id}/${phone.key}-dial`, { method: "POST" });
+      toast.success(phone.started);
     } catch (e) {
       toastError(e);
     } finally {
@@ -131,9 +139,9 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
         }
       />
       <PageBody className={cn(active && "pb-[28rem] sm:pb-6")}>
-        {twilio && aircall === null && !calling && (
+        {twilio && aircall === null && dialpad === null && !calling && (
           <p className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-pretty text-amber-800">
-            To call from Splee, turn on calling in the Twilio card or connect Aircall on the{" "}
+            To call from Splee, turn on calling in the Twilio card or connect Aircall or Dialpad on the{" "}
             <Link href={`/app/p/${projectId}/integrations`} className="font-medium underline underline-offset-2">
               Integrations page
             </Link>
@@ -181,12 +189,12 @@ export default function CallsPage({ params }: PageProps<"/app/p/[projectId]/call
                         key={r.id}
                         row={r}
                         calling={calling}
-                        aircall={!!aircall}
+                        phones={phones}
                         busy={!!active || !!pushing}
-                        pushing={pushing === r.id}
+                        pushing={pushing?.row === r.id ? pushing.phone : null}
                         onOpen={() => setLeadId(r.lead_id)}
                         onDial={() => dial(r)}
-                        onAircall={() => dialInAircall(r)}
+                        onPhone={(phone) => dialIn(r, phone)}
                         onLog={() => setActive({ row: r, phase: "log" })}
                         onSkip={() => skip(r)}
                         onChanged={() => mutate()}
@@ -236,25 +244,26 @@ function Who({ row: r, onOpen }: { row: CallRow; onOpen: () => void }) {
 function TaskRow({
   row: r,
   calling,
-  aircall,
+  phones,
   busy,
   pushing,
   onOpen,
   onDial,
-  onAircall,
+  onPhone,
   onLog,
   onSkip,
   onChanged,
 }: {
   row: CallRow;
   calling: boolean;
-  aircall: boolean;
+  /** The connected cloud phones, each with its own button. */
+  phones: CloudPhone[];
   busy: boolean;
-  /** Its number is on its way to Aircall. */
-  pushing: boolean;
+  /** The phone its number is on its way to. */
+  pushing: CloudPhone["key"] | null;
   onOpen: () => void;
   onDial: () => void;
-  onAircall: () => void;
+  onPhone: (phone: CloudPhone) => void;
   onLog: () => void;
   onSkip: () => void;
   onChanged: () => Promise<unknown>;
@@ -270,17 +279,18 @@ function TaskRow({
           <Button size="sm" variant="outline" onClick={onLog} disabled={busy}>
             <Check className="size-3.5" /> Log call
           </Button>
-          {aircall && (
+          {phones.map((p, i) => (
             <Button
+              key={p.key}
               size="sm"
-              variant={calling ? "outline" : "primary"}
-              onClick={onAircall}
-              loading={pushing}
+              variant={calling || i > 0 ? "outline" : "primary"}
+              onClick={() => onPhone(p)}
+              loading={pushing === p.key}
               disabled={busy || !!r.outside_hours || !r.lead_phone}
             >
-              <Headset className="size-3.5" /> Call in Aircall
+              <p.icon className="size-3.5" /> Call in {p.name}
             </Button>
-          )}
+          ))}
           {calling && (
             <Button size="sm" onClick={onDial} disabled={busy || !!r.outside_hours || !r.lead_phone}>
               <Phone className="size-3.5" /> Call

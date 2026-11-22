@@ -1811,6 +1811,8 @@ export interface Call {
   created_at: Ts;
   /** The call's id in Aircall, for one made or taken there. */
   aircall_id: number | null;
+  /** The call's id in Dialpad, for one made or taken there. */
+  dialpad_id: number | null;
 }
 
 /** GET /projects/{id}/calls. */
@@ -2827,9 +2829,8 @@ export const PAYMENT_PROVIDERS = ["stripe", "paddle", "lemonsqueezy"] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 export const PAYMENT_NAMES: Record<PaymentProvider, string> = { stripe: "Stripe", paddle: "Paddle", lemonsqueezy: "Lemon Squeezy" };
 
-/** GET /projects/:id/payments. The key and signing secret never come back. */
-/** GET /projects/{id}/aircall, null until it's connected. The API token never leaves the server. */
-export interface AircallConnection {
+/** GET /projects/{id}/aircall or /dialpad, null until it's connected. The API token or key never leaves the server. */
+export interface CloudPhoneConnection {
   last_event_at: Ts | null;
   /** Why the last event couldn't be handled, cleared by the next one that is. */
   error: string;
@@ -2838,6 +2839,7 @@ export interface AircallConnection {
   created_at: Ts;
 }
 
+/** GET /projects/:id/payments. The key and signing secret never come back. */
 export interface PaymentConnection {
   provider: PaymentProvider;
   /** The secret in the webhook URL, /api/payments/{provider}/{webhook_token}. */
