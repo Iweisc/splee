@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import useSWR from "swr";
@@ -76,7 +77,11 @@ export function TwilioSection({ settings }: { settings: ProjectSettings }) {
             {c.sms_from && <> with SMS from {c.sms_from}</>}
             {c.whatsapp_from && <>{c.sms_from ? " and" : " with"} WhatsApp from {c.whatsapp_from}</>}. Due texts go out in your sending hours, in the
             lead&apos;s own time zone when their number shows it, up to {settings.daily_text_limit} a day.{" "}
-            {steps ? `This project has ${steps === 1 ? "1 text step" : `${steps} text steps`} on the Follow-ups page.` : "Add text steps on the Follow-ups page."}
+            {steps ? `This project has ${steps === 1 ? "1 text step" : `${steps} text steps`} on the ` : "Add text steps on the "}
+            <Link href={`/app/p/${settings.project_id}/follow-ups`} className="font-medium underline underline-offset-2">
+              Follow-ups page
+            </Link>
+            .
           </p>
           {/* Not a Field: its <label> wrapper would turn a click on the label text into a copy. */}
           <div className="flex flex-col gap-1.5">
