@@ -44,6 +44,7 @@ mod hiring;
 mod hooks;
 mod jobchanges;
 mod jobs;
+mod justcall;
 mod language;
 mod lead_pages;
 mod lemmy;
