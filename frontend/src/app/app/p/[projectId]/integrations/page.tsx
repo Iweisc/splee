@@ -4,6 +4,7 @@ import { use } from "react";
 import { GoogleSheetsSection } from "@/components/app/settings/google-sheets";
 import { ProjectSettingsPage } from "@/components/app/settings/layout";
 import { AdAudiencesSection } from "./ads-section";
+import { AircallSection } from "./aircall-section";
 import { AutomationSection } from "./automation-section";
 import { BlogSection, DevSection, HashnodeSection } from "./blog-sections";
 import { BookingSection } from "./booking-section";
@@ -63,6 +64,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <GoogleMapsSection />
           <UnipileSection projectId={projectId} settings={s} />
           <TwilioSection settings={s} />
+          <AircallSection projectId={projectId} />
           <XSection projectId={projectId} settings={s} />
           <RedditSection projectId={projectId} settings={s} />
           <BlueskySection projectId={projectId} settings={s} />

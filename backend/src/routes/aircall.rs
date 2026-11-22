@@ -1,0 +1,128 @@
+//! Connecting a project's Aircall company (crate::aircall) and the webhook Splee registers there. The webhook URL has a
+//! per-connection token, and an event is only read once the token in its body is the one Aircall gave for that webhook.
+
+use axum::extract::{Path, State};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::{FromRow, PgPool};
+use uuid::Uuid;
+
+use crate::aircall::{self, CONNECTION_COLUMNS, Client, Connection, TOKEN_PURPOSE};
+use crate::audit;
+use crate::auth::Auth;
+use crate::crypto;
+use crate::error::{AppError, AppResult};
+use crate::models::Ts;
+use crate::state::AppState;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/projects/{id}/aircall", get(status).put(connect).delete(disconnect))
+        .route("/aircall-webhooks/{token}", post(webhook))
+}
+
+/// The connection as the integrations page shows it. The API token never leaves the server.
+#[derive(Debug, Serialize, FromRow)]
+pub struct AircallStatus {
+    pub last_event_at: Option<Ts>,
+    /// Why the last event couldn't be handled, cleared by the next one that is.
+    pub error: String,
+    /// Calls with the project's leads kept from it.
+    pub calls: i64,
+    pub created_at: Ts,
+}
+
+async fn load(db: &PgPool, project_id: Uuid) -> AppResult<Json<Option<AircallStatus>>> {
+    let row = sqlx::query_as(
+        "select a.last_event_at, a.error, (select count(*) from calls c where c.project_id = a.project_id and c.aircall_id is not null) as calls,
+           a.created_at
+         from aircall_connections a where a.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(Json(row))
+}
+
+async fn status(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Option<AircallStatus>>> {
+    auth.project(&state.db, id).await?;
+    load(&state.db, id).await
+}
+
+#[derive(Deserialize)]
+struct ConnectBody {
+    api_id: String,
+    api_token: String,
+}
+
+/// Checks the API ID and token, then registers Splee's webhook in Aircall. Connecting again keeps the webhook URL, registers
+/// a new webhook with the new details and deletes the old one.
+async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>, Json(body): Json<ConnectBody>) -> AppResult<Json<Option<AircallStatus>>> {
+    auth.project(&state.db, id).await?;
+    let (api_id, api_token) = (body.api_id.trim(), body.api_token.trim());
+    if api_id.is_empty() || api_token.is_empty() {
+        return Err(AppError::BadRequest("Paste the API ID and the API token".into()));
+    }
+    let credentials = format!("{api_id}:{api_token}");
+    let client = Client::new(&state.cfg.aircall_api_url, &credentials)?;
+    client.ping().await?;
+    let old: Option<(String, String)> = sqlx::query_as("select path_token, webhook_id from aircall_connections where project_id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, _)| token.clone());
+    let url = format!("{}/api/aircall-webhooks/{path_token}", state.cfg.public_url.trim_end_matches('/'));
+    let (webhook_id, token) = client.create_webhook(&url).await?;
+    sqlx::query(
+        "insert into aircall_connections (project_id, org_id, credentials_enc, webhook_id, webhook_token_hash, path_token) values ($1, $2, $3, $4, $5, $6)
+         on conflict (project_id) do update set credentials_enc = excluded.credentials_enc, webhook_id = excluded.webhook_id,
+           webhook_token_hash = excluded.webhook_token_hash, error = ''",
+    )
+    .bind(id)
+    .bind(auth.org_id)
+    .bind(crypto::encrypt(&state.cfg.app_secret, &credentials))
+    .bind(&webhook_id)
+    .bind(crypto::keyed_hash(&state.cfg.app_secret, TOKEN_PURPOSE, &token))
+    .bind(&path_token)
+    .execute(&state.db)
+    .await?;
+    // The old webhook may be in another Aircall company, which these details can't reach. Aircall turns it off on its own
+    // once its events keep failing here.
+    if let Some((_, old_webhook)) = old.filter(|(_, w)| *w != webhook_id) {
+        client.delete_webhook(&old_webhook).await;
+    }
+    audit::integration(&state.db, &auth, Some(id), "Aircall", true).await;
+    load(&state.db, id).await
+}
+
+/// Calls already kept stay, with their notes.
+async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Option<AircallStatus>>> {
+    auth.project(&state.db, id).await?;
+    let connection: Option<Connection> =
+        sqlx::query_as(&format!("delete from aircall_connections where project_id = $1 returning {CONNECTION_COLUMNS}")).bind(id).fetch_optional(&state.db).await?;
+    if let Some(c) = connection {
+        c.client(&state)?.delete_webhook(&c.webhook_id).await;
+        audit::integration(&state.db, &auth, Some(id), "Aircall", false).await;
+    }
+    load(&state.db, id).await
+}
+
+/// An event from Aircall. Aircall delivers at least once, and a repeated event changes nothing. One that fails keeps why on
+/// the connection and answers an error, so Aircall tries it again.
+async fn webhook(State(state): State<AppState>, Path(token): Path<String>, Json(event): Json<Value>) -> AppResult<Json<Value>> {
+    let connection: Option<Connection> = sqlx::query_as(&format!("select {CONNECTION_COLUMNS} from aircall_connections where path_token = $1"))
+        .bind(&token)
+        .fetch_optional(&state.db)
+        .await?;
+    let c = connection.ok_or(AppError::NotFound)?;
+    let given = event["token"].as_str().unwrap_or_default();
+    if given.is_empty() || !crypto::verify_keyed_hash(&state.cfg.app_secret, TOKEN_PURPOSE, given, &c.webhook_token_hash) {
+        return Err(AppError::Unauthorized);
+    }
+    let handled = aircall::handle(&state, &c, &event).await;
+    let error = handled.as_ref().err().map(|e| e.public_message()).unwrap_or_default();
+    sqlx::query("update aircall_connections set last_event_at = now(), error = $2 where project_id = $1").bind(c.project_id).bind(&error).execute(&state.db).await?;
+    Ok(Json(json!({ "matched": handled? })))
+}

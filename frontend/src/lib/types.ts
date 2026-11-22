@@ -1791,7 +1791,7 @@ export interface Call {
   /** Twilio's word for how the lead's side ended, like completed, busy or no-answer. */
   call_status: string;
   duration_secs: number | null;
-  /** Twilio's URL. Play it through /api/calls/{id}/recording. */
+  /** Twilio's URL, or Aircall's page for it. Play it through /api/calls/{id}/recording. */
   recording_url: string;
   recording_secs: number | null;
   outcome: CallOutcome | null;
@@ -1801,6 +1801,8 @@ export interface Call {
   summary: string;
   next_step: string;
   created_at: Ts;
+  /** The call's id in Aircall, for one made or taken there. */
+  aircall_id: number | null;
 }
 
 /** GET /projects/{id}/calls. */
@@ -2818,6 +2820,16 @@ export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 export const PAYMENT_NAMES: Record<PaymentProvider, string> = { stripe: "Stripe", paddle: "Paddle", lemonsqueezy: "Lemon Squeezy" };
 
 /** GET /projects/:id/payments. The key and signing secret never come back. */
+/** GET /projects/{id}/aircall, null until it's connected. The API token never leaves the server. */
+export interface AircallConnection {
+  last_event_at: Ts | null;
+  /** Why the last event couldn't be handled, cleared by the next one that is. */
+  error: string;
+  /** Calls with the project's leads kept from it. */
+  calls: number;
+  created_at: Ts;
+}
+
 export interface PaymentConnection {
   provider: PaymentProvider;
   /** The secret in the webhook URL, /api/payments/{provider}/{webhook_token}. */

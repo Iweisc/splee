@@ -62,6 +62,8 @@ pub struct Config {
     /// Fireflies', Fathom's, Gong's and Zoom's APIs. Empty for the real ones. Only tests and sandboxes set it, to one fake that
     /// answers for each under /fireflies, /fathom, /gong and /zoom.
     pub meetings_api_url: String,
+    /// Aircall's API. Empty for the real one. Only tests and sandboxes set it, to a fake that answers under /aircall.
+    pub aircall_api_url: String,
     /// Webflow's Data API v2, empty for Webflow itself. Only tests and sandboxes point it elsewhere, at a fake.
     pub webflow_api_url: String,
     /// The LinkedIn app projects sign in with to sync ad audiences, from LINKEDIN_ADS_CLIENT_ID and LINKEDIN_ADS_CLIENT_SECRET. It
@@ -185,6 +187,7 @@ impl Config {
             crm_api_url: env::var("CRM_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             payments_api_url: env::var("PAYMENTS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             meetings_api_url: env::var("MEETINGS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            aircall_api_url: env::var("AIRCALL_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             webflow_api_url: env::var("WEBFLOW_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             linkedin_ads: OAuthApp::from_env("LINKEDIN_ADS", crate::ads::linkedin::AUTHORIZE_URL.into(), crate::ads::linkedin::TOKEN_URL.into()),
             google_ads_developer_token: env::var("GOOGLE_ADS_DEVELOPER_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
@@ -261,6 +264,7 @@ mod tests {
             crm_api_url: String::new(),
             payments_api_url: String::new(),
             meetings_api_url: String::new(),
+            aircall_api_url: String::new(),
             webflow_api_url: String::new(),
             linkedin_ads: None,
             google_ads_developer_token: None,

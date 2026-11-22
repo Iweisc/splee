@@ -333,7 +333,7 @@ pub async fn log_manual(state: &AppState, lead: &Lead, outcome: &str, notes: &st
     Ok(call)
 }
 
-async fn apply_outcome(state: &AppState, lead_id: Uuid, outcome: &str) -> anyhow::Result<()> {
+pub(crate) async fn apply_outcome(state: &AppState, lead_id: Uuid, outcome: &str) -> anyhow::Result<()> {
     let db = &state.db;
     let before = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead_id).fetch_one(db).await?;
     if matches!(outcome, "connected" | "voicemail" | "not_interested" | "meeting_booked") {

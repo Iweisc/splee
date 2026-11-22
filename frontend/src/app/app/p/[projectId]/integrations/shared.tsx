@@ -30,7 +30,7 @@ export function AppSteps({ steps }: { steps: readonly (readonly [app: string, st
 }
 
 /** The backend clears this when an alert or a test to the saved URL goes through, or when the URL changes. */
-export function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" | "copy" | "post" }) {
+export function LastFailure({ error, at, what = "alert" }: { error: string | null; at: string | null; what?: "alert" | "sync" | "check" | "send" | "lookup" | "copy" | "post" | "event" }) {
   if (!error || !at) return null;
   return (
     <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
