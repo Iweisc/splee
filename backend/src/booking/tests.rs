@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
+use mail_parser::MessageParser;
 use sqlx::PgPool;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use super::invite::{self, Change, Host, Links};
@@ -113,6 +116,7 @@ fn page(id: Uuid, org_id: Uuid, mailbox_id: Uuid) -> BookingPage {
         notice_minutes: 0,
         days_ahead: 14,
         location: "https://meet.example/abc".into(),
+        reminder_hours: 24,
         calendar_url_enc: String::new(),
         calendar_error: String::new(),
         created_at: Utc::now(),
@@ -171,8 +175,32 @@ fn the_invite_is_a_calendar_request_from_the_mailbox() {
     // A move keeps the UID with a higher SEQUENCE, and a cancellation is a CANCEL.
     let moved = Booking { sequence: 1, ..booking.clone() };
     assert!(invite::ics(&p, &host, &moved, Change::Moved, &links).contains("SEQUENCE:1\r\n"));
-    let cancelled = invite::ics(&p, &host, &Booking { sequence: 2, ..booking }, Change::Cancelled, &links);
+    let cancelled = invite::ics(&p, &host, &Booking { sequence: 2, ..booking.clone() }, Change::Cancelled, &links);
     assert!(cancelled.contains("METHOD:CANCEL\r\n") && cancelled.contains("STATUS:CANCELLED\r\n") && !cancelled.contains("Move or cancel"));
+
+    // The reminder is in the guest's time zone too, with the same links, or asks for a reply on a call booked before
+    // tokens were kept.
+    let (subject, body) = invite::reminder(&p, &host, &booking, Some(&links));
+    assert_eq!(subject, "Reminder: Intro call with Alex Morgan, Tue 17 Nov at 09:00");
+    assert_eq!(
+        body,
+        "Hi Sarah,\n\nA reminder of your Intro call with Alex Morgan on Tuesday 17 November, 09:00 to 09:30 (America/New York time).\n\n\
+         Where: https://meet.example/abc\n\n\
+         Need another time? https://app.test/booking/tok123\nCan't make it? https://app.test/booking/tok123?cancel=1"
+    );
+    let (_, body) = invite::reminder(&page(p.id, p.org_id, p.mailbox_id), &host, &booking, None);
+    assert!(body.ends_with("(America/New York time).\n\nWhere: https://meet.example/abc\n\nNeed another time? Reply to this email."), "{body}");
+}
+
+#[test]
+fn the_reminder_goes_the_pages_hours_before_unless_that_has_passed() {
+    let now = at("2026-11-16T10:00:00Z");
+    let p = page(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    assert_eq!(p.remind_at(at("2026-11-18T09:00:00Z"), now), Some(at("2026-11-17T09:00:00Z")));
+    assert_eq!(p.remind_at(at("2026-11-17T09:00:00Z"), now), None, "booked 23 hours ahead");
+    let hour = BookingPage { reminder_hours: 1, ..p.clone() };
+    assert_eq!(hour.remind_at(at("2026-11-16T12:00:00Z"), now), Some(at("2026-11-16T11:00:00Z")));
+    assert_eq!(BookingPage { reminder_hours: 0, ..p }.remind_at(at("2026-11-18T09:00:00Z"), now), None);
 }
 
 fn state(db: PgPool) -> AppState {
@@ -395,4 +423,113 @@ async fn the_links_token_moves_and_cancels_only_its_booking(db: PgPool) {
     assert!(by_token(&db, &other_token).await.unwrap().0.cancelled_at.is_none());
     // Its time can be booked by someone else.
     book(&state, &page, slots[1], &guest("new@brightline.example"), "10.0.0.3").await.unwrap();
+}
+
+/// An SMTP server without login on a local port that keeps each message it's given.
+async fn smtp_sink() -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    let kept: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let messages = kept.clone();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = server.accept().await {
+            let messages = messages.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = socket.into_split();
+                write.write_all(b"220 sink\r\n").await.unwrap();
+                let mut lines = BufReader::new(read).lines();
+                let mut data: Option<Vec<u8>> = None;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(message) = &mut data {
+                        if line == "." {
+                            messages.lock().unwrap().push(data.take().unwrap());
+                            write.write_all(b"250 kept\r\n").await.unwrap();
+                        } else {
+                            message.extend_from_slice(line.strip_prefix('.').filter(|_| line.starts_with("..")).unwrap_or(&line).as_bytes());
+                            message.extend_from_slice(b"\r\n");
+                        }
+                        continue;
+                    }
+                    let verb = line.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
+                    let reply: &[u8] = match verb.as_str() {
+                        "DATA" => {
+                            data = Some(Vec::new());
+                            b"354 go ahead\r\n"
+                        }
+                        "QUIT" => b"221 bye\r\n",
+                        _ => b"250 ok\r\n",
+                    };
+                    write.write_all(reply).await.unwrap();
+                }
+            });
+        }
+    });
+    (port, kept)
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn the_guest_is_reminded_once_the_pages_hours_before_the_call(db: PgPool) {
+    let state = state(db.clone());
+    let (_, _, mb, page) = setup(&db, "Acme").await;
+    assert_eq!(page.reminder_hours, 24, "a new page reminds a day before");
+    let (port, sent) = smtp_sink().await;
+    let point_at = |port: i32| {
+        sqlx::query("update mailboxes set smtp_host = '127.0.0.1', smtp_port = $2, smtp_security = 'none' where id = $1").bind(mb.id).bind(port)
+    };
+    point_at(port.into()).execute(&db).await.unwrap();
+    let remind_at = |id: Uuid| sqlx::query_scalar::<_, Option<Ts>>("select remind_at from bookings where id = $1").bind(id).fetch_one(&db);
+    let make_due = |id: Uuid| sqlx::query("update bookings set remind_at = now() - interval '1 second' where id = $1").bind(id).execute(&db);
+
+    let now = Utc::now();
+    let slots = open_slots(&state, &page, None).await.unwrap();
+    let far: Vec<Ts> = slots.iter().copied().filter(|s| *s > now + Duration::days(2)).collect();
+    let soon: Vec<Ts> = slots.iter().copied().filter(|s| *s < now + Duration::hours(23)).take(2).collect();
+    let (booking, token) = book(&state, &page, far[0], &guest("sarah@brightline.example"), "10.0.0.1").await.unwrap();
+    assert_eq!(remind_at(booking.id).await.unwrap(), Some(far[0] - Duration::hours(24)));
+    let (late, _) = book(&state, &page, soon[0], &guest("jo@brightline.example"), "10.0.0.2").await.unwrap();
+    assert_eq!(remind_at(late.id).await.unwrap(), None, "booked less than a day ahead, so the booking email is the reminder");
+    // Moving the call moves its reminder.
+    let moved = reschedule(&state, &token, far[1]).await.unwrap();
+    assert_eq!(remind_at(booking.id).await.unwrap(), Some(far[1] - Duration::hours(24)));
+
+    // Not due yet, nothing goes. Due, it goes once, from the page's mailbox with the booking's own links.
+    remind_due(&state).await.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    make_due(booking.id).await.unwrap();
+    // A worker sending it holds its row, so a second one skips it, and one that dies before saving leaves it due.
+    let mut held = db.begin().await.unwrap();
+    sqlx::query("select 1 from bookings where id = $1 for update").bind(booking.id).execute(&mut *held).await.unwrap();
+    remind_due(&state).await.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    held.rollback().await.unwrap();
+    remind_due(&state).await.unwrap();
+    remind_due(&state).await.unwrap();
+    let messages = sent.lock().unwrap().clone();
+    assert_eq!(messages.len(), 1);
+    let email = MessageParser::default().parse(&messages[0]).unwrap();
+    let to: Vec<&str> = email.to().unwrap().iter().filter_map(|a| a.address()).collect();
+    assert_eq!((email.from().unwrap().first().unwrap().address(), to), (Some(mb.email.as_str()), vec!["sarah@brightline.example"]));
+    let (subject, body) = invite::reminder(&page, &Host::of(&mb), &moved, Some(&Links::new(&state.cfg.public_url, &page, &token)));
+    assert_eq!((email.subject(), email.body_text(0).unwrap().replace("\r\n", "\n").trim()), (Some(subject.as_str()), body.as_str()));
+    assert_eq!(remind_at(booking.id).await.unwrap(), None);
+
+    // A cancelled call gets none.
+    let (third, third_token) = book(&state, &page, far[2], &guest("kim@brightline.example"), "10.0.0.3").await.unwrap();
+    cancel(&state, &third_token).await.unwrap();
+    assert_eq!(remind_at(third.id).await.unwrap(), None);
+
+    // A send that fails is tried again in 5 minutes.
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    point_at(closed.into()).execute(&db).await.unwrap();
+    let (fourth, fourth_token) = book(&state, &page, far[3], &guest("lee@brightline.example"), "10.0.0.4").await.unwrap();
+    make_due(fourth.id).await.unwrap();
+    remind_due(&state).await.unwrap();
+    let retry = remind_at(fourth.id).await.unwrap().unwrap() - Utc::now();
+    assert!(retry > Duration::minutes(4) && retry <= Duration::minutes(5), "{retry}");
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    // Moved inside the reminder window, it no longer gets one.
+    reschedule(&state, &fourth_token, soon[1]).await.unwrap();
+    assert_eq!(remind_at(fourth.id).await.unwrap(), None);
 }

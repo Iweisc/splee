@@ -1,7 +1,8 @@
 //! Booking pages, for a team without Calendly or Cal.com. Each mailbox can have one at /book/{slug}: its working hours,
 //! minus the owner's calendar (calendar.rs) and the calls already booked, are the times a visitor can pick. A booking
 //! emails both sides an invite from the mailbox (invite.rs), and a lead with that email in one of the org's projects
-//! moves to Meeting booked through the same code as the scheduling tools' webhooks (routes::bookings::mark_booked).
+//! moves to Meeting booked through the same code as the scheduling tools' webhooks (routes::bookings::mark_booked). The
+//! guest gets a reminder the page's `reminder_hours` before the call (remind_due).
 
 pub mod calendar;
 pub mod invite;
@@ -10,10 +11,10 @@ use chrono::{Datelike, Days, Duration, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use uuid::Uuid;
 
-use self::invite::Change;
-use crate::crypto::{decrypt, random_token, sha256_hex};
+use self::invite::{Change, Host, Links};
+use crate::crypto::{decrypt, encrypt, random_token, sha256_hex};
 use crate::error::{AppError, AppResult};
-use crate::models::{Booking, BookingPage, Lead, Ts};
+use crate::models::{Booking, BookingPage, Lead, Mailbox, Ts};
 use crate::routes::bookings::{mark_booked, mark_cancelled};
 use crate::state::AppState;
 
@@ -55,6 +56,13 @@ impl BookingPage {
 
     pub fn url(&self, public_url: &str) -> String {
         format!("{public_url}/book/{}", self.slug)
+    }
+
+    /// When the guest's reminder for a call at `start` goes out: none when the page sends none, or when that time has
+    /// passed, since they've only just booked.
+    pub fn remind_at(&self, start: Ts, now: Ts) -> Option<Ts> {
+        let at = start - Duration::hours(self.reminder_hours.into());
+        (self.reminder_hours > 0 && at > now).then_some(at)
     }
 }
 
@@ -199,8 +207,8 @@ pub async fn book(state: &AppState, page: &BookingPage, start: Ts, guest: &Guest
     }
     claim(&mut tx, page, start, None).await?;
     let booking: Booking = sqlx::query_as(
-        "insert into bookings (page_id, starts_at, ends_at, name, email, note, timezone, token_hash, ip)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *",
+        "insert into bookings (page_id, starts_at, ends_at, name, email, note, timezone, token_hash, ip, remind_at, token_enc)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning *",
     )
     .bind(page.id)
     .bind(start)
@@ -211,6 +219,8 @@ pub async fn book(state: &AppState, page: &BookingPage, start: Ts, guest: &Guest
     .bind(&guest.timezone)
     .bind(sha256_hex(&token))
     .bind(ip)
+    .bind(page.remind_at(start, Utc::now()))
+    .bind(encrypt(&state.cfg.app_secret, &token))
     .fetch_one(&mut *tx)
     .await
     .map_err(taken_if_duplicate)?;
@@ -248,11 +258,12 @@ pub async fn reschedule(state: &AppState, token: &str, start: Ts) -> AppResult<B
     let mut tx = state.db.begin().await?;
     claim(&mut tx, &page, start, Some(booking.id)).await?;
     let moved: Booking = sqlx::query_as(
-        "update bookings set starts_at = $2, ends_at = $3, sequence = sequence + 1 where id = $1 and cancelled_at is null returning *",
+        "update bookings set starts_at = $2, ends_at = $3, sequence = sequence + 1, remind_at = $4 where id = $1 and cancelled_at is null returning *",
     )
     .bind(booking.id)
     .bind(start)
     .bind(start + Duration::minutes(page.duration_minutes.into()))
+    .bind(page.remind_at(start, Utc::now()))
     .fetch_optional(&mut *tx)
     .await
     .map_err(taken_if_duplicate)?
@@ -267,7 +278,7 @@ pub async fn cancel(state: &AppState, token: &str) -> AppResult<Booking> {
     changeable(&booking)?;
     // Only the request that cancels it sends the emails, if someone clicks twice.
     let cancelled: Option<Booking> = sqlx::query_as(
-        "update bookings set cancelled_at = now(), sequence = sequence + 1 where id = $1 and cancelled_at is null returning *",
+        "update bookings set cancelled_at = now(), sequence = sequence + 1, remind_at = null where id = $1 and cancelled_at is null returning *",
     )
     .bind(booking.id)
     .fetch_optional(&state.db)
@@ -296,6 +307,46 @@ async fn after_change(state: &AppState, page: &BookingPage, booking: &Booking, t
     if let Err(e) = leads.await {
         tracing::error!(error = %e, booking = %booking.id, "couldn't update the leads of a booking");
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct Due {
+    #[sqlx(flatten)]
+    booking: Booking,
+    token_enc: String,
+}
+
+/// Emails each guest whose reminder is due, from the page's mailbox, one booking at a time. Each holds its row from the
+/// claim until the outcome is saved, so a cancel or move waits for the email, a second worker skips it, and a crash
+/// before the commit leaves it due. A failed send is tried again in 5 minutes, until the call is that close.
+pub async fn remind_due(state: &AppState) -> anyhow::Result<()> {
+    for _ in 0..50 {
+        let mut tx = state.db.begin().await?;
+        let due: Option<Due> = sqlx::query_as("select * from bookings where remind_at <= now() order by remind_at limit 1 for update skip locked")
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(Due { booking, token_enc }) = due else { return Ok(()) };
+        let mut next = None;
+        if booking.cancelled_at.is_none()
+            && booking.starts_at > Utc::now()
+            && let Err(e) = remind(state, &booking, &token_enc).await
+        {
+            tracing::error!(error = %e, booking = %booking.id, "couldn't send a booking reminder");
+            next = Some(Utc::now() + Duration::minutes(5)).filter(|at| *at < booking.starts_at);
+        }
+        sqlx::query("update bookings set remind_at = $2 where id = $1").bind(booking.id).bind(next).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    Ok(())
+}
+
+async fn remind(state: &AppState, booking: &Booking, token_enc: &str) -> anyhow::Result<()> {
+    let page: BookingPage = sqlx::query_as("select * from booking_pages where id = $1").bind(booking.page_id).fetch_one(&state.db).await?;
+    let mb: Mailbox = sqlx::query_as("select * from mailboxes where id = $1").bind(page.mailbox_id).fetch_one(&state.db).await?;
+    let token = decrypt(&state.cfg.app_secret, token_enc).ok().filter(|t| !t.is_empty());
+    let links = token.map(|token| Links::new(&state.cfg.public_url, &page, &token));
+    let (subject, body) = invite::reminder(&page, &Host::of(&mb), booking, links.as_ref());
+    crate::mail::send_from(state, &mb, (&booking.name, &booking.email), &subject, &body, None, None).await
 }
 
 /// The leads with this email in any of the org's projects.

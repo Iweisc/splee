@@ -28,6 +28,15 @@ const NOTICE: [number, string][] = [
   [1440, "1 day"],
   [2880, "2 days"],
 ];
+const REMINDERS: [number, string][] = [
+  [0, "No reminder"],
+  [1, "1 hour before"],
+  [2, "2 hours before"],
+  [24, "1 day before"],
+  [48, "2 days before"],
+];
+const reminderOptions = (value: number) =>
+  REMINDERS.some(([h]) => h === value) ? REMINDERS : [...REMINDERS, [value, `${value} hours before`] as [number, string]];
 /** The preset choices, plus a page's own value when it was set to something else. */
 const noticeOptions = (value: number) => (NOTICE.some(([m]) => m === value) ? NOTICE : [...NOTICE, [value, `${value} minutes`] as [number, string]]);
 const clock = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
@@ -102,8 +111,8 @@ export default function BookingPagesPage() {
 type Draft = Required<Omit<BookingPageInput, "calendar_url">> & { calendar_url: string };
 
 function draftOf(p: BookingPage): Draft {
-  const { slug, name, duration_minutes, timezone, hours, buffer_minutes, notice_minutes, days_ahead, location } = p;
-  return { slug, name, duration_minutes, timezone, hours, buffer_minutes, notice_minutes, days_ahead, location, calendar_url: "" };
+  const { slug, name, duration_minutes, timezone, hours, buffer_minutes, notice_minutes, days_ahead, location, reminder_hours } = p;
+  return { slug, name, duration_minutes, timezone, hours, buffer_minutes, notice_minutes, days_ahead, location, reminder_hours, calendar_url: "" };
 }
 
 function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPage) => void }) {
@@ -261,6 +270,16 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
             onChange={(e) => set({ location: e.target.value })}
             placeholder="https://meet.google.com/abc-defg-hij"
           />
+        </Field>
+
+        <Field label="Reminder" hint="Emailed to the guest from this mailbox, with links to move or cancel the call.">
+          <Select value={d.reminder_hours} onChange={(e) => set({ reminder_hours: Number(e.target.value) })} className="sm:w-60">
+            {reminderOptions(d.reminder_hours).map(([h, label]) => (
+              <option key={h} value={h}>
+                {label}
+              </option>
+            ))}
+          </Select>
         </Field>
 
         <Field

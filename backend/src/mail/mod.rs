@@ -24,7 +24,7 @@ use crate::state::AppState;
 pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     if !s.cfg.sending_enabled {
-        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts, call steps, social posts and client reports wait");
+        tracing::warn!("SENDING_ENABLED=false: approved emails, follow-ups, auto-replies, warmup emails, LinkedIn steps, texts, call steps, social posts, client reports and booking reminders wait");
     } else {
         tokio::spawn(async move {
             // A send that was interrupted by a restart never got its SMTP answer. Try it again.
@@ -57,9 +57,11 @@ pub fn spawn_workers(state: AppState) {
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social::tick(&s), "social poster").await });
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(600), || crate::social_channels::poll(&s), "discord and telegram reader").await });
-        // Client reports go to people outside the team, so they wait with the rest of the sending.
+        // Client reports go to people outside the team, so they wait with the rest of the sending, as do booking reminders.
         let s = state.clone();
         tokio::spawn(async move { every(Duration::from_secs(900), || crate::reports::email::tick(&s), "client reports").await });
+        let s = state.clone();
+        tokio::spawn(async move { every(Duration::from_secs(60), || crate::booking::remind_due(&s), "booking reminders").await });
     }
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || inbound::tick(&s), "imap poller").await });
@@ -133,12 +135,26 @@ async fn send_system(
         .fetch_optional(&state.db)
         .await?;
     let Some(mb) = mailbox else { return Ok(false) };
+    send_from(state, &mb, ("", to), subject, body, html, unsubscribe_url).await?;
+    Ok(true)
+}
+
+/// An email from `mb` outside any thread or sequence, like Splee's own emails and a booking's reminder.
+pub async fn send_from(
+    state: &AppState,
+    mb: &Mailbox,
+    to: (&str, &str),
+    subject: &str,
+    body: &str,
+    html: Option<&str>,
+    unsubscribe_url: Option<&str>,
+) -> anyhow::Result<()> {
     let message_id = sender::new_message_id(&mb.email);
     let message = smtp::build(
-        &mb,
+        mb,
         &smtp::Outgoing {
-            to_name: "",
-            to_email: to,
+            to_name: to.0,
+            to_email: to.1,
             subject,
             body,
             message_id: &message_id,
@@ -151,8 +167,8 @@ async fn send_system(
             files: &[],
         },
     )?;
-    smtp::send(&smtp::transport(state, &mb).await?, message).await?;
-    Ok(true)
+    smtp::send(&smtp::transport(state, mb).await?, message).await?;
+    Ok(())
 }
 
 /// A calendar invite or cancellation from `mb`. See smtp::build_invite.
