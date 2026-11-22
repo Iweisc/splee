@@ -1,5 +1,5 @@
-//! A local stand-in for Fireflies, Fathom, Gong and Zoom, each under its own path, that checks their credentials. Gong serves
-//! two calls a page, so a test sees its cursor with a handful of calls.
+//! A local stand-in for Fireflies, Fathom, Gong, Zoom and tl;dv, each under its own path, that checks their credentials. Gong
+//! and tl;dv serve two meetings a page, so a test sees their paging with a handful of meetings.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ pub const ZOOM_CLIENT: &str = "zoom-client";
 pub const ZOOM_SECRET: &str = "zoom-client-secret";
 const ZOOM_TOKEN: &str = "zoom-access-token";
 pub const ZOOM_DOWNLOAD_TOKEN: &str = "zoom-download-token";
+pub const TLDV_KEY: &str = "tldv-fake-key";
 
 const PAGE: usize = 2;
 
@@ -41,6 +42,12 @@ pub struct Fake {
     /// Zoom's participants by meeting UUID as it appears in the path, and the transcript file.
     pub zoom_participants: Arc<Mutex<HashMap<String, Value>>>,
     pub zoom_vtt: Arc<Mutex<String>>,
+    /// tl;dv's meetings, as GET /meetings lists them, and each one's transcript and notes by meeting id.
+    pub tldv_meetings: Arc<Mutex<Vec<Value>>>,
+    pub tldv_transcripts: Arc<Mutex<HashMap<String, Value>>>,
+    pub tldv_notes: Arc<Mutex<HashMap<String, Value>>>,
+    /// Meetings whose transcript tl;dv refuses with a 403, as it does when the organizer's plan has no API access.
+    pub tldv_refused: Arc<Mutex<Vec<String>>>,
 }
 
 impl Fake {
@@ -68,6 +75,20 @@ pub async fn start() -> (String, Fake) {
             get(|State(f): State<Fake>, Path(uuid): Path<String>| async move { found(f.zoom_participants.lock().unwrap().get(&uuid).cloned()) }),
         )
         .route("/zoom/download/{file}", get(|State(f): State<Fake>| async move { f.zoom_vtt.lock().unwrap().clone() }))
+        .route("/tldv/meetings", get(tldv_meetings))
+        .route(
+            "/tldv/meetings/{id}/transcript",
+            get(|State(f): State<Fake>, Path(id): Path<String>| async move {
+                if f.tldv_refused.lock().unwrap().contains(&id) {
+                    return (StatusCode::FORBIDDEN, Json(json!({ "message": "No API access" }))).into_response();
+                }
+                found(f.tldv_transcripts.lock().unwrap().get(&id).cloned())
+            }),
+        )
+        .route(
+            "/tldv/meetings/{id}/notes",
+            get(|State(f): State<Fake>, Path(id): Path<String>| async move { found(f.tldv_notes.lock().unwrap().get(&id).cloned()) }),
+        )
         .layer(axum::middleware::from_fn_with_state(fake.clone(), gate))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -99,6 +120,8 @@ async fn gate(State(fake): State<Fake>, req: Request, next: axum::middleware::Ne
         Some("fireflies") => header("authorization") == format!("Bearer {FIREFLIES_KEY}"),
         Some("fathom") => header("x-api-key") == FATHOM_KEY,
         Some("gong") => header("authorization") == basic(GONG_KEY, GONG_SECRET),
+        // tl;dv turns away a request without its own User-Agent.
+        Some("tldv") => header("x-api-key") == TLDV_KEY && header("user-agent").starts_with("Splee"),
         _ if path == "/zoom/oauth/token" => {
             header("authorization") == basic(ZOOM_CLIENT, ZOOM_SECRET) && uri.query().is_some_and(|q| q.contains(&format!("account_id={ZOOM_ACCOUNT}")))
         }
@@ -155,6 +178,26 @@ async fn gong_transcript(State(fake): State<Fake>, Json(body): Json<Value>) -> J
     let transcripts = fake.gong_transcripts.lock().unwrap();
     let list: Vec<Value> = ids.iter().filter_map(|id| transcripts.get(id).map(|t| json!({ "callId": id, "transcript": t }))).collect();
     Json(json!({ "callTranscripts": list }))
+}
+
+/// External meetings that happened between `from` and `to`, two a page. Internal ones are never listed when the read asks
+/// for external ones.
+async fn tldv_meetings(State(fake): State<Fake>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
+    let at = |s: Option<&str>| s.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let (from, to) = (at(q.get("from").map(String::as_str)), at(q.get("to").map(String::as_str)));
+    let external = q.get("meetingType").map(String::as_str) == Some("external");
+    let meetings: Vec<Value> = fake
+        .tldv_meetings
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| at(m["happenedAt"].as_str()).is_some_and(|s| from.is_none_or(|f| s >= f) && to.is_none_or(|t| s <= t)))
+        .filter(|m| !external || m["internal"] != true)
+        .cloned()
+        .collect();
+    let page: usize = q.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    let results: Vec<Value> = meetings.iter().skip((page - 1) * PAGE).take(PAGE).cloned().collect();
+    Json(json!({ "page": page, "pages": meetings.len().div_ceil(PAGE).max(1), "total": meetings.len(), "pageSize": PAGE, "results": results }))
 }
 
 async fn zoom_token(Query(q): Query<HashMap<String, String>>) -> Response {

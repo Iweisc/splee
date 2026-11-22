@@ -12,14 +12,14 @@ import { Field, Input, Select } from "@/components/ui/form";
 import { fetcher } from "@/hooks/use-me";
 import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
-import { MEETING_NAMES, MEETING_PROVIDERS, type MeetingConnection, type MeetingProvider } from "@/lib/types";
+import { MEETING_NAMES, MEETING_POLLED, MEETING_PROVIDERS, type MeetingConnection, type MeetingProvider } from "@/lib/types";
 import { dateTime, plural, timeAgo } from "@/lib/utils";
 import type { PaymentCall } from "./payments-section";
 import { submit, linkClass } from "./shared";
 
 type MeetingField = { name: string; label: string; secret?: boolean };
 
-/** What each provider asks for and where its webhook goes. Gong has no webhook: Splee reads its calls every 15 minutes. */
+/** What each provider asks for and where its webhook goes. Gong and tl;dv have no webhook: Splee reads them every 15 minutes. */
 const MEETING_SETUP: Record<MeetingProvider, { fields: MeetingField[]; hint: string; webhook?: React.ReactNode; secretHint?: string }> = {
   fireflies: {
     fields: [{ name: "api_key", label: "API key", secret: true }],
@@ -54,11 +54,15 @@ const MEETING_SETUP: Record<MeetingProvider, { fields: MeetingField[]; hint: str
       </>
     ),
   },
+  tldv: {
+    fields: [{ name: "api_key", label: "API key", secret: true }],
+    hint: "In tl;dv, Settings → Personal settings → API keys, then make a key.",
+  },
 };
 
 function meetingStatus(c: MeetingConnection) {
   const kept = c.meetings ? `${plural(c.meetings, "meeting")} with your leads so far.` : "No meetings with your leads yet.";
-  if (c.provider === "gong") return c.synced_at ? `${kept} Reads new calls every 15 minutes.` : "Reading the last week of calls…";
+  if (MEETING_POLLED.includes(c.provider)) return c.synced_at ? `${kept} Reads new meetings every 15 minutes.` : "Reading the last week of meetings…";
   return kept;
 }
 
@@ -66,7 +70,7 @@ function meetingStatus(c: MeetingConnection) {
 export function MeetingsSection({ projectId }: { projectId: string }) {
   const key = `/projects/${projectId}/meeting-connections`;
   const { data, error, mutate } = useSWR<MeetingConnection[]>(key, fetcher, {
-    refreshInterval: (list) => (list?.some((c) => c.provider === "gong" && !c.synced_at) ? 5000 : 0),
+    refreshInterval: (list) => (list?.some((c) => MEETING_POLLED.includes(c.provider) && !c.synced_at) ? 5000 : 0),
   });
   const open = MEETING_PROVIDERS.filter((p) => !data?.some((c) => c.provider === p));
   const [picked, setPicked] = useState<MeetingProvider>("fireflies");
@@ -82,7 +86,7 @@ export function MeetingsSection({ projectId }: { projectId: string }) {
           <Mic className="size-4" /> Meeting notes
         </span>
       }
-      description="After a meeting with a lead in Fireflies, Fathom, Gong or Zoom, the agent sums it up, drafts the follow-up for you to approve and suggests the deal's next stage."
+      description="After a meeting with a lead in Fireflies, Fathom, Gong, Zoom or tl;dv, the agent sums it up, drafts the follow-up for you to approve and suggests the deal's next stage."
     >
       {error ? (
         <LoadError error={error} retry={() => mutate()} />

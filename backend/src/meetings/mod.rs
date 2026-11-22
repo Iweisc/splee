@@ -1,12 +1,14 @@
-//! Sales meetings from Fireflies, Fathom, Gong and Zoom, so what was said on a call moves the deal and gets a follow-up. A
-//! project connects a provider in routes/meetings.rs. Fireflies, Fathom and Zoom post a signed webhook when a meeting's
-//! transcript is ready, and Gong, whose webhooks need an admin's rules, is polled every 15 minutes (`spawn_worker`). A
+//! Sales meetings from Fireflies, Fathom, Gong, Zoom and tl;dv, so what was said on a call moves the deal and gets a follow-up.
+//! A project connects a provider in routes/meetings.rs. Fireflies, Fathom and Zoom post a signed webhook when a meeting's
+//! transcript is ready. Gong, whose webhooks need an admin's rules, and tl;dv, whose webhooks aren't signed, are polled every
+//! 15 minutes (`spawn_worker`). A
 //! meeting with one of the project's leads is kept (`record`), linked to the Splee booking it was, and the agent writes its
 //! summary, next steps, a follow-up email for approval and a suggested deal stage (agent/meetings.rs).
 
 pub mod fathom;
 pub mod fireflies;
 pub mod gong;
+pub mod tldv;
 pub mod zoom;
 
 #[cfg(test)]
@@ -35,10 +37,11 @@ pub enum Provider {
     Fathom,
     Gong,
     Zoom,
+    Tldv,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 4] = [Provider::Fireflies, Provider::Fathom, Provider::Gong, Provider::Zoom];
+    pub const ALL: [Provider; 5] = [Provider::Fireflies, Provider::Fathom, Provider::Gong, Provider::Zoom, Provider::Tldv];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -46,6 +49,7 @@ impl Provider {
             Provider::Fathom => "fathom",
             Provider::Gong => "gong",
             Provider::Zoom => "zoom",
+            Provider::Tldv => "tldv",
         }
     }
 
@@ -55,7 +59,13 @@ impl Provider {
             Provider::Fathom => "Fathom",
             Provider::Gong => "Gong",
             Provider::Zoom => "Zoom",
+            Provider::Tldv => "tl;dv",
         }
+    }
+
+    /// Read every 15 minutes rather than sent by webhook: Gong's need an admin's rules, and tl;dv doesn't sign its.
+    pub fn polled(self) -> bool {
+        matches!(self, Provider::Gong | Provider::Tldv)
     }
 
     pub fn parse(name: &str) -> Option<Provider> {
@@ -73,7 +83,7 @@ impl Provider {
             Provider::Fireflies => fireflies::verify(secret, header("x-hub-signature"), body),
             Provider::Fathom => fathom::verify(secret, header("webhook-id"), header("webhook-timestamp"), header("webhook-signature"), body, now),
             Provider::Zoom => zoom::verify(secret, header("x-zm-request-timestamp"), header("x-zm-signature"), body, now),
-            Provider::Gong => false,
+            Provider::Gong | Provider::Tldv => false,
         }
     }
 
@@ -86,7 +96,7 @@ impl Provider {
             }
             Provider::Fathom => headers.get("webhook-id").and_then(|v| v.to_str().ok()).map(str::to_string).filter(|v| !v.is_empty()),
             Provider::Zoom => Some(format!("{}:{}", text(&event["event"])?, text(&event["payload"]["object"]["uuid"])?)),
-            Provider::Gong => None,
+            Provider::Gong | Provider::Tldv => None,
         }
     }
 }
@@ -389,10 +399,10 @@ pub async fn store(state: &AppState, c: &Connection, lead_id: Uuid, f: &Found) -
     Ok(Recorded::New(id))
 }
 
-/// How often each Gong connection is read.
+/// How often each Gong and tl;dv connection is read.
 pub const POLL_EVERY: Duration = Duration::from_secs(15 * 60);
 
-/// Reads each Gong connection every 15 minutes, a new one right away. Fireflies, Fathom and Zoom post webhooks instead.
+/// Reads each Gong and tl;dv connection every 15 minutes, a new one right away. Fireflies, Fathom and Zoom post webhooks instead.
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
         loop {
@@ -404,20 +414,24 @@ pub fn spawn_worker(state: AppState) {
     });
 }
 
-/// Polls the Gong connections not read in the last 15 minutes, one at a time, and keeps why one failed for the card.
+/// Polls the Gong and tl;dv connections not read in the last 15 minutes, one at a time, and keeps why one failed for the card.
 pub async fn poll_due(state: &AppState) -> anyhow::Result<()> {
+    let polled: Vec<&str> = Provider::ALL.into_iter().filter(|p| p.polled()).map(Provider::name).collect();
     let due: Vec<Connection> = sqlx::query_as(&format!(
         "select {CONNECTION_COLUMNS} from meeting_connections
-         where provider = 'gong' and (synced_at is null or synced_at < now() - make_interval(secs => $1)) order by synced_at nulls first"
+         where provider = any($2) and (synced_at is null or synced_at < now() - make_interval(secs => $1)) order by synced_at nulls first"
     ))
     .bind(POLL_EVERY.as_secs_f64())
+    .bind(&polled)
     .fetch_all(&state.db)
     .await?;
     for c in due {
-        let error = match gong::poll(state, &c).await {
-            Ok(_) => String::new(),
+        // A read that went through can still warn about meetings it left out.
+        let read = if c.provider == Provider::Tldv.name() { tldv::poll(state, &c).await } else { gong::poll(state, &c).await.map(|_| String::new()) };
+        let error = match read {
+            Ok(warning) => warning,
             Err(e) => {
-                tracing::warn!(error = ?e, connection = %c.id, "gong poll failed");
+                tracing::warn!(error = ?e, connection = %c.id, provider = %c.provider, "meetings poll failed");
                 e.public_message()
             }
         };

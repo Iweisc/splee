@@ -1408,7 +1408,7 @@ export interface LeadDetail extends Lead, EffectiveLanguage {
   texts: TextMessage[];
   /** Calls to them, open and made, oldest first. */
   calls: Call[];
-  /** Sales meetings with them from Fireflies, Fathom, Gong or Zoom, oldest first. */
+  /** Sales meetings with them from Fireflies, Fathom, Gong, Zoom or tl;dv, oldest first. */
   meetings: Meeting[];
   hiring: JobPost[];
   /** Their company's funding and news from the last 90 days, newest first. */
@@ -2760,18 +2760,20 @@ export interface TodayPart<T> {
 }
 
 /** In the order the integrations page offers them. Keep in sync with Provider in backend/src/meetings/mod.rs. */
-export const MEETING_PROVIDERS = ["fireflies", "fathom", "gong", "zoom"] as const;
+export const MEETING_PROVIDERS = ["fireflies", "fathom", "gong", "zoom", "tldv"] as const;
 export type MeetingProvider = (typeof MEETING_PROVIDERS)[number];
-export const MEETING_NAMES: Record<MeetingProvider, string> = { fireflies: "Fireflies", fathom: "Fathom", gong: "Gong", zoom: "Zoom" };
+export const MEETING_NAMES: Record<MeetingProvider, string> = { fireflies: "Fireflies", fathom: "Fathom", gong: "Gong", zoom: "Zoom", tldv: "tl;dv" };
+/** Read every 15 minutes instead of sending webhooks. Keep in sync with Provider::polled. */
+export const MEETING_POLLED: readonly MeetingProvider[] = ["gong", "tldv"];
 
 /** GET /projects/:id/meeting-connections. Keys and secrets never come back. */
 export interface MeetingConnection {
   provider: MeetingProvider;
-  /** The secret in the webhook URL, /api/meeting-webhooks/{provider}/{webhook_token}. Gong has no webhook. */
+  /** The secret in the webhook URL, /api/meeting-webhooks/{provider}/{webhook_token}. Gong and tl;dv have no webhook. */
   webhook_token: string;
   has_secret: boolean;
   last_event_at: Ts | null;
-  /** Gong's last read, every 15 minutes, and why it failed. */
+  /** Gong's or tl;dv's last read, every 15 minutes, and why it failed. */
   synced_at: Ts | null;
   error: string;
   /** Meetings kept from it. */

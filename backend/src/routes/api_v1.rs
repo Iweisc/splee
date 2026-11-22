@@ -2130,7 +2130,7 @@ pub(super) async fn log_call(State(state): State<AppState>, auth: ApiKeyAuth, Pa
     Ok(Json(calls::log_for_lead(&state, auth.org_id, id, &body).await?))
 }
 
-/// The lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first, with the agent's summary, next steps and
+/// The lead's sales meetings from Fireflies, Fathom, Gong, Zoom or tl;dv, oldest first, with the agent's summary, next steps and
 /// suggested stage. Transcripts stay in Splee.
 pub(super) async fn list_meetings(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Vec<MeetingRow>>> {
     Ok(Json(meetings::of_lead(&state.db, auth.org_id, id).await?))

@@ -1579,7 +1579,7 @@ Smile Dental,smiledental.co.uk,https://smiledental.co.uk,hello@smiledental.co.uk
       method: "GET",
       path: "/leads/c42e…/meetings",
       summary:
-        "The lead's sales meetings from Fireflies, Fathom, Gong or Zoom, oldest first, with the agent's summary, next steps and the stage it suggests for their deal. Transcripts stay in Splee, and transcript_chars is a transcript's length.",
+        "The lead's sales meetings from Fireflies, Fathom, Gong, Zoom or tl;dv, oldest first, with the agent's summary, next steps and the stage it suggests for their deal. Transcripts stay in Splee, and transcript_chars is a transcript's length.",
       response: `[
   {
     "id": "3e81…",

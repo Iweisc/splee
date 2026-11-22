@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::fake::{self, Fake};
-use super::{Attendee, Provider, TRANSCRIPT_CHARS, cap, fathom, fireflies, gong, match_lead, zoom};
+use super::{Attendee, Provider, TRANSCRIPT_CHARS, cap, fathom, fireflies, gong, match_lead, tldv, zoom};
 use crate::agent::meetings::tests::{answer, run_notes};
 use crate::config::Config;
 use crate::crypto::sha256_hex;
@@ -75,11 +75,12 @@ fn signatures_are_checked_for_each_provider() {
     assert_eq!(answer["plainToken"], "plain-123");
     assert_eq!(answer["encryptedToken"].as_str().unwrap(), hex::encode(hmac_bytes(ZOOM_SECRET_TOKEN.as_bytes(), b"plain-123")));
 
-    // Anyone could sign with an empty secret, and Gong has no webhook.
+    // Anyone could sign with an empty secret, and Gong and tl;dv have no webhook.
     let mut headers = HeaderMap::new();
     headers.insert("x-hub-signature", HeaderValue::from_str(&hex::encode(hmac_bytes(b"", body))).unwrap());
     assert!(!Provider::Fireflies.verify("", &headers, body, now));
     assert!(!Provider::Gong.verify("anything", &headers, body, now));
+    assert!(!Provider::Tldv.verify("anything", &headers, body, now));
 }
 
 #[test]
@@ -545,6 +546,105 @@ async fn gong_is_read_a_page_at_a_time_from_where_the_last_read_ended(db: PgPool
     assert_eq!(s.fake.hits("/gong/v2/calls/transcript"), 3, "g3 was kept already, so only g4 is fetched");
     assert_eq!((s.meetings_of(s.sarah).await.len(), s.meetings_of(s.tom).await.len()), (2, 1));
     assert_eq!(s.runs().await.len(), 3, "a run per meeting");
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn tldv_meetings_with_a_lead_are_kept_once_their_transcript_is_done_and_wait_for_it_up_to_a_week(db: PgPool) {
+    let s = Seeded::start(db).await;
+    let path = format!("/projects/{}/meeting-connections/tldv", s.project);
+    assert_eq!(s.call("acme", Method::PUT, &path, json!({ "api_key": "wrong" })).await.0, 400);
+    let row = s.connect("tldv", json!({ "api_key": fake::TLDV_KEY })).await;
+    assert_eq!((row["synced_at"].clone(), row["has_secret"].clone()), (Value::Null, json!(false)));
+    assert_eq!(s.call("acme", Method::PUT, &format!("{path}/secret"), json!({ "secret": "x" })).await.0, 400, "tl;dv has no webhook");
+    assert_eq!(s.post("tldv", row["webhook_token"].as_str().unwrap(), &[], b"{}").await.0, 404);
+    let meeting = |id: &str, email: &str, hours_ago: i64| {
+        json!({
+            "id": id, "name": format!("Call {id}"), "happenedAt": (Utc::now() - Duration::hours(hours_ago)).to_rfc3339(), "duration": 1799.6,
+            "url": format!("https://tldv.io/app/meetings/{id}"), "organizer": { "name": "Jo", "email": "jo@acme.example" },
+            "invitees": [{ "name": "Jo", "email": "jo@acme.example" }, { "name": "Guest", "email": email }],
+        })
+    };
+    {
+        let mut meetings = s.fake.tldv_meetings.lock().unwrap();
+        meetings.push(meeting("t1", "sarah@northwind.example", 10));
+        meetings.push(meeting("t2", "nobody@elsewhere.example", 20));
+        meetings.push(meeting("t3", "pat@contoso.example", 5));
+        let mut internal = meeting("t4", "sarah@northwind.example", 4);
+        internal["internal"] = json!(true);
+        meetings.push(internal);
+        // An id that would change the transcript's path is never read.
+        meetings.push(meeting("../t5", "sarah@northwind.example", 3));
+        meetings.push(meeting("t6", "tom@contoso.example", 2));
+        s.fake.tldv_refused.lock().unwrap().push("t6".into());
+        let said = json!({ "id": "x", "meetingId": "t1", "data": [{ "speaker": "Jo", "text": "Ready?", "startTime": 0, "endTime": 2 },
+                                                             { "speaker": "Sarah Kim", "text": "Yes.", "startTime": 2, "endTime": 3 }] });
+        s.fake.tldv_transcripts.lock().unwrap().insert("t1".into(), said);
+        s.fake.tldv_notes.lock().unwrap().insert("t1".into(), json!({ "markdownContent": "## Budget\nSet for Q3.", "structuredNotes": [], "topics": [] }));
+    }
+
+    // The list reads, not the key checks.
+    let reads = || -> Vec<String> { s.fake.hits.lock().unwrap().iter().filter(|h| h.starts_with("/tldv/meetings?") && h.contains("page=")).cloned().collect() };
+    let from_of = |hit: &str| {
+        let url = reqwest::Url::parse(&format!("http://fake{hit}")).unwrap();
+        let from = url.query_pairs().find(|(k, _)| k == "from").unwrap().1.into_owned();
+        DateTime::parse_from_rfc3339(&from).unwrap().with_timezone(&Utc)
+    };
+
+    let connection = || async {
+        let (error, cursor): (String, DateTime<Utc>) = sqlx::query_as("select error, sync_cursor from meeting_connections").fetch_one(s.db()).await.unwrap();
+        (error, (Utc::now() - cursor).num_minutes())
+    };
+
+    crate::meetings::poll_due(&s.state).await.unwrap();
+    let first = reads();
+    assert_eq!(first.len(), 9, "a week a day at a time, and the last day's five meetings are three pages: {first:?}");
+    assert!(first.iter().all(|r| r.contains("meetingType=external") && r.contains("limit=100")));
+    assert!((Utc::now() - from_of(&first[0]) - tldv::FIRST_LOOK_BACK).num_seconds().abs() < 60, "the first read goes back a week");
+    assert_eq!(s.fake.hits("/tldv/meetings/t2"), 0, "nobody at t2 is a lead");
+    assert!(!s.fake.hits.lock().unwrap().iter().any(|h| h.contains("t5")));
+    assert_eq!(s.fake.hits("/tldv/meetings/t3/notes"), 0, "t3's transcript isn't done, so its notes wait too");
+    let sarahs = s.meetings_of(s.sarah).await;
+    assert_eq!(sarahs.len(), 1);
+    assert_eq!(
+        (sarahs[0]["external_id"].as_str(), sarahs[0]["provider_summary"].as_str(), sarahs[0]["duration_secs"].as_i64()),
+        (Some("t1"), Some("## Budget\nSet for Q3."), Some(1800))
+    );
+    assert_eq!(sarahs[0]["attendees"], json!([{ "name": "Guest", "email": "sarah@northwind.example" }]), "Jo is the team");
+    let transcript: String = sqlx::query_scalar("select transcript from meetings where external_id = 't1'").fetch_one(s.db()).await.unwrap();
+    assert_eq!(transcript, "Jo: Ready?\nSarah Kim: Yes.");
+    assert!(s.meetings_of(s.tom).await.is_empty(), "t3 waits for its transcript, and tl;dv refuses t6's");
+    let (error, cursor_age) = connection().await;
+    assert!(error.starts_with("Couldn't read the transcript of a meeting with your leads, so it waits") && error.contains("can't read transcripts"), "{error}");
+    assert!((cursor_age - 5 * 60).abs() <= 1, "the cursor stops at t3, the oldest meeting still waiting, not {cursor_age} minutes ago");
+
+    // Not due again for 15 minutes. Then the read starts a day before t3, which comes in with t6 once tl;dv gives their
+    // transcripts, and the warning goes.
+    crate::meetings::poll_due(&s.state).await.unwrap();
+    assert_eq!(reads().len(), 9);
+    s.fake.tldv_transcripts.lock().unwrap().insert("t3".into(), json!({ "id": "y", "meetingId": "t3", "data": [{ "speaker": "Pat", "text": "Hi." }] }));
+    s.fake.tldv_transcripts.lock().unwrap().insert("t6".into(), json!({ "id": "z", "meetingId": "t6", "data": [{ "speaker": "Tom", "text": "Hello." }] }));
+    s.fake.tldv_refused.lock().unwrap().clear();
+    let due = || sqlx::query("update meeting_connections set synced_at = now() - interval '16 minutes'").execute(s.db());
+    due().await.unwrap();
+    crate::meetings::poll_due(&s.state).await.unwrap();
+    let from = from_of(&reads()[9]);
+    assert!((Utc::now() - Duration::hours(29) - from).num_seconds().abs() < 60, "{from} is a day before t3");
+    assert_eq!(s.fake.hits("/tldv/meetings/t1/transcript"), 1, "t1 was kept already");
+    let toms = s.meetings_of(s.tom).await;
+    assert_eq!(toms.iter().map(|m| m["external_id"].as_str().unwrap()).collect::<Vec<_>>(), ["t3", "t6"]);
+    assert_eq!(toms[0]["provider_summary"], "", "a meeting without notes still comes in");
+    assert_eq!(connection().await, (String::new(), 0));
+    assert_eq!(s.runs().await.len(), 3, "a run per meeting");
+
+    // A meeting still without its transcript after a week stops holding the cursor back.
+    s.fake.tldv_meetings.lock().unwrap().push(meeting("t9", "sarah@northwind.example", 7 * 24 + 1));
+    sqlx::query("update meeting_connections set sync_cursor = now() - interval '7 days 2 hours'").execute(s.db()).await.unwrap();
+    due().await.unwrap();
+    crate::meetings::poll_due(&s.state).await.unwrap();
+    assert_eq!(s.fake.hits("/tldv/meetings/t9/transcript"), 1);
+    assert_eq!(connection().await, (String::new(), 0));
 }
 
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

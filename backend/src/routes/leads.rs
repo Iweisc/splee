@@ -359,7 +359,7 @@ pub struct LeadDetail {
     pub texts: Vec<TextMessage>,
     /// Calls to them, open and made, oldest first.
     pub calls: Vec<Call>,
-    /// Sales meetings with them from Fireflies, Fathom, Gong or Zoom, oldest first.
+    /// Sales meetings with them from Fireflies, Fathom, Gong, Zoom or tl;dv, oldest first.
     pub meetings: Vec<super::meetings::MeetingRow>,
     /// Open roles at the lead's company that match the project's hiring signals.
     pub hiring: Vec<hiring::Post>,

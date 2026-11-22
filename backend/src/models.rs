@@ -923,7 +923,7 @@ pub struct Call {
     pub created_at: Ts,
 }
 
-/// A sales meeting with a lead, from Fireflies, Fathom, Gong or Zoom, and the agent's notes on it. See meetings/. The
+/// A sales meeting with a lead, from Fireflies, Fathom, Gong, Zoom or tl;dv, and the agent's notes on it. See meetings/. The
 /// transcript is only read by the agent, so it's not here.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Meeting {
