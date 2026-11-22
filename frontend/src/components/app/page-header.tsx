@@ -29,5 +29,9 @@ export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivEl
 
 /** For pages whose body fills the rest of the screen and scrolls inside, like the inbox. 3.5rem is the shell's mobile top bar. */
 export function ScreenPage({ children }: { children: React.ReactNode }) {
-  return <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">{children}</div>;
+  return <div className="group/screen flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">{children}</div>;
 }
+
+/** On a phone, hides what's above a conversation while one is open inside a ScreenPage (the pane marks itself with
+ *  data-thread-open), so the messages get the screen rather than a sliver under the page's title and tabs. */
+export const HIDE_OVER_THREAD = "max-md:group-has-[[data-thread-open]]/screen:hidden";
