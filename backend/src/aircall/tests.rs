@@ -364,7 +364,8 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
     assert_eq!(status(danas_second).await.unwrap(), ("done".into(), Some(202)));
     assert_eq!(status(danas_first).await.unwrap(), ("open".into(), None));
 
-    // A step put in Aircall two hours ago and never called doesn't take a call now, which goes to Dana.
+    // A step put in Aircall two hours ago and never called doesn't take a call now, which goes to Dana. Her open step is being
+    // called through Twilio and stays for Jo to log, so the call is kept on its own.
     sqlx::query("update calls set aircall_dialed_by = $2, aircall_dialed_at = now() - interval '2 hours' where id = $1")
         .bind(dans_first)
         .bind(s.jo)
@@ -373,5 +374,7 @@ async fn a_call_closes_the_step_its_caller_put_in_aircall_just_before(db: PgPool
         .unwrap();
     assert_eq!(s.event(&token, 1, "call.ended", ended(203, 60)).await.1, json!({ "matched": true }));
     assert_eq!(status(dans_first).await.unwrap(), ("open".into(), None));
-    assert_eq!(status(danas_first).await.unwrap(), ("done".into(), Some(203)));
+    assert_eq!(status(danas_first).await.unwrap(), ("open".into(), None));
+    let kept: (Uuid, String) = sqlx::query_as("select lead_id, kind from calls where aircall_id = 203").fetch_one(s.db()).await.unwrap();
+    assert_eq!(kept, (dana, "manual".into()));
 }

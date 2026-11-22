@@ -207,9 +207,9 @@ impl Ended {
 }
 
 /// Keeps a call with one of the project's leads, once: it closes the step its caller started in Aircall from the Calls page,
-/// or else the lead's first open call step, like one logged on the Calls page, or is kept as a call of its own. A repeated
-/// event, or the recording arriving later, only adds a recording the call didn't have. Returns the call, or None when no
-/// lead in the project has that number.
+/// or else the lead's first open call step not called through Twilio, like one logged on the Calls page, or is kept as a
+/// call of its own. A repeated event, or the recording arriving later, only adds a recording the call didn't have. Returns
+/// the call, or None when no lead in the project has that number.
 ///
 /// The call and what it does to the lead are kept together, since a retry finds the call and goes no further. Aircall's calls
 /// are only connected or not answered, and of what calls::apply_outcome does, that only moves last_contacted_at.
@@ -263,10 +263,12 @@ pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Op
     let Some(lead) = lead else { return Ok(None) };
     let (outcome, notes) = e.outcome();
     let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
+    // A step with a call through Twilio is left for whoever made it to log in the browser, which a closed step would refuse.
     let open: Option<Call> = sqlx::query_as(
         "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
            aircall_id = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11
-         where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' order by due_at limit 1)) and status = 'open'
+         where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' and twilio_sid is null order by due_at limit 1))
+           and status = 'open'
          returning *",
     )
     .bind(lead.id)
