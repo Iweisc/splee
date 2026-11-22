@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use super::blocklists::tests::FakeResolver;
 use super::*;
-use crate::crypto::sha256_hex;
 
 fn state(db: &PgPool) -> AppState {
     let cfg = crate::mail::oauth::tests::config(&crate::mail::oauth::tests::FakeProvider { url: String::new(), hits: Arc::default(), forms: Arc::default() });
@@ -170,13 +169,7 @@ async fn an_at_risk_mailbox_is_held_until_resumed_and_only_a_new_problem_holds_i
     // Resumed on the Mailboxes page, it sends through the listing it was held for.
     let ana_user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('ana@acme.test', 'Ana', 'x') returning id").fetch_one(&db).await.unwrap();
     sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(acme).bind(ana_user).execute(&db).await.unwrap();
-    sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-        .bind(sha256_hex("session-acme"))
-        .bind(ana_user)
-        .bind(acme)
-        .execute(&db)
-        .await
-        .unwrap();
+    crate::auth::sign_in(&db, ana_user, acme, "session-acme").await;
     let base = serve(state.clone()).await;
     let client = reqwest::Client::new();
     let resume = || {
@@ -299,13 +292,7 @@ async fn each_org_sees_and_holds_only_its_own(db: PgPool) {
     // Through the API too, with Beta's session.
     let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('bea@beta.test', 'Bea', 'x') returning id").fetch_one(&db).await.unwrap();
     sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(beta).bind(user).execute(&db).await.unwrap();
-    sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-        .bind(sha256_hex("session-beta"))
-        .bind(user)
-        .bind(beta)
-        .execute(&db)
-        .await
-        .unwrap();
+    crate::auth::sign_in(&db, user, beta, "session-beta").await;
     let base = serve(state).await;
     let body: Value = reqwest::Client::new()
         .get(format!("{base}/deliverability"))

@@ -243,7 +243,6 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::config::Config;
-    use crate::crypto::sha256_hex;
     use crate::state::AppState;
 
     pub struct Team {
@@ -274,13 +273,7 @@ pub(crate) mod tests {
                     .await
                     .unwrap();
                 sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(&db).await.unwrap();
-                sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                    .bind(sha256_hex(name))
-                    .bind(user)
-                    .bind(org)
-                    .execute(&db)
-                    .await
-                    .unwrap();
+                crate::auth::sign_in(&db, user, org, name).await;
                 orgs.push(org);
             }
             let project: Uuid =

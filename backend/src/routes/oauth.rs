@@ -732,13 +732,7 @@ mod tests {
                 projects.push(project);
                 if name == "Acme" {
                     sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(ana).execute(&db).await.unwrap();
-                    sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                        .bind(sha256_hex("session-ana"))
-                        .bind(ana)
-                        .bind(org)
-                        .execute(&db)
-                        .await
-                        .unwrap();
+                    crate::auth::sign_in(&db, ana, org, "session-ana").await;
                 }
             }
             let cfg = Config { app_secret: String::new(), public_url: format!("{PUBLIC}/"), ..Config::test() };
