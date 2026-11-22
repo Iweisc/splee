@@ -1,5 +1,6 @@
-//! Copies hot and booked leads into the CRMs a project connected, each with a note saying what happened, so the sales
-//! team finds them where they work. Tokens are kept encrypted like mailbox passwords and never sent back to the browser.
+//! Copies hot and booked leads, and leads someone talked with on a call or in a meeting, into the CRMs a project connected,
+//! each with a note saying what happened, so the sales team finds them where they work. Tokens are kept encrypted like
+//! mailbox passwords and never sent back to the browser.
 
 mod affinity;
 mod airtable;

@@ -1,5 +1,6 @@
 //! A short summary of a transcribed call and a suggested next step, for the lead's timeline and the inbox, and when someone
-//! talked with the lead, the follow-up email, which waits for approval like the one after a meeting (agent/meetings.rs).
+//! talked with the lead, the follow-up email, which waits for approval like the one after a meeting (agent/meetings.rs), and
+//! a note in the project's CRMs.
 
 use std::future::Future;
 
@@ -95,10 +96,15 @@ where
     let answer = ask(Call::writing(NOTE_TAKER, prompt, schema)).await?;
 
     let (subject, body) = (answer.follow_up_subject.trim(), answer.follow_up_body.trim());
+    let talked = !subject.is_empty() && !body.is_empty();
     let mut tx = db.begin().await?;
-    // A run started twice for the call drafts once.
-    let drafted: Option<Uuid> = sqlx::query_scalar("select follow_up_email_id from calls where id = $1 for update").bind(call.id).fetch_one(&mut *tx).await?;
-    let draft = if drafted.is_some() || subject.is_empty() || body.is_empty() || follow_up_blocker(&mut tx, org_id, &lead).await?.is_some() {
+    // A run started twice for the call drafts once and tells the CRMs once.
+    let (drafted, summarized): (Option<Uuid>, String) =
+        sqlx::query_as("select follow_up_email_id, summary from calls where id = $1 for update").bind(call.id).fetch_one(&mut *tx).await?;
+    // The lead may have opted out while the model was writing.
+    let lead = sqlx::query_as::<_, Lead>("select * from leads where id = $1").bind(lead.id).fetch_one(&mut *tx).await?;
+    let blocked = follow_up_blocker(&mut tx, org_id, &lead).await?.is_some();
+    let draft = if drafted.is_some() || !talked || blocked {
         None
     } else {
         Some(draft_in_thread(&mut tx, &lead, "call_follow_up", subject, &settings.sign(body), lang.code).await?)
@@ -111,8 +117,22 @@ where
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    // Like a hot reply, only a conversation goes to the CRMs, not a voicemail or a gatekeeper, and only with a lead we'd
+    // still email.
+    if talked && !blocked && summarized.is_empty() {
+        let link = crate::hooks::lead_url(&ctx.state.cfg.public_url, call.project_id, lead.id);
+        crate::crm::sync(&ctx.state, call.project_id, &lead, &crm_note(&call, answer.summary.trim(), answer.next_step.trim(), &link)).await;
+    }
     let message = if draft.is_some() { "Summarized the call and drafted the follow-up" } else { "Summarized the call" };
     Ok(Outcome { message: message.into(), output: json!({ "call_id": call.id, "email_id": draft }) })
+}
+
+/// The first line is what Salesforce shows as the Task's subject.
+fn crm_note(call: &models::Call, summary: &str, next_step: &str, link: &str) -> String {
+    let who = if call.inbound { "They called us" } else { "We called them" };
+    let length = call.duration_secs.map(|secs| format!(", {} min", ((secs + 30) / 60).max(1))).unwrap_or_default();
+    let next = if next_step.is_empty() { String::new() } else { format!("\n\nNext step: {next_step}") };
+    format!("Call notes from Splee. {who}{length}.\n\n{summary}{next}\n{link}")
 }
 
 #[cfg(test)]
@@ -123,6 +143,8 @@ mod tests {
     use sqlx::PgPool;
 
     use super::*;
+    use crate::crm::Crm;
+    use crate::crm::signin::tests::{Fake, LIVE, connect_fake};
     use crate::models::AgentRun;
 
     async fn summarize_with(db: &PgPool, call: Uuid, answer: (&str, &str)) -> (Outcome, String) {
@@ -165,6 +187,8 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("insert into project_settings (project_id, sender_name, tone) values ($1, 'Jo', 'warm')").bind(project).execute(&db).await.unwrap();
+        let (crm, state) = (Fake::start().await, crate::autopilot::tests::state(db.clone()));
+        connect_fake(&state, &crm, project, Crm::Zoho, LIVE, "good", 3600).await;
         let lead: Uuid = sqlx::query_scalar(
             "insert into leads (project_id, full_name, first_name, email, company_name, phone)
              values ($1, 'Sam Lee', 'Sam', 'sam@smile.test', 'Smile Dental', '+447700900123') returning id",
@@ -183,6 +207,7 @@ mod tests {
         };
 
         let talked = call("Us: Is now a good time?\nLead: Send me the case study.", false).await.unwrap();
+        sqlx::query("update calls set duration_secs = 254 where id = $1").bind(talked).execute(&db).await.unwrap();
         let (outcome, prompt) = summarize_with(&db, talked, ("Our call today", "Hi Sam, thanks for the call. The case study is on its way.")).await;
         assert_eq!(outcome.message, "Summarized the call and drafted the follow-up");
         assert!(prompt.contains("Lead: Send me the case study.") && prompt.contains("from Fieldnote to a lead (Sam Lee, Smile Dental)"), "{prompt}");
@@ -195,24 +220,35 @@ mod tests {
             sqlx::query_as("select kind, status, to_email, subject, body from email_messages where id = $1").bind(email).fetch_one(&db).await.unwrap();
         let body = "Hi Sam, thanks for the call. The case study is on its way.\n\nJo";
         assert_eq!(draft, ("call_follow_up".into(), "draft".into(), "sam@smile.test".into(), "Our call today".into(), body.into()));
+        let link = format!("{}/app/p/{project}/inbox?lead={lead}", state.cfg.public_url);
+        let notes = || crm.records("zoho:Note").iter().map(|n| n["Note_Content"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let note = |who: &str| format!("Call notes from Splee. {who}.\n\nSam wants to see results first.\n\nNext step: Send the case study.\n{link}");
+        assert_eq!(notes(), [note("We called them, 4 min")], "the CRM gets the call");
+        // One the lead made says so, and without a length when Twilio gave none.
+        let called_us = call("Lead: Hi, it's Sam.\nUs: Hi Sam!", true).await.unwrap();
+        summarize_with(&db, called_us, ("Thanks", "Hi Sam, thanks.")).await;
+        assert_eq!(notes()[1], note("They called us"));
 
-        // A second run for the call doesn't draft again.
+        // A second run for the call doesn't draft again or tell the CRM twice.
         let (outcome, _) = summarize_with(&db, talked, ("Again", "Hi Sam, again.")).await;
         assert_eq!(outcome.message, "Summarized the call");
         let drafts: i64 = sqlx::query_scalar("select count(*) from email_messages where lead_id = $1").bind(lead).fetch_one(&db).await.unwrap();
-        assert_eq!(drafts, 1);
+        assert_eq!(drafts, 2);
+        assert_eq!(notes().len(), 2);
 
-        // A voicemail gets no follow-up, and a call the lead made is told the right way round.
+        // A voicemail gets no follow-up or note, and a call the lead made is told the right way round.
         let voicemail = call("Lead: You've reached Sam, leave a message.", true).await.unwrap();
         let (outcome, prompt) = summarize_with(&db, voicemail, ("", "")).await;
         assert_eq!(outcome.message, "Summarized the call");
         assert!(prompt.contains("a sales call a lead (Sam Lee, Smile Dental) made to Fieldnote. \"Lead\" is the caller"), "{prompt}");
         let email: Option<Uuid> = sqlx::query_scalar("select follow_up_email_id from calls where id = $1").bind(voicemail).fetch_one(&db).await.unwrap();
         assert_eq!(email, None);
+        assert_eq!(notes().len(), 2);
 
-        // Nor does a lead who opted out.
+        // Nor does a lead who opted out, and the CRM doesn't hear about them.
         sqlx::query("update leads set status = 'unsubscribed' where id = $1").bind(lead).execute(&db).await.unwrap();
         let after = call("Us: Hi Sam.\nLead: Hi!", false).await.unwrap();
         assert_eq!(summarize_with(&db, after, ("Thanks", "Hi Sam, thanks.")).await.0.message, "Summarized the call");
+        assert_eq!(notes().len(), 2);
     }
 }

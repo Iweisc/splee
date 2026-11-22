@@ -16,6 +16,8 @@ use super::fake::{self, Fake};
 use super::{Attendee, Provider, TRANSCRIPT_CHARS, cap, fathom, fireflies, gong, match_lead, tldv, zoom};
 use crate::agent::meetings::tests::{answer, run_notes};
 use crate::config::Config;
+use crate::crm::Crm;
+use crate::crm::signin::tests::{Fake as CrmFake, LIVE, connect_fake};
 use crate::crypto::sha256_hex;
 use crate::state::AppState;
 
@@ -667,6 +669,10 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     .execute(s.db())
     .await
     .unwrap();
+    let crm = CrmFake::start().await;
+    sqlx::query("insert into project_settings (project_id) values ($1) on conflict do nothing").bind(s.project).execute(s.db()).await.unwrap();
+    connect_fake(&s.state, &crm, s.project, Crm::Zoho, LIVE, "good", 3600).await;
+    let notes = || crm.records("zoho:Note").iter().map(|n| n["Note_Content"].as_str().unwrap().to_string()).collect::<Vec<_>>();
 
     let (outcome, prompt) = run_notes(&s.state, meeting, answer("Proposal")).await;
     assert_eq!(outcome.message, "Wrote the meeting notes, drafted the follow-up and suggested Proposal");
@@ -682,6 +688,13 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     assert_eq!(row["next_steps"], json!(["Send pricing for 40 seats", "Book a call with their CFO"]));
     assert_eq!((row["suggested_stage"].as_str(), row["stage_status"].as_str(), row["follow_up_status"].as_str()), (Some("Proposal"), Some("pending"), Some("draft")));
     assert_eq!(deal_stage().await.unwrap(), "Interested", "a suggestion never moves the deal by itself");
+    let link = format!("{}/app/p/{}/inbox?lead={}", s.state.cfg.public_url, s.project, s.sarah);
+    let note = format!(
+        "Meeting notes from Splee: Northwind and Fieldnote\n\n{}\n\nNext steps:\n- Send pricing for 40 seats\n- Book a call with their CFO\n\n\
+         Recording: https://app.fireflies.ai/view/ff1\n{link}\n\nDeal in Splee: Interested, 0 USD",
+        row["summary"].as_str().unwrap(),
+    );
+    assert_eq!(notes(), [note], "the CRM gets the notes");
 
     // The draft waits with the other drafts, from the mailbox that emailed Sarah, threaded under that email.
     let (_, drafts) = s.call("acme", Method::GET, &format!("/emails?project_id={}&status=draft", s.project), json!({})).await;
@@ -695,6 +708,7 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     // A second run for the meeting writes nothing more.
     let (again, _) = run_notes(&s.state, meeting, answer("Negotiation")).await;
     assert_eq!(again.message, "The meeting already has notes");
+    assert_eq!(notes().len(), 1, "and only once");
     assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from email_messages where kind = 'meeting_follow_up'").fetch_one(s.db()).await.unwrap(), 1);
 
     // Beta can't decide it, Acme accepts it with one click, and a second click finds it settled.
@@ -732,6 +746,7 @@ async fn the_notes_draft_a_follow_up_and_the_stage_moves_only_on_a_click(db: PgP
     let toms: Uuid = sqlx::query_scalar("select id from meetings where external_id = 'ff4'").fetch_one(s.db()).await.unwrap();
     let (outcome, _) = run_notes(&s.state, toms, answer("Meeting booked")).await;
     assert!(outcome.message.contains("No follow-up"), "{}", outcome.message);
+    assert_eq!(notes().len(), 3, "Sarah's three meetings, and nothing for Tom");
     assert_eq!(s.call("acme", Method::POST, &format!("/meetings/{toms}/stage"), json!({ "accept": true })).await.0, 200);
     let tom_stage: String = sqlx::query_scalar("select s.name from deals d join deal_stages s on s.id = d.stage_id where d.lead_id = $1").bind(s.tom).fetch_one(s.db()).await.unwrap();
     assert_eq!(tom_stage, "Meeting booked");
