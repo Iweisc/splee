@@ -36,6 +36,7 @@ mod nostr;
 pub mod nudges;
 pub mod proposals;
 pub mod qualify;
+pub mod questionnaires;
 pub mod one_on_one;
 pub mod playbook;
 pub mod practice;
@@ -125,6 +126,7 @@ pub mod kind {
     pub const FEEDBACK_SCAN: &str = "feedback_scan";
     pub const FEATURE_SHIPPED: &str = "feature_shipped";
     pub const BUSINESS_CASE: &str = "business_case";
+    pub const QUESTIONNAIRE: &str = "questionnaire";
 }
 
 pub async fn enqueue<'e, E: sqlx::PgExecutor<'e>>(db: E, kind: &str, project_id: Option<Uuid>, org_id: Option<Uuid>, input: Value) -> sqlx::Result<Uuid> {
@@ -435,6 +437,7 @@ async fn dispatch(ctx: &Ctx) -> anyhow::Result<Outcome> {
         kind::FEEDBACK_SCAN => feedback::scan(ctx).await,
         kind::FEATURE_SHIPPED => feedback::announce(ctx).await,
         kind::BUSINESS_CASE => business_cases::write(ctx).await,
+        kind::QUESTIONNAIRE => questionnaires::run(ctx).await,
         other => anyhow::bail!("unsupported run kind {other}"),
     }
 }

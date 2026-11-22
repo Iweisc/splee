@@ -18,6 +18,7 @@ use super::write::{WriterSettings, draft_in_thread};
 use super::{Ctx, Outcome, kind, meetings};
 use crate::models::{Lead, Ts};
 use crate::state::AppState;
+use crate::text::plain;
 
 /// Characters the agent reads of a source, a meeting's transcript, and all of them in one run.
 const PER_SOURCE: usize = 1500;
@@ -100,11 +101,6 @@ fn fresh(body: &str) -> String {
         }
     }
     lines.join("\n").trim().to_string()
-}
-
-/// Lowercase words only, so a quote matches its source whatever the spacing, punctuation and line breaks.
-fn plain(s: &str) -> String {
-    s.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Starts a scan of the project's new sources, or returns the one already running.
@@ -487,7 +483,6 @@ mod tests {
     fn a_reply_loses_the_thread_it_quotes() {
         assert_eq!(fresh("Need SSO.\n> earlier\nThanks\n\nOn Mon, 3 Nov 2026 at 10:00, Dana\n<dana@x.com> wrote:\n> old"), "Need SSO.\nThanks");
         assert_eq!(fresh("Yes\n-----Original Message-----\nFrom: us"), "Yes");
-        assert_eq!(plain(" \"Salesforce  SYNC!\"\n"), "salesforce sync");
     }
 
     #[sqlx::test]

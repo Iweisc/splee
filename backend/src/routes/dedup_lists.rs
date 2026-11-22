@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::imports;
 use super::suppression_lists::{self, Kind, ScopeBody};
 use super::util_input;
+use super::util_table::parse_csv;
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::DedupList;
@@ -203,7 +203,7 @@ struct UploadBody {
 async fn upload(State(state): State<AppState>, auth: Auth, Json(body): Json<UploadBody>) -> AppResult<Json<Added>> {
     let name = suppression_lists::check_name(&body.name)?;
     let scope = suppression_lists::check_scope(&state.db, auth.org_id, body.project_ids).await?;
-    let csv = body.csv.as_deref().map(|c| imports::parse_csv(c.as_bytes())).transpose()?;
+    let csv = body.csv.as_deref().map(|c| parse_csv(c.as_bytes())).transpose()?;
     let raws: Vec<&str> = match &csv {
         Some(csv) => suppression_lists::column_of(csv, Kind::Companies, body.column)
             .ok_or_else(|| AppError::BadRequest("The file has no column of domains or websites".into()))?

@@ -1,10 +1,7 @@
 use std::collections::HashMap;
-use std::io::Cursor;
-
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use calamine::Reader;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +14,7 @@ use super::util_teable as teable;
 use super::util_nocodb as nocodb;
 use super::util_input;
 use super::util_sheet as sheet;
+use super::util_table::{Csv, parse_csv, parse_spreadsheet};
 use super::util_lead_import::{self, NewLead};
 use super::util_notion as notion;
 use crate::auth::Auth;
@@ -173,57 +171,6 @@ impl Upload {
         let spreadsheet = [".xlsx", ".xlsm", ".xls", ".ods"].iter().any(|ext| lower.ends_with(ext));
         Ok((name, if spreadsheet { parse_spreadsheet(file)? } else { parse_csv(&file)? }))
     }
-}
-
-pub(crate) struct Csv {
-    pub headers: Vec<String>,
-    /// (line number in the file, cells)
-    pub rows: Vec<(usize, Vec<String>)>,
-}
-
-pub(crate) fn parse_csv(bytes: &[u8]) -> AppResult<Csv> {
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let mut reader = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::All).from_reader(bytes);
-    let to_strings = |r: &csv::ByteRecord| r.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>();
-    let invalid = |e: csv::Error| AppError::BadRequest(format!("Couldn't read the CSV: {e}"));
-    let headers = to_strings(reader.byte_headers().map_err(invalid)?);
-    if headers.iter().all(String::is_empty) {
-        return Err(AppError::BadRequest("The CSV has no header row".into()));
-    }
-    let mut rows = Vec::new();
-    for record in reader.byte_records() {
-        let record = record.map_err(invalid)?;
-        let line = record.position().map_or(0, |p| p.line() as usize);
-        rows.push((line, to_strings(&record)));
-    }
-    Ok(Csv { headers, rows })
-}
-
-/// How much an .xlsx or .ods may unzip to. Its sheet is read into memory whole, and a small file can unzip to gigabytes.
-const MAX_UNZIPPED: u64 = 200 * 1024 * 1024;
-
-/// The first sheet of an Excel or OpenDocument file, read like a CSV: its first row is the header and line numbers are
-/// the sheet's row numbers. Blank rows are skipped, as the CSV reader skips blank lines.
-fn parse_spreadsheet(bytes: Vec<u8>) -> AppResult<Csv> {
-    let unreadable = |e: &dyn std::fmt::Display| AppError::BadRequest(format!("Couldn't read the spreadsheet: {e}"));
-    // .xls isn't a zip, and only a zip can unzip to more than it is.
-    if let Ok(mut zip) = zip::ZipArchive::new(Cursor::new(&bytes)) {
-        let unzipped: u64 = (0..zip.len()).filter_map(|i| zip.by_index_raw(i).ok().map(|f| f.size())).sum();
-        if unzipped > MAX_UNZIPPED {
-            return Err(AppError::BadRequest("The spreadsheet is too big. Save its first sheet as a CSV and import that.".into()));
-        }
-    }
-    let mut book = calamine::open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| unreadable(&e))?;
-    let sheet = book.worksheet_range_at(0).ok_or_else(|| AppError::BadRequest("The spreadsheet has no sheets".into()))?;
-    let sheet = sheet.map_err(|e| unreadable(&e))?;
-    let first_row = sheet.start().map_or(0, |(row, _)| row as usize);
-    let mut rows = sheet
-        .rows()
-        .enumerate()
-        .map(|(i, cells)| (first_row + i + 1, cells.iter().map(|c| c.to_string().trim().to_string()).collect::<Vec<_>>()))
-        .filter(|(_, cells)| cells.iter().any(|c| !c.is_empty()));
-    let (_, headers) = rows.next().ok_or_else(|| AppError::BadRequest("The spreadsheet has no header row".into()))?;
-    Ok(Csv { headers, rows: rows.collect() })
 }
 
 pub(crate) fn suggest_field(header: &str) -> Option<&'static str> {

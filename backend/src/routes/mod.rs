@@ -92,6 +92,7 @@ mod crm_oauth;
 mod bots;
 mod calls;
 mod proposals;
+mod questionnaires;
 pub mod meetings;
 pub mod settings;
 pub mod materials;
@@ -129,6 +130,7 @@ mod util_notion;
 mod util_pagination;
 mod util_scope;
 mod util_sheet;
+mod util_table;
 
 /// Takes the state for the public API's layer, which needs the database and the rate limits.
 pub fn router(state: &AppState) -> Router<AppState> {
@@ -235,6 +237,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(deals::router())
         .merge(close_plans::router())
         .merge(proposals::router())
+        .merge(questionnaires::router())
         .merge(sheets::router())
         .merge(exports::router())
         .merge(outreach::router())

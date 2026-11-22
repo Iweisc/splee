@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::imports::{self, Csv};
 use super::util_input;
 use super::util_pagination::{PageQuery, Paginated};
+use super::util_table::{Csv, parse_csv};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
 use crate::models::SuppressionList;
@@ -298,7 +298,7 @@ struct CsvBody {
 }
 
 async fn columns(_auth: Auth, Json(body): Json<CsvBody>) -> AppResult<Json<Value>> {
-    let columns = read_columns(&imports::parse_csv(body.csv.as_bytes())?);
+    let columns = read_columns(&parse_csv(body.csv.as_bytes())?);
     Ok(Json(json!({ "column": best_column(&columns), "columns": columns })))
 }
 
@@ -316,7 +316,7 @@ struct UploadBody {
 async fn upload(State(state): State<AppState>, auth: Auth, Json(body): Json<UploadBody>) -> AppResult<Json<Added>> {
     let name = check_name(&body.name)?;
     let scope = check_scope(&state.db, auth.org_id, body.project_ids).await?;
-    let csv = imports::parse_csv(body.csv.as_bytes())?;
+    let csv = parse_csv(body.csv.as_bytes())?;
     let columns = read_columns(&csv);
     let column = body.column.or_else(|| best_column(&columns));
     let Some((i, kind)) = column.and_then(|i| Some((i, columns.get(i)?.kind?))) else {
@@ -378,13 +378,13 @@ mod tests {
 
     #[test]
     fn the_column_with_the_most_emails_or_domains_is_picked() {
-        let csv = super::imports::parse_csv(b"Name,Email,Website\nAna,ana@north.example,north.example\nBo,,https://www.globex.example/\nCy,cy@globex.example,\n").unwrap();
+        let csv = super::parse_csv(b"Name,Email,Website\nAna,ana@north.example,north.example\nBo,,https://www.globex.example/\nCy,cy@globex.example,\n").unwrap();
         let columns = super::read_columns(&csv);
         let kinds: Vec<_> = columns.iter().map(|c| (c.kind, c.values)).collect();
         assert_eq!(kinds, [(None, 0), (Some("people"), 2), (Some("companies"), 2)]);
         assert_eq!(super::best_column(&columns), Some(1), "a tie goes to the first");
         // No header row: the first value counts too.
-        let bare = super::imports::parse_csv(b"acme.example\nglobex.example\n").unwrap();
+        let bare = super::parse_csv(b"acme.example\nglobex.example\n").unwrap();
         assert_eq!(super::read_columns(&bare)[0].values, 2);
     }
 
