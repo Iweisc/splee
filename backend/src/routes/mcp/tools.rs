@@ -959,6 +959,8 @@ pub(super) fn tools() -> Vec<Value> {
                                         "description": "Optional. Email spend a month in micro-dollars. null for no cap" },
                 "match_provider": { "type": "boolean",
                                     "description": "Optional. First emails to Gmail or Outlook leads go from a mailbox on the same provider" },
+                "lead_time_zone": { "type": "boolean",
+                                    "description": "Optional. Send days and hours apply in each lead's time zone, from their phone or country" },
                 "sender_name": { "type": "string", "maxLength": 100,
                                  "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),

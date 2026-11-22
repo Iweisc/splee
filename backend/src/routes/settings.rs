@@ -105,6 +105,7 @@ pub(super) struct SettingsBody {
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     monthly_cap_micros: Option<Option<i64>>,
     match_provider: Option<bool>,
+    lead_time_zone: Option<bool>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -163,6 +164,7 @@ pub(super) struct Controls {
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     monthly_cap_micros: Option<Option<i64>>,
     match_provider: Option<bool>,
+    lead_time_zone: Option<bool>,
     sender_name: Option<String>,
 }
 
@@ -182,6 +184,7 @@ impl From<Controls> for SettingsBody {
             review_window_hours: c.review_window_hours,
             monthly_cap_micros: c.monthly_cap_micros,
             match_provider: c.match_provider,
+            lead_time_zone: c.lead_time_zone,
             sender_name: c.sender_name,
             ..Default::default()
         }
@@ -340,7 +343,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            review_window_hours = case when $44 then $45 else review_window_hours end,
            monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end,
            assign_territories = coalesce($48, assign_territories),
-           match_provider = coalesce($49, match_provider)
+           match_provider = coalesce($49, match_provider),
+           lead_time_zone = coalesce($50, lead_time_zone)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -392,6 +396,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.monthly_cap_micros.flatten())
     .bind(assign_territories)
     .bind(body.match_provider)
+    .bind(body.lead_time_zone)
     .fetch_one(db)
     .await?;
     Ok(settings)

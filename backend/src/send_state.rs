@@ -63,11 +63,20 @@ struct Window {
     days: Vec<i32>,
     start_hour: i32,
     end_hour: i32,
+    /// With lead_time_zone, each time zone the campaign's queued emails go out in and the soonest one of them is due there.
+    /// Empty when sending hours are the project's.
+    lead_zones: Vec<(Tz, Ts)>,
 }
 
 impl Window {
+    /// The first moment from `from` that an email can go out, which with lead_time_zone is the first in any lead zone at or
+    /// after an email there is due.
     fn opens(&self, from: Ts) -> Option<Ts> {
-        mail::window_opens(self.tz, &self.days, self.start_hour, self.end_hour, from)
+        let opens = |tz: Tz, from: Ts| mail::window_opens(tz, &self.days, self.start_hour, self.end_hour, from);
+        if self.lead_zones.is_empty() {
+            return opens(self.tz, from);
+        }
+        self.lead_zones.iter().filter_map(|&(tz, due)| opens(tz, from.max(due))).min()
     }
 
     fn tomorrow(&self, now: Ts) -> Ts {
@@ -103,12 +112,24 @@ struct Facts {
 
 /// The campaign of `org_id` with its project's settings.
 pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &ProjectSettings, now: Ts) -> AppResult<SendState> {
-    let window = Window {
-        tz: settings.timezone.parse().unwrap_or(Tz::UTC),
+    let (autopilot, lead_cap): (bool, i32) = sqlx::query_as("select autopilot, autopilot_lead_cap from project_settings where project_id = $1")
+        .bind(segment.project_id)
+        .fetch_one(db)
+        .await?;
+    let lead_cap_reached =
+        autopilot && autopilot::contacted_since(db, segment.project_id, autopilot::month_start(now)).await? >= i64::from(lead_cap);
+    let tz = settings.timezone.parse().unwrap_or(Tz::UTC);
+    let mut window = Window {
+        tz,
         days: settings.send_days.clone(),
         start_hour: settings.send_start_hour,
         end_hour: settings.send_end_hour,
+        lead_zones: Vec::new(),
     };
+    let mut closed = (Vec::new(), Vec::new());
+    if settings.lead_time_zone {
+        (window.lead_zones, closed) = lead_zones(db, segment.id, &window, lead_cap_reached, now).await?;
+    }
     let day_start = mail::day_start(window.tz, now);
     let queue: Queue = sqlx::query_as(
         "select count(*) filter (where status in ('approved', 'scheduled')) as queued,
@@ -136,12 +157,6 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         .bind(org_id)
         .fetch_one(db)
         .await?;
-    let (autopilot, lead_cap): (bool, i32) = sqlx::query_as("select autopilot, autopilot_lead_cap from project_settings where project_id = $1")
-        .bind(segment.project_id)
-        .fetch_one(db)
-        .await?;
-    let lead_cap_reached =
-        autopilot && autopilot::contacted_since(db, segment.project_id, autopilot::month_start(now)).await? >= i64::from(lead_cap);
     let facts = Facts {
         campaign_id: segment.id,
         project_id: segment.project_id,
@@ -149,7 +164,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         archived: segment.archived_at.is_some(),
         project_paused: settings.paused,
         active_mailboxes,
-        mailbox_ready: mailbox_ready(db, mail::sender::mailboxes_with_room(db, org_id).await?, segment.id, lead_cap_reached, now).await?,
+        mailbox_ready: mailbox_ready(db, mail::sender::mailboxes_with_room(db, org_id).await?, segment.id, lead_cap_reached, &closed, now).await?,
         queue,
         unwritten: agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.len(),
         project_sent,
@@ -162,27 +177,70 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
     Ok(decide(&facts, now))
 }
 
+/// Phone prefixes and countries, in pairs, as the sender's closed_zones gives them.
+type Pairs = (Vec<String>, Vec<String>);
+
+/// Each time zone the campaign's queued emails go out in, the leads' own or else the project's, with the soonest any of them is
+/// due there, and the leads whose window is closed at `now`, which the sender leaves out. Leads are grouped by what their zone
+/// depends on, as the sender does. Past autopilot's lead cap only follow-ups can go, so only they count.
+async fn lead_zones(db: &PgPool, segment_id: Uuid, project: &Window, follow_ups_only: bool, now: Ts) -> AppResult<(Vec<(Tz, Ts)>, Pairs)> {
+    let leads: Vec<(String, String, Ts)> = sqlx::query_as(
+        "select left(l.phone, 4), l.country_code, min(greatest(coalesce(e.scheduled_for, $2), $2))
+         from email_messages e join leads l on l.id = e.lead_id
+         where e.segment_id = $1 and e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status in ('approved', 'scheduled')
+           and (not $3 or e.kind = 'follow_up')
+         group by 1, 2",
+    )
+    .bind(segment_id)
+    .bind(now)
+    .bind(follow_ups_only)
+    .fetch_all(db)
+    .await?;
+    let (mut zones, mut closed): (Vec<(Tz, Ts)>, Pairs) = Default::default();
+    for (phone, country, due) in leads {
+        let tz = crate::phone::time_zone(&phone, &country).unwrap_or(project.tz);
+        match zones.iter_mut().find(|(z, _)| *z == tz) {
+            Some((_, soonest)) => *soonest = (*soonest).min(due),
+            None => zones.push((tz, due)),
+        }
+        if !mail::in_window(tz, &project.days, project.start_hour, project.end_hour, now) {
+            closed.0.push(phone);
+            closed.1.push(country);
+        }
+    }
+    Ok((zones, closed))
+}
+
 /// How many due emails mailbox_ready looks at. Past a first email, which any mailbox with room takes, it's follow-ups whose
 /// threads are on full mailboxes, and 50 of those in a row is as good as all of them.
 const CHECKED: i64 = 50;
 
 /// Whether one of the campaign's due emails has a mailbox to go out from now, as the sender picks it: a first email takes any
 /// mailbox with room, and a follow-up waits for its thread's. Past autopilot's lead cap only follow-ups can go, so only they count.
-async fn mailbox_ready(db: &PgPool, rooms: Vec<Mailbox>, segment_id: Uuid, follow_ups_only: bool, now: Ts) -> AppResult<bool> {
+async fn mailbox_ready(db: &PgPool, rooms: Vec<Mailbox>, segment_id: Uuid, follow_ups_only: bool, closed: &Pairs, now: Ts) -> AppResult<bool> {
     if rooms.is_empty() {
         return Ok(false);
     }
+    // Leads outside their window in their own time zones are left out, as the sender leaves them out.
     let due: Vec<EmailMessage> = sqlx::query_as(
-        "select * from email_messages where segment_id = $1 and direction = 'outbound' and kind in ('initial', 'follow_up')
-           and status in ('approved', 'scheduled') and (scheduled_for is null or scheduled_for <= $2) and (not $4 or kind = 'follow_up')
-         order by kind = 'initial' desc, scheduled_for nulls first, created_at limit $3",
+        "select e.* from email_messages e join leads l on l.id = e.lead_id
+         where e.segment_id = $1 and e.direction = 'outbound' and e.kind in ('initial', 'follow_up') and e.status in ('approved', 'scheduled')
+           and (e.scheduled_for is null or e.scheduled_for <= $2) and (not $4 or e.kind = 'follow_up')
+           and (left(l.phone, 4), l.country_code) not in (select * from unnest($5::text[], $6::text[]))
+         order by e.kind = 'initial' desc, e.scheduled_for nulls first, e.created_at limit $3",
     )
     .bind(segment_id)
     .bind(now)
     .bind(CHECKED)
     .bind(follow_ups_only)
+    .bind(&closed.0)
+    .bind(&closed.1)
     .fetch_all(db)
     .await?;
+    // Every due lead is outside their window, so the mailboxes aren't what holds the campaign. decide says outside_hours.
+    if due.is_empty() && !closed.0.is_empty() {
+        return Ok(true);
+    }
     for email in &due {
         if mail::sender::pick_from(db, rooms.clone(), email, None).await?.is_some() {
             return Ok(true);
@@ -310,7 +368,7 @@ mod tests {
             campaign_limit: None,
             cap_resumes_at: None,
             lead_cap_reached: false,
-            window: Window { tz: chrono_tz::Europe::London, days: vec![1, 2, 3, 4, 5], start_hour: 9, end_hour: 17 },
+            window: Window { tz: chrono_tz::Europe::London, days: vec![1, 2, 3, 4, 5], start_hour: 9, end_hour: 17, lead_zones: Vec::new() },
         }
     }
 
@@ -399,5 +457,24 @@ mod tests {
         let s = decide(&f, noon());
         assert_eq!((s.message.as_str(), s.sending_now), ("Nothing is queued, and 1 lead has no first email yet", false));
         assert!(s.next_action.unwrap().ends_with("/write-emails"));
+    }
+
+    #[test]
+    fn in_leads_time_zones_the_wait_ends_when_the_first_due_lead_can_be_emailed() {
+        let utc = |d, h| Utc.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap();
+        let mut f = sending();
+        // Wednesday 03:00 UTC. A Tokyo lead is due at 13:00 UTC, 22:00 there, and a London lead at 18:00 UTC, after hours.
+        f.window.lead_zones = vec![(chrono_tz::Asia::Tokyo, utc(18, 13)), (chrono_tz::Europe::London, utc(18, 18))];
+        f.queue = Queue { queued: 2, next_scheduled: Some(utc(18, 13)), ..Default::default() };
+        let s = decide(&f, utc(18, 3));
+        assert_eq!((s.state, s.today.next_send_at), ("scheduled", Some(utc(19, 0))), "Thursday 09:00 in Tokyo, before London's");
+
+        // Today's limit is used up, with a New York lead due. It starts again at midnight in the project's London, Wednesday
+        // 19:00 in New York, so not at New York's Wednesday 09:00 but its Thursday 09:00.
+        f.queue = Queue { queued: 1, due: 1, ..Default::default() };
+        f.window.lead_zones = vec![(chrono_tz::America::New_York, utc(18, 3))];
+        f.project_sent = 30;
+        let s = decide(&f, utc(18, 3));
+        assert_eq!((s.state, s.today.next_send_at), ("daily_limit_reached", Some(utc(19, 14))));
     }
 }

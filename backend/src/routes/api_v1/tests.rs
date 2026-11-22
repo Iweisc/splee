@@ -586,6 +586,7 @@ async fn project_controls_take_only_fields_they_know(db: PgPool) {
     assert_eq!(api.get(&format!("/v1/projects/{b}/monthly-cap")).await.0, 404);
     assert_eq!(api.patch(&project, json!({ "monthly_cap_micros": null })).await.1["monthly_cap_micros"], Value::Null);
     assert_eq!(api.patch(&project, json!({ "match_provider": true })).await.1["match_provider"], true);
+    assert_eq!(api.patch(&project, json!({ "lead_time_zone": true })).await.1["lead_time_zone"], true);
 
     // The campaign PATCH refuses fields it doesn't take too, rather than ignoring them.
     let (status, body) = api.patch(&format!("/v1/campaigns/{segment}"), json!({ "language": "fr", "sequence": [] })).await;
