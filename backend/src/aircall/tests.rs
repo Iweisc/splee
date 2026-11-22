@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use reqwest::Method;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -241,4 +241,66 @@ async fn calls_with_leads_are_kept_once_and_their_transcripts_go_to_the_agent(db
     assert_eq!((res.status().as_u16(), res.headers()["location"].to_str().unwrap()), (307, "https://recordings.aircall.example/101.mp3"));
     let res = s.http.get(format!("{}/calls/{}/recording", s.base, c["id"].as_str().unwrap())).header("cookie", "splee_session=beta").send().await.unwrap();
     assert_eq!(res.status().as_u16(), 404, "another organization's call");
+}
+
+/// The fixed-offset zone where it's `hour` o'clock now, so calling hours don't depend on when the tests run.
+fn zone_at(hour: i64) -> String {
+    let mut offset = hour - i64::from(Utc::now().hour());
+    if offset > 14 {
+        offset -= 24;
+    } else if offset < -12 {
+        offset += 24;
+    }
+    // Etc zones have the sign backwards: Etc/GMT-3 is three hours ahead of UTC.
+    if offset >= 0 { format!("Etc/GMT-{offset}") } else { format!("Etc/GMT+{}", -offset) }
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn a_call_starts_in_the_callers_aircall_workspace_after_the_usual_checks(db: PgPool) {
+    let s = Seeded::start(db).await;
+    // A US number, which keeps several time zones, so the project's decides the calling hours.
+    let dan: Uuid = sqlx::query_scalar("insert into leads (project_id, full_name, phone, status) values ($1, 'Dan Ross', '+14155550134', 'contacted') returning id")
+        .bind(s.project)
+        .fetch_one(s.db())
+        .await
+        .unwrap();
+    let call: Uuid = sqlx::query_scalar("insert into calls (project_id, lead_id, kind, step, status, to_number) values ($1, $2, 'sequence', 2, 'open', '+14155550134') returning id")
+        .bind(s.project)
+        .bind(dan)
+        .fetch_one(s.db())
+        .await
+        .unwrap();
+    let zone = |hour: i64| {
+        let upsert = "insert into project_settings (project_id, timezone) values ($1, $2) on conflict (project_id) do update set timezone = excluded.timezone";
+        sqlx::query(upsert).bind(s.project).bind(zone_at(hour)).execute(s.db())
+    };
+    zone(12).await.unwrap();
+    let path = format!("/calls/{call}/aircall-dial");
+    let dial = || s.call("acme", Method::POST, &path, json!({}));
+
+    let (code, body) = dial().await;
+    assert_eq!((code, body["error"].as_str()), (409, Some("Connect Aircall on the Integrations page to call from it.")));
+    assert_eq!(s.connect().await.0, 200);
+    let (code, body) = dial().await;
+    assert!(code == 409 && body["error"].as_str().unwrap().contains("Nobody in your Aircall has the email acme@acme.example"), "{body}");
+
+    s.fake.users.lock().unwrap().insert("acme@acme.example".into(), json!({ "id": 7, "email": "acme@acme.example", "available": true }));
+    assert_eq!(dial().await, (200, json!({ "to": "+14155550134" })));
+    assert_eq!(*s.fake.dialed.lock().unwrap(), [(7, json!({ "to": "+14155550134" }))]);
+    s.fake.unavailable.lock().unwrap().insert(7);
+    let (code, body) = dial().await;
+    assert!(code == 409 && body["error"].as_str().unwrap().contains("unavailable or on a call"), "{body}");
+    s.fake.unavailable.lock().unwrap().clear();
+
+    // The same checks as a call from the browser.
+    assert_eq!(s.call("beta", Method::POST, &path, json!({})).await.0, 404);
+    zone(22).await.unwrap();
+    let (code, body) = dial().await;
+    assert!(code == 409 && body["error"].as_str().unwrap().contains("Call between 8:00 and 20:00 their time"), "{body}");
+    zone(12).await.unwrap();
+    sqlx::query("update calls set status = 'done' where id = $1").bind(call).execute(s.db()).await.unwrap();
+    assert_eq!(dial().await.1["error"], "This call was already logged, skipped or cancelled.");
+    assert_eq!(s.fake.dialed.lock().unwrap().len(), 1, "nothing else reached Aircall");
 }

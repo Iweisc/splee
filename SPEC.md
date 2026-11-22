@@ -476,8 +476,9 @@ A call is kept once, by `calls.aircall_id`, when its `raw_digits` in E.164 (`pho
 | GET | /projects/:id/aircall | | `AircallConnection` `{last_event_at, error, calls, created_at}`, or null before it's connected, never the credentials. `calls` counts the project's calls with an `aircall_id`. |
 | PUT | /projects/:id/aircall | `{api_id, api_token}` | `AircallConnection`, after checking them and registering the webhook. 400 for a missing value, details Aircall refuses or a webhook it doesn't make. |
 | DELETE | /projects/:id/aircall | | null. The calls kept stay. |
+| POST | /calls/:id/aircall-dial | | `{to}`, the lead's number, now in the caller's Aircall Workspace: `GET /v2/users/{email}` finds them in Aircall by their Splee email, and `POST /v1/users/{id}/dial` with `{to}` puts the number in Workspace on their desktop to call from a number they pick. The call comes back through the webhook when it ends and closes this one. 409 with the reason after the same checks as `/calls/:id/dial` (`calls::check`), without Aircall connected, for someone Aircall doesn't have by that email, or when Aircall answers 405 (unavailable or on a call) or 400 (a number it can't dial). |
 
-Another organization's project is 404 on each.
+Another organization's project or call is 404 on each.
 
 ### Ad audiences
 

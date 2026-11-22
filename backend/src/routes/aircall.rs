@@ -1,26 +1,31 @@
-//! Connecting a project's Aircall company (crate::aircall) and the webhook Splee registers there. The webhook URL has a
-//! per-connection token, and an event is only read once the token in its body is the one Aircall gave for that webhook.
+//! Connecting a project's Aircall company (crate::aircall) and the webhook Splee registers there, and starting a call in
+//! Aircall from the Calls page. The webhook URL has a per-connection token, and an event is only read once the token in its
+//! body is the one Aircall gave for that webhook.
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+use super::util_scope;
 use crate::aircall::{self, CONNECTION_COLUMNS, Client, Connection, TOKEN_PURPOSE};
 use crate::audit;
 use crate::auth::Auth;
+use crate::calls;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
-use crate::models::Ts;
+use crate::models::{Call, Ts};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/projects/{id}/aircall", get(status).put(connect).delete(disconnect))
         .route("/aircall-webhooks/{token}", post(webhook))
+        .route("/calls/{id}/aircall-dial", post(dial))
 }
 
 /// The connection as the integrations page shows it. The API token never leaves the server.
@@ -119,6 +124,21 @@ async fn disconnect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uu
         audit::integration(&state.db, &auth, Some(id), "Aircall", false).await;
     }
     load(&state.db, id).await
+}
+
+/// Puts the lead's number in the caller's Aircall Workspace, after the checks a call from the browser gets. When the call
+/// ends, the webhook brings it back and it closes this one, as any call with the lead does. A refusal is a 409 with the reason.
+async fn dial(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    let call: Call = util_scope::load(&state.db, "calls", id, auth.org_id).await?;
+    let (_, lead) = calls::check(&state.db, auth.org_id, auth.user_id, call.id, None, Utc::now()).await?.map_err(AppError::Conflict)?;
+    let connection: Option<Connection> = sqlx::query_as(&format!("select {CONNECTION_COLUMNS} from aircall_connections where project_id = $1"))
+        .bind(call.project_id)
+        .fetch_optional(&state.db)
+        .await?;
+    let c = connection.ok_or_else(|| AppError::Conflict("Connect Aircall on the Integrations page to call from it.".into()))?;
+    let email: String = sqlx::query_scalar("select email::text from users where id = $1").bind(auth.user_id).fetch_one(&state.db).await?;
+    c.client(&state)?.dial(&email, &lead.phone).await?;
+    Ok(Json(json!({ "to": lead.phone })))
 }
 
 /// Connecting and disconnecting a project's Aircall go one at a time. Two connects at once would each make a webhook, and the

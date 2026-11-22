@@ -20,7 +20,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Call, Lead, Ts};
 use crate::state::AppState;
 
-pub const API: &str = "https://api.aircall.io/v1";
+pub const API: &str = "https://api.aircall.io";
 /// What Splee's webhook listens to. A recording that wasn't ready when the call ended comes in call.comm_assets_generated.
 pub const EVENTS: [&str; 3] = ["call.ended", "call.comm_assets_generated", "transcription.created"];
 /// What the webhook token's keyed hash is for.
@@ -44,7 +44,8 @@ impl Connection {
     }
 }
 
-/// Talks to Aircall with a company's API ID and token, or to the fake under /aircall when Config::aircall_api_url is set.
+/// Talks to Aircall with a company's API ID and token, or to the fake under /aircall when Config::aircall_api_url is set. Paths
+/// start with the API's version, since Aircall has V1 and V2 side by side.
 pub struct Client {
     base: String,
     auth: String,
@@ -54,15 +55,23 @@ pub struct Client {
 impl Client {
     /// `credentials` is "{api_id}:{api_token}".
     pub fn new(fake: &str, credentials: &str) -> AppResult<Client> {
-        let base = if fake.is_empty() { API.to_string() } else { format!("{}/aircall/v1", fake.trim_end_matches('/')) };
+        let base = if fake.is_empty() { API.to_string() } else { format!("{}/aircall", fake.trim_end_matches('/')) };
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|e| AppError::Internal(e.into()))?;
         Ok(Client { base, auth: format!("Basic {}", STANDARD.encode(credentials)), http })
     }
 
     /// A 404 is Null, for something Aircall doesn't have, like a call without a transcript.
     async fn send(&self, req: reqwest::RequestBuilder) -> AppResult<Value> {
+        self.send_or(req, |_| None).await
+    }
+
+    /// Like send, with `refused` naming the statuses only this request answers, as the error to give for each.
+    async fn send_or(&self, req: reqwest::RequestBuilder, refused: impl Fn(u16) -> Option<AppError>) -> AppResult<Value> {
         let res = req.header("authorization", &self.auth).send().await.map_err(|_| AppError::BadRequest("Couldn't reach Aircall. Try again in a moment.".into()))?;
         let status = res.status().as_u16();
+        if let Some(e) = refused(status) {
+            return Err(e);
+        }
         let body = res.text().await.unwrap_or_default();
         match status {
             200..=299 => Ok(serde_json::from_str(&body).unwrap_or(Value::Null)),
@@ -75,13 +84,13 @@ impl Client {
     }
 
     pub async fn ping(&self) -> AppResult<()> {
-        self.send(self.http.get(format!("{}/ping", self.base))).await.map(|_| ())
+        self.send(self.http.get(format!("{}/v1/ping", self.base))).await.map(|_| ())
     }
 
     /// Registers Splee's webhook at `url`, returning its id and the token Aircall puts in each of its events.
     pub async fn create_webhook(&self, url: &str) -> AppResult<(String, String)> {
         let body = json!({ "custom_name": "Splee", "url": url, "events": EVENTS });
-        let res = self.send(self.http.post(format!("{}/webhooks", self.base)).json(&body)).await?;
+        let res = self.send(self.http.post(format!("{}/v1/webhooks", self.base)).json(&body)).await?;
         match (text(&res["webhook"]["webhook_id"]), text(&res["webhook"]["token"])) {
             (Some(id), Some(token)) => Ok((id, token)),
             _ => Err(AppError::BadRequest("Aircall didn't create the webhook. Try again in a few minutes.".into())),
@@ -93,13 +102,13 @@ impl Client {
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return;
         }
-        if let Err(e) = self.send(self.http.delete(format!("{}/webhooks/{id}", self.base))).await {
+        if let Err(e) = self.send(self.http.delete(format!("{}/v1/webhooks/{id}", self.base))).await {
             tracing::warn!(error = ?e, "aircall: deleting the webhook failed");
         }
     }
 
     pub async fn call(&self, id: i64) -> AppResult<Value> {
-        Ok(self.send(self.http.get(format!("{}/calls/{id}", self.base))).await?["call"].clone())
+        Ok(self.send(self.http.get(format!("{}/v1/calls/{id}", self.base))).await?["call"].clone())
     }
 
     /// A link to the call's recording, or the voicemail the lead left, that works for an hour. None when there's neither.
@@ -108,9 +117,27 @@ impl Client {
         Ok(text(&call["recording"]).or_else(|| text(&call["voicemail"])).filter(|url| url.starts_with("https://")))
     }
 
+    /// Puts `to` in the Aircall Workspace of whoever has `email` in Aircall, ready to call from a number they pick. Aircall
+    /// only does this in Workspace on a desktop, for someone available and not on a call.
+    pub async fn dial(&self, email: &str, to: &str) -> AppResult<()> {
+        // User V2 finds someone by email as well as by id, and has no dial of its own yet, so dialing stays on V1.
+        let mut url = reqwest::Url::parse(&format!("{}/v2/users", self.base)).map_err(|e| AppError::Internal(e.into()))?;
+        url.path_segments_mut().map_err(|_| AppError::Internal(anyhow::anyhow!("Aircall's URL can't take a path")))?.push(email);
+        let found = self.send(self.http.get(url)).await?;
+        let Some(id) = found["user"]["id"].as_i64() else {
+            return Err(AppError::Conflict(format!("Nobody in your Aircall has the email {email}. Use the same email in Aircall as in Splee.")));
+        };
+        let refused = |status| match status {
+            405 => Some(AppError::Conflict("Aircall has you unavailable or on a call. Set yourself available in Workspace on your desktop.".into())),
+            400 => Some(AppError::Conflict(format!("Aircall couldn't dial {to}."))),
+            _ => None,
+        };
+        self.send_or(self.http.post(format!("{}/v1/users/{id}/dial", self.base)).json(&json!({ "to": to })), refused).await.map(|_| ())
+    }
+
     /// The transcript as "Us: …" and "Lead: …" lines, or empty without one.
     pub async fn transcript(&self, id: i64) -> AppResult<String> {
-        let res = self.send(self.http.get(format!("{}/calls/{id}/transcription", self.base))).await?;
+        let res = self.send(self.http.get(format!("{}/v1/calls/{id}/transcription", self.base))).await?;
         Ok(lines(&res["transcription"]["content"]["utterances"]))
     }
 }
