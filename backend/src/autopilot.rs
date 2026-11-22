@@ -127,6 +127,8 @@ pub struct CampaignQueue {
     /// A run for this campaign is queued or going, whoever started it.
     pub busy: bool,
     pub failed_lately: bool,
+    /// The campaign's own daily limit, which caps what it should hold below the project's share.
+    pub daily_limit: Option<i32>,
 }
 
 /// What each campaign should hold, when `campaigns` working campaigns share the daily limit and the leads left this month.
@@ -150,12 +152,13 @@ pub fn next_step(c: &CampaignQueue, need: i64) -> Option<Step> {
     }
 }
 
-/// The campaign furthest below `need` that's free to run, scaling ones first on a tie (they come first in `campaigns`).
+/// The campaign furthest below `need`, or below 3 days of its own daily limit when that's less, that's free to run, scaling ones
+/// first on a tie (they come first in `campaigns`).
 pub fn pick(campaigns: &[CampaignQueue], need: i64) -> Option<(&CampaignQueue, Step)> {
     campaigns
         .iter()
         .filter(|c| !c.busy && !c.failed_lately)
-        .filter_map(|c| next_step(c, need).map(|step| (c, step)))
+        .filter_map(|c| next_step(c, c.daily_limit.map_or(need, |l| need.min(i64::from(l) * DAYS_AHEAD))).map(|step| (c, step)))
         .min_by_key(|(c, _)| c.queued)
 }
 
@@ -172,7 +175,8 @@ async fn campaigns(db: &PgPool, project_id: Uuid, now: Ts) -> sqlx::Result<Vec<C
            exists (select 1 from agent_runs r where r.project_id = s.project_id and r.status in ('queued', 'running')
                    and r.input->>'segment_id' = s.id::text) as busy,
            exists (select 1 from agent_runs r where r.project_id = s.project_id and r.status = 'failed' and r.input ? 'autopilot'
-                   and r.input->>'segment_id' = s.id::text and r.finished_at > $2 - make_interval(hours => $3)) as failed_lately
+                   and r.input->>'segment_id' = s.id::text and r.finished_at > $2 - make_interval(hours => $3)) as failed_lately,
+           s.daily_limit
          from segments s
          where s.project_id = $1 and s.status in ('working', 'scaling') and s.archived_at is null
          order by s.status = 'scaling' desc, s.position, s.created_at",
@@ -384,7 +388,7 @@ pub(crate) mod tests {
     use crate::config::Config;
 
     fn queue(queued: i64, unwritten: i64, new_companies: i64) -> CampaignQueue {
-        CampaignQueue { id: Uuid::new_v4(), name: "C".into(), queued, unwritten, new_companies, busy: false, failed_lately: false }
+        CampaignQueue { id: Uuid::new_v4(), name: "C".into(), queued, unwritten, new_companies, busy: false, failed_lately: false, daily_limit: None }
     }
 
     #[test]
@@ -406,6 +410,11 @@ pub(crate) mod tests {
         let campaigns = [queue(25, 1, 0), busy, queue(12, 0, 3), queue(12, 0, 0)];
         let (picked, step) = pick(&campaigns, 30).unwrap();
         assert_eq!((picked.id, step), (campaigns[2].id, Step::FindPeople), "the emptiest free campaign, the first on a tie");
+
+        let mut capped = queue(12, 0, 3);
+        capped.daily_limit = Some(4);
+        let campaigns = [capped, queue(20, 0, 3)];
+        assert_eq!(pick(&campaigns, 30).unwrap().0.id, campaigns[1].id, "12 queued is 3 days of a campaign capped at 4 a day");
     }
 
     pub(crate) fn state(db: PgPool) -> AppState {

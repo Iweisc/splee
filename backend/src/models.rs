@@ -509,6 +509,9 @@ pub struct Segment {
     /// When it was archived. An archived campaign stays paused and out of the lists that add leads or send.
     #[sqlx(default)]
     pub archived_at: Option<Ts>,
+    /// Its own cap on first emails and follow-ups a day, on top of the project's limit. Null leaves it to the project's.
+    #[sqlx(default)]
+    pub daily_limit: Option<i32>,
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.

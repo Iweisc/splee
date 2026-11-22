@@ -399,6 +399,8 @@ pub(super) struct CampaignUpdate {
     track_clicks: Option<bool>,
     track_opens: Option<bool>,
     lead_pages: Option<bool>,
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    daily_limit: Option<Option<i32>>,
 }
 
 /// The lists the campaign page edits. Each one sent replaces that list and the others stay, so a typo in a key is a 422 rather
@@ -440,10 +442,12 @@ pub(super) async fn update_campaign(
     if let Some(language) = language {
         segments::check_language(language)?;
     }
+    segments::check_daily_limit(body.daily_limit)?;
     sqlx::query(
         "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{}'),
            pain_points = coalesce($5, pain_points), angle = coalesce($6, angle), language = coalesce($7, language),
-           track_clicks = coalesce($8, track_clicks), track_opens = coalesce($9, track_opens), lead_pages = coalesce($10, lead_pages)
+           track_clicks = coalesce($8, track_clicks), track_opens = coalesce($9, track_opens), lead_pages = coalesce($10, lead_pages),
+           daily_limit = case when $11 then $12 else daily_limit end
          where id = $1",
     )
     .bind(segment.id)
@@ -456,6 +460,8 @@ pub(super) async fn update_campaign(
     .bind(body.track_clicks)
     .bind(body.track_opens)
     .bind(body.lead_pages)
+    .bind(body.daily_limit.is_some())
+    .bind(body.daily_limit.flatten())
     .execute(&state.db)
     .await?;
     get_campaign(State(state), auth, Path(id)).await
@@ -480,6 +486,8 @@ pub(super) struct CampaignDetail {
     track_clicks: bool,
     track_opens: bool,
     lead_pages: bool,
+    /// Its own cap on first emails and follow-ups a day, on top of the project's daily_email_limit, or null for none.
+    daily_limit: Option<i32>,
     schedule: Schedule,
     /// The project's follow-ups after the first email, each an email or a call some days later.
     follow_ups: Value,
@@ -543,6 +551,7 @@ pub(super) async fn get_campaign(State(state): State<AppState>, auth: ApiKeyAuth
         track_clicks: segment.track_clicks,
         track_opens: segment.track_opens,
         lead_pages: segment.lead_pages,
+        daily_limit: segment.daily_limit,
         schedule: Schedule {
             sending: !settings.paused,
             timezone: settings.timezone,
@@ -2635,6 +2644,10 @@ mod tests {
         assert_eq!(detail["targeting"], json!({ "roles": ["Practice Manager"], "countries": ["GB", "IE"], "keywords": [] }));
         assert_eq!((detail["pain_points"].as_str(), detail["angle"].as_str()), (Some("Empty chairs"), Some("Fewer no-shows")));
         assert_eq!((detail["track_opens"].clone(), detail["read_only"][0]["field"].clone()), (json!(true), json!("schedule")), "{detail}");
+        assert_eq!(detail["daily_limit"], Value::Null, "no limit of its own until one is sent");
+        assert_eq!(api.patch(&path, json!({ "daily_limit": 25 })).await.1["daily_limit"], 25);
+        assert_eq!(api.patch(&path, json!({ "angle": "Fewer no-shows" })).await.1["daily_limit"], 25, "left out, it stays");
+        assert_eq!(api.patch(&path, json!({ "daily_limit": null })).await.1["daily_limit"], Value::Null, "null takes it off");
 
         // A refused body changes nothing, and another organization's campaign looks like one that doesn't exist.
         for (body, status) in [
@@ -2642,6 +2655,8 @@ mod tests {
             (json!({ "angle": "New", "targeting": { "role": ["CEO"] } }), 422),
             (json!({ "angle": "New", "schedule": { "send_days": [1] } }), 422),
             (json!({ "angle": "New", "language": "xx" }), 400),
+            (json!({ "angle": "New", "daily_limit": 0 }), 400),
+            (json!({ "angle": "New", "daily_limit": 5001 }), 400),
         ] {
             assert_eq!(api.patch(&path, body.clone()).await.0, status, "{body}");
         }

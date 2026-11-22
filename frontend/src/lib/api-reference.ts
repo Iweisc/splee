@@ -141,8 +141,9 @@ export function endpoints(projectId: string): Endpoint[] {
           "the language of its emails, follow-ups, texts and LinkedIn messages: lead, the default, writes to each lead in the language set on them, else their country's, else their company website's, else English. Or one of en, de, fr, es, pt, it, nl, sv, nb, da, fi, pl, cs, sk, ro, bg, hu, el, tr, ru, uk, ar, he, ja, ko, zh, zh-Hant, hi, id, ms, th, vi",
         ],
         ["track_clicks, track_opens, lead_pages", "true or false"],
+        ["daily_limit", "the most first emails and follow-ups it sends a day, 1 to 5,000, on top of the project's daily limit every campaign shares. null takes it off"],
       ],
-      body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "language": "de" }`,
+      body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "daily_limit": 25 }`,
       response: `{
   "id": "5d0a…",
   "language": "de",
@@ -166,6 +167,7 @@ export function endpoints(projectId: string): Endpoint[] {
   "targeting": { "industries": ["Design"], "countries": ["US"] },
   "pain_points": "Chasing late invoices",
   "angle": "Get paid on time without awkward emails",
+  "daily_limit": 25,
   "schedule": { "sending": true, "timezone": "America/New_York", "send_days": [1, 2, 3, 4, 5], "send_start_hour": 9, "send_end_hour": 17, "daily_email_limit": 50 },
   "follow_ups": [{ "delay_days": 3, "enabled": true, "instructions": "" }],
   "imported_from": null,
@@ -178,14 +180,14 @@ export function endpoints(projectId: string): Endpoint[] {
       method: "GET",
       path: "/campaigns/5d0a…/send-state",
       summary:
-        "Whether the campaign's emails go out now and, if not, the one thing holding them, checked in the order you'd fix them. state is sending, scheduled, archived, not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued, monthly_cap_reached, lead_cap_reached, daily_limit_reached, mailboxes_full or outside_hours, and sending_now is true for the first two. next_action is the call that clears it, null when it only has to wait. today counts the campaign's first emails and follow-ups, project_sent counts every email against the project's shared daily limit, and next_send_at says when the next one can go out. allowed_actions lists the calls below that change something now.",
+        "Whether the campaign's emails go out now and, if not, the one thing holding them, checked in the order you'd fix them. state is sending, scheduled, archived, not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued, monthly_cap_reached, lead_cap_reached, daily_limit_reached, campaign_limit_reached, mailboxes_full or outside_hours, and sending_now is true for the first two. next_action is the call that clears it, null when it only has to wait. today counts the campaign's first emails and follow-ups against its own campaign_limit, null when it has none, project_sent counts every email against the project's shared daily limit, and next_send_at says when the next one can go out. allowed_actions lists the calls below that change something now.",
       response: `{
   "campaign_id": "5d0a…",
   "state": "outside_hours",
   "sending_now": false,
   "message": "Outside sending hours. The next emails go out Mon Nov 23, 09:00 Europe/London",
   "next_action": null,
-  "today": { "sent": 0, "queued": 24, "drafts": 0, "project_sent": 0, "daily_email_limit": 30, "next_send_at": "2026-11-23T09:00:00Z" },
+  "today": { "sent": 0, "queued": 24, "drafts": 0, "project_sent": 0, "daily_email_limit": 30, "campaign_limit": null, "next_send_at": "2026-11-23T09:00:00Z" },
   "allowed_actions": ["stop", "archive"]
 }`,
     },

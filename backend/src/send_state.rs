@@ -1,6 +1,6 @@
 //! Whether a campaign's emails go out now and, if not, the one thing holding them: explee.com's campaign `status`. It reads the
 //! gates mail/sender.rs checks, in the order a person would clear them: the campaign, the project's pause, mailboxes, what's
-//! queued, then the month's cap, autopilot's lead cap, the day's limit, mailbox room and the sending hours. Replies to leads skip
+//! queued, then the month's cap, autopilot's lead cap, the day's limit, the campaign's own, mailbox room and the sending hours. Replies to leads skip
 //! most of these, so they aren't counted here.
 
 use chrono::Duration;
@@ -17,7 +17,7 @@ use crate::{agent, autopilot, mail, monthly_cap};
 pub struct SendState {
     pub campaign_id: Uuid,
     /// sending, scheduled, archived, not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued,
-    /// monthly_cap_reached, lead_cap_reached, daily_limit_reached, mailboxes_full or outside_hours.
+    /// monthly_cap_reached, lead_cap_reached, daily_limit_reached, campaign_limit_reached, mailboxes_full or outside_hours.
     pub state: &'static str,
     /// True for sending and scheduled, when nothing holds the campaign.
     pub sending_now: bool,
@@ -40,6 +40,8 @@ pub struct Today {
     /// Every email the project sent today, replies included, against the daily limit all its campaigns share.
     pub project_sent: i64,
     pub daily_email_limit: i32,
+    /// The campaign's own cap on `sent`, or null when only the project's limit applies.
+    pub campaign_limit: Option<i32>,
     /// When its next email can go out, or null while it sends now or nothing is queued.
     pub next_send_at: Option<Ts>,
 }
@@ -92,6 +94,7 @@ struct Facts {
     unwritten: usize,
     project_sent: i64,
     daily_email_limit: i32,
+    campaign_limit: Option<i32>,
     /// While the monthly cap is reached, when it resets.
     cap_resumes_at: Option<Ts>,
     lead_cap_reached: bool,
@@ -151,6 +154,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         unwritten: agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.len(),
         project_sent,
         daily_email_limit: settings.daily_email_limit,
+        campaign_limit: segment.daily_limit,
         cap_resumes_at: monthly_cap::status(db, segment.project_id, now).await?.resumes_at,
         lead_cap_reached,
         window,
@@ -228,6 +232,9 @@ fn decide(f: &Facts, now: Ts) -> SendState {
     } else if f.project_sent >= i64::from(f.daily_email_limit) {
         let message = format!("The project sent its {} for today", count(i64::from(f.daily_email_limit), "email"));
         ("daily_limit_reached", message, None, f.window.opens(f.window.tomorrow(now)))
+    } else if let Some(limit) = f.campaign_limit.filter(|&l| q.sent >= i64::from(l)) {
+        let message = format!("This campaign sent its {} for today", count(i64::from(limit), "email"));
+        ("campaign_limit_reached", message, None, f.window.opens(f.window.tomorrow(now)))
     } else if !f.mailbox_ready {
         let message = "The mailboxes its emails go out from sent their most for today or are still warming up";
         ("mailboxes_full", message.into(), None, f.window.opens(f.window.tomorrow(now)))
@@ -265,6 +272,7 @@ fn decide(f: &Facts, now: Ts) -> SendState {
             drafts: q.drafts,
             project_sent: f.project_sent,
             daily_email_limit: f.daily_email_limit,
+            campaign_limit: f.campaign_limit,
             next_send_at,
         },
         allowed_actions,
@@ -299,6 +307,7 @@ mod tests {
             unwritten: 0,
             project_sent: 0,
             daily_email_limit: 30,
+            campaign_limit: None,
             cap_resumes_at: None,
             lead_cap_reached: false,
             window: Window { tz: chrono_tz::Europe::London, days: vec![1, 2, 3, 4, 5], start_hour: 9, end_hour: 17 },
@@ -340,6 +349,8 @@ mod tests {
             f.queue.follow_ups_due = 1;
         }), "sending");
         assert_eq!(state(&|f| f.project_sent = 30), "daily_limit_reached");
+        assert_eq!(state(&|f| (f.campaign_limit, f.queue.sent) = (Some(5), 5)), "campaign_limit_reached");
+        assert_eq!(state(&|f| (f.campaign_limit, f.queue.sent) = (Some(5), 4)), "sending");
         assert_eq!(state(&|f| f.mailbox_ready = false), "mailboxes_full");
         assert_eq!(state(&|f| f.window.start_hour = 13), "outside_hours");
     }

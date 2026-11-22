@@ -1436,9 +1436,9 @@ fn tools() -> Vec<Value> {
             "Is a campaign sending",
             "Whether a campaign's emails go out now and, if not, the one thing holding them: state (sending, scheduled, archived, \
              not_started, paused, project_paused, no_mailbox, awaiting_approval, nothing_queued, monthly_cap_reached, \
-             lead_cap_reached, daily_limit_reached, mailboxes_full or outside_hours), message, next_action (the call that clears it, \
-             null when it only waits), today's counts with next_send_at, and the allowed_actions. Ask the user before a next_action \
-             that starts sending.",
+             lead_cap_reached, daily_limit_reached, campaign_limit_reached, mailboxes_full or outside_hours), message, next_action \
+             (the call that clears it, null when it only waits), today's counts with next_send_at, and the allowed_actions. Ask the \
+             user before a next_action that starts sending.",
             json!({ "campaign_id": campaign }),
             &["campaign_id"],
             read.clone(),
@@ -1467,6 +1467,10 @@ fn tools() -> Vec<Value> {
                 "track_clicks": { "type": "boolean" },
                 "track_opens": { "type": "boolean" },
                 "lead_pages": { "type": "boolean", "description": "A personal page for each lead, written with the first email" },
+                "daily_limit": {
+                    "type": ["integer", "null"], "minimum": 1, "maximum": 5000,
+                    "description": "The most first emails and follow-ups it sends a day, on top of the project's limit. null takes it off"
+                },
             }),
             &["campaign_id"],
             control.clone(),

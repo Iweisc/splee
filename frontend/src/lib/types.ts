@@ -856,6 +856,8 @@ export interface Segment {
   language: CampaignLanguage;
   /** When it was archived. An archived campaign is paused, and lists that add leads to a campaign leave it out. */
   archived_at: Ts | null;
+  /** Its own cap on first emails and follow-ups a day, on top of the project's limit. Null leaves it to the project's. */
+  daily_limit: number | null;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */
@@ -984,6 +986,7 @@ export type SendStateName =
   | "monthly_cap_reached"
   | "lead_cap_reached"
   | "daily_limit_reached"
+  | "campaign_limit_reached"
   | "mailboxes_full"
   | "outside_hours"
   | "sending";
@@ -1000,6 +1003,8 @@ export interface SendState {
     drafts: number;
     project_sent: number;
     daily_email_limit: number;
+    /** The campaign's own cap on `sent`, or null when only the project's limit applies. */
+    campaign_limit: number | null;
     /** When its next email can go out, or null while it sends now or nothing is queued. */
     next_send_at: string | null;
   };

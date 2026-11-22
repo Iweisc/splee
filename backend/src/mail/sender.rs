@@ -118,15 +118,24 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// SQL counting the first emails and follow-ups campaign `s` sent since `since`, a parameter, against its own daily_limit.
+fn campaign_sent(since: &str) -> String {
+    format!(
+        "select count(*) from email_messages x where x.segment_id = s.id and x.direction = 'outbound' and x.kind in ('initial', 'follow_up')
+           and x.status = 'sent' and x.sent_at >= {since}"
+    )
+}
+
 async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()> {
     let now = Utc::now();
+    let day_start = p.day_start(now);
     let cold_slots = if !p.paused && p.in_window(now) {
         // Replies count toward the limit too, so a busy inbox slows cold sending rather than adding to it.
         let sent_today: i64 = sqlx::query_scalar(
             "select count(*) from email_messages where project_id = $1 and direction = 'outbound' and status = 'sent' and sent_at >= $2",
         )
         .bind(p.id)
-        .bind(p.day_start(now))
+        .bind(day_start)
         .fetch_one(&state.db)
         .await?;
         (i64::from(p.daily_email_limit) - sent_today).max(0)
@@ -134,26 +143,37 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
         0
     };
 
-    // Replies first, then campaigns the optimizer marked as scaling.
-    let due = sqlx::query_as::<_, EmailMessage>(
+    // Replies first, then campaigns the optimizer marked as scaling. A campaign with a limit of its own takes no more of the
+    // selection than what's left of it, so the rest goes to the others. A cancelled email doesn't use up its room, and the
+    // next tick picks the one after it.
+    let due = sqlx::query_as::<_, EmailMessage>(&format!(
         "(select e.* from email_messages e
           where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
             and (e.scheduled_for is null or e.scheduled_for <= now()) and e.kind = any($2)
           order by e.created_at limit 20)
          union all
-         (select e.* from email_messages e left join segments s on s.id = e.segment_id
-          where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
-            and (e.scheduled_for is null or e.scheduled_for <= now()) and e.kind in ('initial', 'follow_up')
-            and s.status is distinct from 'paused' and s.archived_at is null
-            -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
-            and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
-                            and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
-          order by (s.status = 'scaling') desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
+         (select e.* from email_messages e join (
+              select e.id, s.status = 'scaling' as scaling, c.room,
+                     row_number() over (partition by e.segment_id order by e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at) as nth
+              from email_messages e left join segments s on s.id = e.segment_id
+                left join (select s.id, s.daily_limit - ({}) as room from segments s where s.project_id = $1 and s.daily_limit is not null) c
+                  on c.id = e.segment_id
+              where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
+                and (e.scheduled_for is null or e.scheduled_for <= now()) and e.kind in ('initial', 'follow_up')
+                and s.status is distinct from 'paused' and s.archived_at is null
+                -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
+                and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
+                                and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
+            ) r on r.id = e.id
+          where r.room is null or r.nth <= r.room
+          order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
           limit $3)",
-    )
+        campaign_sent("$4")
+    ))
     .bind(p.id)
     .bind(&REPLY_KINDS[..])
     .bind(cold_slots)
+    .bind(day_start)
     .fetch_all(&state.db)
     .await?;
 
@@ -913,6 +933,69 @@ mod tests {
         sqlx::query("update project_settings set autopilot = false").execute(&db).await.unwrap();
         super::tick(&state).await.unwrap();
         assert_eq!(status().await.unwrap(), "cancelled");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_stops_at_its_own_daily_limit_and_the_others_carry_on(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        // 1 sent today and 3 more fill the project's 4, so the capped campaign's older emails could take the whole selection.
+        sqlx::query(
+            "insert into project_settings (project_id, paused, send_days, send_start_hour, send_end_hour, daily_email_limit)
+             values ($1, false, '{1,2,3,4,5,6,7}', 0, 24, 4)",
+        )
+            .bind(project)
+            .execute(&db)
+            .await
+            .unwrap();
+        let campaign = |limit: Option<i32>| {
+            sqlx::query_scalar::<_, Uuid>("insert into segments (project_id, name, status, daily_limit) values ($1, 'C', 'working', $2) returning id")
+                .bind(project)
+                .bind(limit)
+                .fetch_one(&db)
+        };
+        let (capped, open) = (campaign(Some(2)).await.unwrap(), campaign(None).await.unwrap());
+        // Every address is on the do-not-contact list, so a send attempt cancels the email without SMTP, and one the limit
+        // holds stays approved.
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'held.example', 'domain', 'manual')").bind(org).execute(&db).await.unwrap();
+        let email = |segment: Uuid, n: i32, status: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "with l as (insert into leads (project_id, segment_id, email, status) values ($1, $2, 'p' || $3 || '@held.example', 'queued') returning id)
+                 insert into email_messages (project_id, segment_id, lead_id, direction, kind, status, sent_at, created_at)
+                 select $1, $2, id, 'outbound', 'initial', $4, case when $4 = 'sent' then now() end, now() + make_interval(secs => $3) from l
+                 returning id",
+            )
+            .bind(project)
+            .bind(segment)
+            .bind(n)
+            .bind(status)
+            .fetch_one(&db)
+        };
+        email(capped, 0, "sent").await.unwrap();
+        let held = [email(capped, 1, "approved").await.unwrap(), email(capped, 2, "approved").await.unwrap(), email(capped, 3, "approved").await.unwrap()];
+        let other = email(open, 4, "approved").await.unwrap();
+        let state = crate::autopilot::tests::state(db.clone());
+        let statuses = |ids: Vec<Uuid>| {
+            sqlx::query_scalar::<_, String>("select status from email_messages where id = any($1) order by created_at").bind(ids).fetch_all(&db)
+        };
+
+        super::tick(&state).await.unwrap();
+        assert_eq!(statuses(held.to_vec()).await.unwrap(), ["cancelled", "approved", "approved"], "1 sent today and 1 more makes its 2");
+        assert_eq!(statuses(vec![other]).await.unwrap(), ["cancelled"], "the campaign without a limit of its own sends in the same tick");
+
+        super::tick(&state).await.unwrap();
+        assert_eq!(statuses(held.to_vec()).await.unwrap(), ["cancelled", "cancelled", "approved"], "a cancelled email doesn't use up its room");
+
+        email(capped, 5, "sent").await.unwrap();
+        super::tick(&state).await.unwrap();
+        assert_eq!(statuses(held.to_vec()).await.unwrap(), ["cancelled", "cancelled", "approved"], "2 sent makes its 2");
+
+        sqlx::query("update segments set daily_limit = null where id = $1").bind(capped).execute(&db).await.unwrap();
+        super::tick(&state).await.unwrap();
+        assert_eq!(statuses(held.to_vec()).await.unwrap(), ["cancelled", "cancelled", "cancelled"]);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
