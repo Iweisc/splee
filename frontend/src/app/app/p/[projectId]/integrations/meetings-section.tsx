@@ -80,29 +80,31 @@ export function MeetingsSection({ projectId }: { projectId: string }) {
     await mutate(await api<MeetingConnection[]>(`${key}/${path}`, { method, body }), { revalidate: false });
   };
   return (
-    <Section
-      title={
-        <span className="flex items-center gap-2">
-          <Mic className="size-4" /> Meeting notes
-        </span>
-      }
-      description="After a meeting with a lead in Fireflies, Fathom, Gong, Zoom or tl;dv, the agent sums it up, drafts the follow-up for you to approve and suggests the deal's next stage."
-    >
-      {error ? (
-        <LoadError error={error} retry={() => mutate()} />
-      ) : (
-        <>
-          {!!data?.length && (
-            <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
-              {data.map((c) => (
-                <ConnectedMeetings key={c.provider} connection={c} call={call} />
-              ))}
-            </ul>
-          )}
-          {data && provider && <MeetingForm key={provider} provider={provider} open={open} pick={setPicked} call={call} label={data.length ? "Connect another" : "Recorder"} />}
-        </>
-      )}
-    </Section>
+    <div id="meeting-notes" className="scroll-mt-20">
+      <Section
+        title={
+          <span className="flex items-center gap-2">
+            <Mic className="size-4" /> Meeting notes
+          </span>
+        }
+        description="After a meeting with a lead in Fireflies, Fathom, Gong, Zoom or tl;dv, the agent sums it up, drafts the follow-up for you to approve and suggests the deal's next stage."
+      >
+        {error ? (
+          <LoadError error={error} retry={() => mutate()} />
+        ) : (
+          <>
+            {!!data?.length && (
+              <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+                {data.map((c) => (
+                  <ConnectedMeetings key={c.provider} connection={c} call={call} />
+                ))}
+              </ul>
+            )}
+            {data && provider && <MeetingForm key={provider} provider={provider} open={open} pick={setPicked} call={call} label={data.length ? "Connect another" : "Recorder"} />}
+          </>
+        )}
+      </Section>
+    </div>
   );
 }
 

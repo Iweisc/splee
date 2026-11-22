@@ -29,6 +29,7 @@ export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; s
   const key = `/segments/${segmentId}/audiences`;
   const { data, mutate } = useSWR<AdsStatus>(key, fetcher);
   const { pending, run } = useAction();
+  const integrations = `/app/p/${projectId}/integrations#ad-audiences`;
 
   if (!data) return <Skeleton className="h-28 rounded-2xl" />;
   if (!data.available.length && !data.connections.length) return null;
@@ -50,7 +51,7 @@ export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; s
       </div>
       {data.connections.length === 0 ? (
         <p className="text-sm text-pretty">
-          <Link href={`/app/p/${projectId}/integrations#ad-audiences`} className="font-medium underline underline-offset-4">
+          <Link href={integrations} className="font-medium underline underline-offset-4">
             Connect an ad platform
           </Link>{" "}
           on the Integrations page to start.
@@ -69,9 +70,21 @@ export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; s
                     {c.ad_account_name && <span className="font-normal text-muted-foreground"> · {c.ad_account_name}</span>}
                   </p>
                   {c.needs_reconnect ? (
-                    <p className="text-xs text-pretty text-amber-700">Reconnect {name} on the Integrations page to sync.</p>
+                    <p className="text-xs text-pretty text-amber-700">
+                      Reconnect {name} on the{" "}
+                      <Link href={integrations} className="font-medium underline underline-offset-4">
+                        Integrations page
+                      </Link>{" "}
+                      to sync.
+                    </p>
                   ) : !c.ad_account_id ? (
-                    <p className="text-xs text-pretty text-muted-foreground">Pick an ad account on the Integrations page.</p>
+                    <p className="text-xs text-pretty text-muted-foreground">
+                      Pick an ad account on the{" "}
+                      <Link href={integrations} className="font-medium text-foreground underline underline-offset-4">
+                        Integrations page
+                      </Link>
+                      .
+                    </p>
                   ) : audience ? (
                     <AudienceNote audience={audience} />
                   ) : (

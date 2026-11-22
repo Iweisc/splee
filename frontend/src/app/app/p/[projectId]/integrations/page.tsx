@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect } from "react";
 import { GoogleSheetsSection } from "@/components/app/settings/google-sheets";
 import { ProjectSettingsPage } from "@/components/app/settings/layout";
 import { AdAudiencesSection } from "./ads-section";
@@ -38,8 +38,44 @@ import { VerifierSection } from "./verifier-section";
 import { VisitorsSection } from "./visitors-section";
 import { WebhooksSection } from "./webhooks-section";
 
+/** Links here from other pages point at a section, like #ad-audiences. Sections render once the settings and their own data
+ *  load, after the router's own jump to the hash, so this jumps when the section shows up. It follows the section down while the
+ *  ones above it load, for a few seconds or until the reader scrolls, clicks or goes to another hash. */
+function useJumpToHash() {
+  useEffect(() => {
+    // Section ids are plain ASCII, so the hash is used as is. Decoding a stray "#%" would throw.
+    const id = location.hash.slice(1);
+    if (!id) return;
+    const inputs = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+    let found = false;
+    // Gives up if the section never shows, like ad audiences when no ad platform is set up.
+    let timer = setTimeout(stop, 15_000);
+    const observer = new MutationObserver(jump);
+    function jump() {
+      if (location.hash.slice(1) !== id) return stop();
+      const section = document.getElementById(id);
+      if (!section) return;
+      section.scrollIntoView({ block: "start" });
+      if (found) return;
+      found = true;
+      clearTimeout(timer);
+      timer = setTimeout(stop, 3000);
+    }
+    function stop() {
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const e of inputs) removeEventListener(e, stop);
+    }
+    jump();
+    observer.observe(document.body, { childList: true, subtree: true });
+    for (const e of inputs) addEventListener(e, stop, { passive: true });
+    return stop;
+  }, []);
+}
+
 export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectId]/integrations">) {
   const { projectId } = use(params);
+  useJumpToHash();
   return (
     <ProjectSettingsPage
       title="Integrations"

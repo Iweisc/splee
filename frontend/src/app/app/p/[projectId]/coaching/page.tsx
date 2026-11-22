@@ -8,7 +8,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { LeadModal } from "@/components/app/work/lead-modal";
 import { QUALIFY_LABELS } from "@/components/app/work/qualification";
 import { LoadError, MicroLabel } from "@/components/app/work/states";
-import { Button } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
 import { Avatar, Badge, type BadgeTone, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
@@ -101,6 +101,14 @@ export default function CoachingPage({ params }: PageProps<"/app/p/[projectId]/c
             <EmptyState
               icon={writing ? <Loader2 className="size-5 animate-spin" /> : <GraduationCap className="size-5" />}
               title={writing ? "Coaching your calls" : failed ? "Coaching didn't finish" : "No calls coached yet"}
+              action={
+                !writing &&
+                !failedNote && (
+                  <LinkButton href={`/app/p/${projectId}/integrations#meeting-notes`} variant="outline" size="sm">
+                    Open Integrations
+                  </LinkButton>
+                )
+              }
             >
               {writing
                 ? `The agent is listening to ${plural(writing, "call")}. Scores show up here in a minute.`
