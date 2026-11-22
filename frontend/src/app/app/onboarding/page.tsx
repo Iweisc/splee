@@ -2,22 +2,47 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { ArrowRight } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { toastError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
+import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
-import type { Project } from "@/lib/types";
+import type { Project, ProjectSummary } from "@/lib/types";
 import { isDomain, normalizeDomain } from "@/lib/utils";
+
+/** Mail services whose domain isn't the sender's company. Same list as FREE_MAIL in backend/src/tracking.rs. */
+const FREE_MAIL = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "icloud.com",
+  "me.com",
+  "aol.com",
+  "proton.me",
+  "protonmail.com",
+  "gmx.com",
+  "zoho.com",
+]);
 
 export default function OnboardingPage() {
   const router = useRouter();
   const { mutate } = useSWRConfig();
+  const { me } = useMe();
+  const { data: projects } = useSWR<ProjectSummary[]>("/projects", fetcher);
   const [noWebsite, setNoWebsite] = useState(false);
-  const [website, setWebsite] = useState("");
+  // Null until they type. A first project starts on their work email's domain, which is nearly always the business. A later
+  // one is often a client's, so it starts empty.
+  const [typed, setTyped] = useState<string | null>(null);
+  const emailDomain = me?.user.email.split("@")[1]?.toLowerCase() ?? "";
+  const website = typed ?? (projects?.length === 0 && isDomain(emailDomain) && !FREE_MAIL.has(emailDomain) ? emailDomain : "");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -57,7 +82,7 @@ export default function OnboardingPage() {
               </Field>
             ) : (
               <Field label="Your website" error={website && !isDomain(website) ? "Enter a domain like acme.com" : null}>
-                <Input autoFocus value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="acme.com" />
+                <Input autoFocus value={website} onChange={(e) => setTyped(e.target.value)} placeholder="acme.com" />
               </Field>
             )}
             {/* Where the two don't fit side by side, on the narrowest phones, Start research takes the full row on top. */}
