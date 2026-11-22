@@ -646,6 +646,8 @@ export interface Analytics {
   steps: ({ step: number; sent: number; replies: number; reply_rate: number | null } & Engagement)[];
   /** weekday 1 (Monday) to 7, hour 0 to 23, in the project's time zone. Empty cells are left out. */
   heatmap: { weekday: number; hour: number; sent: number; replies: number }[];
+  /** In each lead's own time zone. */
+  call_heatmap: { weekday: number; hour: number; calls: number; connected: number }[];
   /** null leads or replies are ones Splee doesn't record for the channel. */
   channels: {
     channel: "email" | "linkedin" | "sms" | "whatsapp" | "call" | "social";

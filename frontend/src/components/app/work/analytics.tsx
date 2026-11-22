@@ -5,7 +5,6 @@ import { ArrowDown, ArrowUp, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/misc";
 import { downloadCsv, toCsv } from "@/lib/csv";
-import type { Analytics } from "@/lib/types";
 import { cn, num, percent } from "@/lib/utils";
 import { MicroLabel, Td, Th } from "./states";
 
@@ -149,33 +148,66 @@ export function RateBar({ rate, best }: { rate: number | null; best: number }) {
 }
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-/** Under this many emails, one reply swings a slot's rate too far to call it the best time. */
-const MIN_SENT = 30;
+/** Under this many emails or calls, one reply or pickup swings a slot's rate too far to call it the best time. Fewer calls are
+ *  made than emails sent, and more of them connect. */
+const MIN_SENT = { email: 30, call: 10 };
 
 function hourText(h: number) {
   return `${h % 12 || 12}${h < 12 ? "am" : "pm"}`;
 }
 
+/** What each heatmap counts, and its words. */
+const HEATMAPS = {
+  email: {
+    title: "Reply rate by send time",
+    unit: "emails",
+    did: "replied",
+    none: "Nothing sent",
+    zero: "No replies",
+    scale: "Higher reply rate",
+  },
+  call: {
+    title: "Connect rate by call time",
+    unit: "calls",
+    did: "picked up",
+    none: "No calls",
+    zero: "Nobody picked up",
+    scale: "Higher connect rate",
+  },
+} as const;
+
 /**
- * Reply rate by the weekday and hour the email went out. A slot's shade is its rate against the best slot's, so the
- * pattern shows even when every rate is small. Slots that sent nothing stay blank, which is different from "no replies".
+ * Reply rate by the weekday and hour the email went out, or the share of calls someone picked up by when they were made. A
+ * slot's shade is its rate against the best slot's, so the pattern shows even when every rate is small. Slots with nothing
+ * stay blank, which is different from a rate of zero.
  */
-export function Heatmap({ cells, timezone }: { cells: Analytics["heatmap"]; timezone: string }) {
+export function Heatmap({
+  kind,
+  cells,
+  where,
+}: {
+  kind: keyof typeof HEATMAPS;
+  /** `total` emails or calls, `hits` of them replied to or picked up. */
+  cells: { weekday: number; hour: number; total: number; hits: number }[];
+  /** The time zone the times are in, as a sentence. */
+  where: string;
+}) {
+  const words = HEATMAPS[kind];
   const at = new Map(cells.map((c) => [`${c.weekday}-${c.hour}`, c]));
-  const rated = cells.filter((c) => c.sent > 0);
-  const top = Math.max(0, ...rated.map((c) => c.replies / c.sent));
-  const best = rated.filter((c) => c.sent >= MIN_SENT && c.replies > 0).sort((a, b) => b.replies / b.sent - a.replies / a.sent)[0];
+  const rated = cells.filter((c) => c.total > 0);
+  const top = Math.max(0, ...rated.map((c) => c.hits / c.total));
+  const best = rated.filter((c) => c.total >= MIN_SENT[kind] && c.hits > 0).sort((a, b) => b.hits / b.total - a.hits / a.total)[0];
 
   return (
     <Card className="p-5">
-      <MicroLabel>Reply rate by send time</MicroLabel>
+      <MicroLabel>{words.title}</MicroLabel>
       <p className="mt-1 mb-4 text-xs text-muted-foreground">
         {best
-          ? `Best: ${DAYS[best.weekday - 1]} ${hourText(best.hour)}–${hourText((best.hour + 1) % 24)}, ${percent(best.replies / best.sent)} of ${num(best.sent)} emails. `
+          ? `Best: ${DAYS[best.weekday - 1]} ${hourText(best.hour)}–${hourText((best.hour + 1) % 24)}, ${percent(best.hits / best.total)} of ${num(best.total)} ${words.unit}. `
           : ""}
-        Times are in {timezone}.
+        {where}
       </p>
-      <div className="grid grid-cols-[2.25rem_repeat(24,minmax(0,1fr))] gap-0.5" role="img" aria-label="Reply rate by weekday and hour of send">
+      <div className="grid grid-cols-[2.25rem_repeat(24,minmax(0,1fr))] gap-0.5" role="img" aria-label={`${words.title}, by weekday and hour`}>
         <span />
         {Array.from({ length: 24 }, (_, h) => (
           // Left-aligned and allowed to run over the next empty labels, since a column is narrower than "12am" on a phone.
@@ -187,12 +219,16 @@ export function Heatmap({ cells, timezone }: { cells: Analytics["heatmap"]; time
           <Row key={day} day={day}>
             {Array.from({ length: 24 }, (_, h) => {
               const c = at.get(`${d + 1}-${h}`);
-              const rate = c && c.sent > 0 ? c.replies / c.sent : null;
+              const rate = c && c.total > 0 ? c.hits / c.total : null;
               const shade = rate && top > 0 ? 15 + Math.round((rate / top) * 85) : 0;
               return (
                 <span
                   key={h}
-                  title={c ? `${day} ${hourText(h)}: ${num(c.sent)} sent, ${num(c.replies)} replied (${rateText(rate)})` : `${day} ${hourText(h)}: nothing sent`}
+                  title={
+                    c
+                      ? `${day} ${hourText(h)}: ${num(c.total)} ${words.unit}, ${num(c.hits)} ${words.did} (${rateText(rate)})`
+                      : `${day} ${hourText(h)}: ${words.none.toLowerCase()}`
+                  }
                   className={cn("aspect-square rounded-[3px]", !c ? "bg-black/[0.025]" : !rate && "bg-black/[0.08]")}
                   style={shade ? { backgroundColor: `color-mix(in oklab, var(--color-brand-600) ${shade}%, transparent)` } : undefined}
                 />
@@ -203,15 +239,15 @@ export function Heatmap({ cells, timezone }: { cells: Analytics["heatmap"]; time
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
-          <span className="size-2.5 rounded-[3px] bg-black/[0.025] ring-1 ring-black/5" /> Nothing sent
+          <span className="size-2.5 rounded-[3px] bg-black/[0.025] ring-1 ring-black/5" /> {words.none}
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="size-2.5 rounded-[3px] bg-black/[0.08]" /> No replies
+          <span className="size-2.5 rounded-[3px] bg-black/[0.08]" /> {words.zero}
         </span>
         <span className="inline-flex items-center gap-1.5">
           Lower
           <span className="h-2.5 w-16 rounded-[3px] bg-gradient-to-r from-brand-600/15 to-brand-600" />
-          Higher reply rate
+          {words.scale}
         </span>
       </div>
     </Card>

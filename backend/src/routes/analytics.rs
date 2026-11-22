@@ -8,10 +8,12 @@
 //! Open and click rates are by email, out of the emails sent in the range that tracked them, counting opens and clicks
 //! whenever they came. Opens are an estimate: some people block the pixel and Apple Mail opens every email itself.
 
+use std::collections::BTreeMap;
+
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Timelike, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
@@ -19,7 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
-use crate::models::bouncing;
+use crate::models::{Ts, bouncing};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -66,6 +68,8 @@ pub struct Analytics {
     steps: Vec<StepRow>,
     /// Weekday (1 for Monday to 7 for Sunday) and hour of the emails sent, in the project's time zone. Empty cells are left out.
     heatmap: Vec<SlotRow>,
+    /// Weekday and hour of the calls logged, in each lead's own time zone like calling hours. Empty cells are left out.
+    call_heatmap: Vec<CallSlot>,
     channels: Vec<ChannelRow>,
     /// By the language of the emails leads got, most leads first. A reply counts for the language of the last email before it.
     languages: Vec<LanguageRow>,
@@ -216,6 +220,14 @@ struct SlotRow {
     hour: i32,
     sent: i64,
     replies: i64,
+}
+
+#[derive(Serialize)]
+struct CallSlot {
+    weekday: i32,
+    hour: i32,
+    calls: i64,
+    connected: i64,
 }
 
 /// sent is emails, LinkedIn steps, texts, calls made or posts. Null leads or replies are ones Splee doesn't record for the
@@ -549,6 +561,7 @@ pub async fn analytics(db: &PgPool, id: Uuid, q: &AnalyticsQuery) -> AppResult<A
         angles: angle_rows(db, id, angles).await?,
         mailboxes: mailbox_rows(db, project.org_id, mailboxes).await?,
         channels: channels(db, id, q, from, to, &project.timezone, email).await?,
+        call_heatmap: call_slots(db, id, q, from, to, &project.timezone).await?,
         from,
         to,
         previous_from,
@@ -784,7 +797,7 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
          ), calls as (
            -- A call counts once it's logged, on the day it was made.
            select count(*) as calls, count(distinct c.lead_id) as call_leads,
-             count(*) filter (where c.outcome in ('connected', 'not_interested', 'meeting_booked')) as connected,
+             count(*) filter (where c.outcome = any($6)) as connected,
              count(*) filter (where c.outcome = 'meeting_booked') as call_meetings
            from calls c, w
            where c.project_id = $1 and c.status = 'done' and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi
@@ -799,6 +812,7 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
     .bind(to)
     .bind(tz)
     .bind(q.segment_id)
+    .bind(&crate::calls::CONNECTED[..])
     .fetch_one(db)
     .await?;
     let row = |channel, sent, leads| ChannelRow { channel, sent, leads, replies: None, reply_rate: None, connect_rate: None, meetings: None };
@@ -814,6 +828,35 @@ async fn channels(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to
         rows.push(row("social", c.posts, None));
     }
     Ok(rows)
+}
+
+/// The calls logged in the range, counted by the weekday and hour where the lead was, from their number or country, else
+/// the project's zone. Calls count on the day they were made, like the channel row. A mailbox filter has none.
+async fn call_slots(db: &PgPool, id: Uuid, q: &AnalyticsQuery, from: NaiveDate, to: NaiveDate, tz: &str) -> sqlx::Result<Vec<CallSlot>> {
+    if q.mailbox_id.is_some() {
+        return Ok(vec![]);
+    }
+    let calls: Vec<(Option<Ts>, Option<String>, String, String)> = sqlx::query_as(
+        "with w as (select $2::date::timestamp at time zone $4 as lo, ($3::date + 1)::timestamp at time zone $4 as hi)
+         select coalesce(c.called_at, c.closed_at), c.outcome, l.phone, l.country_code from calls c join leads l on l.id = c.lead_id, w
+         where c.project_id = $1 and c.status = 'done' and coalesce(c.called_at, c.closed_at) >= w.lo and coalesce(c.called_at, c.closed_at) < w.hi
+           and ($5::uuid is null or c.segment_id = $5)",
+    )
+    .bind(id)
+    .bind(from)
+    .bind(to)
+    .bind(tz)
+    .bind(q.segment_id)
+    .fetch_all(db)
+    .await?;
+    let mut slots: BTreeMap<(i32, i32), (i64, i64)> = BTreeMap::new();
+    for (at, outcome, phone, country) in calls {
+        let Some(local) = at.map(|at| at.with_timezone(&crate::calls::zone(&phone, &country, tz))) else { continue };
+        let slot = slots.entry((local.weekday().number_from_monday() as i32, local.hour() as i32)).or_default();
+        slot.0 += 1;
+        slot.1 += i64::from(outcome.is_some_and(|o| crate::calls::CONNECTED.contains(&o.as_str())));
+    }
+    Ok(slots.into_iter().map(|((weekday, hour), (calls, connected))| CallSlot { weekday, hour, calls, connected }).collect())
 }
 
 async fn project_analytics(
@@ -865,6 +908,8 @@ mod tests {
         };
         let l1 = lead(alpha, "hot").fetch_one(db).await.unwrap();
         let l2 = lead(alpha, "meeting_booked").fetch_one(db).await.unwrap();
+        // In London, so the call heatmap puts their call in London's time.
+        sqlx::query("update leads set phone = '+447700900123' where id = $1").bind(l2).execute(db).await.unwrap();
         let l3 = lead(beta, "bounced").fetch_one(db).await.unwrap();
         let l4 = lead(beta, "unsubscribed").fetch_one(db).await.unwrap();
         let l5 = lead(alpha, "replied").fetch_one(db).await.unwrap();
@@ -1097,6 +1142,10 @@ mod tests {
         let calls = a["channels"].as_array().unwrap().iter().find(|c| c["channel"] == "call").unwrap();
         assert_eq!((calls["connect_rate"].as_f64(), calls["meetings"].as_i64()), (Some(2.0 / 3.0), Some(1)));
         assert!(a["channels"][0]["connect_rate"].is_null() && a["channels"][0]["meetings"].is_null(), "only calls have them");
+        // 10:00 in New York on Saturday and Monday, and 15:00 on Sunday for the lead in London.
+        let slots: Vec<_> =
+            a["call_heatmap"].as_array().unwrap().iter().map(|c| ["weekday", "hour", "calls", "connected"].map(|k| c[k].as_i64().unwrap())).collect();
+        assert_eq!(slots, [[1, 10, 1, 0], [6, 10, 1, 1], [7, 15, 1, 1]]);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

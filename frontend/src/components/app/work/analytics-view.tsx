@@ -385,7 +385,18 @@ export function AnalyticsView({ data, validating, shared }: { data?: Analytics; 
           {(!shared || shared.mailboxes) && (
             <Breakdown title="Mailboxes" rows={data.mailboxes} columns={MAILBOX_COLUMNS} file={`splee-mailboxes-${slug}.csv`} rowKey={(r) => r.mailbox_id ?? "none"} />
           )}
-          <Heatmap cells={data.heatmap} timezone={data.timezone} />
+          <Heatmap
+            kind="email"
+            cells={data.heatmap.map((c) => ({ weekday: c.weekday, hour: c.hour, total: c.sent, hits: c.replies }))}
+            where={`Times are in ${data.timezone}.`}
+          />
+          {data.call_heatmap.length > 0 && (
+            <Heatmap
+              kind="call"
+              cells={data.call_heatmap.map((c) => ({ weekday: c.weekday, hour: c.hour, total: c.calls, hits: c.connected }))}
+              where="Times are each lead's own."
+            />
+          )}
         </>
       ) : (
         <Card>
