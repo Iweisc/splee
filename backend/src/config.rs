@@ -230,35 +230,29 @@ impl Config {
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
     }
-}
 
-fn emails(list: &str) -> Vec<String> {
-    list.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cfg(public_url: &str, app_secret: &str) -> Config {
-        Config {
+    /// What tests start from: no sign-in apps, no agents, nothing sent and every API URL empty. Set the fields a test cares
+    /// about and fill the rest with `..Config::test()`.
+    #[cfg(test)]
+    pub fn test() -> Self {
+        Self {
             database_url: String::new(),
-            app_secret: app_secret.into(),
-            public_url: public_url.into(),
-            unsubscribe_url: public_url.into(),
+            app_secret: "test-secret".into(),
+            public_url: String::new(),
+            unsubscribe_url: String::new(),
             bind_addr: String::new(),
             agent_model: String::new(),
-            agent_concurrency: 1,
+            agent_concurrency: 0,
             sending_enabled: false,
             bird_bin: None,
             open_signup: true,
-            public_agent: true,
+            public_agent: false,
             porkbun_api_url: String::new(),
             twilio_api_url: String::new(),
             bots_api_url: String::new(),
             outreach_api_url: String::new(),
             postmaster_api_url: String::new(),
-            operator_emails: emails(" Ops@Example.com,, admin@example.org "),
+            operator_emails: Vec::new(),
             google: None,
             microsoft: None,
             slack: None,
@@ -285,6 +279,27 @@ mod tests {
             sec_api_url: String::new(),
             news_sites_url: String::new(),
             s3_api_url: String::new(),
+        }
+    }
+}
+
+fn emails(list: &str) -> Vec<String> {
+    list.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(public_url: &str, app_secret: &str) -> Config {
+        Config {
+            app_secret: app_secret.into(),
+            public_url: public_url.into(),
+            unsubscribe_url: public_url.into(),
+            agent_concurrency: 1,
+            public_agent: true,
+            operator_emails: emails(" Ops@Example.com,, admin@example.org "),
+            ..Config::test()
         }
     }
 
