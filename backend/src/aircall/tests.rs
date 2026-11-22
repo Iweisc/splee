@@ -141,16 +141,19 @@ async fn connecting_registers_splees_webhook_and_disconnecting_deletes_it(db: Pg
     assert!(!stored.1.contains("token-1") && !stored.2.contains(fake::API_TOKEN), "neither the webhook token nor the API token is stored as it is");
     assert_eq!(s.call("beta", Method::GET, &path, json!(null)).await.0, 404, "another organization's project");
 
-    // Connecting again keeps the URL, registers a new webhook and deletes the old one.
-    assert_eq!(s.connect().await.0, 200);
+    // Connecting again, here to another company, keeps the URL, registers a new webhook and deletes the old one with the old
+    // details, the only ones that reach it.
+    assert_eq!(s.call("acme", Method::PUT, &path, json!({ "api_id": fake::OTHER_ID, "api_token": fake::OTHER_TOKEN })).await.0, 200);
     assert_eq!(s.path_token().await, token);
     assert_eq!(s.fake.webhooks.lock().unwrap()[1]["url"], first["url"]);
     assert_eq!(*s.fake.deleted.lock().unwrap(), ["wh-1"]);
+    assert_eq!(*s.fake.deleted_by.lock().unwrap(), [fake::API_ID]);
     assert_eq!(s.event(&token, 1, "call.created", json!({})).await.0, 401, "the old webhook's token is no good any more");
     assert_eq!(s.event(&token, 2, "call.created", json!({})).await, (200, json!({ "matched": false })));
 
     assert_eq!(s.call("acme", Method::DELETE, &path, json!(null)).await, (200, Value::Null));
     assert_eq!(*s.fake.deleted.lock().unwrap(), ["wh-1", "wh-2"]);
+    assert_eq!(*s.fake.deleted_by.lock().unwrap(), [fake::API_ID, fake::OTHER_ID]);
     assert_eq!(s.event(&token, 2, "call.created", json!({})).await.0, 404);
 }
 

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -14,12 +14,17 @@ use serde_json::{Value, json};
 
 pub const API_ID: &str = "aircall-id";
 pub const API_TOKEN: &str = "aircall-token";
+/// Another company's details, which the fake takes too.
+pub const OTHER_ID: &str = "other-aircall-id";
+pub const OTHER_TOKEN: &str = "other-aircall-token";
 
 #[derive(Clone, Default)]
 pub struct Fake {
     /// The webhooks Splee created, as it sent them. The nth gets id wh-n and token token-n.
     pub webhooks: Arc<Mutex<Vec<Value>>>,
     pub deleted: Arc<Mutex<Vec<String>>>,
+    /// The API ID each delete came with.
+    pub deleted_by: Arc<Mutex<Vec<String>>>,
     /// Calls by id, as GET /calls/{id} answers them, and each one's utterances.
     pub calls: Arc<Mutex<HashMap<i64, Value>>>,
     pub transcripts: Arc<Mutex<HashMap<i64, Value>>>,
@@ -38,8 +43,9 @@ pub async fn start() -> (String, Fake) {
         .route("/aircall/v1/webhooks", post(create_webhook))
         .route(
             "/aircall/v1/webhooks/{id}",
-            delete(|State(f): State<Fake>, Path(id): Path<String>| async move {
+            delete(|State(f): State<Fake>, Path(id): Path<String>, headers: HeaderMap| async move {
                 f.deleted.lock().unwrap().push(id);
+                f.deleted_by.lock().unwrap().push(api_id(&headers));
                 Json(json!({}))
             }),
         )
@@ -72,9 +78,19 @@ fn found(body: Option<Value>) -> Response {
 }
 
 /// Aircall turns away wrong credentials with a 403.
+/// The API ID in the Basic auth header, when its token is the one for that ID.
+fn api_id(headers: &HeaderMap) -> String {
+    let basic = headers.get("authorization").and_then(|v| v.to_str().ok()?.strip_prefix("Basic ")).unwrap_or_default();
+    let pair = STANDARD.decode(basic).ok().and_then(|p| String::from_utf8(p).ok()).unwrap_or_default();
+    match pair.split_once(':') {
+        Some((API_ID, API_TOKEN)) => API_ID.into(),
+        Some((OTHER_ID, OTHER_TOKEN)) => OTHER_ID.into(),
+        _ => String::new(),
+    }
+}
+
 async fn gate(req: Request, next: axum::middleware::Next) -> Response {
-    let expected = format!("Basic {}", STANDARD.encode(format!("{API_ID}:{API_TOKEN}")));
-    if req.headers().get("authorization").and_then(|v| v.to_str().ok()) != Some(expected.as_str()) {
+    if api_id(req.headers()).is_empty() {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "Forbidden", "troubleshoot": "Check your API key" }))).into_response();
     }
     next.run(req).await

@@ -75,11 +75,12 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
     client.ping().await?;
     let mut tx = state.db.begin().await?;
     lock(&mut tx, id).await?;
-    let old: Option<(String, String)> = sqlx::query_as("select path_token, webhook_id from aircall_connections where project_id = $1")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, _)| token.clone());
+    let old: Option<(String, String, String)> =
+        sqlx::query_as("select path_token, webhook_id, credentials_enc from aircall_connections where project_id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let path_token = old.as_ref().map_or_else(|| Uuid::new_v4().simple().to_string(), |(token, ..)| token.clone());
     let url = format!("{}/api/aircall-webhooks/{path_token}", state.cfg.public_url.trim_end_matches('/'));
     let (webhook_id, token) = client.create_webhook(&url).await?;
     let upsert = sqlx::query(
@@ -102,10 +103,13 @@ async fn connect(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>
         client.delete_webhook(&webhook_id).await;
         return Err(e.into());
     }
-    // The old webhook may be in another Aircall company, which these details can't reach. Aircall turns it off on its own
-    // once its events keep failing here.
-    if let Some((_, old_webhook)) = old.filter(|(_, w)| *w != webhook_id) {
-        client.delete_webhook(&old_webhook).await;
+    // The old webhook may be in another Aircall company, which only the old details reach.
+    if let Some((_, old_webhook, old_credentials)) = old.filter(|(_, w, _)| *w != webhook_id) {
+        let old_client = crypto::decrypt(&state.cfg.app_secret, &old_credentials).map_err(AppError::from);
+        match old_client.and_then(|details| Client::new(&state.cfg.aircall_api_url, &details)) {
+            Ok(old_client) => old_client.delete_webhook(&old_webhook).await,
+            Err(e) => tracing::warn!(error = ?e, "aircall: the old details couldn't delete the old webhook"),
+        }
     }
     audit::integration(&state.db, &auth, Some(id), "Aircall", true).await;
     load(&state.db, id).await
