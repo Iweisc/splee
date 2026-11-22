@@ -66,25 +66,31 @@ export function JustcallSection({ projectId }: { projectId: string }) {
         </p>
       ) : (
         data === null && (
-          <form onSubmit={submit(connect)} className="flex flex-col gap-4 sm:flex-row">
-            <Field label="API key" className="sm:w-56">
-              <Input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value.trim())} />
-            </Field>
-            <Field label="API secret" className="flex-1" hint="In JustCall, your profile menu → APIs and Webhooks. It takes the Team plan or above.">
-              <div className="flex gap-2">
-                {/* The label also wraps Connect, so name the input itself. */}
-                <Input
-                  aria-label="API secret"
-                  type="password"
-                  autoComplete="off"
-                  value={apiSecret}
-                  onChange={(e) => setApiSecret(e.target.value.trim())}
-                />
-                <Button type="submit" loading={pending === "connect"} disabled={!apiKey || !apiSecret}>
-                  Connect
-                </Button>
-              </div>
-            </Field>
+          <form onSubmit={submit(connect)} className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <Field label="API key" className="sm:w-56">
+                <Input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value.trim())} />
+              </Field>
+              <Field label="API secret" className="flex-1">
+                <div className="flex gap-2">
+                  {/* The label also wraps Connect, so name the input itself. */}
+                  <Input
+                    aria-label="API secret"
+                    type="password"
+                    autoComplete="off"
+                    value={apiSecret}
+                    onChange={(e) => setApiSecret(e.target.value.trim())}
+                  />
+                  <Button type="submit" loading={pending === "connect"} disabled={!apiKey || !apiSecret}>
+                    Connect
+                  </Button>
+                </div>
+              </Field>
+            </div>
+            {/* Under both fields, since it says where to find each of them. */}
+            <p className="text-xs text-pretty text-muted-foreground">
+              Find both in JustCall under your profile menu → APIs and Webhooks. They take the Team plan or above.
+            </p>
           </form>
         )
       )}
