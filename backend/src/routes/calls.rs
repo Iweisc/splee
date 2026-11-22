@@ -56,6 +56,7 @@ struct Joined {
     owner_name: Option<String>,
     called_by_name: Option<String>,
     prep: Option<serde_json::Value>,
+    follow_up_status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +78,8 @@ pub struct CallRow {
     pub outside_hours: Option<String>,
     /// The talk track, `{prep, created_at, status}` as in agent::call_prep, or None before one was asked for.
     pub prep: Option<serde_json::Value>,
+    /// Where the follow-up email the agent drafted from the call is: draft, approved, sent or cancelled. None without one.
+    pub follow_up_status: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -99,9 +102,9 @@ pub async fn rows(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: &ListQuery
     let found = sqlx::query_as::<_, Joined>(&format!(
         "select c.*, l.full_name as lead_name, l.title as lead_title, l.company_name as lead_company, l.phone as lead_phone,
                 l.country_code as lead_country, coalesce(nullif(o.name, ''), o.email::text) as owner_name,
-                coalesce(nullif(b.name, ''), b.email::text) as called_by_name, {} as prep
+                coalesce(nullif(b.name, ''), b.email::text) as called_by_name, {} as prep, f.status as follow_up_status
          from calls c join leads l on l.id = c.lead_id
-         left join users o on o.id = c.owner_id left join users b on b.id = c.called_by
+         left join users o on o.id = c.owner_id left join users b on b.id = c.called_by left join email_messages f on f.id = c.follow_up_email_id
          where c.project_id = $1 and (c.status = 'open' or c.closed_at > now() - interval '14 days')
            and ($2::text is null or ($2 = 'open') = (c.status = 'open')) and {}
          order by c.status <> 'open', case when c.status = 'open' then c.due_at end, c.closed_at desc limit 300",
@@ -145,6 +148,7 @@ pub async fn rows(db: &PgPool, project_id: Uuid, me: Option<Uuid>, q: &ListQuery
                 owner_name: j.owner_name,
                 called_by_name: j.called_by_name,
                 prep: j.prep,
+                follow_up_status: j.follow_up_status,
             }
         })
         .collect())

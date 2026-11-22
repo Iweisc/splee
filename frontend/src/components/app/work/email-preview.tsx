@@ -22,6 +22,7 @@ export const EMAIL_KINDS: Record<Exclude<EmailRow["kind"], "follow_up">, string>
   manual_reply: "Manual reply",
   inbound: "Lead's reply",
   meeting_follow_up: "Meeting follow-up",
+  call_follow_up: "Call follow-up",
   deal_nudge: "Deal nudge",
   win_back: "Win-back",
   expansion: "Expansion",
