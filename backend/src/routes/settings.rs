@@ -109,6 +109,7 @@ pub(super) struct SettingsBody {
     assign_rule: Option<String>,
     /// Round robin's members, in the order it goes through them.
     assign_members: Option<Vec<Uuid>>,
+    assign_territories: Option<Vec<crate::ownership::Territory>>,
 }
 
 /// Each follow-up is an email or a call. A call step opens a call for the lead's owner instead of sending anything.
@@ -261,16 +262,21 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
     }
-    let assign_members = match body.assign_members {
-        Some(mut members) => {
-            let mut seen = std::collections::HashSet::new();
-            members.retain(|m| seen.insert(*m));
-            for member in &members {
-                crate::ownership::check_member(db, org_id, Some(*member)).await?;
-            }
-            Some(members)
+    let (assign_members, assign_territories) = match (body.assign_members, body.assign_territories) {
+        (None, None) => (None, None),
+        (members, territories) => {
+            let saved: crate::ownership::Assignment =
+                sqlx::query_as("select assign_members, assign_territories from project_settings where project_id = $1").bind(id).fetch_one(db).await?;
+            let members = match members {
+                Some(members) => Some(crate::ownership::check_members(db, org_id, members, &saved).await?),
+                None => None,
+            };
+            let territories = match territories {
+                Some(territories) => Some(sqlx::types::Json(crate::ownership::check_territories(db, org_id, territories, &saved).await?)),
+                None => None,
+            };
+            (members, territories)
         }
-        None => None,
     };
     let bcc_email = match body.bcc_email.as_deref().map(str::trim) {
         Some("") => Some(String::new()),
@@ -329,7 +335,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            watch_churn = coalesce($42, watch_churn),
            prep_renewals = coalesce($43, prep_renewals),
            review_window_hours = case when $44 then $45 else review_window_hours end,
-           monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end
+           monthly_cap_micros = case when $46 then $47 else monthly_cap_micros end,
+           assign_territories = coalesce($48, assign_territories)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -379,6 +386,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.review_window_hours.flatten())
     .bind(body.monthly_cap_micros.is_some())
     .bind(body.monthly_cap_micros.flatten())
+    .bind(assign_territories)
     .fetch_one(db)
     .await?;
     Ok(settings)

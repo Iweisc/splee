@@ -1,16 +1,28 @@
 //! Who on the team works a lead. A lead has at most one owner, a member of its organization. Someone sets it by hand, or the
 //! project's assignment rule does when the lead first replies, books or is captured by the website chat: round robin among
-//! picked members, or the owner of the mailbox that emailed it. The rule looks at a lead once, at the first of those, so an
+//! picked members, the owner of the mailbox that emailed it, or whoever's territory has the lead's country. The rule looks at a lead once, at the first of those, so an
 //! owner cleared by hand stays cleared and a rule turned on later leaves earlier leads alone.
 //! A deal's owner is its lead's. The owner gets the lead's hot-lead email instead of the whole team, and Slack mentions them.
 
+use std::collections::HashSet;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::types::Json;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
-pub const RULES: &[&str] = &["off", "round_robin", "mailbox"];
+pub const RULES: &[&str] = &["off", "round_robin", "mailbox", "territory"];
+
+/// Who covers which countries, as project_settings.assign_territories keeps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Territory {
+    pub owner: Uuid,
+    /// ISO 3166-1 alpha-2 codes, upper case.
+    pub countries: Vec<String>,
+}
 /// The pages with an Everyone, Mine or Unassigned filter, each remembered per member in memberships.owner_filters.
 pub const VIEWS: &[&str] = &["inbox", "leads", "pipeline"];
 pub const VIEW_FILTERS: &[&str] = &["everyone", "mine", "unassigned"];
@@ -50,30 +62,119 @@ async fn try_claim(db: &PgPool, lead_id: Uuid) -> sqlx::Result<Option<Uuid>> {
     Ok(owner)
 }
 
-/// Who the project's rule gives the lead to, taking that member's turn for round robin.
+#[derive(sqlx::FromRow)]
+struct Rule {
+    assign_rule: String,
+    assign_members: Vec<Uuid>,
+    assign_last: Option<Uuid>,
+    assign_territories: Json<Vec<Territory>>,
+}
+
+/// Who the project's rule gives the lead to, taking that member's turn when it goes round robin.
 async fn pick(tx: &mut PgConnection, project_id: Uuid, org_id: Uuid, lead_id: Uuid) -> sqlx::Result<Option<Uuid>> {
-    let rule: Option<(String, Vec<Uuid>, Option<Uuid>)> =
-        sqlx::query_as("select assign_rule, assign_members, assign_last from project_settings where project_id = $1 for update")
+    let rule: Option<Rule> =
+        sqlx::query_as("select assign_rule, assign_members, assign_last, assign_territories from project_settings where project_id = $1 for update")
             .bind(project_id)
             .fetch_optional(&mut *tx)
             .await?;
-    let Some((rule, members, last)) = rule else { return Ok(None) };
-    let owner = match rule.as_str() {
-        "round_robin" => {
-            let available: Vec<Uuid> = sqlx::query_scalar("select user_id from memberships where org_id = $1 and user_id = any($2) and not away")
-                .bind(org_id)
-                .bind(&members)
-                .fetch_all(&mut *tx)
-                .await?;
-            next_in_turn(&members, last, &available)
+    let Some(Rule { assign_rule: rule, assign_members: members, assign_last: last, assign_territories: Json(territories) }) = rule else { return Ok(None) };
+    let (owner, took_turn) = match rule.as_str() {
+        "round_robin" => (next_in_turn(&members, last, &available(&mut *tx, org_id, &members).await?), true),
+        // A lead from no one's territory, or from the territory of someone away or gone, takes its turn like round robin.
+        "territory" => {
+            let country = lead_country(&mut *tx, lead_id).await?;
+            let covering = country.and_then(|c| territories.iter().find(|t| t.countries.contains(&c))).map(|t| t.owner);
+            let available = available(&mut *tx, org_id, &[members.as_slice(), covering.as_slice()].concat()).await?;
+            match covering.filter(|o| available.contains(o)) {
+                Some(owner) => (Some(owner), false),
+                None => (next_in_turn(&members, last, &available), true),
+            }
         }
-        "mailbox" => mailbox_owner(&mut *tx, org_id, lead_id).await?,
-        _ => None,
+        "mailbox" => (mailbox_owner(&mut *tx, org_id, lead_id).await?, false),
+        _ => (None, false),
     };
-    if let (Some(owner), "round_robin") = (owner, rule.as_str()) {
+    if let (Some(owner), true) = (owner, took_turn) {
         sqlx::query("update project_settings set assign_last = $2 where project_id = $1").bind(project_id).bind(owner).execute(&mut *tx).await?;
     }
     Ok(owner)
+}
+
+/// Those among `users` who are on the team and not away.
+async fn available(conn: &mut PgConnection, org_id: Uuid, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar("select user_id from memberships where org_id = $1 and user_id = any($2) and not away").bind(org_id).bind(users).fetch_all(conn).await
+}
+
+/// The lead's country for territories: its own, else its company's, else its phone number's, where +1 reads as the US.
+async fn lead_country(conn: &mut PgConnection, lead_id: Uuid) -> sqlx::Result<Option<String>> {
+    let (own, phone): (String, String) = sqlx::query_as(
+        "select coalesce(nullif(trim(l.country_code), ''), trim(c.country_code), ''), l.phone from leads l left join companies c on c.id = l.company_id
+         where l.id = $1",
+    )
+    .bind(lead_id)
+    .fetch_one(conn)
+    .await?;
+    Ok(Some(own.to_ascii_uppercase()).filter(|c| !c.is_empty()).or_else(|| crate::phone::country(&phone).map(str::to_string)))
+}
+
+/// Who the project's settings give leads to now, before a save.
+#[derive(sqlx::FromRow)]
+pub struct Assignment {
+    pub assign_members: Vec<Uuid>,
+    pub assign_territories: Json<Vec<Territory>>,
+}
+
+/// Those among `users` who left the team. Someone who was never on it fails the save. The settings drop someone they named
+/// before who left since, because every settings page sends the whole form back and it would fail otherwise.
+async fn departed(db: &PgPool, org_id: Uuid, users: &[Uuid], saved: &Assignment) -> AppResult<HashSet<Uuid>> {
+    let off: Vec<Uuid> =
+        sqlx::query_scalar("select u from unnest($2::uuid[]) u where not exists (select 1 from memberships m where m.org_id = $1 and m.user_id = u)")
+            .bind(org_id)
+            .bind(users)
+            .fetch_all(db)
+            .await?;
+    let named = |u: &Uuid| saved.assign_members.contains(u) || saved.assign_territories.iter().any(|t| t.owner == *u);
+    if !off.iter().all(named) {
+        return Err(AppError::BadRequest("The owner has to be on your team".into()));
+    }
+    Ok(off.into_iter().collect())
+}
+
+/// Round robin's members as settings save them: on the team, each once, in the order given.
+pub async fn check_members(db: &PgPool, org_id: Uuid, mut members: Vec<Uuid>, saved: &Assignment) -> AppResult<Vec<Uuid>> {
+    let mut seen = HashSet::new();
+    members.retain(|m| seen.insert(*m));
+    let gone = departed(db, org_id, &members, saved).await?;
+    members.retain(|m| !gone.contains(m));
+    Ok(members)
+}
+
+/// Territories as settings save them: codes in upper case, each owner on the team and in one territory, and each country in
+/// one territory, so a lead never has two people who cover it. A territory without countries is dropped.
+pub async fn check_territories(db: &PgPool, org_id: Uuid, territories: Vec<Territory>, before: &Assignment) -> AppResult<Vec<Territory>> {
+    let gone = departed(db, org_id, &territories.iter().map(|t| t.owner).collect::<Vec<_>>(), before).await?;
+    let (mut owners, mut taken, mut saved) = (HashSet::new(), HashSet::new(), vec![]);
+    for t in territories.into_iter().filter(|t| !gone.contains(&t.owner)) {
+        let mut countries: Vec<String> = vec![];
+        for code in t.countries.iter().map(|c| c.trim().to_ascii_uppercase()).filter(|c| !c.is_empty()) {
+            if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()) {
+                return Err(AppError::BadRequest(format!("{code} isn't a two-letter country code, like US or DE")));
+            }
+            if !countries.contains(&code) {
+                countries.push(code);
+            }
+        }
+        if countries.is_empty() {
+            continue;
+        }
+        if !owners.insert(t.owner) {
+            return Err(AppError::BadRequest("Give each person one territory, with all their countries in it".into()));
+        }
+        if let Some(code) = countries.iter().find(|c| !taken.insert((*c).clone())) {
+            return Err(AppError::BadRequest(format!("{code} is in two territories. Give each country to one person")));
+        }
+        saved.push(Territory { owner: t.owner, countries });
+    }
+    Ok(saved)
 }
 
 /// The member after `last` in `members`, going round, who is in `available`. The order is the one picked in settings, and
@@ -370,6 +471,53 @@ mod tests {
         let nobody = t.lead(t.project, "Nobody In").await;
         assert_eq!(claim(&t.db, nobody).await, None, "everyone is away, so it waits for someone to take it");
         assert_eq!(t.owner(nobody).await, None);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn territories_get_their_countries_leads_and_the_rest_take_turns(db: PgPool) {
+        let t = Team::new(db).await;
+        let [ana, ben, cy] = t.people;
+        t.rule("territory", &[ana, cy]).await;
+        let territories = json!([{ "owner": ben, "countries": ["DE", "AT"] }, { "owner": cy, "countries": ["FR"] }]);
+        sqlx::query("update project_settings set assign_territories = $2 where project_id = $1").bind(t.project).bind(&territories).execute(&t.db).await.unwrap();
+        // A lead with its own country, a company's or a phone number's, as each may be all Splee knows.
+        let lead = |name: &'static str, country: &'static str, company_country: &'static str, phone: &'static str| {
+            let (db, project) = (t.db.clone(), t.project);
+            async move {
+                let company: Option<Uuid> = if company_country.is_empty() {
+                    None
+                } else {
+                    let domain = format!("{}.test", name.to_lowercase().replace(' ', "-"));
+                    let insert = "insert into companies (project_id, domain, country_code) values ($1, $2, $3) returning id";
+                    Some(sqlx::query_scalar(insert).bind(project).bind(domain).bind(company_country).fetch_one(&db).await.unwrap())
+                };
+                let id: Uuid = sqlx::query_scalar("insert into leads (project_id, full_name, country_code, company_id, phone) values ($1, $2, $3, $4, $5) returning id")
+                    .bind(project)
+                    .bind(name)
+                    .bind(country)
+                    .bind(company)
+                    .bind(phone)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap();
+                claim(&db, id).await
+            }
+        };
+        assert_eq!(lead("Berlin", "de", "", "").await, Some(ben), "the lead's own country, in any case");
+        assert_eq!(lead("Boston", "US", "", "").await, Some(ana), "nobody covers the US, so it's Ana's turn");
+        assert_eq!(lead("Vienna", "", "AT", "").await, Some(ben), "the company's country");
+        assert_eq!(lead("Nowhere", "", "", "").await, Some(cy), "Ben's leads didn't use a turn");
+        assert_eq!(lead("Paris", "", "", "+33612345678").await, Some(cy), "the phone number's country");
+        assert_eq!(lead("Leeds", "GB", "FR", "+33612345678").await, Some(ana), "the lead's own country comes first");
+
+        // Someone away, or gone, has their territory's leads take turns until they're back.
+        t.away(ben, true).await;
+        assert_eq!(lead("Munich", "DE", "", "").await, Some(cy));
+        t.away(ben, false).await;
+        assert_eq!(lead("Hamburg", "DE", "", "").await, Some(ben));
+        sqlx::query("delete from memberships where user_id = $1").bind(ben).execute(&t.db).await.unwrap();
+        assert_eq!(lead("Graz", "AT", "", "").await, Some(ana));
     }
 
     #[sqlx::test]
@@ -682,13 +830,37 @@ mod tests {
         assert_eq!(status, 400);
         let (status, saved) = api.send("ana", put.clone(), &settings, Some(json!({ "assign_rule": "round_robin", "assign_members": [ben, ana, ben] }))).await;
         assert_eq!((status, saved["assign_rule"].as_str(), saved["assign_members"].clone()), (200, Some("round_robin"), json!([ben, ana])));
-        let (status, _) = api.send("ana", put, &settings, Some(json!({ "assign_rule": "random" }))).await;
+        let (status, _) = api.send("ana", put.clone(), &settings, Some(json!({ "assign_rule": "random" }))).await;
         assert_eq!(status, 400);
+
+        // Territories are kept in upper case, without empty ones, and each person and each country is in one at most.
+        let territories = json!([{ "owner": ben, "countries": [" de", "AT", "DE"] }, { "owner": ana, "countries": [""] }]);
+        let (status, saved) = api.send("ana", put.clone(), &settings, Some(json!({ "assign_rule": "territory", "assign_territories": territories }))).await;
+        assert_eq!((status, saved["assign_rule"].as_str()), (200, Some("territory")));
+        assert_eq!(saved["assign_territories"], json!([{ "owner": ben, "countries": ["DE", "AT"] }]));
+        for wrong in [
+            json!([{ "owner": t.eve, "countries": ["FR"] }]),
+            json!([{ "owner": ben, "countries": ["DE"] }, { "owner": ana, "countries": ["de"] }]),
+            json!([{ "owner": ben, "countries": ["DE"] }, { "owner": ben, "countries": ["FR"] }]),
+            json!([{ "owner": ben, "countries": ["Germany"] }]),
+        ] {
+            assert_eq!(api.send("ana", put.clone(), &settings, Some(json!({ "assign_territories": wrong }))).await.0, 400, "{wrong}");
+        }
+        assert_eq!(api.get("ana", &settings).await["assign_territories"], json!([{ "owner": ben, "countries": ["DE", "AT"] }]));
 
         // Removing someone hands their leads back to nobody.
         assign(&t.db, t.acme, &[nobodys], Some(ben)).await.unwrap();
         let (status, _) = api.send("ana", reqwest::Method::DELETE, &format!("/organization/users/{ben}"), None).await;
         assert_eq!(status, 200);
         assert_eq!((t.owner(nobodys).await, t.owner(mine).await), (None, Some(ana)));
+        // The settings still name him, and any settings page sends them back on save, which drops him. Someone who was never
+        // on the team is still refused.
+        let draft = api.get("ana", &settings).await;
+        let resend = json!({ "assign_members": draft["assign_members"], "assign_territories": draft["assign_territories"], "daily_email_limit": 40 });
+        let (status, saved) = api.send("ana", put.clone(), &settings, Some(resend)).await;
+        assert_eq!((status, saved["assign_members"].clone(), saved["assign_territories"].clone()), (200, json!([ana]), json!([])));
+        assert_eq!(api.send("ana", put.clone(), &settings, Some(json!({ "assign_members": [ana, t.eve] }))).await.0, 400);
+        let territory = json!([{ "owner": t.eve, "countries": ["FR"] }]);
+        assert_eq!(api.send("ana", put, &settings, Some(json!({ "assign_territories": territory }))).await.0, 400);
     }
 }

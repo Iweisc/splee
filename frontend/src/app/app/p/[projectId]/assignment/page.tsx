@@ -3,12 +3,14 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { ArrowDown, ArrowUp } from "lucide-react";
+import { ChipInput } from "@/components/app/settings/chip-input";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { OptionCards } from "@/components/app/settings/option-cards";
 import { memberName, useMembers } from "@/components/app/work/owner-menu";
 import { Button } from "@/components/ui/button";
 import { Avatar, Badge, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
+import { countryCode, countryName } from "@/lib/countries";
 import type { AssignRule, Mailbox, Member, ProjectSettings } from "@/lib/types";
 import { plural } from "@/lib/utils";
 
@@ -16,6 +18,7 @@ const RULES: { value: AssignRule; label: string; description: string }[] = [
   { value: "off", label: "Off", description: "Leads stay unassigned until someone on the team takes one." },
   { value: "round_robin", label: "Round robin", description: "Each new lead goes to the next person you pick below, in turn." },
   { value: "mailbox", label: "By mailbox", description: "A lead goes to whoever owns the mailbox that emailed it." },
+  { value: "territory", label: "By territory", description: "A lead goes to whoever covers its country, and the rest take turns." },
 ];
 
 export default function AssignmentPage() {
@@ -23,7 +26,13 @@ export default function AssignmentPage() {
     <ProjectSettingsPage
       title="Assignment"
       description="Who gets a lead when it first replies, books a meeting or leaves its email in the website chat. A lead that already has an owner keeps them."
-      problem={(s) => (s.assign_rule === "round_robin" && s.assign_members.length === 0 ? "Pick at least one person for round robin" : null)}
+      problem={(s) =>
+        s.assign_rule === "round_robin" && s.assign_members.length === 0
+          ? "Pick at least one person for round robin"
+          : s.assign_rule === "territory" && s.assign_territories.length === 0 && s.assign_members.length === 0
+            ? "Give someone a territory, or pick who takes turns"
+            : null
+      }
     >
       {(s, update) => (
         <>
@@ -33,10 +42,28 @@ export default function AssignmentPage() {
               value={s.assign_rule}
               onChange={(assign_rule) => update({ assign_rule })}
               options={RULES}
-              className="@2xl:grid-cols-3"
+              className="@2xl:grid-cols-2"
             />
           </Section>
-          {s.assign_rule === "round_robin" && <RoundRobin settings={s} update={update} />}
+          {s.assign_rule === "round_robin" && (
+            <RoundRobin
+              settings={s}
+              update={update}
+              title="Who takes turns"
+              description="New leads go to these people in this order. Anyone who switched on Away in their account is skipped."
+            />
+          )}
+          {s.assign_rule === "territory" && (
+            <>
+              <Territories settings={s} update={update} />
+              <RoundRobin
+                settings={s}
+                update={update}
+                title="Who takes the rest"
+                description="Leads from a country nobody covers, or from the territory of someone away, go to these people in turn. With nobody picked, they stay unassigned."
+              />
+            </>
+          )}
           {s.assign_rule === "mailbox" && <MailboxOwners />}
         </>
       )}
@@ -44,7 +71,58 @@ export default function AssignmentPage() {
   );
 }
 
-function RoundRobin({ settings: s, update }: { settings: ProjectSettings; update: (patch: Partial<ProjectSettings>) => void }) {
+type Update = (patch: Partial<ProjectSettings>) => void;
+
+/** Each member and the countries they cover. Saving drops the territory of someone who left the team. */
+function Territories({ settings: s, update }: { settings: ProjectSettings; update: Update }) {
+  const members = useMembers();
+  const set = (owner: string, countries: string[]) => {
+    const others = s.assign_territories.filter((t) => t.owner !== owner);
+    // A country moves to whoever was given it last, since it can only be in one territory.
+    const kept = others.map((t) => ({ ...t, countries: t.countries.filter((c) => !countries.includes(c)) })).filter((t) => t.countries.length);
+    update({ assign_territories: countries.length ? [...kept, { owner, countries }] : kept });
+  };
+  return (
+    <Section
+      title="Territories"
+      description="A lead's country is its own, else its company's, else its phone number's. Type a country's name or code and press Enter. A country belongs to one person."
+    >
+      {!members ? (
+        <Skeleton className="h-24 w-full" />
+      ) : (
+        // A container, so each row goes side by side when the card has room, not the screen.
+        <ul className="@container divide-y divide-border rounded-xl border border-border">
+          {members.map((m) => (
+            <li key={m.user_id} className="flex flex-col gap-2 px-3 py-2.5 text-sm @xl:flex-row @xl:items-center @xl:gap-3">
+              <span className="flex min-w-0 items-center gap-3 @xl:w-56 @xl:shrink-0">
+                <Avatar name={memberName(m)} className="size-7" />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate font-medium">{memberName(m)}</span>
+                    {m.away && <Badge className="shrink-0">Away</Badge>}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">{m.email}</span>
+                </span>
+              </span>
+              <span className="min-w-0 flex-1">
+                <ChipInput
+                  value={s.assign_territories.find((t) => t.owner === m.user_id)?.countries ?? []}
+                  onChange={(countries) => set(m.user_id, countries)}
+                  parse={countryCode}
+                  show={countryName}
+                  label={`Countries ${memberName(m)} covers`}
+                  placeholder="e.g. Germany, AT"
+                />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function RoundRobin({ settings: s, update, title, description }: { settings: ProjectSettings; update: Update; title: string; description: string }) {
   const members = useMembers();
   // The picked come first in their turn order, then everyone else on the team.
   const picked = s.assign_members.map((id) => members?.find((m) => m.user_id === id)).filter((m): m is Member => !!m);
@@ -58,7 +136,7 @@ function RoundRobin({ settings: s, update }: { settings: ProjectSettings; update
     update({ assign_members: s.assign_members.includes(id) ? s.assign_members.filter((m) => m !== id) : [...s.assign_members, id] });
 
   return (
-    <Section title="Who takes turns" description="New leads go to these people in this order. Anyone who switched on Away in their account is skipped.">
+    <Section title={title} description={description}>
       {!members ? (
         <Skeleton className="h-24 w-full" />
       ) : (

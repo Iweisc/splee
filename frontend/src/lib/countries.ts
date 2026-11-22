@@ -17,3 +17,12 @@ export const countryName = (code: string) => {
     return code;
   }
 };
+
+const byName = new Map(COUNTRY_CODES.map((code) => [countryName(code).toLowerCase(), code]));
+
+/** The code for a country typed as its code or its English name, or null when it's neither. */
+export function countryCode(typed: string): string | null {
+  const t = typed.trim();
+  const code = t.toUpperCase();
+  return COUNTRY_CODES.includes(code) ? code : (byName.get(t.toLowerCase()) ?? null);
+}
