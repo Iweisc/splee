@@ -144,7 +144,9 @@ async fn webhook(State(state): State<AppState>, Path(token): Path<String>, heade
         .await?;
     let c = connection.ok_or(AppError::NotFound)?;
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    if !justcall::signed(&c.secret(&state)?, &event, header("x-justcall-request-timestamp"), header("x-justcall-signature")) {
+    // Projects on one JustCall account share its secret, so a signature only counts for the URL it was sent to.
+    let ours = event["webhook_url"].as_str().is_some_and(|url| url.ends_with(&format!("/api/justcall-webhooks/{token}")));
+    if !ours || !justcall::signed(&c.secret(&state)?, &event, header("x-justcall-request-timestamp"), header("x-justcall-signature")) {
         return Err(AppError::Unauthorized);
     }
     let handled = justcall::handle(&state, &c, &event).await;

@@ -145,7 +145,12 @@ impl Seeded {
 
     /// Posts `event` of type `kind` to the webhook with `token`, as JustCall would to the URL it has, signed with `secret`.
     async fn event_with(&self, token: &str, secret: &str, kind: &str, data: &Value) -> (u16, Value) {
-        let url = format!("https://splee.example/api/justcall-webhooks/{token}");
+        self.event_for(token, token, secret, kind, data).await
+    }
+
+    /// Posts to the webhook with `token` an event JustCall signed for the URL with `url_token`.
+    async fn event_for(&self, token: &str, url_token: &str, secret: &str, kind: &str, data: &Value) -> (u16, Value) {
+        let url = format!("https://splee.example/api/justcall-webhooks/{url_token}");
         let event = json!({ "request_id": "01HSGZRD0PHRCCHM46JRCRYMC4", "webhook_url": url, "url_id": "u1", "type": kind, "data": data });
         let req = self.http.post(format!("{}/justcall-webhooks/{token}", self.base)).header("content-type", "application/json");
         let req = req.header("x-justcall-signature", fake::sign(secret, &event, AT)).header("x-justcall-request-timestamp", AT).header("x-justcall-signature-version", "v1");
@@ -221,6 +226,8 @@ async fn connecting_adds_the_webhook_url_to_each_call_event_and_disconnecting_re
     assert_eq!(s.event(&token, "call.completed", &ringing).await.0, 404, "the old URL is gone");
     assert_eq!(s.event_with(&new_token, fake::API_SECRET, "call.completed", &ringing).await.0, 401, "the old secret is no good any more");
     assert_eq!(s.event_with(&new_token, fake::OTHER_SECRET, "call.completed", &ringing).await, (200, json!({ "matched": false })));
+    // A project on the same JustCall account shares its secret, so a signature for another URL doesn't count.
+    assert_eq!(s.event_for(&new_token, "another-project", fake::OTHER_SECRET, "call.completed", &ringing).await.0, 401);
 
     assert_eq!(s.call("acme", Method::DELETE, &path, json!(null)).await, (200, Value::Null));
     assert_eq!(s.fake.removed.lock().unwrap()[4..], ["u5", "u6", "u7", "u8"]);

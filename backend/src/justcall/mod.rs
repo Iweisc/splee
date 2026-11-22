@@ -164,7 +164,7 @@ fn secs(v: &Value) -> i64 {
 
 /// Whether JustCall signed an event with `secret`: the hex HMAC-SHA256, keyed with the secret, of
 /// "{secret}|{the event's webhook_url, percent-encoded}|{its type}|{the timestamp header}". The signature doesn't cover the
-/// call itself, so the URL's own token is what keeps another project's calls out.
+/// call itself, so the URL's own token, which the webhook route checks is in that webhook_url, keeps another project's calls out.
 pub fn signed(secret: &str, event: &Value, timestamp: &str, signature: &str) -> bool {
     let Ok(signature) = hex::decode(signature.trim()) else { return false };
     let url = event["webhook_url"].as_str().unwrap_or_default();
