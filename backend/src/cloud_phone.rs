@@ -1,6 +1,6 @@
-//! Calls with the project's leads kept from a cloud phone, Aircall (aircall/) or Dialpad (dialpad/), once its webhook says one
-//! ended. A call closes the lead's open call step, like one logged on the Calls page, or is kept as a call of its own, and its
-//! transcript goes to the agent for a summary like a Twilio call's (calls.rs).
+//! Calls with the project's leads kept from a cloud phone, Aircall (aircall/), Dialpad (dialpad/) or JustCall (justcall/), once
+//! its webhook says one ended. A call closes the lead's open call step, like one logged on the Calls page, or is kept as a call
+//! of its own, and its transcript goes to the agent for a summary like a Twilio call's (calls.rs).
 
 use serde_json::json;
 use uuid::Uuid;
@@ -15,6 +15,7 @@ use crate::state::AppState;
 pub enum Phone {
     Aircall,
     Dialpad,
+    Justcall,
 }
 
 impl Phone {
@@ -22,6 +23,7 @@ impl Phone {
         match self {
             Phone::Aircall => "aircall_id",
             Phone::Dialpad => "dialpad_id",
+            Phone::Justcall => "justcall_id",
         }
     }
 }

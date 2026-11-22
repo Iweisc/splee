@@ -66,6 +66,8 @@ pub struct Config {
     pub aircall_api_url: String,
     /// Dialpad's API. Empty for the real one. Only tests and sandboxes set it, to a fake that answers under /dialpad.
     pub dialpad_api_url: String,
+    /// JustCall's API. Empty for the real one. Only tests and sandboxes set it, to a fake that answers under /justcall.
+    pub justcall_api_url: String,
     /// Webflow's Data API v2, empty for Webflow itself. Only tests and sandboxes point it elsewhere, at a fake.
     pub webflow_api_url: String,
     /// The LinkedIn app projects sign in with to sync ad audiences, from LINKEDIN_ADS_CLIENT_ID and LINKEDIN_ADS_CLIENT_SECRET. It
@@ -191,6 +193,7 @@ impl Config {
             meetings_api_url: env::var("MEETINGS_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             aircall_api_url: env::var("AIRCALL_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             dialpad_api_url: env::var("DIALPAD_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
+            justcall_api_url: env::var("JUSTCALL_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             webflow_api_url: env::var("WEBFLOW_API_URL").unwrap_or_default().trim().trim_end_matches('/').to_string(),
             linkedin_ads: OAuthApp::from_env("LINKEDIN_ADS", crate::ads::linkedin::AUTHORIZE_URL.into(), crate::ads::linkedin::TOKEN_URL.into()),
             google_ads_developer_token: env::var("GOOGLE_ADS_DEVELOPER_TOKEN").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
@@ -269,6 +272,7 @@ mod tests {
             meetings_api_url: String::new(),
             aircall_api_url: String::new(),
             dialpad_api_url: String::new(),
+            justcall_api_url: String::new(),
             webflow_api_url: String::new(),
             linkedin_ads: None,
             google_ads_developer_token: None,

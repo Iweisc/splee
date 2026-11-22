@@ -1816,6 +1816,8 @@ export interface Call {
   aircall_id: number | null;
   /** The call's id in Dialpad, for one made or taken there. */
   dialpad_id: number | null;
+  /** The call's id in JustCall, for one made or taken there. */
+  justcall_id: number | null;
   /** A call the lead made to the team. */
   inbound: boolean;
   /** The follow-up email the agent drafted from the transcript, when someone talked with the lead. */
@@ -2854,7 +2856,7 @@ export const PAYMENT_PROVIDERS = ["stripe", "paddle", "lemonsqueezy"] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 export const PAYMENT_NAMES: Record<PaymentProvider, string> = { stripe: "Stripe", paddle: "Paddle", lemonsqueezy: "Lemon Squeezy" };
 
-/** GET /projects/{id}/aircall or /dialpad, null until it's connected. The API token or key never leaves the server. */
+/** GET /projects/{id}/aircall, /dialpad or /justcall, null until it's connected. The API token, key or secret never leaves the server. */
 export interface CloudPhoneConnection {
   last_event_at: Ts | null;
   /** Why the last event couldn't be handled, cleared by the next one that is. */

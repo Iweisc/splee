@@ -95,6 +95,7 @@ mod bots;
 mod calls;
 mod aircall;
 mod dialpad;
+mod justcall;
 mod proposals;
 mod questionnaires;
 pub mod meetings;
@@ -241,6 +242,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(voicemail::router())
         .merge(aircall::router())
         .merge(dialpad::router())
+        .merge(justcall::router())
         .merge(meetings::router())
         .merge(deals::router())
         .merge(close_plans::router())

@@ -17,6 +17,7 @@ import { FinderSection } from "./finder-section";
 import { FormSection } from "./form-section";
 import { DiscourseSection, StackExchangeSection } from "./forum-sections";
 import { GoogleMapsSection } from "./google-maps-section";
+import { JustcallSection } from "./justcall-section";
 import { MeetingsSection } from "./meetings-section";
 import { MetaSection } from "./meta-section";
 import { PaymentsSection } from "./payments-section";
@@ -67,6 +68,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <TwilioSection settings={s} />
           <AircallSection projectId={projectId} />
           <DialpadSection projectId={projectId} />
+          <JustcallSection projectId={projectId} />
           <XSection projectId={projectId} settings={s} />
           <RedditSection projectId={projectId} settings={s} />
           <BlueskySection projectId={projectId} settings={s} />
