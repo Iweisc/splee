@@ -8,12 +8,8 @@
 
 use std::collections::HashSet;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{RequestBuilder, StatusCode, Url};
 use serde_json::{Value, json};
-use sha2::Sha256;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -278,11 +274,7 @@ pub fn ghost_key(raw: &str) -> Option<(String, Vec<u8>)> {
 
 /// The token Ghost's Admin API takes: a JWT signed with the key's secret, for /admin/, good for five minutes, Ghost's most.
 pub fn ghost_token(id: &str, secret: &[u8], now: i64) -> String {
-    let header = URL_SAFE_NO_PAD.encode(json!({ "alg": "HS256", "typ": "JWT", "kid": id }).to_string());
-    let claims = URL_SAFE_NO_PAD.encode(json!({ "iat": now, "exp": now + 300, "aud": "/admin/" }).to_string());
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC takes a key of any length");
-    mac.update(format!("{header}.{claims}").as_bytes());
-    format!("{header}.{claims}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    crate::crypto::hs256_jwt(secret, &json!({ "alg": "HS256", "typ": "JWT", "kid": id }), &json!({ "iat": now, "exp": now + 300, "aud": "/admin/" }))
 }
 
 /// Ghost's Admin API, with the Admin API key of a custom integration.
@@ -610,6 +602,10 @@ pub(crate) mod fake {
     use axum::http::HeaderMap;
     use axum::routing::get;
     use axum::{Json, Router};
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
 
     use super::*;
 
@@ -846,6 +842,11 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
     use super::*;
     use crate::crypto::encrypt;
 

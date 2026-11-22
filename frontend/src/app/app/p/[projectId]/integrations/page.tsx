@@ -12,6 +12,7 @@ import { DiscordSection, TelegramSection } from "./bot-sections";
 import { CalendarFeedSection } from "./calendar-section";
 import { ChatSection } from "./chat-section";
 import { BccSection, CrmSection } from "./crm-section";
+import { DialpadSection } from "./dialpad-section";
 import { FinderSection } from "./finder-section";
 import { FormSection } from "./form-section";
 import { DiscourseSection, StackExchangeSection } from "./forum-sections";
@@ -65,6 +66,7 @@ export default function IntegrationsPage({ params }: PageProps<"/app/p/[projectI
           <UnipileSection projectId={projectId} settings={s} />
           <TwilioSection settings={s} />
           <AircallSection projectId={projectId} />
+          <DialpadSection projectId={projectId} />
           <XSection projectId={projectId} settings={s} />
           <RedditSection projectId={projectId} settings={s} />
           <BlueskySection projectId={projectId} settings={s} />

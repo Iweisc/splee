@@ -1,7 +1,6 @@
 //! Aircall, the cloud phone. A project connects its Aircall company with an API ID and token (routes/aircall.rs), and Splee
 //! registers a webhook for the calls that end, the recordings that come after them and the transcripts Aircall's AI writes.
-//! A call with one of the project's leads, by number, closes the lead's open call step or is kept as a call of its own, and
-//! its transcript goes to the agent for a summary like a Twilio call's (calls.rs).
+//! What a call does with the project's leads is cloud_phone.rs, shared with Dialpad.
 
 #[cfg(test)]
 pub mod fake;
@@ -15,9 +14,8 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::agent::{self, kind};
+use crate::cloud_phone::{self, Ended, Phone, Project};
 use crate::error::{AppError, AppResult};
-use crate::models::{Call, Lead, Ts};
 use crate::state::AppState;
 
 pub const API: &str = "https://api.aircall.io";
@@ -39,6 +37,10 @@ pub struct Connection {
 pub const CONNECTION_COLUMNS: &str = "project_id, org_id, credentials_enc, webhook_id, webhook_token_hash";
 
 impl Connection {
+    pub fn project(&self) -> Project {
+        Project { id: self.project_id, org_id: self.org_id }
+    }
+
     pub fn client(&self, state: &AppState) -> AppResult<Client> {
         Client::new(&state.cfg.aircall_api_url, &crate::crypto::decrypt(&state.cfg.app_secret, &self.credentials_enc)?)
     }
@@ -156,23 +158,8 @@ fn lines(utterances: &Value) -> String {
         .join("\n")
 }
 
-/// A call as Aircall's events and GET /calls/{id} give it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ended {
-    pub id: i64,
-    /// The other side's number in E.164.
-    pub number: String,
-    pub inbound: bool,
-    pub started_at: Ts,
-    pub answered_at: Option<Ts>,
-    pub ended_at: Option<Ts>,
-    /// The team member who made or took it, lowercased.
-    pub user_email: String,
-    /// The recording's page in Aircall, which only the team can open, or empty while there's no recording or voicemail.
-    pub asset: String,
-}
-
-/// None for a call without a number Splee can read, like an anonymous one.
+/// A call as Aircall's events and GET /calls/{id} give it. None for a call without a number Splee can read, like an anonymous
+/// one.
 pub fn parse(call: &Value) -> Option<Ended> {
     let at = |v: &Value| v.as_i64().and_then(|s| DateTime::from_timestamp(s, 0));
     let recorded = text(&call["recording"]).is_some() || text(&call["voicemail"]).is_some();
@@ -184,176 +171,23 @@ pub fn parse(call: &Value) -> Option<Ended> {
         answered_at: at(&call["answered_at"]),
         ended_at: at(&call["ended_at"]),
         user_email: text(&call["user"]["email"]).map(|e| e.to_lowercase()).unwrap_or_default(),
+        // Aircall's page for the call, which only the team can open.
         asset: text(&call["asset"]).filter(|_| recorded).unwrap_or_default(),
+        step: None,
     })
 }
 
-impl Ended {
-    /// The outcome the Calls page knows, and a note for a call the lead made.
-    fn outcome(&self) -> (&'static str, &'static str) {
-        match (self.answered_at.is_some(), self.inbound) {
-            (true, false) => ("connected", ""),
-            (true, true) => ("connected", "They called in."),
-            (false, false) => ("no_answer", ""),
-            (false, true) if !self.asset.is_empty() => ("no_answer", "They called and left a voicemail."),
-            (false, true) => ("no_answer", "They called and nobody answered."),
-        }
-    }
-
-    /// How long they talked, without the ringing.
-    fn talk_secs(&self) -> Option<i32> {
-        Some((self.ended_at? - self.answered_at?).num_seconds() as i32).filter(|s| *s >= 0)
-    }
-}
-
-/// Keeps a call with one of the project's leads, once: it closes the step its caller started in Aircall from the Calls page,
-/// or else the lead's first open call step not called through Twilio, like one logged on the Calls page, or is kept as a
-/// call of its own. A repeated event, or the recording arriving later, only adds a recording the call didn't have. Returns
-/// the call, or None when no lead in the project has that number.
-///
-/// The call and what it does to the lead are kept together, since a retry finds the call and goes no further. Aircall's calls
-/// are only connected or not answered, and of what calls::apply_outcome does, that only moves last_contacted_at.
-pub async fn record(state: &AppState, c: &Connection, e: &Ended) -> AppResult<Option<Uuid>> {
-    let mut tx = state.db.begin().await?;
-    let kept: Option<Uuid> = sqlx::query_scalar(
-        "update calls set recording_url = case when $3 <> '' then $3 else recording_url end where project_id = $1 and aircall_id = $2 returning id",
-    )
-    .bind(c.project_id)
-    .bind(e.id)
-    .bind(&e.asset)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if kept.is_some() {
-        tx.commit().await?;
-        return Ok(kept);
-    }
-    let user: Option<Uuid> =
-        sqlx::query_scalar("select u.id from users u join memberships m on m.user_id = u.id where m.org_id = $1 and lower(u.email::text) = $2")
-            .bind(c.org_id)
-            .bind(&e.user_email)
-            .fetch_optional(&mut *tx)
-            .await?;
-    // A step with a call through Twilio is left for whoever made it to log in the browser, which a closed step would refuse.
-    // Otherwise the step they put in Aircall from the Calls page, if the call started within half an hour of that. The latest
-    // one put there before the call started wins, so a late event doesn't take a newer step's place. The minute after allows
-    // for Aircall's clock running behind.
-    let dialed: Option<(Uuid, Uuid)> = match user.filter(|_| !e.inbound) {
-        Some(user) => sqlx::query_as(
-            "select c.id, c.lead_id from calls c join leads l on l.id = c.lead_id
-             where c.project_id = $1 and c.status = 'open' and c.aircall_dialed_by = $2 and l.phone = $3 and c.twilio_sid is null
-               and c.aircall_dialed_at between $4 - interval '30 minutes' and $4 + interval '1 minute'
-             order by c.aircall_dialed_at desc limit 1",
-        )
-        .bind(c.project_id)
-        .bind(user)
-        .bind(&e.number)
-        .bind(e.started_at)
-        .fetch_optional(&mut *tx)
-        .await?,
-        None => None,
-    };
-    let lead: Option<Lead> = sqlx::query_as(
-        "select * from leads where project_id = $1 and (id = $3 or $3::uuid is null and phone = $2)
-         order by last_contacted_at desc nulls last, created_at desc limit 1",
-    )
-    .bind(c.project_id)
-    .bind(&e.number)
-    .bind(dialed.map(|(_, lead)| lead))
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(lead) = lead else { return Ok(None) };
-    let (outcome, notes) = e.outcome();
-    let (call_status, ended) = (if e.answered_at.is_some() { "completed" } else { "no-answer" }, e.ended_at.unwrap_or(e.started_at));
-    let open: Option<Call> = sqlx::query_as(
-        "update calls set status = 'done', outcome = $2, notes = $3, closed_at = $4, called_by = coalesce(called_by, $5), called_at = $6,
-           aircall_id = $7, to_number = $8, call_status = $9, duration_secs = $10, recording_url = $11
-         where id = coalesce($12, (select id from calls where lead_id = $1 and status = 'open' and twilio_sid is null order by due_at limit 1))
-           and status = 'open'
-         returning *",
-    )
-    .bind(lead.id)
-    .bind(outcome)
-    .bind(notes)
-    .bind(ended)
-    .bind(user)
-    .bind(e.started_at)
-    .bind(e.id)
-    .bind(&e.number)
-    .bind(call_status)
-    .bind(e.talk_secs())
-    .bind(&e.asset)
-    .bind(dialed.map(|(call, _)| call))
-    .fetch_optional(&mut *tx)
-    .await?;
-    let call: Option<Call> = match open {
-        Some(call) => Some(call),
-        // A delivery of the same call at the same moment keeps it first, and this one finds it below.
-        None => sqlx::query_as(
-            "insert into calls (project_id, lead_id, segment_id, kind, owner_id, status, to_number, called_by, called_at, closed_at, outcome, notes,
-                                aircall_id, call_status, duration_secs, recording_url)
-             values ($1, $2, $3, 'manual', $4, 'done', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-             on conflict (project_id, aircall_id) where aircall_id is not null do nothing returning *",
-        )
-        .bind(lead.project_id)
-        .bind(lead.id)
-        .bind(lead.segment_id)
-        .bind(lead.owner_id)
-        .bind(&e.number)
-        .bind(user)
-        .bind(e.started_at)
-        .bind(ended)
-        .bind(outcome)
-        .bind(notes)
-        .bind(e.id)
-        .bind(call_status)
-        .bind(e.talk_secs())
-        .bind(&e.asset)
-        .fetch_optional(&mut *tx)
-        .await?,
-    };
-    let Some(call) = call else {
-        tx.commit().await?;
-        let kept = sqlx::query_scalar("select id from calls where project_id = $1 and aircall_id = $2").bind(c.project_id).bind(e.id);
-        return Ok(kept.fetch_optional(&state.db).await?);
-    };
-    if outcome == "connected" {
-        sqlx::query("update leads set last_contacted_at = greatest(last_contacted_at, $2) where id = $1")
-            .bind(lead.id)
-            .bind(ended)
-            .execute(&mut *tx)
-            .await?;
-    }
-    tx.commit().await?;
-    Ok(Some(call.id))
-}
-
-/// Puts Aircall's transcript on the call and asks the agent for a summary, once. A transcript can come before the call's own
-/// event, so a call Splee hasn't seen is read from Aircall and kept first.
+/// Puts Aircall's transcript on the call for the agent to sum up. A transcript can come before the call's own event, so a call
+/// Splee hasn't seen is read from Aircall and kept first.
 pub async fn transcribe(state: &AppState, c: &Connection, client: &Client, aircall_id: i64) -> AppResult<bool> {
-    let db = &state.db;
-    let mut call: Option<Uuid> =
-        sqlx::query_scalar("select id from calls where project_id = $1 and aircall_id = $2").bind(c.project_id).bind(aircall_id).fetch_optional(db).await?;
+    let mut call = cloud_phone::kept(state, Phone::Aircall, c.project(), aircall_id).await?;
     if call.is_none()
         && let Some(e) = parse(&client.call(aircall_id).await?)
     {
-        call = record(state, c, &e).await?;
+        call = cloud_phone::record(state, Phone::Aircall, c.project(), &e).await?;
     }
     let Some(call) = call else { return Ok(false) };
-    let transcript = client.transcript(aircall_id).await?;
-    if transcript.is_empty() {
-        return Ok(true);
-    }
-    // Saved with its summary run, since a retry finds the transcript and doesn't ask again.
-    let mut tx = db.begin().await?;
-    let saved: Option<Uuid> = sqlx::query_scalar("update calls set transcript = $2, transcribed_at = now() where id = $1 and transcribed_at is null returning id")
-        .bind(call)
-        .bind(&transcript)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if saved.is_some() {
-        agent::enqueue(&mut *tx, kind::SUMMARIZE_CALL, Some(c.project_id), Some(c.org_id), json!({ "call_id": call })).await?;
-    }
-    tx.commit().await?;
+    cloud_phone::transcribed(state, c.project(), call, &client.transcript(aircall_id).await?).await?;
     Ok(true)
 }
 
@@ -361,7 +195,7 @@ pub async fn transcribe(state: &AppState, c: &Connection, client: &Client, airca
 pub async fn handle(state: &AppState, c: &Connection, event: &Value) -> AppResult<bool> {
     match event["event"].as_str().unwrap_or_default() {
         "call.ended" | "call.comm_assets_generated" => match parse(&event["data"]) {
-            Some(e) => Ok(record(state, c, &e).await?.is_some()),
+            Some(e) => Ok(cloud_phone::record(state, Phone::Aircall, c.project(), &e).await?.is_some()),
             None => Ok(false),
         },
         "transcription.created" => {

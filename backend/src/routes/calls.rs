@@ -215,7 +215,7 @@ async fn skip(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -
     Ok(Json(skipped.ok_or_else(|| AppError::Conflict("This call was already logged, skipped or cancelled".into()))?))
 }
 
-/// The call's recording: fetched from Twilio with the organization's API key, or for an Aircall call, a fresh link from Aircall.
+/// The call's recording: fetched from Twilio or Dialpad with the API key, or for an Aircall call, a fresh link from Aircall.
 async fn recording(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Response> {
     let call: Call = util_scope::load(&state.db, "calls", id, auth.org_id).await?;
     // Aircall's recording links last an hour, so each play asks it for a fresh one and the player follows it there.
@@ -228,6 +228,16 @@ async fn recording(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
         let connection = connection.ok_or_else(|| AppError::BadRequest("Connect Aircall to play its recordings".into()))?;
         let url = connection.client(&state)?.recording(aircall_id).await?.ok_or(AppError::NotFound)?;
         return Ok(Redirect::temporary(&url).into_response());
+    }
+    if call.dialpad_id.is_some() && !call.recording_url.is_empty() {
+        let connection: Option<crate::dialpad::Connection> =
+            sqlx::query_as(&format!("select {} from dialpad_connections where project_id = $1", crate::dialpad::CONNECTION_COLUMNS))
+                .bind(call.project_id)
+                .fetch_optional(&state.db)
+                .await?;
+        let connection = connection.ok_or_else(|| AppError::BadRequest("Connect Dialpad to play its recordings".into()))?;
+        let audio = connection.client(&state)?.recording(&call.recording_url).await?;
+        return Ok(([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "private, max-age=3600")], audio).into_response());
     }
     if call.recording_sid.is_empty() {
         return Err(AppError::NotFound);
