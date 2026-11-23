@@ -34,8 +34,9 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{id}/integrations/unipile", put(connect_unipile).delete(disconnect_unipile))
 }
 
-/// Settings rows are created with the project, but older demo projects may not have one yet.
-pub async fn load_or_create(db: &PgPool, project_id: Uuid) -> AppResult<ProjectSettings> {
+/// Settings rows are created with the project, but older demo projects may not have one yet. In a transaction this locks
+/// the row until it ends.
+pub async fn load_or_create<'e>(db: impl sqlx::PgExecutor<'e>, project_id: Uuid) -> AppResult<ProjectSettings> {
     Ok(sqlx::query_as::<_, ProjectSettings>(
         "insert into project_settings (project_id) values ($1)
          on conflict (project_id) do update set project_id = excluded.project_id returning *",
@@ -250,7 +251,11 @@ const MAX_DAYS_OFF: usize = 100;
 
 /// Saves the fields the body fills in, with the settings page's checks, for a project the caller already checked.
 pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBody) -> AppResult<ProjectSettings> {
-    let current = load_or_create(db, id).await?;
+    // The row stays locked until the save, so two saves that each send one end of the send window are checked against what
+    // the other saved and neither undoes the other. Every query here goes through `tx`: waiting on another pool connection
+    // while holding the lock could leave the pool full of saves waiting on it.
+    let mut tx = db.begin().await?;
+    let current = load_or_create(&mut *tx, id).await?;
     let bad = |m: &str| Err(AppError::BadRequest(m.into()));
 
     if body.daily_email_limit.is_some_and(|n| !(1..=5000).contains(&n)) {
@@ -259,7 +264,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if let Some(tz) = &body.timezone {
         let known: bool = sqlx::query_scalar("select exists(select 1 from pg_timezone_names where name = $1)")
             .bind(tz)
-            .fetch_one(db)
+            .fetch_one(&mut *tx)
             .await?;
         if !known {
             return bad("Unknown timezone");
@@ -330,7 +335,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     });
     if let Some(ids) = &mailbox_ids {
         let theirs: i64 =
-            sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(ids).fetch_one(db).await?;
+            sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(ids).fetch_one(&mut *tx).await?;
         if theirs != ids.len() as i64 {
             return bad("Pick mailboxes connected to this organization");
         }
@@ -342,13 +347,13 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
         (None, None) => (None, None),
         (members, territories) => {
             let saved: crate::ownership::Assignment =
-                sqlx::query_as("select assign_members, assign_territories from project_settings where project_id = $1").bind(id).fetch_one(db).await?;
+                sqlx::query_as("select assign_members, assign_territories from project_settings where project_id = $1").bind(id).fetch_one(&mut *tx).await?;
             let members = match members {
-                Some(members) => Some(crate::ownership::check_members(db, org_id, members, &saved).await?),
+                Some(members) => Some(crate::ownership::check_members(&mut tx, org_id, members, &saved).await?),
                 None => None,
             };
             let territories = match territories {
-                Some(territories) => Some(sqlx::types::Json(crate::ownership::check_territories(db, org_id, territories, &saved).await?)),
+                Some(territories) => Some(sqlx::types::Json(crate::ownership::check_territories(&mut tx, org_id, territories, &saved).await?)),
                 None => None,
             };
             (members, territories)
@@ -477,8 +482,9 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(mailbox_ids)
     .bind(body.company_daily_limit.is_some())
     .bind(body.company_daily_limit.flatten())
-    .fetch_one(db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(settings)
 }
 
@@ -766,4 +772,439 @@ async fn set_verifier(db: &PgPool, id: Uuid, provider: &str, enc: &str) -> AppRe
     .fetch_one(db)
     .await?;
     Ok(Json(settings))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Duration;
+
+    use super::*;
+    use crate::config::Config;
+
+    /// A project with no settings row yet, two mailboxes in its org, and another org with a project and a mailbox of its own.
+    struct Seeded {
+        state: AppState,
+        auth: Auth,
+        project: Uuid,
+        mailboxes: [Uuid; 2],
+        other: Auth,
+        other_project: Uuid,
+        other_mailbox: Uuid,
+    }
+
+    async fn seed(db: PgPool) -> Seeded {
+        let mut orgs = Vec::new();
+        for name in ["Acme", "Other"] {
+            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(&db).await.unwrap();
+            let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, $2, 'x') returning id")
+                .bind(format!("owner@{}.example", name.to_lowercase()))
+                .bind(name)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(&db).await.unwrap();
+            let project: Uuid =
+                sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id").bind(org).bind(name).fetch_one(&db).await.unwrap();
+            let mut mailboxes = Vec::new();
+            for n in 1..=2 {
+                let mailbox: Uuid = sqlx::query_scalar(
+                    "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, $2, 'smtp.example', '', '') returning id",
+                )
+                .bind(org)
+                .bind(format!("box{n}@{}.example", name.to_lowercase()))
+                .fetch_one(&db)
+                .await
+                .unwrap();
+                mailboxes.push(mailbox);
+            }
+            orgs.push((Auth { user_id: user, org_id: org, role: "owner".into(), token_hash: String::new() }, project, mailboxes));
+        }
+        let (other, other_project, other_mailboxes) = orgs.pop().unwrap();
+        let (auth, project, mailboxes) = orgs.pop().unwrap();
+        let state = AppState { db, cfg: Arc::new(Config::test()), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
+        Seeded { state, auth, project, mailboxes: [mailboxes[0], mailboxes[1]], other, other_project, other_mailbox: other_mailboxes[0] }
+    }
+
+    impl Seeded {
+        async fn save(&self, body: Value) -> AppResult<ProjectSettings> {
+            let body = serde_json::from_value(body).unwrap();
+            update_settings(State(self.state.clone()), self.auth.clone(), Path(self.project), Json(body)).await.map(|Json(s)| s)
+        }
+
+        /// The whole settings row, to show a refused save changed nothing.
+        async fn row(&self) -> Value {
+            sqlx::query_scalar("select to_jsonb(s) from project_settings s where project_id = $1").bind(self.project).fetch_one(&self.state.db).await.unwrap()
+        }
+
+        async fn audit(&self) -> Vec<(String, String)> {
+            // Every org's, so an event filed under the wrong org shows up too.
+            sqlx::query_as("select action, target_label from audit_events order by created_at")
+                .fetch_all(&self.state.db)
+                .await
+                .unwrap()
+        }
+    }
+
+    fn refused<T>(result: AppResult<T>) -> String {
+        match result {
+            Err(AppError::BadRequest(m)) => m,
+            Err(e) => panic!("{e:?}"),
+            Ok(_) => panic!("saved"),
+        }
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn each_refused_setting_saves_nothing(db: PgPool) {
+        let s = seed(db).await;
+        let Json(created) = get_settings(State(s.state.clone()), s.auth.clone(), Path(s.project)).await.unwrap();
+        assert_eq!((created.daily_email_limit, created.send_start_hour), (125, 9), "the first read makes the row with its defaults");
+        let before = s.row().await;
+
+        let step = |extra: Value| {
+            let mut step = json!({ "delay_days": 3, "enabled": true, "instructions": "" });
+            step.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            step
+        };
+        let text = |channel: &str, delay: i32, instructions: String| json!({ "channel": channel, "delay_days": delay, "instructions": instructions });
+        let window = "Send window must start before it ends, within 0-24h";
+        let days: Vec<String> = (0..101).map(|d| (NaiveDate::from_ymd_opt(2027, 1, 1).unwrap() + Duration::days(d)).to_string()).collect();
+        let cases = [
+            (json!({ "daily_email_limit": 0 }), "Daily email limit must be between 1 and 5,000".to_string()),
+            (json!({ "daily_email_limit": 5001 }), "Daily email limit must be between 1 and 5,000".into()),
+            (json!({ "timezone": "Mars/Olympus_Mons" }), "Unknown timezone".into()),
+            (json!({ "send_days": [1, 8] }), "Send days must be between 1 (Monday) and 7 (Sunday)".into()),
+            (json!({ "send_days": [0] }), "Send days must be between 1 (Monday) and 7 (Sunday)".into()),
+            // The saved window is 9 to 17, so moving only one end is checked against the other.
+            (json!({ "send_start_hour": 17 }), window.into()),
+            (json!({ "send_end_hour": 9 }), window.into()),
+            (json!({ "send_start_hour": 0, "send_end_hour": 25 }), window.into()),
+            (json!({ "send_start_hour": -1 }), window.into()),
+            (json!({ "follow_ups": {} }), "follow_ups must be a list".into()),
+            (json!({ "follow_ups": vec![step(json!({})); 6] }), "A sequence can have up to 5 follow-ups".into()),
+            (json!({ "follow_ups": [step(json!({ "kind": "sms" }))] }), "Each follow-up is an email or a call".into()),
+            (json!({ "follow_ups": [step(json!({ "delay_days": 0 }))] }), "Each follow-up's delay must be 1 to 30 days".into()),
+            (json!({ "follow_ups": [step(json!({ "delay_days": 31 }))] }), "Each follow-up's delay must be 1 to 30 days".into()),
+            (json!({ "follow_ups": [{ "delay_days": 3 }] }), "Each follow-up needs enabled, true or false".into()),
+            (json!({ "follow_ups": [step(json!({ "instructions": 5 }))] }), "A follow-up's instructions must be text".into()),
+            (json!({ "text_steps": "sms" }), "text_steps must be a list".into()),
+            (json!({ "text_steps": vec![text("sms", 2, String::new()); 6] }), "A sequence can have up to 5 texts".into()),
+            (json!({ "text_steps": [text("fax", 2, String::new())] }), "Each text is SMS or WhatsApp".into()),
+            (json!({ "text_steps": [text("whatsapp", 31, String::new())] }), "Each text's delay must be 1 to 30 days".into()),
+            (json!({ "text_steps": [text("sms", 2, "a".repeat(1001))] }), "Keep each text's instructions under 1,000 characters".into()),
+            (json!({ "daily_text_limit": 1001 }), "Daily text limit must be between 1 and 1,000".into()),
+            (json!({ "channels": [] }), "channels and targeting must be objects".into()),
+            (json!({ "targeting": "founders" }), "channels and targeting must be objects".into()),
+            (json!({ "auto_reply_mode": "sometimes" }), "auto_reply_mode must be one of: off, approve, auto".into()),
+            (json!({ "max_words": 19 }), "Max words must be between 20 and 500".into()),
+            (json!({ "max_words": 501 }), "Max words must be between 20 and 500".into()),
+            (json!({ "webhook_events": [hooks::EVENTS[0], "lead.exploded"] }), format!("webhook_events must be one of: {}", hooks::EVENTS.join(", "))),
+            (json!({ "autopilot_budget_micros": -1 }), "Autopilot budget must be between $0 and $100,000 a month".into()),
+            (json!({ "autopilot_budget_micros": 100_000_000_001_i64 }), "Autopilot budget must be between $0 and $100,000 a month".into()),
+            (json!({ "autopilot_lead_cap": 100_001 }), "Autopilot lead cap must be between 0 and 100,000 a month".into()),
+            (json!({ "review_window_hours": 0 }), "The review window must be between 1 and 72 hours".into()),
+            (json!({ "review_window_hours": 73 }), "The review window must be between 1 and 72 hours".into()),
+            (json!({ "monthly_cap_micros": 999_999 }), "The monthly cap must be between $1 and $1,000,000".into()),
+            (json!({ "monthly_cap_micros": 1_000_000_000_001_i64 }), "The monthly cap must be between $1 and $1,000,000".into()),
+            (json!({ "company_daily_limit": 51 }), "First emails per company must be between 1 and 50 a day".into()),
+            (json!({ "days_off": days }), "A project can have up to 100 days off".into()),
+            (json!({ "sender_name": "ana@acme.example" }), "The sender name must be a person's or team's name of up to 100 characters, not an email address".into()),
+            (json!({ "sender_name": "Ana\nLopez" }), "The sender name must be a person's or team's name of up to 100 characters, not an email address".into()),
+            (json!({ "sender_name": "a".repeat(101) }), "The sender name must be a person's or team's name of up to 100 characters, not an email address".into()),
+            (json!({ "mailbox_ids": [s.mailboxes[0], s.other_mailbox] }), "Pick mailboxes connected to this organization".into()),
+            (json!({ "mailbox_ids": [Uuid::new_v4()] }), "Pick mailboxes connected to this organization".into()),
+            (json!({ "assign_rule": "lottery" }), format!("assign_rule must be one of: {}", crate::ownership::RULES.join(", "))),
+            (json!({ "bcc_email": "not an address" }), "The BCC address isn't a valid email address".into()),
+            // Good values sent with a bad one aren't saved either.
+            (json!({ "tone": "warm", "daily_email_limit": 80, "max_words": 10 }), "Max words must be between 20 and 500".into()),
+        ];
+        for (body, message) in cases {
+            assert_eq!(refused(s.save(body.clone()).await), message, "{body}");
+            assert_eq!(s.row().await, before, "{body} changed something");
+        }
+
+        let theirs = |body: Value| update_settings(State(s.state.clone()), s.other.clone(), Path(s.project), Json(serde_json::from_value(body).unwrap()));
+        assert!(matches!(theirs(json!({ "tone": "rude" })).await, Err(AppError::NotFound)));
+        assert!(matches!(get_settings(State(s.state.clone()), s.other.clone(), Path(s.project)).await, Err(AppError::NotFound)));
+        assert_eq!(s.row().await, before);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_save_keeps_what_it_leaves_out_and_a_null_clears(db: PgPool) {
+        let s = seed(db).await;
+        let mut both = s.mailboxes.to_vec();
+        both.sort();
+        let [first, second] = [both[0], both[1]];
+        let hundred: Vec<NaiveDate> = (0..100).map(|d| NaiveDate::from_ymd_opt(2027, 1, 1).unwrap() + Duration::days(d)).collect();
+        let mut days: Vec<String> = hundred.iter().rev().map(|d| d.to_string()).collect();
+        days.push("2027-01-01".into());
+        let saved = s
+            .save(json!({
+                "daily_email_limit": 40,
+                "timezone": "Europe/Berlin",
+                "send_start_hour": 8,
+                "send_end_hour": 18,
+                "review_window_hours": 24,
+                "monthly_cap_micros": 5_000_000,
+                "company_daily_limit": 3,
+                "mailbox_ids": [second, first, second],
+                "days_off": days,
+                "sender_name": "  Ana    Lopez  ",
+                "booking_link": "  https://cal.example/ana  ",
+            }))
+            .await
+            .unwrap();
+        assert_eq!(saved.days_off, hundred, "sorted, and a repeated day doesn't count toward the 100");
+        assert_eq!(
+            (saved.daily_email_limit, saved.timezone.as_str(), saved.send_start_hour, saved.send_end_hour, saved.review_window_hours, saved.monthly_cap_micros),
+            (40, "Europe/Berlin", 8, 18, Some(24), Some(5_000_000))
+        );
+        assert_eq!((saved.company_daily_limit, saved.mailbox_ids.clone()), (Some(3), Some(both.clone())));
+        assert_eq!((saved.sender_name.as_str(), saved.booking_link.as_str()), ("Ana Lopez", "https://cal.example/ana"));
+
+        // Moving one end of the window is checked against the saved other end, and everything not sent stays.
+        let before = s.row().await;
+        let saved = s.save(json!({ "send_start_hour": 6, "tone": "warm" })).await.unwrap();
+        assert_eq!((saved.send_start_hour, saved.send_end_hour, saved.tone.as_str()), (6, 18, "warm"));
+        let mut expected = before.clone();
+        expected["send_start_hour"] = json!(6);
+        expected["tone"] = json!("warm");
+        assert_eq!(s.row().await, expected);
+
+        let saved = s.save(json!({ "review_window_hours": null, "monthly_cap_micros": null, "company_daily_limit": null, "mailbox_ids": null })).await.unwrap();
+        assert_eq!((saved.review_window_hours, saved.monthly_cap_micros, saved.company_daily_limit, saved.mailbox_ids), (None, None, None, None));
+        assert_eq!((saved.daily_email_limit, saved.days_off.len(), saved.tone.as_str()), (40, 100, "warm"));
+        let saved = s.save(json!({ "mailbox_ids": [], "days_off": [] })).await.unwrap();
+        assert_eq!((saved.mailbox_ids, saved.days_off), (Some(vec![]), vec![]), "an empty pick is kept, unlike null");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn two_saves_moving_each_end_of_the_send_window_keep_both(db: PgPool) {
+        let s = seed(db).await;
+        load_or_create(&s.state.db, s.project).await.unwrap();
+        // Racing them once may not overlap, so race them a few times.
+        for _ in 0..10 {
+            sqlx::query("update project_settings set send_start_hour = 9, send_end_hour = 17 where project_id = $1").bind(s.project).execute(&s.state.db).await.unwrap();
+            let (start, end) = tokio::join!(s.save(json!({ "send_start_hour": 6 })), s.save(json!({ "send_end_hour": 12 })));
+            assert!(start.is_ok() && end.is_ok());
+            let window: (i32, i32) =
+                sqlx::query_as("select send_start_hour, send_end_hour from project_settings where project_id = $1").bind(s.project).fetch_one(&s.state.db).await.unwrap();
+            assert_eq!(window, (6, 12));
+        }
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn follow_ups_are_checked_only_when_they_change(db: PgPool) {
+        let s = seed(db).await;
+        load_or_create(&s.state.db, s.project).await.unwrap();
+        // Saved before the check got stricter: no `enabled`.
+        let old = json!([{ "delay_days": 3, "instructions": "" }]);
+        sqlx::query("update project_settings set follow_ups = $2 where project_id = $1").bind(s.project).bind(&old).execute(&s.state.db).await.unwrap();
+
+        let saved = s.save(json!({ "follow_ups": old, "tone": "warm" })).await.unwrap();
+        assert_eq!((saved.follow_ups, saved.tone.as_str()), (old.clone(), "warm"), "sending the saved steps back doesn't block the page");
+        let changed = json!([{ "delay_days": 4, "instructions": "" }]);
+        assert_eq!(refused(s.save(json!({ "follow_ups": changed })).await), "Each follow-up needs enabled, true or false");
+        let fixed = json!([{ "delay_days": 4, "enabled": true }, { "kind": "call", "delay_days": 2, "enabled": false, "instructions": "Ask about pricing" }]);
+        assert_eq!(s.save(json!({ "follow_ups": fixed })).await.unwrap().follow_ups, fixed);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_new_bcc_address_clears_its_last_error_and_new_targeting_rescores(db: PgPool) {
+        let s = seed(db).await;
+        load_or_create(&s.state.db, s.project).await.unwrap();
+        sqlx::query(
+            "update project_settings set bcc_email = 'crm@acme.example', bcc_error = 'Mailbox full', bcc_failed_at = now(),
+               targeting = '{\"titles\": [\"Founder\"]}', score_inputs_at = '2026-01-01T00:00:00Z' where project_id = $1",
+        )
+        .bind(s.project)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+        let rescored = || async {
+            sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>("select score_inputs_at from project_settings where project_id = $1")
+                .bind(s.project)
+                .fetch_one(&s.state.db)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let january = "2026-01-01T00:00:00Z".parse::<chrono::DateTime<Utc>>().unwrap();
+
+        let saved = s.save(json!({ "bcc_email": " CRM@Acme.example ", "targeting": { "titles": ["Founder"] } })).await.unwrap();
+        assert_eq!((saved.bcc_email.as_str(), saved.bcc_error.as_deref(), saved.bcc_failed_at.is_some()), ("crm@acme.example", Some("Mailbox full"), true));
+        assert_eq!(rescored().await, january, "the same targeting doesn't rescore");
+
+        let saved = s.save(json!({ "bcc_email": "log@acme.example", "targeting": { "titles": ["CEO"] } })).await.unwrap();
+        assert_eq!((saved.bcc_email.as_str(), saved.bcc_error, saved.bcc_failed_at), ("log@acme.example", None, None));
+        assert_eq!(saved.targeting, json!({ "titles": ["CEO"] }));
+        let changed = rescored().await;
+        assert!(changed > january);
+
+        let saved = s.save(json!({ "bcc_email": "  " })).await.unwrap();
+        assert_eq!(saved.bcc_email, "", "blank turns it off");
+        assert_eq!((saved.targeting, rescored().await), (json!({ "titles": ["CEO"] }), changed), "leaving targeting out keeps it and its time");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_webhook_secret_can_be_replaced_and_deliveries_stay_with_their_project(db: PgPool) {
+        let s = seed(db).await;
+        let first = load_or_create(&s.state.db, s.project).await.unwrap().webhook_secret;
+        let Json(saved) = replace_webhook_secret(State(s.state.clone()), s.auth.clone(), Path(s.project)).await.unwrap();
+        assert!(saved.webhook_secret.len() == 48 && saved.webhook_secret.chars().all(|c| c.is_ascii_hexdigit()), "{}", saved.webhook_secret);
+        assert_ne!(saved.webhook_secret, first);
+        assert!(matches!(replace_webhook_secret(State(s.state.clone()), s.other.clone(), Path(s.project)).await, Err(AppError::NotFound)));
+        assert_eq!(load_or_create(&s.state.db, s.project).await.unwrap().webhook_secret, saved.webhook_secret);
+
+        let mut ids = Vec::new();
+        for (project, event, hours_ago) in [(s.project, "hot_lead", 2), (s.project, "lead_replied", 1), (s.other_project, "hot_lead", 0), (s.project, "deal.won", 3)] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into webhook_deliveries (project_id, event, payload, url, created_at)
+                 values ($1, $2, '{}', 'https://hooks.example/a', now() - make_interval(hours => $3)) returning id",
+            )
+            .bind(project)
+            .bind(event)
+            .bind(hours_ago)
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let Json(listed) = list_deliveries(State(s.state.clone()), s.auth.clone(), Path(s.project)).await.unwrap();
+        assert_eq!(listed.iter().map(|d| d.id).collect::<Vec<_>>(), [ids[1], ids[0], ids[3]], "newest first, this project's only");
+        assert!(matches!(list_deliveries(State(s.state.clone()), s.other.clone(), Path(s.project)).await, Err(AppError::NotFound)));
+
+        // The endpoint is only listed on the other project.
+        sqlx::query("insert into webhook_endpoints (project_id, url) values ($1, 'https://hooks.example/a')").bind(s.other_project).execute(&s.state.db).await.unwrap();
+        let resend = |delivery: Uuid| resend_delivery(State(s.state.clone()), s.auth.clone(), Path((s.project, delivery)));
+        assert!(matches!(resend(ids[2]).await, Err(AppError::NotFound)), "another project's delivery");
+        assert!(matches!(resend_delivery(State(s.state.clone()), s.other.clone(), Path((s.project, ids[0]))).await, Err(AppError::NotFound)));
+        assert_eq!(refused(resend(ids[0]).await), "That endpoint isn't in the list any more");
+        let count: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries").fetch_one(&s.state.db).await.unwrap();
+        assert_eq!(count, 4, "nothing was sent or logged");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn integration_forms_refuse_before_calling_out_and_disconnecting_clears_them(db: PgPool) {
+        let s = seed(db).await;
+        let (state, auth, id) = (s.state.clone(), s.auth.clone(), s.project);
+        load_or_create(&s.state.db, id).await.unwrap();
+        sqlx::query(
+            "update project_settings set hubspot_token_enc = 'x', hubspot_error = 'Token expired', hubspot_failed_at = now(), pipedrive_token_enc = 'y',
+               verifier = 'hunter', verifier_key_enc = 'z', verifier_error = 'Out of credits', verifier_failed_at = now(),
+               unipile_dsn = 'https://api8.unipile.com:13851/api/v1', unipile_token_enc = 'w', unipile_account_id = 'acc', unipile_account_name = 'Ana Lopez',
+               unipile_error = 'Session expired', unipile_failed_at = now()
+             where project_id = $1",
+        )
+        .bind(id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+        let before = s.row().await;
+
+        let crm = |auth: &Auth, name: &str, token: &str, account: &str| {
+            let body = CrmBody { token: token.into(), account: account.into() };
+            connect_crm(State(state.clone()), auth.clone(), Path((id, name.to_string())), Json(body))
+        };
+        assert!(matches!(crm(&auth, "myspace", "t", "").await, Err(AppError::NotFound)));
+        assert!(matches!(crm(&s.other, "hubspot", "t", "").await, Err(AppError::NotFound)));
+        assert_eq!(refused(crm(&auth, "salesforce", "t", "").await), "Connect Salesforce by signing in");
+        assert_eq!(refused(crm(&auth, "hubspot", "  ", "").await), "Paste your HubSpot token");
+        assert_eq!(refused(crm(&auth, "copper", "t", " ").await), "Paste your Copper email");
+        assert_eq!(refused(crm(&auth, "grist", "t", "").await), "Paste your Grist page link");
+
+        let verifier = |auth: &Auth, provider: &str, key: &str| {
+            let body = ServiceKey { provider: provider.into(), key: key.into() };
+            connect_verifier(State(state.clone()), auth.clone(), Path(id), Json(body))
+        };
+        assert!(matches!(verifier(&s.other, "hunter", "k").await, Err(AppError::NotFound)));
+        assert_eq!(refused(verifier(&auth, "nope", "k").await), "Pick a verification service");
+        assert_eq!(refused(verifier(&auth, "hunter", " ").await), "Paste your Hunter API key");
+
+        let unipile = |auth: &Auth, dsn: &str, token: &str| {
+            let body = UnipileBody { dsn: dsn.into(), token: token.into() };
+            connect_unipile(State(state.clone()), auth.clone(), Path(id), Json(body))
+        };
+        let dsn = "Paste the DSN from your Unipile dashboard, like api8.unipile.com:13851";
+        assert!(matches!(unipile(&s.other, "api8.unipile.com:13851", "t").await, Err(AppError::NotFound)));
+        assert_eq!(refused(unipile(&auth, "api8.evil.example:13851", "t").await), dsn);
+        assert_eq!(refused(unipile(&auth, "http://api8.unipile.com:13851", "t").await), dsn);
+        assert_eq!(refused(unipile(&auth, "api8.unipile.com:13851", " ").await), "Paste your Unipile access token");
+
+        let test = |auth: &Auth, target: &str| {
+            let body = TestBody { target: target.into(), url: "https://hooks.example/a".into() };
+            test_integration(State(state.clone()), auth.clone(), Path(id), Json(body))
+        };
+        assert!(matches!(test(&s.other, "webhook").await, Err(AppError::NotFound)));
+        assert_eq!(refused(test(&auth, "email").await), "target must be one of: webhook, slack");
+
+        assert!(matches!(disconnect_crm(State(state.clone()), s.other.clone(), Path((id, "hubspot".into()))).await, Err(AppError::NotFound)));
+        assert!(matches!(disconnect_verifier(State(state.clone()), s.other.clone(), Path(id)).await, Err(AppError::NotFound)));
+        assert!(matches!(disconnect_unipile(State(state.clone()), s.other.clone(), Path(id)).await, Err(AppError::NotFound)));
+        assert_eq!(s.row().await, before, "nothing changed");
+        assert_eq!(s.audit().await, [], "nothing connected or disconnected");
+
+        let Json(saved) = disconnect_crm(State(state.clone()), auth.clone(), Path((id, "hubspot".into()))).await.unwrap();
+        assert_eq!((saved.hubspot_connected, saved.hubspot_error, saved.hubspot_failed_at, saved.pipedrive_connected), (false, None, None, true));
+        let Json(saved) = disconnect_verifier(State(state.clone()), auth.clone(), Path(id)).await.unwrap();
+        assert_eq!((saved.verifier.as_str(), saved.verifier_error, saved.verifier_failed_at), ("", None, None));
+        assert_eq!(disconnect_verifier(State(state.clone()), auth.clone(), Path(id)).await.unwrap().0.verifier, "");
+        // With no webhooks saved, disconnecting Unipile has nothing to remove there.
+        let Json(saved) = disconnect_unipile(State(state.clone()), auth.clone(), Path(id)).await.unwrap();
+        assert_eq!((saved.unipile_connected, saved.unipile_account_name.as_str(), saved.unipile_error, saved.unipile_failed_at), (false, "", None, None));
+        let left: (String, String, String, String, String) = sqlx::query_as(
+            "select hubspot_token_enc, verifier_key_enc, unipile_token_enc, unipile_dsn, unipile_account_id from project_settings where project_id = $1",
+        )
+        .bind(id)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+        assert_eq!(left, Default::default());
+        let disconnected = |label: &str| ("integration.disconnected".to_string(), label.to_string());
+        assert_eq!(s.audit().await, [disconnected("HubSpot"), disconnected("Hunter"), disconnected("LinkedIn (Unipile)")], "a second disconnect of nothing isn't audited");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn assignment_keeps_its_order_and_only_takes_people_on_the_team(db: PgPool) {
+        let s = seed(db).await;
+        let mut team = vec![s.auth.user_id];
+        for name in ["bea", "cal"] {
+            let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1 || '@acme.example', $1, 'x') returning id")
+                .bind(name)
+                .fetch_one(&s.state.db)
+                .await
+                .unwrap();
+            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(s.auth.org_id).bind(user).execute(&s.state.db).await.unwrap();
+            team.push(user);
+        }
+        team.sort();
+        let saved = s
+            .save(json!({
+                "assign_rule": "round_robin",
+                "assign_members": [team[2], team[0], team[2], team[1]],
+                "assign_territories": [{ "owner": team[1], "countries": [" de ", "AT", "de"] }],
+            }))
+            .await
+            .unwrap();
+        let assignment: (String, Vec<Uuid>, Value) =
+            sqlx::query_as("select assign_rule, assign_members, assign_territories from project_settings where project_id = $1").bind(s.project).fetch_one(&s.state.db).await.unwrap();
+        assert_eq!(assignment, ("round_robin".to_string(), vec![team[2], team[0], team[1]], json!([{ "owner": team[1], "countries": ["DE", "AT"] }])));
+        assert_eq!(saved.assign_rule, "round_robin");
+
+        let before = s.row().await;
+        let outsider = s.other.user_id;
+        let not_on_team = "The owner has to be on your team";
+        assert_eq!(refused(s.save(json!({ "assign_members": [team[0], outsider] })).await), not_on_team);
+        assert_eq!(refused(s.save(json!({ "assign_territories": [{ "owner": outsider, "countries": ["FR"] }] })).await), not_on_team);
+        assert_eq!(s.row().await, before);
+    }
 }

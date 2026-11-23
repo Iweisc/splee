@@ -125,12 +125,12 @@ pub struct Assignment {
 
 /// Those among `users` who left the team. Someone who was never on it fails the save. The settings drop someone they named
 /// before who left since, because every settings page sends the whole form back and it would fail otherwise.
-async fn departed(db: &PgPool, org_id: Uuid, users: &[Uuid], saved: &Assignment) -> AppResult<HashSet<Uuid>> {
+async fn departed(db: &mut PgConnection, org_id: Uuid, users: &[Uuid], saved: &Assignment) -> AppResult<HashSet<Uuid>> {
     let off: Vec<Uuid> =
         sqlx::query_scalar("select u from unnest($2::uuid[]) u where not exists (select 1 from memberships m where m.org_id = $1 and m.user_id = u)")
             .bind(org_id)
             .bind(users)
-            .fetch_all(db)
+            .fetch_all(&mut *db)
             .await?;
     let named = |u: &Uuid| saved.assign_members.contains(u) || saved.assign_territories.iter().any(|t| t.owner == *u);
     if !off.iter().all(named) {
@@ -140,7 +140,7 @@ async fn departed(db: &PgPool, org_id: Uuid, users: &[Uuid], saved: &Assignment)
 }
 
 /// Round robin's members as settings save them: on the team, each once, in the order given.
-pub async fn check_members(db: &PgPool, org_id: Uuid, mut members: Vec<Uuid>, saved: &Assignment) -> AppResult<Vec<Uuid>> {
+pub async fn check_members(db: &mut PgConnection, org_id: Uuid, mut members: Vec<Uuid>, saved: &Assignment) -> AppResult<Vec<Uuid>> {
     let mut seen = HashSet::new();
     members.retain(|m| seen.insert(*m));
     let gone = departed(db, org_id, &members, saved).await?;
@@ -150,7 +150,7 @@ pub async fn check_members(db: &PgPool, org_id: Uuid, mut members: Vec<Uuid>, sa
 
 /// Territories as settings save them: codes in upper case, each owner on the team and in one territory, and each country in
 /// one territory, so a lead never has two people who cover it. A territory without countries is dropped.
-pub async fn check_territories(db: &PgPool, org_id: Uuid, territories: Vec<Territory>, before: &Assignment) -> AppResult<Vec<Territory>> {
+pub async fn check_territories(db: &mut PgConnection, org_id: Uuid, territories: Vec<Territory>, before: &Assignment) -> AppResult<Vec<Territory>> {
     let gone = departed(db, org_id, &territories.iter().map(|t| t.owner).collect::<Vec<_>>(), before).await?;
     let (mut owners, mut taken, mut saved) = (HashSet::new(), HashSet::new(), vec![]);
     for t in territories.into_iter().filter(|t| !gone.contains(&t.owner)) {
