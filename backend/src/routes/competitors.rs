@@ -44,7 +44,7 @@ async fn create(
     auth.project(&state.db, id).await?;
     let domain = util_input::domain(&body.domain).ok_or_else(|| AppError::BadRequest("Enter a website like acme.com".into()))?;
     sqlx::query_as::<_, Competitor>(
-        "insert into competitors (project_id, domain, name, note) values ($1, $2, $3, $4)
+        "insert into competitors (project_id, domain, name, note, added_by_hand) values ($1, $2, $3, $4, true)
          on conflict (project_id, domain) do nothing returning *",
     )
     .bind(id)

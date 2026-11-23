@@ -134,7 +134,7 @@ export default function CompetitorsPage({ params, searchParams }: PageProps<"/ap
 
           {/* Waits for the list: drawn under the skeleton, it jumped down by the list's height when that loaded. */}
           {data && (
-            <Section title="Add a competitor" description="Running the research again replaces the whole list, including any you add here, and deletes every battlecard.">
+            <Section title="Add a competitor" description="Running the research again keeps the ones you add here, and any with a battlecard.">
               <form
                 className="grid gap-4 sm:grid-cols-[1fr_1fr]"
                 onSubmit={(e) => {
