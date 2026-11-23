@@ -277,7 +277,7 @@ export function PriceListSection({ admin }: { admin: boolean }) {
               A discount past the limit needs an owner or admin&apos;s approval before the buyer can accept.
             </span>
           </span>
-          <Switch checked={data.discount_limit_pct !== null} disabled={!admin || saving} onChange={(on) => setLimit(on)} label="Approve big discounts" />
+          <Switch checked={data.discount_limit_pct !== null} disabled={!admin} loading={saving} onChange={(on) => setLimit(on)} label="Approve big discounts" />
         </div>
         {data.discount_limit_pct !== null && (
           <div className="flex flex-wrap items-center gap-2">

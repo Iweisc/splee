@@ -153,7 +153,7 @@ function Profile({
       <ul className="divide-y divide-border">
         {parts.map((p) => (
           <li key={p.key} className="flex items-start gap-3 px-4 py-3">
-            <Switch checked={p.on} onChange={(on) => toggle(p.key, on)} disabled={saving || p.values.length === 0} label={p.label} />
+            <Switch checked={p.on} onChange={(on) => toggle(p.key, on)} loading={saving} disabled={p.values.length === 0} label={p.label} />
             <div className="-mt-0.5 min-w-0">
               <p className={cn("text-sm font-medium", !p.on && "text-muted-foreground")}>{p.label}</p>
               <p className="text-sm text-pretty break-words text-muted-foreground">{describe(p)}</p>

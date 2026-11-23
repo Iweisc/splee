@@ -28,7 +28,7 @@ export function AudienceNote({ audience: a, className }: { audience: AdAudience;
 export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; segmentId: string }) {
   const key = `/segments/${segmentId}/audiences`;
   const { data, mutate } = useSWR<AdsStatus>(key, fetcher);
-  const { pending, run } = useAction();
+  const { busy, run } = useAction();
   const integrations = `/app/p/${projectId}/integrations#ad-audiences`;
 
   if (!data) return <Skeleton className="h-28 rounded-2xl" />;
@@ -94,7 +94,8 @@ export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; s
                 <Switch
                   checked={!!audience}
                   onChange={(on) => toggle(c, on)}
-                  disabled={pending === c.platform || (blocked && !audience)}
+                  loading={busy(c.platform)}
+                  disabled={blocked && !audience}
                   label={`${name} audience for this campaign`}
                 />
               </li>
