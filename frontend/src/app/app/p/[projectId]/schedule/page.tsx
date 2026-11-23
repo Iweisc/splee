@@ -96,18 +96,17 @@ export default function SchedulePage() {
                         key={day}
                         type="button"
                         aria-pressed={on}
-                        aria-label={label}
                         onClick={() =>
                           update({ send_days: on ? s.send_days.filter((d) => d !== day) : [...s.send_days, day].sort((a, b) => a - b) })
                         }
                         className={cn(
-                          "rounded-lg border py-2 text-sm font-medium transition-colors",
+                          // A column is only about 30px wide on a 320px phone, where "Wed" at text-sm splits in two. Two letters fit, but
+                          // then the visible word isn't the button's name, which voice control users say aloud.
+                          "rounded-lg border py-2 text-sm font-medium whitespace-nowrap transition-colors max-sm:py-2.5 max-sm:text-xs",
                           on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card hover:bg-accent",
                         )}
                       >
-                        {/* A column is only about 30px wide on a 320px phone, which splits "Wed" in two, so phones get two letters. */}
-                        <span className="sm:hidden">{label.slice(0, 2)}</span>
-                        <span className="max-sm:hidden">{label}</span>
+                        {label}
                       </button>
                     );
                   })}

@@ -113,8 +113,9 @@ export function OwnerMenu({
         }}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={look === "bulk" ? undefined : name ? `Owner: ${name}. Change the owner` : "No owner. Assign it"}
-        title={look === "avatar" ? (name ?? "Unassigned") : undefined}
+        // The name holds the words the button shows, so someone using voice control can say what they see.
+        aria-label={look === "bulk" ? undefined : name ? `Owner: ${name}. Change the owner` : "Unassigned. Assign an owner"}
+        title={look === "avatar" ? (name || "Unassigned") : undefined}
         className={cn(
           "inline-flex shrink-0 items-center text-sm disabled:opacity-50",
           look === "field" && "h-8 max-w-full gap-2 rounded-lg border border-border-strong bg-card pr-2 pl-1.5 hover:bg-accent",
@@ -139,7 +140,7 @@ export function OwnerMenu({
           <>
             {name ? <Avatar name={name} className="size-5 text-[9px]" /> : <UserRound className="size-4 text-muted-foreground" />}
             <span data-owner-name className={cn("truncate", !name && "text-muted-foreground")}>
-              {name ?? "Unassigned"}
+              {name || "Unassigned"}
             </span>
             <ChevronDown className="size-3.5 text-muted-foreground" />
           </>
