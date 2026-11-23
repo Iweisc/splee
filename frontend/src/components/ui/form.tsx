@@ -111,11 +111,12 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
+      // aria-disabled rather than disabled, so a switch busy saving keeps keyboard focus instead of dropping it to the page.
+      aria-disabled={disabled || undefined}
+      onClick={() => !disabled && onChange(!checked)}
       // Drawn in system colors in Windows high contrast, which would otherwise drop the track and the thumb, both backgrounds.
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors aria-disabled:opacity-50",
         "forced-color-adjust-none forced-colors:border forced-colors:border-[ButtonText]",
         checked ? "bg-brand-600 forced-colors:border-[Highlight] forced-colors:bg-[Highlight]" : "bg-black/15 forced-colors:bg-[Canvas]",
       )}

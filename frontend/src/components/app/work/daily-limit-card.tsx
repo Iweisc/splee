@@ -6,6 +6,7 @@ import { useSWRConfig } from "swr";
 import { NumberInput, Switch } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
 import { useAction } from "@/components/app/settings/use-action";
+import { useKeepFocus } from "@/hooks/use-keep-focus";
 import { api } from "@/lib/api";
 import type { SegmentWithStats } from "@/lib/types";
 import { MicroLabel } from "./states";
@@ -19,6 +20,7 @@ const FIRST = 20;
 export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
   const { mutate } = useSWRConfig();
   const { pending, run } = useAction();
+  const root = useKeepFocus<HTMLDivElement>("daily-limit");
   const [draft, setDraft] = useState(segment.daily_limit ?? FIRST);
   const on = segment.daily_limit !== null;
 
@@ -33,7 +35,7 @@ export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
   };
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card ref={root} className="flex flex-col gap-4 p-5">
       <div className="min-w-0">
         <MicroLabel className="flex items-center gap-1.5">
           <Gauge className="size-3.5" /> Daily limit

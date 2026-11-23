@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import type { ProjectSettings, SegmentWithStats } from "@/lib/types";
 import { zoneName } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
+import { useKeepFocus } from "@/hooks/use-keep-focus";
 import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { MicroLabel, toastError } from "./states";
 
@@ -29,6 +30,7 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const problemId = useId();
+  const root = useKeepFocus<HTMLDivElement>("send-hours");
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
 
@@ -53,7 +55,7 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
   const shown = draft ?? project;
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card ref={root} className="flex flex-col gap-4 p-5">
       <div className="min-w-0">
         <MicroLabel className="flex items-center gap-1.5">
           <CalendarClock className="size-3.5" /> Sending hours
