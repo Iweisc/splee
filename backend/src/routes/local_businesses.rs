@@ -95,7 +95,6 @@ mod tests {
     use uuid::Uuid;
 
     use crate::config::Config;
-    use crate::crypto::sha256_hex;
     use crate::places::fake::{self as places, place};
     use crate::site_contacts::fake as sites;
     use crate::state::AppState;
@@ -135,13 +134,7 @@ mod tests {
                     .unwrap();
                 let role = if name == "jo" { "member" } else { "owner" };
                 sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, $3)").bind(org).bind(user).bind(role).execute(&db).await.unwrap();
-                sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                    .bind(sha256_hex(name))
-                    .bind(user)
-                    .bind(org)
-                    .execute(&db)
-                    .await
-                    .unwrap();
+                crate::auth::sign_in(&db, user, org, name).await;
                 if name == "jo" {
                     continue;
                 }

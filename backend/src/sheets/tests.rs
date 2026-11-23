@@ -75,13 +75,7 @@ impl Server {
             let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(org_name).fetch_one(&db).await.unwrap();
             // A member, not an admin: a project's Sheets is up to anyone in it.
             sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'member')").bind(org).bind(user).execute(&db).await.unwrap();
-            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                .bind(sha256_hex(&format!("session-{org_name}")))
-                .bind(user)
-                .bind(org)
-                .execute(&db)
-                .await
-                .unwrap();
+            crate::auth::sign_in(&db, user, org, &format!("session-{org_name}")).await;
             let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id").bind(org).bind(org_name).fetch_one(&db).await.unwrap();
             ids.push((org, project));
         }

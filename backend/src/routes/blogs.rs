@@ -310,7 +310,6 @@ mod tests {
 
     use super::*;
     use crate::blog::fake;
-    use crate::crypto::sha256_hex;
 
     /// Ana's project in Acme, and another org's project with a blog of its own.
     async fn server(db: &PgPool) -> (String, String, Uuid, Uuid, Uuid) {
@@ -318,13 +317,7 @@ mod tests {
         let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('ana@acme.test', 'Ana', 'x') returning id").fetch_one(db).await.unwrap();
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(db).await.unwrap();
         sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, 'owner')").bind(org).bind(user).execute(db).await.unwrap();
-        sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-            .bind(sha256_hex("session-acme"))
-            .bind(user)
-            .bind(org)
-            .execute(db)
-            .await
-            .unwrap();
+        crate::auth::sign_in(db, user, org, "session-acme").await;
         let ours: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Acme') returning id").bind(org).fetch_one(db).await.unwrap();
         let other: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(db).await.unwrap();
         let theirs: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Other') returning id").bind(other).fetch_one(db).await.unwrap();

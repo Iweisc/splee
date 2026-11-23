@@ -133,13 +133,7 @@ impl Server {
                 .await
                 .unwrap();
             sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, $3)").bind(org).bind(user).bind(role).execute(&db).await.unwrap();
-            sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
-                .bind(sha256_hex(&format!("session-{session}")))
-                .bind(user)
-                .bind(org)
-                .execute(&db)
-                .await
-                .unwrap();
+            crate::auth::sign_in(&db, user, org, &format!("session-{session}")).await;
         }
         for (org, key) in [(orgs[0], API_KEY), (orgs[1], OTHER_KEY)] {
             sqlx::query("insert into api_keys (org_id, name, prefix, key_hash) values ($1, 'exports', 'splee_test_', $2)").bind(org).bind(sha256_hex(key)).execute(&db).await.unwrap();

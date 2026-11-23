@@ -73,6 +73,19 @@ pub async fn create_session(db: impl sqlx::PgExecutor<'_>, user_id: Uuid, org_id
         .build())
 }
 
+/// Signs `user` in to `org` for a day with the cookie `splee_session=<token>`, a token the test picks instead of create_session's
+/// random one.
+#[cfg(test)]
+pub(crate) async fn sign_in(db: &PgPool, user: Uuid, org: Uuid, token: &str) {
+    sqlx::query("insert into sessions (token_hash, user_id, org_id, expires_at) values ($1, $2, $3, now() + interval '1 day')")
+        .bind(sha256_hex(token))
+        .bind(user)
+        .bind(org)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
 pub fn clear_session_cookie(secure: bool) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, "")).path("/").secure(secure).max_age(time_days(0)).build()
 }
