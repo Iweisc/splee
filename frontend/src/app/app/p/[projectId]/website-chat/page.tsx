@@ -99,7 +99,8 @@ export default function WebsiteChatPage({ params }: PageProps<"/app/p/[projectId
               </Section>
 
               <Section title="Appearance" description="How the chat looks on your site, and where it shows.">
-                <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
+                {/* One shrinkable column on phones, or the preview's one-line title, however long the project's name, sets its width. */}
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
                   <div className="flex min-w-0 flex-col gap-4">
                     <Field label="Accent color">
                       <div className="flex items-center gap-2">
