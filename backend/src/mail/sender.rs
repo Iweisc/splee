@@ -191,6 +191,14 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                 -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
                 and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
                                 and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
+                -- A follow-up waiting out its thread's mailbox gap would only be put back, so it can't take a first email's place.
+                and not (e.kind = 'follow_up' and exists (
+                  select 1 from mailboxes m
+                  where m.id = coalesce(e.mailbox_id, (select x.mailbox_id from email_messages x
+                                                       where x.lead_id = e.lead_id and x.mailbox_id is not null
+                                                         and (x.direction = 'inbound' or x.status = 'sent')
+                                                       order by x.created_at desc limit 1))
+                    and {IN_GAP}))
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
@@ -377,6 +385,10 @@ async fn replace_guessed(db: &sqlx::PgPool, lead: &Lead, found: &verify::Found) 
 const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 * (current_date - coalesce(m.first_sent_on, current_date)))
                            else m.daily_limit end";
 
+/// Mailbox `m` sent an email less than its min_gap_minutes ago, so cold email from it waits.
+const IN_GAP: &str = "(m.min_gap_minutes > 0 and exists (select 1 from email_messages g
+                       where g.mailbox_id = m.id and g.status = 'sent' and g.sent_at > now() - make_interval(mins => m.min_gap_minutes)))";
+
 /// Mailboxes of the org that may still send campaigns today, least used first. A warming mailbox also stays under its
 /// total with today's warmup emails. One held until warm sends none in its first 14 days of warmup, or while its warmup
 /// emails land in spam. With `spaced`, so is one that sent within its min_gap_minutes: a first email goes from another
@@ -389,9 +401,7 @@ pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid, spaced:
          where m.org_id = $1 and m.status = 'active' and coalesce(t.sent, 0) < {TODAY_LIMIT}
            and (not m.warmup or coalesce(t.sent, 0) + ({WARMUP_SENT_TODAY}) < m.total_daily_limit)
            and not (m.warmup and m.hold_until_warm and (coalesce(current_date - m.warmup_started_on, 0) < {HOLD_DAYS} or {LANDING_IN_SPAM}))
-           and not ($2 and m.min_gap_minutes > 0 and exists (
-             select 1 from email_messages g
-             where g.mailbox_id = m.id and g.status = 'sent' and g.sent_at > now() - make_interval(mins => m.min_gap_minutes)))
+           and not ($2 and {IN_GAP})
          order by coalesce(t.sent, 0), t.last_sent nulls first",
     ))
     .bind(org_id)
