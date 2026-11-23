@@ -420,7 +420,274 @@ async fn check_dns(State(state): State<AppState>, auth: Auth, Path(id): Path<Uui
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::config::Config;
+    use crate::crypto::decrypt;
+
+    struct Seeded {
+        state: AppState,
+        org: Uuid,
+        other_org: Uuid,
+        /// The org's admin, and a member who isn't one.
+        admin: Uuid,
+        member: Uuid,
+    }
+
+    async fn seed(db: PgPool) -> Seeded {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let other_org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(&db).await.unwrap();
+        let mut users = Vec::new();
+        for (email, role) in [("dana@acme.example", "admin"), ("sam@acme.example", "member")] {
+            let user: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ($1, $1, 'x') returning id").bind(email).fetch_one(&db).await.unwrap();
+            sqlx::query("insert into memberships (org_id, user_id, role) values ($1, $2, $3)").bind(org).bind(user).bind(role).execute(&db).await.unwrap();
+            users.push(user);
+        }
+        let cfg = Config { app_secret: "0123456789abcdef0123456789abcdef".into(), ..Config::test() };
+        let state = AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
+        Seeded { state, org, other_org, admin: users[0], member: users[1] }
+    }
+
+    fn as_user(user: Uuid, org_id: Uuid, role: &str) -> Auth {
+        Auth { user_id: user, org_id, role: role.into(), token_hash: String::new() }
+    }
+
+    fn body(value: Value) -> Json<MailboxBody> {
+        Json(serde_json::from_value(value).unwrap())
+    }
+
+    async fn connect(s: &Seeded, value: Value) -> AppResult<Mailbox> {
+        create(State(s.state.clone()), as_user(s.admin, s.org, "admin"), body(value)).await.map(|Json(m)| m)
+    }
+
+    async fn edit(s: &Seeded, id: Uuid, value: Value) -> AppResult<Mailbox> {
+        update(State(s.state.clone()), as_user(s.admin, s.org, "admin"), Path(id), body(value)).await.map(|Json(m)| m)
+    }
+
+    async fn saved(s: &Seeded, id: Uuid) -> Value {
+        let mailbox: Mailbox = sqlx::query_as("select * from mailboxes where id = $1").bind(id).fetch_one(&s.state.db).await.unwrap();
+        // The passwords aren't serialized, so they're added to tell a change apart.
+        let mut value = serde_json::to_value(&mailbox).unwrap();
+        value["smtp_password_enc"] = json!(mailbox.smtp_password_enc);
+        value["imap_password_enc"] = json!(mailbox.imap_password_enc);
+        value
+    }
+
+    fn message<T: std::fmt::Debug>(result: AppResult<T>) -> String {
+        match result {
+            Err(AppError::BadRequest(m) | AppError::Conflict(m)) => m,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    const MINIMAL: &str = r#"{ "email": " Dana@Acme.example ", "smtp_host": " smtp.acme.example ", "smtp_password": "smtp-secret" }"#;
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn connecting_a_mailbox_refuses_bad_settings_and_fills_in_the_rest(db: PgPool) {
+        let s = seed(db).await;
+        let good: Value = serde_json::from_str(MINIMAL).unwrap();
+        let with = |change: Value| {
+            let mut value = good.clone();
+            value.as_object_mut().unwrap().extend(change.as_object().unwrap().clone());
+            value
+        };
+        let refused = [
+            (json!({ "smtp_host": "smtp.acme.example", "smtp_password": "x" }), "Email is required"),
+            (with(json!({ "email": "not an address" })), "Enter a valid email address"),
+            (with(json!({ "smtp_host": "  " })), "SMTP host is required"),
+            (with(json!({ "smtp_password": "" })), "SMTP password is required"),
+            (with(json!({ "smtp_security": "ssl" })), "smtp_security must be one of: tls, starttls, none"),
+            (with(json!({ "status": "error" })), "status must be one of: active, paused"),
+            (with(json!({ "smtp_port": 0 })), "Ports must be between 1 and 65535"),
+            (with(json!({ "imap_port": 65536 })), "Ports must be between 1 and 65535"),
+            (with(json!({ "daily_limit": 2001 })), "Daily limit must be between 1 and 2000"),
+            (with(json!({ "booking_link": "cal.example/dana" })), "Booking link must be a full URL starting with https://"),
+            (with(json!({ "booking_link": "ftp://cal.example/dana" })), "Booking link must be a full URL starting with https://"),
+            (with(json!({ "min_gap_minutes": 61 })), "Minutes between emails must be between 0 and 60"),
+            (with(json!({ "warmup_daily_cap": 0 })), "Warmup emails a day must be between 1 and 200"),
+            (with(json!({ "total_daily_limit": 5001 })), "Total emails a day must be between 1 and 5000"),
+            (with(json!({ "cost_per_email_micros": 1_000_001 })), "Cost per email must be between $0 and $1"),
+            (with(json!({ "dkim_selector": "s1 k2" })), "A DKIM selector has only letters, digits, dashes, underscores and dots, like s1 or k2"),
+            (with(json!({ "owner_id": Uuid::new_v4() })), "The owner has to be on your team"),
+        ];
+        for (value, want) in refused {
+            assert_eq!(message(connect(&s, value.clone()).await), want, "{value}");
+        }
+        assert!(matches!(create(State(s.state.clone()), as_user(s.member, s.org, "member"), body(good.clone())).await, Err(AppError::Forbidden(_))));
+        assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from mailboxes").fetch_one(&s.state.db).await.unwrap(), 0);
+
+        // Left out, a mailbox sends over STARTTLS on 587 with its address as the login, reads no inbox, and belongs to who
+        // connected it.
+        let plain = connect(&s, good.clone()).await.unwrap();
+        assert_eq!((plain.email.as_str(), plain.smtp_host.as_str(), plain.smtp_port, plain.smtp_security.as_str()), ("dana@acme.example", "smtp.acme.example", 587, "starttls"));
+        assert_eq!((plain.smtp_username.as_str(), plain.imap_host.as_str(), plain.imap_username.as_str(), plain.imap_password_enc.as_str()), ("dana@acme.example", "", "", ""));
+        assert_eq!((plain.daily_limit, plain.status.as_str(), plain.owner_id, plain.provider.as_str()), (30, "active", Some(s.admin), "password"));
+        assert_eq!(decrypt(&s.state.cfg.app_secret, &plain.smtp_password_enc).unwrap(), "smtp-secret");
+        assert_ne!(plain.smtp_password_enc, "smtp-secret");
+        assert_eq!(message(connect(&s, with(json!({ "email": "DANA@acme.example" }))).await), "This mailbox is already connected");
+
+        // An inbox with no login of its own reads with the SMTP one. A pasted DKIM record name is cut to its selector.
+        let inbox = connect(&s, with(json!({ "email": "sam@acme.example", "smtp_username": "sam-login", "imap_host": "imap.acme.example", "dkim_selector": "S1._domainkey.acme.example", "owner_id": s.member })))
+            .await
+            .unwrap();
+        assert_eq!((inbox.imap_host.as_str(), inbox.imap_port, inbox.imap_username.as_str(), inbox.dkim_selector.as_str()), ("imap.acme.example", 993, "sam-login", "s1"));
+        assert_eq!((decrypt(&s.state.cfg.app_secret, &inbox.imap_password_enc).unwrap(), inbox.owner_id), ("smtp-secret".to_string(), Some(s.member)));
+        let own = connect(&s, with(json!({ "email": "ops@acme.example", "imap_host": "imap.acme.example", "imap_username": "ops-imap", "imap_password": "imap-secret", "owner_id": null })))
+            .await
+            .unwrap();
+        assert_eq!((own.imap_username.as_str(), decrypt(&s.state.cfg.app_secret, &own.imap_password_enc).unwrap(), own.owner_id), ("ops-imap", "imap-secret".to_string(), None));
+
+        let ends = [
+            ("high@acme.example", 65535, 2000, 60, 200, 5000, 1_000_000),
+            ("low@acme.example", 1, 1, 0, 1, 1, 0),
+        ];
+        for (email, port, daily, gap, warmup, total, cost) in ends {
+            let value = with(json!({ "email": email, "smtp_port": port, "imap_host": "imap.acme.example", "imap_port": port, "daily_limit": daily, "min_gap_minutes": gap,
+                                     "warmup_daily_cap": warmup, "total_daily_limit": total, "cost_per_email_micros": cost, "booking_link": "http://cal.example/edge" }));
+            let m = connect(&s, value).await.unwrap();
+            assert_eq!(
+                (m.smtp_port, m.imap_port, m.daily_limit, m.min_gap_minutes, m.warmup_daily_cap, m.total_daily_limit, m.cost_per_email_micros),
+                (port, port, daily, gap, warmup, total, cost)
+            );
+        }
+
+        let audit: Vec<String> = sqlx::query_scalar("select target_label from audit_events where action = 'mailbox.connected' order by target_label").fetch_all(&s.state.db).await.unwrap();
+        assert_eq!(audit, ["dana@acme.example", "high@acme.example", "low@acme.example", "ops@acme.example", "sam@acme.example"]);
+        let Json(listed) = list(State(s.state.clone()), as_user(s.member, s.org, "member")).await.unwrap();
+        assert_eq!(listed.len(), 5);
+        let Json(theirs) = list(State(s.state.clone()), as_user(s.admin, s.other_org, "admin")).await.unwrap();
+        assert!(theirs.is_empty());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn editing_a_mailbox_checks_whats_sent_and_starts_over_what_changed(db: PgPool) {
+        let s = seed(db).await;
+        let mailbox = connect(&s, json!({ "email": "dana@acme.example", "smtp_host": "smtp.acme.example", "smtp_password": "smtp-secret", "imap_host": "imap.acme.example", "dkim_selector": "s1" }))
+            .await
+            .unwrap();
+        let reader = connect(&s, json!({ "email": "inbox@acme.example", "smtp_host": "smtp.acme.example", "smtp_password": "x", "imap_host": "imap.acme.example" }))
+            .await
+            .unwrap();
+        let sender_only = connect(&s, json!({ "email": "bulk@acme.example", "smtp_host": "smtp.acme.example", "smtp_password": "x" })).await.unwrap();
+        let elsewhere: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, imap_host) values ($1, 'inbox@other.example', 'smtp.other.example', '', '', 'imap.other.example') returning id",
+        )
+        .bind(s.other_org)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+        let outsider: Uuid = sqlx::query_scalar("insert into users (email, name, password_hash) values ('x@other.example', 'X', 'x') returning id").fetch_one(&s.state.db).await.unwrap();
+        let before = saved(&s, mailbox.id).await;
+
+        let refused = [
+            (json!({ "daily_limit": 0 }), "Daily limit must be between 1 and 2000"),
+            (json!({ "email": "nope" }), "Enter a valid email address"),
+            (json!({ "owner_id": outsider }), "The owner has to be on your team"),
+            (json!({ "reply_to_mailbox_id": mailbox.id }), "Replies can go to another of your mailboxes that Splee reads"),
+            (json!({ "reply_to_mailbox_id": sender_only.id }), "Replies can go to another of your mailboxes that Splee reads"),
+            (json!({ "reply_to_mailbox_id": Uuid::new_v4() }), "Replies can go to another of your mailboxes that Splee reads"),
+            (json!({ "reply_to_mailbox_id": elsewhere }), "Replies can go to another of your mailboxes that Splee reads"),
+        ];
+        for (value, want) in refused {
+            assert_eq!(message(edit(&s, mailbox.id, value.clone()).await), want, "{value}");
+            assert_eq!(saved(&s, mailbox.id).await, before, "{value}");
+        }
+        assert!(matches!(update(State(s.state.clone()), as_user(s.member, s.org, "member"), Path(mailbox.id), body(json!({ "daily_limit": 5 }))).await, Err(AppError::Forbidden(_))));
+        assert!(matches!(update(State(s.state.clone()), as_user(s.admin, s.other_org, "admin"), Path(mailbox.id), body(json!({ "daily_limit": 5 }))).await, Err(AppError::NotFound)));
+        assert_eq!(saved(&s, mailbox.id).await, before);
+
+        // A blank password keeps the saved one, a new one replaces it, and reply-to and owner can be set and cleared.
+        let kept = edit(&s, mailbox.id, json!({ "smtp_password": "", "from_name": "  Dana Reyes ", "reply_to_mailbox_id": reader.id, "owner_id": s.member })).await.unwrap();
+        assert_eq!((kept.smtp_password_enc.as_str(), kept.from_name.as_str(), kept.reply_to_mailbox_id, kept.owner_id), (mailbox.smtp_password_enc.as_str(), "Dana Reyes", Some(reader.id), Some(s.member)));
+        let changed = edit(&s, mailbox.id, json!({ "smtp_password": "new-secret", "reply_to_mailbox_id": null, "owner_id": null })).await.unwrap();
+        assert_eq!((decrypt(&s.state.cfg.app_secret, &changed.smtp_password_enc).unwrap(), changed.reply_to_mailbox_id, changed.owner_id), ("new-secret".to_string(), None, None));
+        assert_eq!(saved(&s, mailbox.id).await["dkim_selector"], "s1");
+        assert_eq!(edit(&s, mailbox.id, json!({ "dkim_selector": "" })).await.unwrap().dkim_selector, "", "empty clears it");
+
+        // Another IMAP server starts reading from the top. The same one keeps its place.
+        sqlx::query("update mailboxes set imap_last_uid = 812, imap_uid_validity = 7 where id = $1").bind(mailbox.id).execute(&s.state.db).await.unwrap();
+        let same = edit(&s, mailbox.id, json!({ "imap_host": " imap.acme.example " })).await.unwrap();
+        assert_eq!((same.imap_last_uid, same.imap_uid_validity), (812, Some(7)));
+        let moved = edit(&s, mailbox.id, json!({ "imap_host": "imap.newhost.example" })).await.unwrap();
+        assert_eq!((moved.imap_host.as_str(), moved.imap_last_uid, moved.imap_uid_validity), ("imap.newhost.example", -1, None));
+
+        // Warmup turned off starts from scratch when it's turned on again.
+        let warming: (Option<chrono::NaiveDate>, Option<crate::models::Ts>) =
+            sqlx::query_as("update mailboxes set warmup = true, warmup_started_on = current_date - 9, warmup_next_at = now() where id = $1 returning warmup_started_on, warmup_next_at")
+                .bind(mailbox.id)
+                .fetch_one(&s.state.db)
+                .await
+                .unwrap();
+        let still = edit(&s, mailbox.id, json!({ "warmup": true })).await.unwrap();
+        assert_eq!((still.warmup_started_on, still.warmup_next_at), warming, "left on, it keeps its place in the ramp");
+        let off = edit(&s, mailbox.id, json!({ "warmup": false })).await.unwrap();
+        assert_eq!((off.warmup, off.warmup_started_on, off.warmup_next_at), (false, None, None));
+        let on = edit(&s, mailbox.id, json!({ "warmup": true })).await.unwrap();
+        assert_eq!((on.warmup, on.warmup_started_on, on.warmup_next_at), (true, None, None), "the warmup worker starts it again from day one");
+
+        // Resuming a mailbox clears why it was paused, and the Deliverability check's hold.
+        sqlx::query("update mailboxes set status = 'paused', last_error = 'Bounce rate 9%', health_held_at = now() where id = $1").bind(mailbox.id).execute(&s.state.db).await.unwrap();
+        let still_paused = edit(&s, mailbox.id, json!({ "daily_limit": 10 })).await.unwrap();
+        assert_eq!((still_paused.status.as_str(), still_paused.last_error.as_str(), still_paused.health_held_at.is_some()), ("paused", "Bounce rate 9%", true));
+        let resumed = edit(&s, mailbox.id, json!({ "status": "active" })).await.unwrap();
+        assert_eq!((resumed.status.as_str(), resumed.last_error.as_str(), resumed.health_held_at), ("active", "", None));
+        let ack: Vec<String> = sqlx::query_scalar("select health_ack from mailboxes where id = $1").bind(mailbox.id).fetch_one(&s.state.db).await.unwrap();
+        assert!(ack.is_empty(), "{ack:?}: nothing is at risk on a mailbox that hasn't sent");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_signed_in_mailbox_keeps_its_address_and_servers(db: PgPool) {
+        let s = seed(db).await;
+        let google: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, provider) values ($1, 'dana@gmail.example', 'smtp.gmail.com', '', '', 'google') returning id",
+        )
+        .bind(s.org)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+        let edited = edit(&s, google, json!({ "email": "other@gmail.example", "smtp_host": "evil.example", "smtp_password": "x", "imap_host": "imap.evil.example", "daily_limit": 12 }))
+            .await
+            .unwrap();
+        assert_eq!((edited.email.as_str(), edited.smtp_host.as_str(), edited.imap_host.as_str(), edited.smtp_password_enc.as_str()), ("dana@gmail.example", "smtp.gmail.com", "", ""));
+        assert_eq!(edited.daily_limit, 12, "the rest is saved");
+        // A bad address is ignored with the rest of the server settings rather than refused.
+        assert!(edit(&s, google, json!({ "email": "not an address" })).await.is_ok());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn removing_a_mailbox_takes_it_out_of_each_projects_send_from_pick(db: PgPool) {
+        let s = seed(db).await;
+        let base = |email: &str| json!({ "email": email, "smtp_host": "smtp.acme.example", "smtp_password": "x" });
+        let (gone, kept) = (connect(&s, base("gone@acme.example")).await.unwrap(), connect(&s, base("kept@acme.example")).await.unwrap());
+        let mut projects = Vec::new();
+        for picked in [Some(vec![gone.id, kept.id]), Some(vec![kept.id]), Some(vec![gone.id]), None] {
+            let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(s.org).fetch_one(&s.state.db).await.unwrap();
+            sqlx::query("insert into project_settings (project_id, mailbox_ids) values ($1, $2)").bind(project).bind(picked).execute(&s.state.db).await.unwrap();
+            projects.push(project);
+        }
+
+        assert!(matches!(remove(State(s.state.clone()), as_user(s.member, s.org, "member"), Path(gone.id)).await, Err(AppError::Forbidden(_))));
+        assert!(matches!(remove(State(s.state.clone()), as_user(s.admin, s.other_org, "admin"), Path(gone.id)).await, Err(AppError::NotFound)));
+        assert_eq!(remove(State(s.state.clone()), as_user(s.admin, s.org, "admin"), Path(gone.id)).await.unwrap().0, json!({ "ok": true }));
+
+        let mut picks = Vec::new();
+        for project in &projects {
+            let ids: Option<Vec<Uuid>> = sqlx::query_scalar("select mailbox_ids from project_settings where project_id = $1").bind(project).fetch_one(&s.state.db).await.unwrap();
+            picks.push(ids);
+        }
+        // A project that picked only the removed mailbox is left with none picked, so its first emails wait until someone picks
+        // another, rather than going out from mailboxes it chose not to use. All mailboxes (null) stays all.
+        assert_eq!(picks, [Some(vec![kept.id]), Some(vec![kept.id]), Some(vec![]), None]);
+        let left: Vec<Uuid> = sqlx::query_scalar("select id from mailboxes").fetch_all(&s.state.db).await.unwrap();
+        assert_eq!(left, [kept.id]);
+        let audit: Vec<String> = sqlx::query_scalar("select target_label from audit_events where action = 'mailbox.removed'").fetch_all(&s.state.db).await.unwrap();
+        assert_eq!(audit, ["gone@acme.example"]);
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
