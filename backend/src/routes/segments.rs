@@ -689,16 +689,17 @@ type Due = (Uuid, Uuid, Ts, Option<Uuid>, Option<Uuid>, bool);
 /// A pause waits while a start is still due. A start whose pause has passed too, its whole window gone while nothing ran,
 /// takes the pause with it under the same lock, so the pause job can't drop it while the start is under way.
 async fn claim_due(db: &PgPool, which: &str) -> sqlx::Result<Vec<Due>> {
-    let (waits, lapsed) = if which == "pause" { ("and start_at is null", "false") } else { ("", "coalesce(pause_at <= now(), false)") };
-    let clear = |col: &str| format!("{col} = case when due.lapsed then null else s.{col} end");
+    let (waits, lapsed, also) = if which == "pause" {
+        ("and start_at is null", "false", String::new())
+    } else {
+        let clear = |col: &str| format!(", {col} = case when due.lapsed then null else s.{col} end");
+        ("", "coalesce(pause_at <= now(), false)", ["pause_at", "pause_by_user", "pause_by_key"].map(clear).concat())
+    };
     sqlx::query_as(&format!(
         "with due as (select id, {which}_at as at, {which}_by_user as by_user, {which}_by_key as by_key, {lapsed} as lapsed
                       from segments where {which}_at <= now() {waits} for update skip locked)
-         update segments s set {which}_at = null, {which}_by_user = null, {which}_by_key = null, {}, {}, {} from due, projects p
-         where s.id = due.id and p.id = s.project_id returning s.id, p.org_id, due.at, due.by_user, due.by_key, due.lapsed",
-        clear("pause_at"),
-        clear("pause_by_user"),
-        clear("pause_by_key"),
+         update segments s set {which}_at = null, {which}_by_user = null, {which}_by_key = null {also} from due, projects p
+         where s.id = due.id and p.id = s.project_id returning s.id, p.org_id, due.at, due.by_user, due.by_key, due.lapsed"
     ))
     .fetch_all(db)
     .await
@@ -995,15 +996,17 @@ mod tests {
         let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Ours') returning id").fetch_one(&db).await.unwrap();
         let project: Uuid =
             sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(org).fetch_one(&db).await.unwrap();
-        let campaign = |pause: &'static str| {
-            sqlx::query_scalar::<_, Uuid>(&format!(
-                "insert into segments (project_id, name, status, start_at, pause_at) values ($1, 'C', 'draft', now() - interval '2 hours', {pause})
-                 returning id"
-            ))
+        // `pause` is hours from now, and the start was 2 hours ago.
+        let campaign = |pause: i32| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into segments (project_id, name, status, start_at, pause_at)
+                 values ($1, 'C', 'draft', now() - interval '2 hours', now() + make_interval(hours => $2)) returning id",
+            )
             .bind(project)
+            .bind(pause)
             .fetch_one(&db)
         };
-        let (lapsed, open) = (campaign("now() - interval '1 hour'").await.unwrap(), campaign("now() + interval '1 hour'").await.unwrap());
+        let (lapsed, open) = (campaign(-1).await.unwrap(), campaign(1).await.unwrap());
 
         let mut claimed: Vec<(Uuid, bool)> = claim_due(&db, "start").await.unwrap().into_iter().map(|d| (d.0, d.5)).collect();
         claimed.sort_by_key(|(id, _)| *id != lapsed);
