@@ -17,6 +17,8 @@ import { useKeepFocus } from "@/hooks/use-keep-focus";
 import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { MicroLabel, toastError } from "./states";
 
+const LABEL = "Its own days and hours";
+
 /** Whether the campaign sends in the project's days and hours or its own. Its own start as a copy of the project's, saved at once
  *  so nothing changes until someone edits them, and edits wait for Save. The page keys it on the saved hours, so a save starts the
  *  draft over. The time zone and days off stay the project's. */
@@ -30,7 +32,7 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const problemId = useId();
-  const root = useKeepFocus<HTMLDivElement>("send-hours");
+  const root = useKeepFocus<HTMLDivElement>(`send-hours:${segment.id}`, LABEL);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
 
@@ -79,8 +81,9 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
           <Switch
             checked={!!saved}
             onChange={(on) => (on ? save(copy!, "This campaign has its own sending hours") : save(null, "Back to the project's sending hours"))}
-            disabled={saving || !project}
-            label="Its own days and hours"
+            disabled={!project}
+            loading={saving}
+            label={LABEL}
           />
         </li>
       </ul>

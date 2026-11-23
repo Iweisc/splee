@@ -47,7 +47,7 @@ export function TrackingCard({ segment }: { segment: SegmentWithStats }) {
               <p className="text-sm font-medium">{s.label}</p>
               <p className="text-xs text-pretty text-muted-foreground">{s.note}</p>
             </div>
-            <Switch checked={segment[s.key]} onChange={(on) => save(s.key, on)} disabled={pending === s.key} label={s.label} />
+            <Switch checked={segment[s.key]} onChange={(on) => save(s.key, on)} loading={pending === s.key} label={s.label} />
           </li>
         ))}
       </ul>
