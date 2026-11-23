@@ -1,17 +1,15 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { Check, Loader2, Sparkles, TrendingUp, X } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
-import { toast } from "sonner";
+import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, Expansion, ExpansionView } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
-import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, useDealActions } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const ready = (x: Expansion) => x.status === "drafted";
@@ -19,31 +17,12 @@ const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { day: "n
 
 /** Looking again, dropping one and sending the draft, each refreshing every view of it. */
 function useActions(dealId: string, onChanged: () => unknown) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
-    setBusy(what);
-    try {
-      await call();
-      if (done) toast.success(done);
-      await onChanged();
-      mutate((k) => typeof k === "string" && k.includes("/expansion"));
-    } catch (e) {
-      toastError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const { busy, act, send } = useDealActions(onChanged, (k) => k.includes("/expansion"));
   return {
     busy,
     look: () => act("write", () => api(`/deals/${dealId}/expansion`, { method: "POST" })),
     drop: (x: Expansion) => act("drop", () => api(`/expansions/${x.id}`, { method: "PATCH", body: { dismissed: true } })),
-    send: (x: Expansion) =>
-      act(
-        "send",
-        () => api(`/emails/${x.email_id}`, { method: "PATCH", body: { status: "approved" } }),
-        "Approved. It goes out in the thread shortly.",
-      ),
+    send: (x: Expansion) => send(x.email_id),
   };
 }
 
