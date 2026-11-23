@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useId } from "react";
 import { Inbox } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { Switch } from "@/components/ui/form";
@@ -9,7 +10,7 @@ import { useAction } from "@/components/app/settings/use-action";
 import { api } from "@/lib/api";
 import { todayLimit } from "@/lib/mailbox";
 import type { Mailbox, ProjectSettings, SegmentWithStats } from "@/lib/types";
-import { num } from "@/lib/utils";
+import { cn, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { MicroLabel } from "./states";
 
@@ -18,6 +19,7 @@ import { MicroLabel } from "./states";
 export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
   const { mutate } = useSWRConfig();
   const { pending, run } = useAction();
+  const lastId = useId();
   const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
   const { data: settings } = useSWR<ProjectSettings>(`/projects/${segment.project_id}/settings`, fetcher);
   const picked = segment.mailbox_ids;
@@ -36,6 +38,8 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
   const copy = settings && (settings.mailbox_ids ?? active);
   const saving = pending === "mailbox_ids";
   // Ignored while a save runs rather than disabled, so keyboard focus stays on the box.
+  // The one ticked mailbox can't be unticked. Only once the list has loaded and shows it, so the hint never stands alone.
+  const locked = picked?.length === 1 && mailboxes?.some((m) => m.id === picked[0]) ? picked[0] : null;
   const toggle = (id: string) => picked && !saving && save(picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id]);
 
   return (
@@ -77,17 +81,19 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
           ) : (
             mailboxes.map((m) => {
               const on = picked.includes(m.id);
-              const last = on && picked.length === 1;
+              const last = m.id === locked;
               return (
                 <li key={m.id}>
-                  <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
+                  <label className={cn("flex items-center gap-3 px-3 py-2.5 text-sm", !last && "cursor-pointer")}>
+                    {/* The last ticked box stays focusable and says why it can't be unticked, rather than being skipped by Tab
+                        with its reason only in a title. */}
                     <input
                       type="checkbox"
                       checked={on}
-                      onChange={() => toggle(m.id)}
-                      disabled={last}
-                      title={last ? "Keep at least one ticked, or switch it off to use the project's" : undefined}
-                      className="accent-black"
+                      onChange={() => !last && toggle(m.id)}
+                      aria-disabled={last || undefined}
+                      aria-describedby={last ? lastId : undefined}
+                      className="accent-black aria-disabled:opacity-50"
                     />
                     <span className="min-w-0 flex-1 truncate font-medium">{m.email}</span>
                     {m.status === "active" ? (
@@ -101,6 +107,11 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
             })
           ))}
       </ul>
+      {locked && (
+        <p id={lastId} className="-mt-2 text-xs text-pretty text-muted-foreground">
+          Keep at least one ticked, or switch it off to use the project&apos;s.
+        </p>
+      )}
     </Card>
   );
 }
