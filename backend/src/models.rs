@@ -410,6 +410,17 @@ pub struct ProjectSettings {
     pub assign_territories: sqlx::types::Json<Vec<crate::ownership::Territory>>,
 }
 
+impl ProjectSettings {
+    pub fn send_hours(&self) -> crate::mail::SendHours {
+        crate::mail::SendHours {
+            days: self.send_days.clone(),
+            days_off: self.days_off.clone(),
+            start_hour: self.send_start_hour,
+            end_hour: self.send_end_hour,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Competitor {
     pub id: Uuid,
