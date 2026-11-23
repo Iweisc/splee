@@ -33,11 +33,14 @@ export async function api<T>(path: string, init: { method?: string; body?: Body;
     throw new ApiError(0, "Couldn't reach Splee. Check your connection and try again.");
   }
   if (!res.ok) {
-    let message = res.statusText;
+    let error: unknown;
     try {
-      message = (await res.json()).error ?? message;
+      error = (await res.json()).error;
     } catch {}
-    throw new ApiError(res.status, message);
+    // The backend always answers with a string {error}, and never with 502 to 504. Anything else came from what sits in front
+    // of it while it's down or restarting, and its status text, like "Bad Gateway", tells nobody anything.
+    const message = typeof error === "string" && error.trim() && ![502, 503, 504].includes(res.status) ? error : undefined;
+    throw new ApiError(res.status, message ?? (res.status >= 500 ? "Splee isn't answering right now. Try again in a moment." : res.statusText));
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
