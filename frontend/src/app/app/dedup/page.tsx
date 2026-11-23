@@ -31,11 +31,14 @@ export default function DoNotContactPage() {
   const [page, setPage] = useState(1);
   const q = useDeferredValue(query.trim());
   const key = `/suppressions${qs({ q, page, per_page: PER_PAGE })}`;
-  const { data, error, mutate } = useSWR<Paginated<Suppression>>(key, fetcher, { keepPreviousData: true });
+  const { data, error, isLoading, mutate } = useSWR<Paginated<Suppression>>(key, fetcher, { keepPreviousData: true });
   useLastPageGuard(data?.total, page, setPage);
   const { pending, run } = useAction();
 
   const pasted = values.split(/[\s,;]+/).filter(Boolean).length;
+  // Nothing to search or count yet, so the empty state stands alone. A search with no matches keeps the box to clear it, and
+  // while clearing it the previous search's 0 is still shown, so this waits for the whole list's total, or a retry after an error, first.
+  const blank = data?.total === 0 && !q && !query.trim() && !isLoading && !error;
 
   const add = () =>
     run("add", async () => {
@@ -80,28 +83,30 @@ export default function DoNotContactPage() {
 
           <Card>
             {/* On phones the search gets its own row, so the count and Export button don't squeeze it to a few letters. */}
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-border p-4">
-              <SearchField
-                value={query}
-                onChange={(v) => {
-                  setQuery(v);
-                  setPage(1);
-                }}
-                label="Search the list"
-                className="max-w-xs flex-1 max-sm:max-w-none"
-              />
-              {data && (
-                <div className="flex shrink-0 items-center gap-3 max-sm:w-full max-sm:justify-between">
-                  <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>
-                  {data.total > 0 && (
-                    // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
-                    <a href={`/api/suppressions/export${qs({ q })}`} download className={buttonClass("outline", "sm", "h-9")}>
-                      <Download className="size-3.5" /> Export
-                    </a>
-                  )}
-                </div>
-              )}
-            </div>
+            {!blank && (
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-border p-4">
+                <SearchField
+                  value={query}
+                  onChange={(v) => {
+                    setQuery(v);
+                    setPage(1);
+                  }}
+                  label="Search the list"
+                  className="max-w-xs flex-1 max-sm:max-w-none"
+                />
+                {data && (
+                  <div className="flex shrink-0 items-center gap-3 max-sm:w-full max-sm:justify-between">
+                    <span className="text-sm text-muted-foreground tabular-nums">{num(data.total)} total</span>
+                    {data.total > 0 && (
+                      // A plain link so the browser streams the file with the session cookie. It exports every match, not just this page.
+                      <a href={`/api/suppressions/export${qs({ q })}`} download className={buttonClass("outline", "sm", "h-9")}>
+                        <Download className="size-3.5" /> Export
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {error ? (
               <LoadError error={error} what="the list" retry={() => mutate()} />
