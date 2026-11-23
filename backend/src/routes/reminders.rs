@@ -73,13 +73,18 @@ async fn create(State(state): State<AppState>, auth: Auth, Path(lead): Path<Uuid
     Ok(Json(sqlx::query_as(&format!("{SELECT} where r.id = $1")).bind(id).fetch_one(&state.db).await?))
 }
 
-/// Marks your own reminder done. 404 for someone else's, so they can't clear what you meant to come back to.
+/// Marks your own reminder done. 404 for someone else's, so they can't clear what you meant to come back to, and for one on
+/// another of your organizations' leads.
 async fn done(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<serde_json::Value>> {
-    let updated = sqlx::query("update lead_reminders set done_at = now() where id = $1 and user_id = $2 and done_at is null")
-        .bind(id)
-        .bind(auth.user_id)
-        .execute(&state.db)
-        .await?;
+    let updated = sqlx::query(
+        "update lead_reminders r set done_at = now() from leads l join projects p on p.id = l.project_id
+         where r.id = $1 and r.user_id = $2 and r.done_at is null and l.id = r.lead_id and p.org_id = $3",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .bind(auth.org_id)
+    .execute(&state.db)
+    .await?;
     if updated.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }

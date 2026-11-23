@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type { LeadReminder } from "@/lib/types";
 import { cn, dayTime, isPast } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
-import { toastError } from "./states";
+import { LoadError, toastError } from "./states";
 
 /** "2026-11-24" for the day `days` from today, where you are. */
 function localDay(days: number): string {
@@ -24,7 +24,7 @@ function localDay(days: number): string {
 export function LeadReminders({ leadId }: { leadId: string }) {
   const key = `/leads/${leadId}/reminders`;
   const { me } = useMe();
-  const { data: reminders, mutate } = useSWR<LeadReminder[]>(key, fetcher);
+  const { data: reminders, error, mutate } = useSWR<LeadReminder[]>(key, fetcher);
   const { mutate: mutateAll } = useSWRConfig();
   const [day, setDay] = useState(() => localDay(1));
   const [note, setNote] = useState("");
@@ -65,6 +65,7 @@ export function LeadReminders({ leadId }: { leadId: string }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {error && !reminders && <LoadError error={error} retry={() => void mutate()} what="reminders" />}
       {reminders?.map((r) => (
         <div key={r.id} className="flex items-start gap-3 rounded-lg border border-border px-3 py-2 text-sm">
           <div className="min-w-0 flex-1">
