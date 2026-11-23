@@ -291,9 +291,6 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
         ids.dedup();
         ids
     });
-    if mailbox_ids.as_ref().is_some_and(Vec::is_empty) {
-        return bad("Pick at least one mailbox, or send from all of them");
-    }
     if let Some(ids) = &mailbox_ids {
         let theirs: i64 =
             sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(ids).fetch_one(db).await?;

@@ -86,7 +86,9 @@ export default function DailyLimitPage() {
                   value={capacity !== undefined ? `${num(capacity)}/day` : mailboxesError ? "Couldn't load" : null}
                 />
               </div>
-              {capacity === 0 ? (
+              {capacity === 0 && picked ? (
+                <p className="mt-3 text-sm text-muted-foreground">No first emails go out until you pick an active mailbox under Send from.</p>
+              ) : capacity === 0 ? (
                 <p className="mt-3 text-sm text-muted-foreground">
                   Nothing sends until you{" "}
                   <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">

@@ -149,13 +149,10 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
     .bind(day_start)
     .fetch_one(db)
     .await?;
-    // Only the project's own mailboxes, when it picked some, can start its threads.
-    let active_mailboxes: i64 =
-        sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and status = 'active' and ($2::uuid[] is null or id = any($2))")
-            .bind(org_id)
-            .bind(&settings.mailbox_ids)
-            .fetch_one(db)
-            .await?;
+    let active_mailboxes: i64 = sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and status = 'active'")
+        .bind(org_id)
+        .fetch_one(db)
+        .await?;
     let facts = Facts {
         campaign_id: segment.id,
         project_id: segment.project_id,
