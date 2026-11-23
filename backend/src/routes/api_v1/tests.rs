@@ -438,6 +438,8 @@ async fn a_campaign_set_to_pause_later_pauses_itself_then_and_a_scheduled_start_
     assert!(status == 200 && detail["pause_at"].is_string(), "{detail}");
     assert!(detail["status_reason"].as_str().unwrap().contains("It pauses by itself on"), "{detail}");
     assert_eq!(api.patch(&path, json!({ "start_at": in_hours(6) })).await.0, 400, "a start moved past the pause");
+    assert_eq!(api.patch(&path, json!({ "start_at": null })).await.1["pause_at"], Value::Null, "cancelling the start takes the pause with it");
+    api.patch(&path, json!({ "start_at": in_hours(2), "pause_at": in_hours(5) })).await;
 
     // The scheduled start keeps the pause, and the pause waits for its time.
     sqlx::query("update segments set start_at = now() - interval '1 minute' where id = $1").bind(segment).execute(&db).await.unwrap();
@@ -466,6 +468,20 @@ async fn a_campaign_set_to_pause_later_pauses_itself_then_and_a_scheduled_start_
     api.patch(&other_path, json!({ "pause_at": in_hours(2) })).await;
     assert_eq!(api.post(KEYS[0], &format!("{other_path}/archive"), None, json!({})).await.0, 200);
     assert_eq!(row(other).await, ("paused".into(), false));
+
+    // A whole window that passed while nothing ran, after downtime say, doesn't start a campaign with no end, whichever job
+    // runs first.
+    let lapsed: Uuid = sqlx::query_scalar(
+        "insert into segments (project_id, name, status, start_at, pause_at) values ($1, 'Spas', 'draft', now() - interval '2 hours', now() - interval '1 hour')
+         returning id",
+    )
+    .bind(a)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    crate::routes::segments::pause_scheduled(&db).await.unwrap();
+    crate::routes::segments::start_scheduled(&db).await.unwrap();
+    assert_eq!(row(lapsed).await, ("draft".into(), false));
 }
 
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

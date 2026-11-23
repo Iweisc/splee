@@ -260,7 +260,8 @@ pub(in crate::routes) async fn update_campaign(
     let (days, start, end) = segments::SendHoursBody::columns(send_hours.as_ref().and_then(Option::as_ref));
     let (set, start_at, by_user, by_key) = segments::start_columns(&segment, &segment.status, (&auth).into(), body.start_at)?;
     let starts = if set { start_at } else { segment.start_at };
-    let (set_pause, pause_at, pause_user, pause_key) = segments::pause_columns(&segment, &segment.status, starts, (&auth).into(), body.pause_at)?;
+    let (set_pause, pause_at, pause_user, pause_key) =
+        segments::pause_columns(&segment, &segment.status, starts, set, (&auth).into(), body.pause_at)?;
     sqlx::query(&format!(
         "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{{}}'),
            pain_points = coalesce($5, pain_points), angle = coalesce($6, angle), language = coalesce($7, language),
