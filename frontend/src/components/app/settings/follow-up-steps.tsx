@@ -77,7 +77,7 @@ export function FollowUpSteps({ steps, onChange }: { steps: FollowUp[]; onChange
               <Switch checked={f.enabled} onChange={(enabled) => patch(i, { enabled })} label={`Enable step ${i + 1}`} />
               {f.kind === "call" ? (
                 <span className="flex items-center gap-1.5 font-medium">
-                  <Phone className="size-4 text-muted-foreground" /> Call
+                  <Phone className="size-4 text-muted-foreground" /> Call {i + 1}
                 </span>
               ) : (
                 <span className="font-medium">Follow-up {i + 1}</span>

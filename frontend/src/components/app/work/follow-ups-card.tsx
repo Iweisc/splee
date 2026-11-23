@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Repeat } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -27,6 +27,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
   const saved = segment.follow_ups?.map((f) => ({ ...f, instructions: f.instructions || "" })) ?? null;
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
+  const problemId = useId();
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
   if (!imported || imported.steps.length > 0) return null;
@@ -85,16 +86,31 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
         // Disabled while saving, since the saved steps start the draft over and would drop an edit made meanwhile.
         <fieldset disabled={saving} className="flex min-w-0 flex-col gap-4">
           <FollowUpSteps steps={draft} onChange={setDraft} />
+          {/* Always mounted, so a screen reader is already listening when an edit makes the first problem, like the settings
+              save bar. */}
+          <span role="status" className="sr-only">
+            {problem}
+          </span>
           <div className="flex flex-wrap items-center gap-2">
             {draft.length > 0 && <AddStepButtons steps={draft} onChange={setDraft} />}
-            <div className="ml-auto flex items-center gap-2">
-              {problem && <p className="text-sm text-red-700">{problem}</p>}
+            {/* On phones the problem takes its own line above the buttons, or it squeezes to a word a line beside them. */}
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              {problem && (
+                <p id={problemId} className="text-sm text-red-700 max-sm:w-full max-sm:text-right">
+                  {problem}
+                </p>
+              )}
               {dirty && (
                 <Button variant="ghost" onClick={() => setDraft(saved)}>
                   Discard
                 </Button>
               )}
-              <Button onClick={() => save(draft, "Follow-ups saved")} loading={saving} disabled={!dirty || !!problem}>
+              <Button
+                onClick={() => save(draft, "Follow-ups saved")}
+                loading={saving}
+                disabled={!dirty || !!problem}
+                aria-describedby={problem ? problemId : undefined}
+              >
                 Save follow-ups
               </Button>
             </div>
@@ -115,7 +131,9 @@ function ProjectSteps({ steps }: { steps: FollowUp[] }) {
       {steps.map((f, i) => (
         <li key={i} className={cn("px-3 py-2.5", !f.enabled && "text-muted-foreground")}>
           <p>
-            <span className="font-medium">{f.kind === "call" ? "Call" : `Follow-up ${i + 1}`}</span>
+            <span className="font-medium">
+              {f.kind === "call" ? "Call" : "Follow-up"} {i + 1}
+            </span>
             <span className="text-muted-foreground">
               {" "}
               · {plural(f.delay_days, "day")} later{!f.enabled && ", switched off"}
