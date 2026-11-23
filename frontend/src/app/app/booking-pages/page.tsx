@@ -159,7 +159,9 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
         </a>
       }
     >
-      <div className="grid gap-6">
+      {/* grid-cols-1 rather than the implicit track, which grows to the Time zone select's longest zone name and made a phone
+          scroll sideways. */}
+      <div className="grid grid-cols-1 gap-6">
         <CopyField value={page.url} />
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -178,7 +180,7 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
           </Field>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Length" group>
             <Tabs
               value={String(d.duration_minutes) as (typeof LENGTHS)[number]}
