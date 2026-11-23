@@ -52,8 +52,14 @@ pub fn found(text: &str) -> Vec<&'static str> {
     WORDS
         .iter()
         .copied()
+        // Every start, not match_indices, which skips overlapping ones: "$$$" in "a$$$$" only stands alone one dollar in.
         .filter(|word| {
-            text.match_indices(word).any(|(at, _)| edge(text[..at].chars().next_back()) && edge(text[at + word.len()..].chars().next()))
+            (0..text.len()).any(|at| {
+                text.is_char_boundary(at)
+                    && text[at..].starts_with(word)
+                    && edge(text[..at].chars().next_back())
+                    && edge(text[at + word.len()..].chars().next())
+            })
         })
         .collect()
 }
@@ -68,5 +74,7 @@ mod tests {
         assert_eq!(found("Freelance designers get a guarantee-free quote"), ["free", "guarantee"]);
         assert!(found("Saw your post on hiring a freelancer. Worth a call?").is_empty());
         assert_eq!(found("Margins up 100% guaranteed $$$"), ["100% guaranteed", "guaranteed", "$$$"]);
+        assert_eq!(found("a$$$$"), ["$$$"]);
+        assert_eq!(found("Café, 100% guaranteed. Ça va?"), ["100% guaranteed", "guaranteed"]);
     }
 }
