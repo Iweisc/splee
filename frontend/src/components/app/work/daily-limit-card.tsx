@@ -22,7 +22,7 @@ const LABEL = "Its own daily limit";
 export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
   const { mutate } = useSWRConfig();
   const { pending, run } = useAction();
-  const root = useKeepFocus<HTMLDivElement>(`daily-limit:${segment.id}`, LABEL);
+  const root = useKeepFocus<HTMLDivElement>(`daily-limit:${segment.id}`, [LABEL]);
   const [draft, setDraft] = useState(segment.daily_limit ?? FIRST);
   const on = segment.daily_limit !== null;
 

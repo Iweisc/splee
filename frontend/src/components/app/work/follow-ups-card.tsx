@@ -18,6 +18,7 @@ import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { MicroLabel, toastError } from "./states";
 
 const LABEL = "Its own follow-ups";
+const SAVE = "Save follow-ups";
 
 /** Whether the campaign follows the project's follow-ups or has its own. Its own start as a copy of the project's, saved at
  *  once so nothing changes until someone edits them, and edits wait for Save. The page keys it on the saved steps, so a save
@@ -31,7 +32,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const problemId = useId();
-  const root = useKeepFocus<HTMLDivElement>(`follow-ups:${segment.id}`, LABEL);
+  const root = useKeepFocus<HTMLDivElement>(`follow-ups:${segment.id}`, [LABEL, SAVE]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
   if (!imported || imported.steps.length > 0) return null;
@@ -88,16 +89,21 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
         </li>
       </ul>
       {draft ? (
-        // Disabled while saving, since the saved steps start the draft over and would drop an edit made meanwhile.
-        <fieldset disabled={saving} className="flex min-w-0 flex-col gap-4">
-          <FollowUpSteps steps={draft} onChange={setDraft} />
+        // The edits are disabled while saving, since the saved steps start the draft over and would drop an edit made meanwhile.
+        // Save isn't, so it keeps keyboard focus: it shows loading, then stays focusable but unavailable once there's nothing to save.
+        <div className="flex min-w-0 flex-col gap-4">
+          <fieldset disabled={saving} className="contents">
+            <FollowUpSteps steps={draft} onChange={setDraft} />
+          </fieldset>
           {/* Always mounted, so a screen reader is already listening when an edit makes the first problem, like the settings
               save bar. */}
           <span role="status" className="sr-only">
             {problem}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            {draft.length > 0 && <AddStepButtons steps={draft} onChange={setDraft} />}
+            <fieldset disabled={saving} className="contents">
+              {draft.length > 0 && <AddStepButtons steps={draft} onChange={setDraft} />}
+            </fieldset>
             {/* On phones the problem takes its own line above the buttons, or it squeezes to a word a line beside them. */}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {problem && (
@@ -106,21 +112,22 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
                 </p>
               )}
               {dirty && (
-                <Button variant="ghost" onClick={() => setDraft(saved)}>
+                <Button variant="ghost" onClick={() => setDraft(saved)} disabled={saving}>
                   Discard
                 </Button>
               )}
               <Button
-                onClick={() => save(draft, "Follow-ups saved")}
+                onClick={dirty ? () => save(draft, "Follow-ups saved") : undefined}
                 loading={saving}
-                disabled={!dirty || !!problem}
+                disabled={!!problem}
+                aria-disabled={!dirty || undefined}
                 aria-describedby={problem ? problemId : undefined}
               >
-                Save follow-ups
+                {SAVE}
               </Button>
             </div>
           </div>
-        </fieldset>
+        </div>
       ) : (
         settings && <ProjectSteps steps={settings.follow_ups} />
       )}
