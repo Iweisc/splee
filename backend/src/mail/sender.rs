@@ -225,6 +225,8 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     // selection than what's left of it, so the rest goes to the others. A cancelled email doesn't use up its room, and the
     // next tick picks the one after it.
     let closed = if p.lead_time_zone && cold_slots > 0 { closed_zones(&state.db, p, &own, now).await? } else { Zones::default() };
+    let own_mailboxes = own_mailboxes(&state.db, p.id).await?;
+    let (picking, full_picks, project_full) = full_picks(state, p, &own_mailboxes).await?;
     let due = sqlx::query_as::<_, EmailMessage>(&format!(
         "(select e.* from email_messages e
           where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
@@ -257,6 +259,8 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                     and m.status = 'active' and {IN_GAP}))
                 -- A first email to a company that had its first emails for today waits too, so it can't hold back other companies.
                 and not {company_full}
+                -- So does one whose picked mailboxes are all full, so it can't hold back a campaign that picks others.
+                and not (e.kind = 'initial' and case when e.segment_id = any($14) then e.segment_id = any($15) else $16 end)
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
@@ -280,6 +284,9 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     .bind(&own_open)
     .bind(&closed.windows)
     .bind(project_open)
+    .bind(&picking)
+    .bind(&full_picks)
+    .bind(project_full)
     .fetch_all(&state.db)
     .await?;
 
@@ -294,7 +301,6 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
         Some(cap) => cap - monthly_cap::spent_since(&state.db, p.id, crate::autopilot::month_start(now)).await?,
         None => i64::MAX,
     };
-    let own_mailboxes = own_mailboxes(&state.db, p.id).await?;
     // Replies sent in this tick also use up the day's room, so cold emails stop at the limit rather than one past it.
     let mut room = cold_slots;
     for email in due {
@@ -622,6 +628,18 @@ async fn own_mailboxes(db: &sqlx::PgPool, project: Uuid) -> anyhow::Result<HashM
         .fetch_all(db)
         .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// The campaigns with a pick of their own, those of them none of whose mailboxes has room, and whether that's so for the
+/// project's pick. Without any pick nothing is full here, so a first email still reaches the checks that cancel it.
+async fn full_picks(state: &AppState, p: &SendingProject, own_mailboxes: &HashMap<Uuid, Vec<Uuid>>) -> anyhow::Result<(Vec<Uuid>, Vec<Uuid>, bool)> {
+    if own_mailboxes.is_empty() && p.mailbox_ids.is_none() {
+        return Ok((vec![], vec![], false));
+    }
+    let room: Vec<Uuid> = mailboxes_with_room(&state.db, p.org_id, true).await?.into_iter().map(|m| m.id).collect();
+    let full = |ids: &[Uuid]| !ids.iter().any(|id| room.contains(id));
+    let full_picks = own_mailboxes.iter().filter(|(_, ids)| full(ids)).map(|(id, _)| *id).collect();
+    Ok((own_mailboxes.keys().copied().collect(), full_picks, p.mailbox_ids.as_deref().is_some_and(full)))
 }
 
 /// The mailboxes an email may start a thread from: its campaign's own pick, else the project's, None for all.
@@ -1324,6 +1342,59 @@ mod tests {
         sqlx::query("update segments set daily_limit = null where id = $1").bind(capped).execute(&db).await.unwrap();
         super::tick(&state).await.unwrap();
         assert_eq!(statuses(held.to_vec()).await.unwrap(), ["cancelled", "cancelled", "cancelled"]);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_whose_mailboxes_are_full_leaves_the_days_room_to_the_others(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        // Room for one email today, which the stuck campaign's older email would take every tick.
+        sqlx::query(
+            "insert into project_settings (project_id, paused, send_days, send_start_hour, send_end_hour, daily_email_limit)
+             values ($1, false, '{1,2,3,4,5,6,7}', 0, 24, 1)",
+        )
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let paused: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, status)
+             values ($1, 'paused@example.test', 'smtp.example.test', 'paused', 'x', 'paused') returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let campaign = |own: Option<Vec<Uuid>>| {
+            sqlx::query_scalar::<_, Uuid>("insert into segments (project_id, name, status, mailbox_ids) values ($1, 'C', 'working', $2) returning id")
+                .bind(project)
+                .bind(own)
+                .fetch_one(&db)
+        };
+        let (stuck, open) = (campaign(Some(vec![paused])).await.unwrap(), campaign(None).await.unwrap());
+        // On the do-not-contact list, so an email the tick picks is cancelled without SMTP or DNS, and one it leaves stays approved.
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'held.example', 'domain', 'manual')").bind(org).execute(&db).await.unwrap();
+        let email = |segment: Uuid, n: i32| {
+            sqlx::query_scalar::<_, Uuid>(
+                "with l as (insert into leads (project_id, segment_id, email, status) values ($1, $2, 'p' || $3 || '@held.example', 'queued') returning id)
+                 insert into email_messages (project_id, segment_id, lead_id, direction, kind, status, created_at)
+                 select $1, $2, id, 'outbound', 'initial', 'approved', now() + make_interval(secs => $3) from l
+                 returning id",
+            )
+            .bind(project)
+            .bind(segment)
+            .bind(n)
+            .fetch_one(&db)
+        };
+        let (waiting, other) = (email(stuck, 0).await.unwrap(), email(open, 1).await.unwrap());
+        let state = crate::autopilot::tests::state(db.clone());
+        let status = |id: Uuid| sqlx::query_scalar::<_, String>("select status from email_messages where id = $1").bind(id).fetch_one(&db);
+
+        super::tick(&state).await.unwrap();
+        assert_eq!((status(waiting).await.unwrap(), status(other).await.unwrap()), ("approved".into(), "cancelled".into()));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

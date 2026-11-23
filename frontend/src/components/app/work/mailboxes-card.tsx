@@ -33,7 +33,7 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
     );
   // Its own pick starts as the project's, so switching it on changes nothing until someone ticks a box.
   const active = mailboxes?.filter((m) => m.status === "active").map((m) => m.id);
-  const copy = settings?.mailbox_ids ?? active;
+  const copy = settings && (settings.mailbox_ids ?? active);
   const toggle = (id: string) => picked && save(picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id]);
 
   return (
@@ -62,7 +62,7 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
           <Switch
             checked={picked !== null}
             onChange={(on) => (on ? save(copy!, "This campaign has its own mailboxes") : save(null, "Back to the project's mailboxes"))}
-            disabled={pending === "mailbox_ids" || !copy?.length}
+            disabled={pending === "mailbox_ids" || (picked === null && !copy?.length)}
             label="Its own mailboxes"
           />
         </li>
