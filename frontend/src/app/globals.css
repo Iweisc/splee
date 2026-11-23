@@ -98,12 +98,13 @@ body {
   }
 
   /* Windows high contrast drops backgrounds and shadows and draws every border alike, which are all that mark the picked
-     range, tab or chip, the current page or conversation, and a picked option like a call's outcome. A thick underline
+     range, tab or chip, the current page, conversation or step, and a picked option like a call's outcome. A thick underline
      marks them there instead, not an outline, which is how focus shows. */
   @media (forced-colors: active) {
     [aria-pressed="true"],
     [aria-current="page"],
     [aria-current="true"],
+    [aria-current="step"],
     label:has(input.sr-only:checked) {
       text-decoration-line: underline;
       text-decoration-thickness: 2px;
