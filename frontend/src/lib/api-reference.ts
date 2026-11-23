@@ -240,6 +240,13 @@ export function endpoints(projectId: string): Endpoint[] {
       response: `{ "id": "5d0a…", "status": "paused", "archived_at": null, "…": "…" }`,
     },
     {
+      method: "POST",
+      path: "/campaigns/5d0a…/duplicate",
+      summary:
+        "Copy a campaign as a new draft named \"<name> (copy)\": its description, targeting, brief, language, tracking, lead pages, daily limit, follow-ups, send hours, its own first email, its A/B variants that aren't paused and an imported campaign's sequence. No leads, emails or results come with it, and it sends nothing until you start it. Returns the new campaign like the list above.",
+      response: `{ "id": "8c41…", "name": "Design studios (copy)", "status": "draft", "leads": 0, "…": "…" }`,
+    },
+    {
       method: "GET",
       path: "/campaigns/5d0a…/my-copy",
       summary:
