@@ -82,6 +82,8 @@ pub(in crate::routes) struct ProjectControls {
     lead_time_zone: bool,
     /// Dates nothing cold goes out on, like holidays, as "2026-12-25".
     days_off: Vec<chrono::NaiveDate>,
+    /// Once a lead replies, the sequence stops for the project's other leads at the same company.
+    stop_company_on_reply: bool,
     /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
     sender_name: String,
 }
@@ -106,6 +108,7 @@ impl From<ProjectSettings> for ProjectControls {
             match_provider: s.match_provider,
             lead_time_zone: s.lead_time_zone,
             days_off: s.days_off,
+            stop_company_on_reply: s.stop_company_on_reply,
             sender_name: s.sender_name,
         }
     }

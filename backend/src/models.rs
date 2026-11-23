@@ -399,6 +399,8 @@ pub struct ProjectSettings {
     pub match_provider: bool,
     /// First emails and follow-ups keep to the send days and hours in the lead's time zone, when their number or country has one.
     pub lead_time_zone: bool,
+    /// Once a lead replies, the sequence stops for the project's other leads at the same company.
+    pub stop_company_on_reply: bool,
     /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.

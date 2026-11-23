@@ -156,17 +156,9 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result
     .bind(lead.id)
     .fetch_one(&mut *tx)
     .await?;
-    sqlx::query(
-        "update email_messages set status = 'cancelled', error = $2
-         where lead_id = $1 and kind in ('initial', 'follow_up') and status in ('draft', 'approved', 'scheduled')",
-    )
-    .bind(lead.id)
-    .bind(why)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead.id).execute(&mut *tx).await?;
-    sqlx::query(crate::twilio::STOP_TEXTS).bind(lead.id).bind(why).execute(&mut *tx).await?;
-    sqlx::query(crate::calls::STOP_SEQUENCE_CALLS).bind(lead.id).bind(why).execute(&mut *tx).await?;
+    crate::mail::end_sequence(&mut tx, lead.id, why).await?;
+    // In the same transaction, so a webhook retried after a failure here still finds the lead not replied yet.
+    crate::mail::stop_colleagues(&mut tx, lead).await?;
     tx.commit().await?;
     let owner = crate::ownership::claim(db, lead.id).await;
     Ok(Lead { owner_id: updated.owner_id.or(owner), ..updated })
@@ -269,5 +261,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(emails, [("follow_up".into(), "cancelled".into()), ("initial".into(), "sent".into()), ("manual_reply".into(), "draft".into())]);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_reply_stops_the_sequence_for_everyone_at_the_company_when_the_project_says_so(db: PgPool) {
+        let (sam, _) = sequence(&db).await;
+        let project = sam.project_id;
+        let company: Uuid = sqlx::query_scalar("insert into companies (project_id, domain, name) values ($1, 'northwind.example', 'Northwind') returning id")
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        sqlx::query("update leads set company_id = $2, company_domain = 'northwind.example' where id = $1").bind(sam.id).bind(company).execute(&db).await.unwrap();
+        let sam: Lead = sqlx::query_as("select * from leads where id = $1").bind(sam.id).fetch_one(&db).await.unwrap();
+        sqlx::query("insert into project_settings (project_id) values ($1) on conflict do nothing").bind(project).execute(&db).await.unwrap();
+        let lead = |name: &str, status: &str, company_id: Option<Uuid>, domain: &str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into leads (project_id, full_name, email, status, company_id, company_domain) values ($1, $2, $3, $4, $5, $6) returning id",
+            )
+            .bind(project)
+            .bind(name.to_string())
+            .bind(format!("{}@{domain}", name.to_lowercase()))
+            .bind(status.to_string())
+            .bind(company_id)
+            .bind(domain.to_string())
+            .fetch_one(&db)
+        };
+        // Dana shares the company row, Lee only the website, and Kim and Ava work elsewhere.
+        let dana = lead("Dana", "contacted", Some(company), "northwind.example").await.unwrap();
+        let lee = lead("Lee", "new", None, "NorthWind.example").await.unwrap();
+        let kim = lead("Kim", "contacted", None, "contoso.example").await.unwrap();
+        let ava = lead("Ava", "new", None, "contoso.example").await.unwrap();
+        for id in [dana, kim] {
+            sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, step, status) values ($1, $2, 'outbound', 'follow_up', 1, 'approved')")
+                .bind(project)
+                .bind(id)
+                .execute(&db)
+                .await
+                .unwrap();
+            sqlx::query("insert into linkedin_messages (lead_id, project_id, step, kind, body, due_at) values ($1, $2, 1, 'connect', 'Hi', now())")
+                .bind(id)
+                .bind(project)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let follow_up = |id: Uuid| {
+            sqlx::query_as::<_, (String, Option<String>)>("select status, error from email_messages where lead_id = $1 and kind = 'follow_up'")
+                .bind(id)
+                .fetch_one(&db)
+        };
+        let unwritten = || async {
+            let mut ids: Vec<Uuid> = crate::agent::write::leads_without_initial(&db, project, None).await.unwrap().iter().map(|l| l.id).collect();
+            ids.sort();
+            ids
+        };
+        let sorted = |mut ids: Vec<Uuid>| {
+            ids.sort();
+            ids
+        };
+
+        // Off, a reply only stops the lead's own sequence.
+        assert_eq!(crate::mail::stop_colleagues(&mut db.acquire().await.unwrap(), &sam).await.unwrap(), 0);
+        assert_eq!(follow_up(dana).await.unwrap().0, "approved");
+        assert_eq!(unwritten().await, sorted(vec![lee, ava]));
+
+        sqlx::query("update project_settings set stop_company_on_reply = true where project_id = $1").bind(project).execute(&db).await.unwrap();
+        stop_for_reply(&db, &sam, "They replied on LinkedIn").await.unwrap();
+        assert_eq!(follow_up(dana).await.unwrap(), ("cancelled".into(), Some("Sam Lee at the same company replied".into())));
+        assert_eq!(steps(&db, dana).await[0].status, "skipped");
+        assert_eq!(follow_up(kim).await.unwrap().0, "approved");
+        assert_eq!(steps(&db, kim).await[0].status, "todo");
+        // Lee gets no first email while Sam's reply stands.
+        assert_eq!(unwritten().await, [ava]);
     }
 }

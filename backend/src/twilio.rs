@@ -346,7 +346,7 @@ pub struct DueStep {
 /// later one its delay after the text before it was sent. A lead who wrote back, isn't being contacted, or whose number is
 /// on the do-not-contact list gets none, and a text that failed or was cancelled ends their sequence. `leads` narrows it.
 pub async fn due_steps(db: &PgPool, leads: Option<&[Uuid]>) -> sqlx::Result<Vec<DueStep>> {
-    sqlx::query_as(
+    sqlx::query_as(&format!(
         "with next as (
            select l.id as lead_id, l.project_id, p.org_id, l.phone, ps.text_steps, coalesce(s.status, 'working') in ('working', 'scaling') as sending,
                   coalesce(last.step, 0) + 1 as step, last.status as last_status,
@@ -367,6 +367,7 @@ pub async fn due_steps(db: &PgPool, leads: Option<&[Uuid]>) -> sqlx::Result<Vec<
              and (last.status is null or last.status in ('sent', 'delivered'))
              and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
              and not exists (select 1 from suppressions x where x.org_id = p.org_id and x.kind = 'phone' and x.value = l.phone)
+             and not {COMPANY_REPLIED}
          ), timed as (
            select n.*, n.text_steps -> (n.step - 1) as rule,
                   n.anchor + make_interval(days => greatest(1, coalesce((n.text_steps -> (n.step - 1) ->> 'delay_days')::int, 2))) as due_at
@@ -378,7 +379,8 @@ pub async fn due_steps(db: &PgPool, leads: Option<&[Uuid]>) -> sqlx::Result<Vec<
                             where op.org_id = t.org_id and o.to_number = t.phone and o.status in ('sent', 'delivered')) as first
          from timed t where t.due_at <= now() + interval '12 hours'
          order by t.due_at limit 500",
-    )
+        COMPANY_REPLIED = crate::mail::COMPANY_REPLIED,
+    ))
     .bind(leads)
     .fetch_all(db)
     .await

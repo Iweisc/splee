@@ -229,6 +229,55 @@ pub async fn suppressed_among(db: &sqlx::PgPool, org_id: Uuid, project_id: Uuid,
 /// Takes a lead's unsent LinkedIn steps off the to-do list, for a reply or a suppression. $1 is the lead.
 pub const STOP_LINKEDIN: &str = "update linkedin_messages set status = 'skipped' where lead_id = $1 and status = 'todo'";
 
+/// Cancels what's still to go out in a lead's sequence: unsent first emails and follow-ups, LinkedIn steps, texts and call
+/// steps. `why` is shown on the emails, texts and calls.
+pub async fn end_sequence(conn: &mut sqlx::PgConnection, lead_id: Uuid, why: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "update email_messages set status = 'cancelled', error = $2
+         where lead_id = $1 and kind in ('initial', 'follow_up') and status in ('draft', 'approved', 'scheduled')",
+    )
+    .bind(lead_id)
+    .bind(why)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(STOP_LINKEDIN).bind(lead_id).execute(&mut *conn).await?;
+    sqlx::query(crate::twilio::STOP_TEXTS).bind(lead_id).bind(why).execute(&mut *conn).await?;
+    sqlx::query(crate::calls::STOP_SEQUENCE_CALLS).bind(lead_id).bind(why).execute(&mut *conn).await?;
+    Ok(())
+}
+
+/// Lead `l` works where another of the project's leads replied, booked or said no, and the project stops a company's sequence
+/// on a reply (stop_company_on_reply). The places that write sequence steps check it, so none are written for them.
+pub const COMPANY_REPLIED: &str = "exists (select 1 from project_settings cs join leads o on o.project_id = cs.project_id
+    where cs.project_id = l.project_id and cs.stop_company_on_reply and o.id <> l.id
+      and o.status in ('replied', 'hot', 'meeting_booked', 'not_interested')
+      and (o.company_id = l.company_id or (l.company_domain <> '' and o.company_domain = l.company_domain)))";
+
+/// `lead` replied, so with the project's stop_company_on_reply on, the sequence ends for its other leads still being contacted
+/// at the same company, the same company row or website. Returns how many.
+pub async fn stop_colleagues(conn: &mut sqlx::PgConnection, lead: &Lead) -> sqlx::Result<usize> {
+    let colleagues: Vec<Uuid> = sqlx::query_scalar(
+        "select l.id from leads l join project_settings ps on ps.project_id = l.project_id
+         where l.project_id = $1 and ps.stop_company_on_reply and l.id <> $2 and l.status in ('new', 'queued', 'contacted')
+           and (l.company_id = $3 or ($4::text <> '' and l.company_domain = $4::text::citext))",
+    )
+    .bind(lead.project_id)
+    .bind(lead.id)
+    .bind(lead.company_id)
+    .bind(&lead.company_domain)
+    .fetch_all(&mut *conn)
+    .await?;
+    if colleagues.is_empty() {
+        return Ok(0);
+    }
+    let who = [&lead.full_name, lead.email.as_ref().unwrap_or(&String::new())].into_iter().find(|s| !s.is_empty()).cloned();
+    let why = format!("{} at the same company replied", who.as_deref().unwrap_or("Someone"));
+    for id in &colleagues {
+        end_sequence(conn, *id, &why).await?;
+    }
+    Ok(colleagues.len())
+}
+
 /// Stops all outreach to a lead: sets its status, suppresses the address for the org and cancels unsent emails, LinkedIn
 /// steps and texts.
 pub async fn suppress_lead(state: &AppState, lead: &Lead, org_id: Option<Uuid>, status: &str, reason: &str) -> sqlx::Result<()> {

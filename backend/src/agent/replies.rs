@@ -189,6 +189,9 @@ async fn apply_verdict(ctx: &Ctx, t: &Thread, verdict: &Verdict) -> anyhow::Resu
     sqlx::query(mail::STOP_LINKEDIN).bind(lead_id).execute(db).await?;
     sqlx::query(crate::twilio::STOP_TEXTS).bind(lead_id).bind("They replied").execute(db).await?;
     sqlx::query(crate::calls::STOP_SEQUENCE_CALLS).bind(lead_id).bind("They replied").execute(db).await?;
+    let mut tx = db.begin().await?;
+    mail::stop_colleagues(&mut tx, &t.lead).await?;
+    tx.commit().await?;
 
     let reply = |classification: &str| {
         json!({

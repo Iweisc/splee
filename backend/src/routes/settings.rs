@@ -108,6 +108,7 @@ pub(super) struct SettingsBody {
     lead_time_zone: Option<bool>,
     /// Sorted and deduplicated on save.
     days_off: Option<Vec<NaiveDate>>,
+    stop_company_on_reply: Option<bool>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -168,6 +169,7 @@ pub(super) struct Controls {
     match_provider: Option<bool>,
     lead_time_zone: Option<bool>,
     days_off: Option<Vec<NaiveDate>>,
+    stop_company_on_reply: Option<bool>,
     sender_name: Option<String>,
 }
 
@@ -189,6 +191,7 @@ impl From<Controls> for SettingsBody {
             match_provider: c.match_provider,
             lead_time_zone: c.lead_time_zone,
             days_off: c.days_off,
+            stop_company_on_reply: c.stop_company_on_reply,
             sender_name: c.sender_name,
             ..Default::default()
         }
@@ -360,7 +363,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            assign_territories = coalesce($48, assign_territories),
            match_provider = coalesce($49, match_provider),
            lead_time_zone = coalesce($50, lead_time_zone),
-           days_off = coalesce($51, days_off)
+           days_off = coalesce($51, days_off),
+           stop_company_on_reply = coalesce($52, stop_company_on_reply)
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -414,6 +418,7 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.match_provider)
     .bind(body.lead_time_zone)
     .bind(days_off)
+    .bind(body.stop_company_on_reply)
     .fetch_one(db)
     .await?;
     Ok(settings)

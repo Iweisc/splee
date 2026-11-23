@@ -963,6 +963,8 @@ pub(super) fn tools() -> Vec<Value> {
                                     "description": "Optional. Send days and hours apply in each lead's time zone, from their phone or country" },
                 "days_off": { "type": "array", "maxItems": 100, "items": { "type": "string", "format": "date" },
                               "description": "Optional. Dates like 2026-12-25 when no first emails, follow-ups, texts or LinkedIn steps go out" },
+                "stop_company_on_reply": { "type": "boolean",
+                                           "description": "Optional. Once a lead replies, stop the sequence for other leads at their company" },
                 "sender_name": { "type": "string", "maxLength": 100,
                                  "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),
