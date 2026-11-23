@@ -30,17 +30,15 @@ export function LeadReminders({ leadId }: { leadId: string }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
-  // A done reminder whose Done had focus, and where that Done was. Once its row leaves the list and takes focus with it, focus
-  // goes to the Done now in that place, or the last one, or the note, so someone on the keyboard isn't sent back to the top of
-  // the page. Someone who moved focus elsewhere meanwhile keeps it there.
-  const refocus = useRef<{ id: string; at: number } | null>(null);
+  // Where a done reminder's Done was, when it still had focus as its row left the list. Focus goes to the Done now in that
+  // place, or the last one, or the note, so someone on the keyboard isn't sent back to the top of the page.
+  const refocus = useRef<number | null>(null);
   useEffect(() => {
-    const pending = refocus.current;
-    if (!pending || reminders?.some((r) => r.id === pending.id)) return;
+    const at = refocus.current;
     refocus.current = null;
-    if (!root.current || document.activeElement !== document.body) return;
+    if (at === null || !root.current) return;
     const dones = root.current.querySelectorAll<HTMLElement>("[data-done]");
-    (dones[pending.at] ?? dones[dones.length - 1] ?? root.current.querySelector("input"))?.focus();
+    (dones[at] ?? dones[dones.length - 1] ?? root.current.querySelector("input"))?.focus();
   }, [reminders]);
 
   const refresh = async () => {
@@ -65,12 +63,13 @@ export function LeadReminders({ leadId }: { leadId: string }) {
   };
 
   const done = async (id: string, button: HTMLElement) => {
-    const at = button === document.activeElement ? [...(root.current?.querySelectorAll("[data-done]") ?? [])].indexOf(button) : -1;
     setBusy(id);
     try {
       await api(`/reminders/${id}/done`, { body: {} });
-      if (at >= 0) refocus.current = { id, at };
       toast.success("Reminder done");
+      // The row goes at once rather than with the refresh, so whether its Done still has focus is known as it leaves.
+      if (button === document.activeElement) refocus.current = [...(root.current?.querySelectorAll("[data-done]") ?? [])].indexOf(button);
+      await mutate((list) => list?.filter((r) => r.id !== id), { revalidate: false });
       await refresh();
     } catch (err) {
       toastError(err);
