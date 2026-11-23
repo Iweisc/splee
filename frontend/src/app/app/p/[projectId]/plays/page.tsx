@@ -19,12 +19,12 @@ const TRIGGERS: Record<PlayTrigger, { label: string; lead: boolean }> = {
   news: { label: "A company has news", lead: false },
   hiring: { label: "A company posts a job you watch", lead: false },
   visit: { label: "A company visits your website", lead: false },
-  job_change: { label: "A past customer moves to a new company", lead: true },
+  job_change: { label: "A past customer moves companies", lead: true },
   score: { label: "A lead's score reaches", lead: true },
 };
 
 const ACTIONS: Record<PlayAction, string> = {
-  add_to_campaign: "Add it to a campaign and find its people",
+  add_to_campaign: "Add to a campaign and find people",
   write_email: "Write their first email",
   notify: "Tell my chats",
 };
