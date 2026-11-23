@@ -359,6 +359,57 @@ async fn campaigns_start_stop_and_approve_like_the_app_buttons(db: PgPool) {
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn a_campaign_set_to_start_later_starts_itself_then_in_the_name_of_the_key_that_set_it(db: PgPool) {
+    let [a, _] = seed(&db).await;
+    let (segment, email) = campaign(&db, a, "draft").await;
+    let other: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status) values ($1, 'Gyms', 'paused') returning id")
+        .bind(a)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let api = Api::start(&db, LIMITS).await;
+    let path = format!("/v1/campaigns/{segment}");
+    let in_hours = |h: i64| (chrono::Utc::now() + chrono::Duration::hours(h)).to_rfc3339();
+    let row = |id: Uuid| {
+        let db = db.clone();
+        async move {
+            sqlx::query_as::<_, (String, bool)>("select status, start_at is not null from segments where id = $1").bind(id).fetch_one(&db).await.unwrap()
+        }
+    };
+
+    for (start_at, why) in [(in_hours(-1), "in the past"), (in_hours(24 * 400), "over a year away")] {
+        assert_eq!(api.patch(&path, json!({ "start_at": start_at })).await.0, 400, "{why}");
+    }
+    let (status, detail) = api.patch(&path, json!({ "start_at": in_hours(2) })).await;
+    assert!(status == 200 && detail["start_at"].is_string(), "{detail}");
+    assert!(detail["status_reason"].as_str().unwrap().starts_with("Not sending yet. It starts by itself on"), "{detail}");
+    crate::routes::segments::start_scheduled(&db).await.unwrap();
+    assert_eq!(row(segment).await, ("draft".into(), true), "not before its time");
+
+    // Its time comes: it starts like Start, once, and the audit log names the key that set it.
+    sqlx::query("update segments set start_at = now() - interval '1 minute' where id = $1").bind(segment).execute(&db).await.unwrap();
+    for _ in 0..2 {
+        crate::routes::segments::start_scheduled(&db).await.unwrap();
+    }
+    assert_eq!(row(segment).await, ("working".into(), false));
+    let email_status: String = sqlx::query_scalar("select status from email_messages where id = $1").bind(email).fetch_one(&db).await.unwrap();
+    assert_eq!(email_status, "approved");
+    assert_eq!(count(&db, "select count(*) from audit_events where action = 'campaign.launched' and actor_key_id is not null").await, 1);
+    assert_eq!(api.patch(&path, json!({ "start_at": in_hours(2) })).await.0, 400, "it's already sending");
+
+    // null cancels it, and so does archiving.
+    let other_path = format!("/v1/campaigns/{other}");
+    api.patch(&other_path, json!({ "start_at": in_hours(2) })).await;
+    assert_eq!(api.patch(&other_path, json!({ "start_at": null })).await.1["start_at"], Value::Null);
+    api.patch(&other_path, json!({ "start_at": in_hours(2) })).await;
+    assert_eq!(api.post(KEYS[0], &format!("{other_path}/archive"), None, json!({})).await.0, 200);
+    assert_eq!(row(other).await, ("paused".into(), false));
+    assert_eq!(api.patch(&other_path, json!({ "start_at": in_hours(2) })).await.0, 409, "an archived campaign can't start");
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
     let [a, b] = seed(&db).await;
     let (segment, _) = campaign(&db, a, "draft").await;

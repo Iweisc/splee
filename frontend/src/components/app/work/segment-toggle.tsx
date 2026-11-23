@@ -1,13 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Archive, ArchiveRestore, Pause, Play } from "lucide-react";
+import { Archive, ArchiveRestore, CalendarClock, Pause, Play, X } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, type ButtonSize } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import type { Segment } from "@/lib/types";
+import { dayTime } from "@/lib/utils";
 import { toastError } from "./states";
+import { TimePicker, tomorrowMorning } from "./time-picker";
 
 export function SegmentToggle({ segment, size = "sm" }: { segment: Segment; size?: ButtonSize }) {
   const { mutate } = useSWRConfig();
@@ -34,6 +36,64 @@ export function SegmentToggle({ segment, size = "sm" }: { segment: Segment; size
       {running ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
       {running ? "Pause" : "Start"}
     </Button>
+  );
+}
+
+/** Beside Start on a campaign that isn't sending: pick a time for it to start by itself, as Start would then, or change or
+ *  cancel the one picked. Start and Archive cancel it too. */
+export function StartLater({ segment }: { segment: Segment }) {
+  const { mutate } = useSWRConfig();
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const set = async (start_at: string | null) => {
+    setBusy(true);
+    try {
+      await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
+      await mutate(() => true);
+      toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
+      setPicking(false);
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {segment.start_at ? (
+        <span className="inline-flex items-center">
+          <Button variant="outline" className="rounded-r-none" onClick={() => setPicking(true)} aria-label={`Starts ${dayTime(segment.start_at)}. Change it`}>
+            <CalendarClock className="size-3.5" /> Starts {dayTime(segment.start_at)}
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-10 rounded-l-none border-l-0"
+            onClick={() => set(null)}
+            loading={busy}
+            aria-label="Cancel the scheduled start"
+            title="Cancel the scheduled start"
+          >
+            <X className="size-4" />
+          </Button>
+        </span>
+      ) : (
+        <Button variant="outline" onClick={() => setPicking(true)}>
+          <CalendarClock className="size-3.5" /> Start later
+        </Button>
+      )}
+      {picking && (
+        <TimePicker
+          title="Start this campaign later"
+          action="Schedule start"
+          initial={segment.start_at ? new Date(segment.start_at) : tomorrowMorning()}
+          days={365}
+          onPick={set}
+          onClose={() => setPicking(false)}
+        />
+      )}
+    </>
   );
 }
 

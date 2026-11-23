@@ -11,7 +11,7 @@ use crate::agent::{self, kind};
 use crate::audit::{self, Target, Who};
 use crate::auth::Auth;
 use crate::error::{AppError, AppResult};
-use crate::models::Segment;
+use crate::models::{Segment, Ts};
 use crate::send_state::{self, SendState};
 use crate::state::AppState;
 
@@ -148,6 +148,9 @@ pub(super) struct SegmentBody {
     /// The campaign's own send days and hours, where null goes back to the project's and leaves out keeps them.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     send_hours: Option<Option<SendHoursBody>>,
+    /// When the campaign starts itself, where null cancels it and leaves out keeps it.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    start_at: Option<Option<Ts>>,
 }
 
 /// A campaign's own send days, 1 (Monday) to 7, and hours, read in the project's time zone.
@@ -316,7 +319,9 @@ async fn update(
     if body.status.is_some() {
         ensure_not_archived(&segment)?;
     }
-    let segment = sqlx::query_as::<_, Segment>(
+    let status = body.status.as_deref().unwrap_or(&segment.status);
+    let (set, start_at, by_user, by_key) = start_columns(&segment, status, (&auth).into(), body.start_at)?;
+    let segment = sqlx::query_as::<_, Segment>(&format!(
         "update segments set
            name = coalesce($2, name),
            description = coalesce($3, description),
@@ -336,9 +341,11 @@ async fn update(
            follow_ups = case when $18 then $19 else follow_ups end,
            send_days = case when $20 then $21 else send_days end,
            send_start_hour = case when $20 then $22 else send_start_hour end,
-           send_end_hour = case when $20 then $23 else send_end_hour end
+           send_end_hour = case when $20 then $23 else send_end_hour end,
+           {}
          where id = $1 returning *",
-    )
+        set_start(24, "coalesce($7, status)"),
+    ))
     .bind(segment.id)
     .bind(body.name.as_deref().map(str::trim))
     .bind(body.description)
@@ -362,6 +369,10 @@ async fn update(
     .bind(days)
     .bind(start)
     .bind(end)
+    .bind(set)
+    .bind(start_at)
+    .bind(by_user)
+    .bind(by_key)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
@@ -514,6 +525,70 @@ async fn start(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) 
     Ok(Json(json!({ "ok": true })))
 }
 
+/// What a PATCH's start_at sets: whether it changes, then start_at and the member or API key asking, all None to cancel. Left
+/// out (the outer None) changes nothing. A campaign the PATCH leaves sending (`status`) has nothing to start, and an archived
+/// one is refused like its Start button. set_start writes them in the PATCH's update.
+pub(super) fn start_columns(segment: &Segment, status: &str, who: Who, start_at: Option<Option<Ts>>) -> AppResult<StartColumns> {
+    let Some(start_at) = start_at else { return Ok((false, None, None, None)) };
+    if let Some(at) = start_at {
+        ensure_not_archived(segment)?;
+        if matches!(status, "working" | "scaling") {
+            return Err(AppError::BadRequest("This campaign is already sending".into()));
+        }
+        let now = chrono::Utc::now();
+        if at <= now || at > now + chrono::Duration::days(366) {
+            return Err(AppError::BadRequest("Pick a time to start within the next year".into()));
+        }
+    }
+    Ok((true, start_at, start_at.and(who.user_id()), start_at.and(who.key_id())))
+}
+
+pub(super) type StartColumns = (bool, Option<Ts>, Option<Uuid>, Option<Uuid>);
+
+/// SQL for an update that writes start_columns, bound in order from parameter `$n`. `status` is the status the update leaves:
+/// a campaign left sending has nothing to start, like after Start. start_columns checked the status as loaded, and this also
+/// covers a Start or a schedule that another request committed in between.
+pub(super) fn set_start(n: usize, status: &str) -> String {
+    let (to, user, key) = (n + 1, n + 2, n + 3);
+    let sends = format!("{status} in ('working', 'scaling')");
+    format!(
+        "start_at = case when {sends} then null when ${n} then ${to} else start_at end,
+         start_by_user = case when {sends} then null when ${n} then ${user} else start_by_user end,
+         start_by_key = case when {sends} then null when ${n} then ${key} else start_by_key end"
+    )
+}
+
+/// Starts each campaign whose start_at has come, as its Start button would, in the name of whoever set it. Clearing start_at
+/// claims it, so two servers can't both start one, and a campaign that's sending or archived by then is left as it is.
+pub async fn start_scheduled(db: &PgPool) -> anyhow::Result<()> {
+    // The campaign, its organization, and the start_at, start_by_user and start_by_key it had.
+    type Due = (Uuid, Uuid, Ts, Option<Uuid>, Option<Uuid>);
+    let due: Vec<Due> = sqlx::query_as(
+        "with due as (select id, start_at, start_by_user, start_by_key from segments where start_at <= now() for update skip locked)
+         update segments s set start_at = null, start_by_user = null, start_by_key = null from due, projects p
+         where s.id = due.id and p.id = s.project_id returning s.id, p.org_id, due.start_at, due.start_by_user, due.start_by_key",
+    )
+    .fetch_all(db)
+    .await?;
+    for (id, org_id, at, user, key) in due {
+        // Deleted since it was claimed, or started or archived by hand.
+        let segment: Option<Segment> = sqlx::query_as("select * from segments where id = $1").bind(id).fetch_optional(db).await?;
+        let Some(segment) = segment.filter(|s| !running(s) && s.archived_at.is_none()) else { continue };
+        if let Err(e) = launch(db, Who::stored(org_id, user, key), &segment).await {
+            tracing::error!(error = ?e, segment_id = %id, "could not start a scheduled campaign");
+            // Back for the next minute, unless it was set again meanwhile.
+            sqlx::query("update segments set start_at = $2, start_by_user = $3, start_by_key = $4 where id = $1 and start_at is null")
+                .bind(id)
+                .bind(at)
+                .bind(user)
+                .bind(key)
+                .execute(db)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether the campaign sends. The app shows Pause for these and Start for the rest.
 pub(super) fn running(segment: &Segment) -> bool {
     matches!(segment.status.as_str(), "working" | "scaling")
@@ -524,7 +599,10 @@ pub(super) async fn launch(db: &PgPool, who: impl Into<Who>, segment: &Segment) 
     let mut tx = db.begin().await?;
     // Checked in the update, so an archive that lands after the campaign was loaded still wins.
     let started =
-        sqlx::query("update segments set status = 'working' where id = $1 and archived_at is null").bind(segment.id).execute(&mut *tx).await?;
+        sqlx::query(&format!("update segments set status = 'working', {CANCEL_START} where id = $1 and archived_at is null"))
+            .bind(segment.id)
+            .execute(&mut *tx)
+            .await?;
     if started.rows_affected() == 0 {
         return Err(archived_error());
     }
@@ -584,6 +662,9 @@ pub(super) async fn hold(db: &PgPool, who: impl Into<Who>, segment: &Segment) ->
     Ok(())
 }
 
+/// Starting or archiving a campaign takes back its scheduled start.
+const CANCEL_START: &str = "start_at = null, start_by_user = null, start_by_key = null";
+
 fn archived_error() -> AppError {
     AppError::Conflict("This campaign is archived. Unarchive it first.".into())
 }
@@ -610,10 +691,11 @@ pub(super) async fn archive(db: &PgPool, who: impl Into<Who>, segment: &Segment)
     let who = who.into();
     // Archived before it's held, so a Start in between is refused rather than sending again. The status is the row's as it
     // is archived, not as it was loaded, since a Start may have landed in between.
-    let status: Option<String> = sqlx::query_scalar("update segments set archived_at = now() where id = $1 and archived_at is null returning status")
-        .bind(segment.id)
-        .fetch_optional(db)
-        .await?;
+    let status: Option<String> =
+        sqlx::query_scalar(&format!("update segments set archived_at = now(), {CANCEL_START} where id = $1 and archived_at is null returning status"))
+            .bind(segment.id)
+            .fetch_optional(db)
+            .await?;
     let Some(status) = status else { return Ok(()) };
     // A draft campaign can hold emails approved one at a time, which the sender would still send, so it's held too.
     if status != "paused" {
