@@ -96,6 +96,18 @@ body {
   textarea {
     text-wrap-style: auto;
   }
+
+  /* Windows high contrast drops backgrounds and shadows, which are all that mark the picked range or tab, the current page
+     in the sidebar and a picked option like a call's outcome. An outline marks them there instead. In the base layer, so
+     a focus ring still wins. */
+  @media (forced-colors: active) {
+    [aria-pressed="true"],
+    [aria-current="page"],
+    label:has(input.sr-only:checked) {
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
+  }
 }
 
 /* A shared client report (/report/{token}) saves as a PDF from the browser's print dialog. Cards print as bordered boxes

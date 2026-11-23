@@ -2,7 +2,7 @@ import { createContext, useContext, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const field =
-  "w-full rounded-lg border border-border-strong bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-shadow focus:border-foreground/40 focus:ring-4 focus:ring-black/5 disabled:opacity-60";
+  "w-full rounded-lg border border-border-strong bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden transition-shadow focus:border-foreground/40 focus:ring-4 focus:ring-black/5 disabled:opacity-60";
 
 export function Input({ className, ...props }: React.ComponentProps<"input">) {
   return <input className={cn(field, "h-10", className)} {...props} />;
@@ -113,12 +113,19 @@ export function Switch({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
+      // Drawn in system colors in Windows high contrast, which would otherwise drop the track and the thumb, both backgrounds.
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
-        checked ? "bg-brand-600" : "bg-black/15",
+        "forced-color-adjust-none forced-colors:border forced-colors:border-[ButtonText]",
+        checked ? "bg-brand-600 forced-colors:border-[Highlight] forced-colors:bg-[Highlight]" : "bg-black/15 forced-colors:bg-[Canvas]",
       )}
     >
-      <span className={cn("size-4 rounded-full bg-white shadow transition-transform", checked ? "translate-x-4.5" : "translate-x-0.5")} />
+      <span
+        className={cn(
+          "size-4 rounded-full bg-white shadow transition-transform",
+          checked ? "translate-x-4.5 forced-colors:bg-[HighlightText]" : "translate-x-0.5 forced-colors:bg-[ButtonText]",
+        )}
+      />
     </button>
   );
 }

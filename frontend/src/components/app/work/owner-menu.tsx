@@ -180,7 +180,7 @@ function Item({ checked, onClick, children }: { checked: boolean; onClick: () =>
       role="menuitemradio"
       aria-checked={checked}
       onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:bg-accent"
+      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden"
     >
       {children}
       <Check className={cn("size-3.5 shrink-0", !checked && "invisible")} />
