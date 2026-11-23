@@ -97,15 +97,17 @@ body {
     text-wrap-style: auto;
   }
 
-  /* Windows high contrast drops backgrounds and shadows, which are all that mark the picked range or tab, the current page
-     in the sidebar and a picked option like a call's outcome. An outline marks them there instead. In the base layer, so
-     a focus ring still wins. */
+  /* Windows high contrast drops backgrounds and shadows and draws every border alike, which are all that mark the picked
+     range, tab or chip, the current page or conversation, and a picked option like a call's outcome. A thick underline
+     marks them there instead, not an outline, which is how focus shows. */
   @media (forced-colors: active) {
     [aria-pressed="true"],
     [aria-current="page"],
+    [aria-current="true"],
     label:has(input.sr-only:checked) {
-      outline: 2px solid Highlight;
-      outline-offset: -2px;
+      text-decoration-line: underline;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 3px;
     }
   }
 }
