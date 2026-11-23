@@ -105,8 +105,8 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
             ) : (
               <>
                 <ArchiveToggle segment={segment} />
-                {segment.status !== "working" && segment.status !== "scaling" && <StartLater segment={segment} />}
                 <SegmentToggle segment={segment} size="md" />
+                {segment.status !== "working" && segment.status !== "scaling" && <StartLater segment={segment} />}
               </>
             )}
           </>

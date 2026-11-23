@@ -33,7 +33,7 @@ export function buttonClass(variant: ButtonVariant = "primary", size: ButtonSize
   );
 }
 
-type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+type ButtonProps = React.ComponentProps<"button"> & {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
