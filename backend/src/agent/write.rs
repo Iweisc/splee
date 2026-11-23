@@ -15,9 +15,18 @@ use crate::models::{EmailMessage, Lead, Project, Segment, SegmentStep, Variant};
 use crate::my_copy::{self, Copies, Fields, Filled, Sender, Template};
 use crate::{hiring, tech};
 
-const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
-that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
-offers. Never use placeholders such as [Name] or {company}. Plain text only.";
+macro_rules! writer {
+    () => {
+        "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
+         that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
+         offers. Never use placeholders such as [Name] or {company}. Plain text only."
+    };
+}
+/// For LinkedIn messages and texts.
+const WRITER: &str = writer!();
+/// For emails, which spam filters read. See spam_words.rs.
+const EMAIL_WRITER: &str =
+    concat!(writer!(), " Keep clear of words spam filters hold against cold email, like free, guarantee, act now, click here or limited time.");
 
 /// The subset of project_settings the writer uses. Demo projects have no settings row and get the defaults.
 #[derive(sqlx::FromRow)]
@@ -262,7 +271,7 @@ async fn ask_drafts(ctx: &Ctx, prompt: String, leads: &[Lead], with_subject: boo
         let list = serde_json::to_string_pretty(&missing.iter().map(|l| lead_brief(l, &signals)).collect::<Vec<_>>())?;
         let retry = if attempt > 0 { "\nWrite every email in full, with real names, and no placeholders." } else { "" };
         let drafts: Drafts =
-            ctx.ask(&Call::writing(WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject, with_page))).await?;
+            ctx.ask(&Call::writing(EMAIL_WRITER, format!("{prompt}\n\nLeads (write exactly one email per lead_id):\n{list}{retry}"), drafts_schema(with_subject, with_page))).await?;
         for d in drafts.emails {
             let known = missing.iter().any(|l| l.id == d.lead_id);
             if known && !d.body.trim().is_empty() && !has_placeholder(&d.body) && !has_placeholder(&d.subject) {
@@ -474,7 +483,7 @@ async fn write_my_copy_lines(
              Leads (write the lines for each lead_id, in order):\n{list}",
             outline = template.outline(),
         );
-        let written: WrittenLines = ctx.ask(&Call::writing(WRITER, prompt, schema.clone())).await?;
+        let written: WrittenLines = ctx.ask(&Call::writing(EMAIL_WRITER, prompt, schema.clone())).await?;
         for (lead, text) in batch {
             let Some(found) = written.leads.iter().find(|l| l.lead_id == lead.id) else { continue };
             let lines: Vec<String> = found.lines.iter().map(|l| l.trim().to_string()).collect();

@@ -176,7 +176,12 @@ pub(super) async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args
         "list_emails_to_approve" => async {
             let mut a = a.clone();
             a["status"] = json!("draft");
-            value(v1::list_emails(st(), auth, Query(parse(&a)?), Query(parse(&a)?)).await?)
+            let mut page = value(v1::list_emails(st(), auth, Query(parse(&a)?), Query(parse(&a)?)).await?)?;
+            for email in page["items"].as_array_mut().into_iter().flatten() {
+                let text = format!("{}\n{}", email["subject"].as_str().unwrap_or_default(), email["body"].as_str().unwrap_or_default());
+                email["spam_words"] = json!(crate::spam_words::found(&text));
+            }
+            Ok(page)
         }
         .await,
         "approve_email" => async { value(v1::approve_email(st(), auth, id(a, "email_id")?).await?) }.await,
