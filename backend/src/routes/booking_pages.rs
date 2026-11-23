@@ -430,7 +430,273 @@ async fn reschedule(
 
 #[cfg(test)]
 mod tests {
-    use super::slug_from;
+    use std::sync::Arc;
+
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::config::Config;
+
+    fn state(db: PgPool) -> AppState {
+        let cfg = Config { app_secret: "0123456789abcdef0123456789abcdef".into(), public_url: "https://app.test".into(), ..Config::test() };
+        AppState { db, cfg: Arc::new(cfg), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() }
+    }
+
+    fn owner(org_id: Uuid) -> Auth {
+        Auth { user_id: Uuid::new_v4(), org_id, role: "owner".into(), token_hash: String::new() }
+    }
+
+    async fn org(db: &PgPool, name: &str) -> Uuid {
+        sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(db).await.unwrap()
+    }
+
+    async fn mailbox(db: &PgPool, org_id: Uuid, email: &str, from_name: &str) -> Uuid {
+        sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_username, smtp_password_enc)
+             values ($1, $2, $3, 'smtp.test', '', '') returning id",
+        )
+        .bind(org_id)
+        .bind(email)
+        .bind(from_name)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    async fn create_page(state: &AppState, org_id: Uuid, mailbox_id: Uuid) -> AppResult<PageView> {
+        create(State(state.clone()), owner(org_id), Json(CreateBody { mailbox_id })).await.map(|Json(view)| view)
+    }
+
+    async fn edit(state: &AppState, org_id: Uuid, id: Uuid, body: Value) -> AppResult<PageView> {
+        let body: PageBody = serde_json::from_value(body).unwrap();
+        update(State(state.clone()), owner(org_id), Path(id), Json(body)).await.map(|Json(view)| view)
+    }
+
+    async fn saved(db: &PgPool, id: Uuid) -> BookingPage {
+        sqlx::query_as("select * from booking_pages where id = $1").bind(id).fetch_one(db).await.unwrap()
+    }
+
+    /// Each test uses its own address, since the public routes' rate limit is shared by the whole test binary.
+    fn visitor(ip: &str) -> (ConnectInfo<SocketAddr>, HeaderMap) {
+        (ConnectInfo(format!("{ip}:443").parse().unwrap()), HeaderMap::new())
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_mailbox_gets_one_page_on_a_free_link_made_from_its_name(db: PgPool) {
+        let state = state(db.clone());
+        let (acme, other) = (org(&db, "Acme").await, org(&db, "Other").await);
+        let alex = mailbox(&db, acme, "alex@acme.example", " Alex Morgan ").await;
+
+        let page = create_page(&state, acme, alex).await.unwrap();
+        assert_eq!(page.page.slug, "alex-morgan");
+        assert_eq!(page.page.name, "Intro call");
+        assert_eq!(page.url, "https://app.test/book/alex-morgan");
+        assert_eq!((page.host.as_str(), page.mailbox_email.as_str()), ("Alex Morgan", "alex@acme.example"));
+        assert_eq!(page.calendar_host, "");
+        assert_eq!(create_page(&state, acme, alex).await.unwrap().page.id, page.page.id, "a second press returns the same page");
+
+        // A colleague with the same name gets the next free link, and one with no name gets theirs from the address.
+        let namesake = mailbox(&db, acme, "alex.m@acme.example", "Alex Morgan").await;
+        assert_eq!(create_page(&state, acme, namesake).await.unwrap().page.slug, "alex-morgan-2");
+        let sam = mailbox(&db, acme, "sam.lee@acme.example", "").await;
+        let sams = create_page(&state, acme, sam).await.unwrap();
+        assert_eq!((sams.page.slug.as_str(), sams.host.as_str()), ("sam-lee", "sam.lee@acme.example"));
+
+        // Links are shared by every org, so alex-morgan to alex-morgan-9 taken by another org leaves a random one.
+        sqlx::query("update booking_pages set slug = 'acme-' || slug where org_id = $1").bind(acme).execute(&db).await.unwrap();
+        for n in 1..10 {
+            let slug = if n == 1 { "alex-morgan".to_string() } else { format!("alex-morgan-{n}") };
+            let mb = mailbox(&db, other, &format!("alex{n}@other.example"), "").await;
+            sqlx::query("insert into booking_pages (org_id, mailbox_id, slug) values ($1, $2, $3)").bind(other).bind(mb).bind(slug).execute(&db).await.unwrap();
+        }
+        let third = mailbox(&db, acme, "a.morgan@acme.example", "Alex Morgan").await;
+        let random = create_page(&state, acme, third).await.unwrap().page.slug;
+        let suffix = random.strip_prefix("alex-morgan-").unwrap_or_default();
+        assert!(suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "{random}");
+
+        // Another org's mailbox isn't found, and the list only has the org's own pages, oldest first.
+        assert!(matches!(create_page(&state, other, alex).await, Err(AppError::NotFound)));
+        for (email, age) in [("sam.lee@acme.example", 4), ("alex@acme.example", 3), ("a.morgan@acme.example", 2), ("alex.m@acme.example", 1)] {
+            sqlx::query("update booking_pages set created_at = now() - make_interval(days => $2) where mailbox_id = (select id from mailboxes where email = $1)")
+                .bind(email)
+                .bind(age)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let Json(listed) = list(State(state.clone()), owner(acme)).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|v| v.mailbox_email.as_str()).collect::<Vec<_>>(),
+            ["sam.lee@acme.example", "alex@acme.example", "a.morgan@acme.example", "alex.m@acme.example"]
+        );
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn editing_a_page_refuses_bad_values_and_a_taken_link_and_saves_nothing(db: PgPool) {
+        let state = state(db.clone());
+        let (acme, other) = (org(&db, "Acme").await, org(&db, "Other").await);
+        let id = create_page(&state, acme, mailbox(&db, acme, "alex@acme.example", "Alex Morgan").await).await.unwrap().page.id;
+        create_page(&state, acme, mailbox(&db, acme, "sam@acme.example", "Sam Lee").await).await.unwrap();
+        let calendar = encrypt(&state.cfg.app_secret, "webcal://calendar.example/private/basic.ics");
+        sqlx::query("update booking_pages set calendar_url_enc = $2, calendar_error = 'Timed out' where id = $1")
+            .bind(id)
+            .bind(&calendar)
+            .execute(&db)
+            .await
+            .unwrap();
+        let before = saved(&db, id).await;
+
+        let refused = [
+            json!({ "slug": "a" }),
+            json!({ "slug": "x".repeat(49) }),
+            json!({ "slug": "-alex" }),
+            json!({ "slug": "alex_morgan" }),
+            json!({ "name": "   " }),
+            json!({ "name": "x".repeat(81) }),
+            json!({ "duration_minutes": 20 }),
+            json!({ "timezone": "Mars/Olympus" }),
+            json!({ "hours": vec![[540, 1020]; 6] }),
+            json!({ "hours": [[540, 540], null, null, null, null, null, null] }),
+            json!({ "hours": [[-1, 600], null, null, null, null, null, null] }),
+            json!({ "hours": [[540, 1441], null, null, null, null, null, null] }),
+            json!({ "buffer_minutes": -1 }),
+            json!({ "buffer_minutes": 121 }),
+            json!({ "notice_minutes": 20161 }),
+            json!({ "days_ahead": 0 }),
+            json!({ "days_ahead": 91 }),
+            json!({ "reminder_hours": 169 }),
+            json!({ "location": "x".repeat(501) }),
+            // A good value alongside a bad one doesn't get saved either.
+            json!({ "name": "Demo", "days_ahead": 91 }),
+        ];
+        let unchanged = || {
+            let (db, before, calendar) = (&db, &before, &calendar);
+            async move {
+                let after = saved(db, id).await;
+                serde_json::to_value(&after).unwrap() == serde_json::to_value(before).unwrap() && after.calendar_url_enc == *calendar
+            }
+        };
+        for body in refused {
+            let result = edit(&state, acme, id, body.clone()).await;
+            assert!(matches!(result, Err(AppError::BadRequest(_))), "{body}: {:?}", result.map(|v| v.page.slug));
+            assert!(unchanged().await, "{body}");
+        }
+        // A calendar address that can't be read is refused before anything is saved, so the old one stays.
+        let unreadable = edit(&state, acme, id, json!({ "name": "Demo", "calendar_url": "://" })).await;
+        assert!(matches!(&unreadable, Err(AppError::BadRequest(m)) if m.starts_with("Couldn't read that calendar")), "{:?}", unreadable.map(|v| v.page.slug));
+        assert!(unchanged().await);
+        let taken = edit(&state, acme, id, json!({ "slug": "sam-lee", "name": "Demo" })).await;
+        assert!(matches!(&taken, Err(AppError::Conflict(m)) if m == "That link is taken. Try another."), "{:?}", taken.map(|v| v.page.slug));
+        assert!(unchanged().await);
+        assert!(matches!(edit(&state, other, id, json!({ "name": "Demo" })).await, Err(AppError::NotFound)));
+        assert!(unchanged().await);
+
+        let view = edit(&state, acme, id, json!({ "location": "  Our office  " })).await.unwrap();
+        assert_eq!(view.calendar_host, "calendar.example", "a page left without calendar_url keeps its calendar");
+        assert_eq!((view.page.location.as_str(), view.page.calendar_error.as_str()), ("Our office", "Timed out"));
+
+        let hours = json!([[0, 1440], null, [540, 600], null, null, null, null]);
+        let view = edit(
+            &state,
+            acme,
+            id,
+            json!({
+                "slug": " Alex-Call ", "name": " Demo ", "duration_minutes": 45, "timezone": "America/New_York", "hours": hours,
+                "buffer_minutes": 120, "notice_minutes": 20160, "days_ahead": 90, "reminder_hours": 168, "calendar_url": " ",
+            }),
+        )
+        .await
+        .unwrap();
+        let page = saved(&db, id).await;
+        assert_eq!((page.slug.as_str(), page.name.as_str(), page.duration_minutes, page.timezone.as_str()), ("alex-call", "Demo", 45, "America/New_York"));
+        assert_eq!(serde_json::to_value(&page.hours).unwrap(), hours);
+        assert_eq!((page.buffer_minutes, page.notice_minutes, page.days_ahead, page.reminder_hours), (120, 20160, 90, 168));
+        assert_eq!((page.location.as_str(), page.calendar_url_enc.as_str(), page.calendar_error.as_str()), ("Our office", "", ""), "a blank calendar_url removes it");
+        assert_eq!((view.url.as_str(), view.calendar_host.as_str()), ("https://app.test/book/alex-call", ""));
+
+        let long = edit(&state, acme, id, json!({ "slug": "a".repeat(48), "name": "n".repeat(80), "location": "l".repeat(500) })).await.unwrap().page;
+        assert_eq!((long.slug.len(), long.name.chars().count(), long.location.chars().count()), (48, 80, 500));
+
+        let low = edit(&state, acme, id, json!({ "slug": "ab", "buffer_minutes": 0, "notice_minutes": 0, "days_ahead": 1, "reminder_hours": 0 })).await.unwrap().page;
+        assert_eq!((low.slug.as_str(), low.buffer_minutes, low.notice_minutes, low.days_ahead, low.reminder_hours), ("ab", 0, 0, 1, 0));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn deleting_a_page_clears_the_mailboxs_link_only_when_it_pointed_there(db: PgPool) {
+        let state = state(db.clone());
+        let (acme, other) = (org(&db, "Acme").await, org(&db, "Other").await);
+        let (alex, sam) = (mailbox(&db, acme, "alex@acme.example", "Alex Morgan").await, mailbox(&db, acme, "sam@acme.example", "Sam Lee").await);
+        let alexs = create_page(&state, acme, alex).await.unwrap();
+        let sams = create_page(&state, acme, sam).await.unwrap();
+        let set_link = |id: Uuid, link: String| {
+            let db = db.clone();
+            async move { sqlx::query("update mailboxes set booking_link = $2 where id = $1").bind(id).bind(link).execute(&db).await.unwrap() }
+        };
+        set_link(alex, alexs.url.clone()).await;
+        set_link(sam, "https://cal.example/sam".into()).await;
+        let link = |id: Uuid| {
+            let db = db.clone();
+            async move { sqlx::query_scalar::<_, String>("select booking_link from mailboxes where id = $1").bind(id).fetch_one(&db).await.unwrap() }
+        };
+
+        assert!(matches!(remove(State(state.clone()), owner(other), Path(alexs.page.id)).await, Err(AppError::NotFound)));
+        assert_eq!(link(alex).await, alexs.url, "another org can't delete the page");
+
+        for page in [&alexs, &sams] {
+            assert_eq!(remove(State(state.clone()), owner(acme), Path(page.page.id)).await.unwrap().0, json!({ "ok": true }));
+        }
+        assert_eq!(link(alex).await, "");
+        assert_eq!(link(sam).await, "https://cal.example/sam", "a link to somewhere else stays");
+        assert!(matches!(remove(State(state.clone()), owner(acme), Path(alexs.page.id)).await, Err(AppError::NotFound)));
+        assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from booking_pages").fetch_one(&db).await.unwrap(), 0);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_public_page_names_the_host_and_hides_a_video_link(db: PgPool) {
+        let state = state(db.clone());
+        let acme = org(&db, "Acme").await;
+        let page = create_page(&state, acme, mailbox(&db, acme, "alex@acme.example", "Alex Morgan").await).await.unwrap().page;
+        let visit = |slug: &str| {
+            let (state, slug) = (state.clone(), slug.to_string());
+            let (peer, headers) = visitor("192.0.2.10");
+            async move { show(State(state), peer, headers, Path(slug)).await.map(|Json(p)| p) }
+        };
+
+        edit(&state, acme, page.id, json!({ "location": "https://meet.example/alex?pwd=secret", "notice_minutes": 0 })).await.unwrap();
+        let asked = Utc::now();
+        let shown = visit("Alex-Morgan").await.unwrap();
+        assert_eq!((shown.slug.as_str(), shown.host.as_str(), shown.location.as_str()), ("alex-morgan", "Alex Morgan", "Video call"));
+        assert!(!shown.slots.is_empty() && shown.slots.iter().all(|s| *s >= asked), "{:?}", shown.slots);
+
+        edit(&state, acme, page.id, json!({ "location": "Our office, 1 Main St" })).await.unwrap();
+        assert_eq!(visit("alex-morgan").await.unwrap().location, "Our office, 1 Main St");
+        assert!(matches!(visit("nobody").await, Err(AppError::NotFound)));
+        let (peer, headers) = visitor("192.0.2.10");
+        assert!(matches!(manage(State(state.clone()), peer, headers, Path("not-a-token".into())).await, Err(AppError::NotFound)));
+    }
+
+    #[test]
+    fn one_address_gets_60_public_requests_a_minute() {
+        let peer: SocketAddr = "10.0.0.1:443".parse().unwrap();
+        let from = |ip: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", ip.parse().unwrap());
+            headers
+        };
+        for _ in 0..60 {
+            limit(&from("198.51.100.60"), peer).unwrap();
+        }
+        assert!(matches!(limit(&from("198.51.100.60"), peer), Err(AppError::TooManyRequests(_))));
+        limit(&from("198.51.100.61"), peer).expect("another address still gets in");
+
+        // A minute on, the address starts again.
+        HITS.lock().unwrap().get_mut("198.51.100.60").unwrap().0 -= Duration::from_secs(61);
+        limit(&from("198.51.100.60"), peer).expect("a new minute");
+    }
 
     #[test]
     fn slugs_come_from_the_name_or_address() {
