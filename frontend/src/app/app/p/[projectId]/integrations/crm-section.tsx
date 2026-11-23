@@ -30,7 +30,7 @@ const CRMS = {
     name: "Zoho CRM",
     record: "leads",
     signIn: true,
-    hint: "Hot and booked leads go to the Leads module, matched by email, in whichever Zoho data centre your account is in.",
+    hint: "Hot and booked leads go to the Leads module, matched by email, in whichever Zoho data center your account is in.",
   },
   dynamics: {
     name: "Dynamics 365 Sales",

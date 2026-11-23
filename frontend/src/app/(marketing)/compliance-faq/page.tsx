@@ -23,7 +23,7 @@ export default function ComplianceFaq() {
             <p>
               Cold B2B outreach usually relies on legitimate interest: a business contacting a professional about something relevant to
               their role. The operator of this instance and each sending user are responsible for checking that this applies to their
-              outreach, keeping messages relevant, and honouring objections straight away.
+              outreach, keeping messages relevant, and honoring objections straight away.
             </p>
           ),
         },
