@@ -633,8 +633,13 @@ function ThreadPane({ leadId, onDone }: { leadId: string; onDone: () => void }) 
         <LeadNotes key={lead.id} lead={lead} onSaved={refresh} />
       </div>
 
+      {/* Focusable so the arrow keys can scroll a thread that has nothing to tab to. Chrome and Firefox do that for
+          scrollers by themselves, Safari doesn't. */}
       <ol
         ref={observeThread}
+        tabIndex={0}
+        role="list"
+        aria-label="Conversation"
         onScroll={(e) => {
           const el = e.currentTarget;
           atLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;

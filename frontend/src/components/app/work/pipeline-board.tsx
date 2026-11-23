@@ -159,7 +159,13 @@ export function PipelineBoard({
   };
 
   return (
-    <div className="-mx-4 flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-2 sm:-mx-8 sm:px-8">
+    // Focusable so the arrow keys can reach stages off to the right when there are no deals to tab to, as in the inbox thread.
+    <div
+      tabIndex={0}
+      role="region"
+      aria-label="Pipeline stages"
+      className="-mx-4 flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-2 focus-visible:-outline-offset-2 sm:-mx-8 sm:px-8"
+    >
       <p id="deal-drag-help" className="sr-only">
         Press Space or Enter to pick up the deal, the arrow keys to choose a stage, and Space or Enter again to drop it. Escape cancels.
       </p>
