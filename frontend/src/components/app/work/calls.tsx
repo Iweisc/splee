@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Mail, Phone, PhoneIncoming, PhoneMissed, Sparkles } from "lucide-react";
 import { Button, LinkButton } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/form";
@@ -49,6 +49,7 @@ export function OutcomeForm({
   const [outcome, setOutcome] = useState<CallOutcome | null>(initial ?? null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const group = useId();
   const save = async () => {
     if (!outcome) return;
     setBusy(true);
@@ -66,23 +67,35 @@ export function OutcomeForm({
   return (
     <div className="flex flex-col gap-3">
       <div role="radiogroup" aria-label="What happened" className="grid grid-cols-2 gap-2">
+        {/* Real radios under the buttons, so the group is one Tab stop and the arrow keys move through it, as a screen
+            reader says they will. */}
         {(Object.keys(OUTCOMES) as CallOutcome[]).map((o) => (
-          <button
+          <label
             key={o}
-            type="button"
-            role="radio"
-            aria-checked={outcome === o}
-            onClick={() => setOutcome(o)}
             className={cn(
-              "rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+              "cursor-pointer rounded-lg border px-3 py-2 text-sm transition-colors",
+              "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600",
               outcome === o ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted",
             )}
           >
+            <input
+              type="radio"
+              name={group}
+              value={o}
+              checked={outcome === o}
+              onChange={() => setOutcome(o)}
+              aria-describedby={outcome === o && hint[o] ? `${group}-hint` : undefined}
+              className="sr-only"
+            />
             {OUTCOMES[o].label}
-          </button>
+          </label>
         ))}
       </div>
-      {outcome && hint[outcome] && <p className="text-xs text-pretty text-muted-foreground">{hint[outcome]}</p>}
+      {outcome && hint[outcome] && (
+        <p id={`${group}-hint`} className="text-xs text-pretty text-muted-foreground">
+          {hint[outcome]}
+        </p>
+      )}
       <Textarea
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
