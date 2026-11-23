@@ -21,6 +21,7 @@ import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-
 import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
 import { DailyLimitCard } from "@/components/app/work/daily-limit-card";
 import { FollowUpsCard } from "@/components/app/work/follow-ups-card";
+import { SendHoursCard } from "@/components/app/work/send-hours-card";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LeadPagesCard } from "@/components/app/work/lead-page";
@@ -145,6 +146,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           <AbTestCard segmentId={segId} />
           <FollowUpsCard key={JSON.stringify(segment.follow_ups)} segment={segment} />
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
+          <SendHoursCard key={JSON.stringify([segment.send_days, segment.send_start_hour, segment.send_end_hour])} segment={segment} />
           <DailyLimitCard key={segment.daily_limit ?? "none"} segment={segment} />
           <LanguageCard segment={segment} />
           <TrackingCard segment={segment} />

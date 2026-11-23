@@ -882,6 +882,10 @@ export interface Segment {
   daily_limit: number | null;
   /** Its own follow-ups instead of the project's. Null follows the project's. */
   follow_ups: FollowUp[] | null;
+  /** Its own send days, 1 (Monday) to 7, and hours, in the project's time zone. All three null send in the project's. */
+  send_days: number[] | null;
+  send_start_hour: number | null;
+  send_end_hour: number | null;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */

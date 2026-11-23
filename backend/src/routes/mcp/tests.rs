@@ -567,6 +567,10 @@ async fn language_on_leads_and_campaigns_through_the_api_and_mcp(db: PgPool) {
     let (is_error, text) = server.call(KEY, "update_campaign", json!({ "campaign_id": segment, "follow_ups": [] })).await;
     let updated: Value = serde_json::from_str(&text).unwrap();
     assert!(!is_error && updated["follow_ups"] == json!([]) && updated["own_follow_ups"] == true, "{text}");
+    let hours = json!({ "campaign_id": segment, "send_hours": { "days": [6, 7], "start_hour": 10, "end_hour": 14 } });
+    let (is_error, text) = server.call(KEY, "update_campaign", hours).await;
+    let schedule = &serde_json::from_str::<Value>(&text).unwrap()["schedule"];
+    assert!(!is_error && schedule["send_days"] == json!([6, 7]) && schedule["own_send_hours"] == true, "{text}");
     let (is_error, _) = server.call(KEY, "set_lead_language", json!({ "lead_id": olaf, "language": "de" })).await;
     assert!(is_error);
     let (_, text) = server.call(KEY, "list_leads", json!({ "project_id": project, "language": "de" })).await;

@@ -540,6 +540,21 @@ pub struct Segment {
     /// Its own follow-ups, shaped like the project's. Null follows the project's (mail::FOLLOW_UPS).
     #[sqlx(default)]
     pub follow_ups: Option<Value>,
+    /// Its own send days and hours, all three set or all null for the project's. See send_hours.
+    #[sqlx(default)]
+    pub send_days: Option<Vec<i32>>,
+    #[sqlx(default)]
+    pub send_start_hour: Option<i32>,
+    #[sqlx(default)]
+    pub send_end_hour: Option<i32>,
+}
+
+impl Segment {
+    /// When its first emails and follow-ups go out: its own days and hours, else the project's, and the project's days off.
+    pub fn send_hours(&self, project: &ProjectSettings) -> crate::mail::SendHours {
+        let own = crate::mail::SendHours::own(self.send_days.clone(), self.send_start_hour, self.send_end_hour, &project.days_off);
+        own.unwrap_or_else(|| project.send_hours())
+    }
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.

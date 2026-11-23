@@ -145,6 +145,36 @@ pub(super) struct SegmentBody {
     /// The campaign's own follow-ups, where null goes back to the project's and leaves out keeps them.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     follow_ups: Option<Option<Value>>,
+    /// The campaign's own send days and hours, where null goes back to the project's and leaves out keeps them.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    send_hours: Option<Option<SendHoursBody>>,
+}
+
+/// A campaign's own send days, 1 (Monday) to 7, and hours, read in the project's time zone.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SendHoursBody {
+    days: Vec<i32>,
+    start_hour: i32,
+    end_hour: i32,
+}
+
+impl SendHoursBody {
+    /// The days, sorted without repeats, or a 400.
+    pub(super) fn checked(mut self) -> AppResult<Self> {
+        self.days.sort_unstable();
+        self.days.dedup();
+        if self.days.is_empty() {
+            return Err(AppError::BadRequest("Pick at least one send day".into()));
+        }
+        super::settings::check_send_window(&self.days, self.start_hour, self.end_hour).map_err(|m| AppError::BadRequest(m.into()))?;
+        Ok(self)
+    }
+
+    /// The segments columns it sets, all null for the project's.
+    pub(super) fn columns(hours: Option<&Self>) -> (Option<&[i32]>, Option<i32>, Option<i32>) {
+        (hours.map(|h| h.days.as_slice()), hours.map(|h| h.start_hour), hours.map(|h| h.end_hour))
+    }
 }
 
 /// A campaign's own follow-ups, or a 400. One brought over from another tool sends the steps it came with, so it can't have any.
@@ -281,6 +311,8 @@ async fn update(
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     body.validate()?;
     check_follow_ups(&state.db, segment.id, &body.follow_ups).await?;
+    let send_hours = body.send_hours.map(|h| h.map(SendHoursBody::checked).transpose()).transpose()?;
+    let (days, start, end) = SendHoursBody::columns(send_hours.as_ref().and_then(Option::as_ref));
     if body.status.is_some() {
         ensure_not_archived(&segment)?;
     }
@@ -301,7 +333,10 @@ async fn update(
            language = coalesce($14, language),
            lead_pages = coalesce($15, lead_pages),
            daily_limit = case when $16 then $17 else daily_limit end,
-           follow_ups = case when $18 then $19 else follow_ups end
+           follow_ups = case when $18 then $19 else follow_ups end,
+           send_days = case when $20 then $21 else send_days end,
+           send_start_hour = case when $20 then $22 else send_start_hour end,
+           send_end_hour = case when $20 then $23 else send_end_hour end
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -323,6 +358,10 @@ async fn update(
     .bind(body.daily_limit.flatten())
     .bind(body.follow_ups.is_some())
     .bind(body.follow_ups.flatten())
+    .bind(send_hours.is_some())
+    .bind(days)
+    .bind(start)
+    .bind(end)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
