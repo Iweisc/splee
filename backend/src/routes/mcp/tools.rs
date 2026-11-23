@@ -801,8 +801,8 @@ pub(super) fn tools() -> Vec<Value> {
             "Update campaign",
             "Changes a campaign's definition as its page does and returns it as get_campaign does. Pass only what changes. Each \
              targeting list sent replaces that list, and the others stay. Emails already written keep their brief and language \
-             until they're rewritten. The schedule is the project's, so it's refused here. follow_ups gives the campaign its own \
-             instead of the project's, and null goes back to the project's.",
+             until they're rewritten. The time zone and daily limit are the project's. follow_ups and send_hours give the campaign its \
+             own instead of the project's, and null goes back to the project's.",
             json!({
                 "campaign_id": campaign,
                 "name": { "type": "string" },
@@ -839,6 +839,18 @@ pub(super) fn tools() -> Vec<Value> {
                             "enabled": { "type": "boolean" },
                             "instructions": { "type": "string", "description": "What this follow-up should say, or what to talk about on the call" },
                         },
+                    },
+                },
+                "send_hours": {
+                    "type": ["object", "null"],
+                    "additionalProperties": false,
+                    "required": ["days", "start_hour", "end_hour"],
+                    "description": "The days and hours it sends first emails and follow-ups, in the project's time zone (or each lead's when the \
+                                    project sends in theirs), instead of the project's. Days off stay the project's. null follows the project's",
+                    "properties": {
+                        "days": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 7 }, "minItems": 1, "description": "1 (Monday) to 7 (Sunday)" },
+                        "start_hour": { "type": "integer", "minimum": 0, "maximum": 23 },
+                        "end_hour": { "type": "integer", "minimum": 1, "maximum": 24, "description": "The hour it stops, after start_hour" },
                     },
                 },
             }),

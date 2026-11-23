@@ -393,6 +393,11 @@ async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
     assert_eq!((detail["follow_ups"].clone(), detail["own_follow_ups"].clone()), (own, json!(true)), "{detail}");
     let (_, detail) = api.patch(&path, json!({ "follow_ups": null })).await;
     assert_eq!((detail["own_follow_ups"].clone(), detail["follow_ups"].is_array()), (json!(false), true), "null goes back to the project's");
+    let (_, detail) = api.patch(&path, json!({ "send_hours": { "days": [3, 1, 3], "start_hour": 7, "end_hour": 11 } })).await;
+    let hours = |d: &Value| (d["schedule"]["send_days"].clone(), d["schedule"]["send_start_hour"].clone(), d["schedule"]["own_send_hours"].clone());
+    assert_eq!(hours(&detail), (json!([1, 3]), json!(7), json!(true)), "{detail}");
+    let (_, detail) = api.patch(&path, json!({ "send_hours": null })).await;
+    assert_eq!(hours(&detail), (json!([1, 2, 3, 4, 5]), json!(9), json!(false)), "null goes back to the project's");
 
     // A refused body changes nothing, and another organization's campaign looks like one that doesn't exist.
     for (body, status) in [
@@ -405,6 +410,10 @@ async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
         (json!({ "angle": "New", "follow_ups": [{ "delay_days": 0, "enabled": true }] }), 400),
         (json!({ "angle": "New", "follow_ups": [{ "delay_days": 3 }] }), 400),
         (json!({ "angle": "New", "follow_ups": [{ "kind": "text", "delay_days": 3, "enabled": true }] }), 400),
+        (json!({ "angle": "New", "send_hours": { "days": [], "start_hour": 9, "end_hour": 17 } }), 400),
+        (json!({ "angle": "New", "send_hours": { "days": [8], "start_hour": 9, "end_hour": 17 } }), 400),
+        (json!({ "angle": "New", "send_hours": { "days": [1], "start_hour": 17, "end_hour": 9 } }), 400),
+        (json!({ "angle": "New", "send_hours": { "days": [1] } }), 422),
     ] {
         assert_eq!(api.patch(&path, body.clone()).await.0, status, "{body}");
     }

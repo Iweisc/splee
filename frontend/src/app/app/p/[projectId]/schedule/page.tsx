@@ -5,14 +5,12 @@ import { useState } from "react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select, Switch } from "@/components/ui/form";
+import { DAYS, formatDays, hour, SendWindowFields, windowProblem } from "@/components/app/settings/send-window";
+import { Input, Select, Switch } from "@/components/ui/form";
 import type { HourStats, WeekdayStats } from "@/lib/types";
-import { cn, zoneName } from "@/lib/utils";
+import { zoneName } from "@/lib/utils";
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const TIMEZONES = Intl.supportedValuesOf("timeZone");
-
-const hour = (h: number) => `${String(h).padStart(2, "0")}:00`;
 // Keep in sync with MAX_DAYS_OFF in backend/src/routes/settings.rs.
 const MAX_DAYS_OFF = 100;
 
@@ -20,29 +18,12 @@ const MAX_DAYS_OFF = 100;
 const dayLabel = (d: string) =>
   new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-/** [1,2,3,4,5] -> "Mon–Fri", [1,3,5] -> "Mon, Wed, Fri", [1,2,3,6,7] -> "Mon–Wed, Sat, Sun" */
-function formatDays(days: number[]): string {
-  if (days.length === 7) return "every day";
-  const sorted = [...days].sort((a, b) => a - b);
-  const runs: number[][] = [];
-  for (const d of sorted) {
-    const last = runs.at(-1);
-    if (last && last.at(-1) === d - 1) last.push(d);
-    else runs.push([d]);
-  }
-  return runs
-    .flatMap((r) => (r.length >= 3 ? [`${DAYS[r[0]! - 1]}–${DAYS[r.at(-1)! - 1]}`] : r.map((d) => DAYS[d - 1])))
-    .join(", ");
-}
-
 export default function SchedulePage() {
   return (
     <ProjectSettingsPage
       title="Schedule"
       description="When the agent is allowed to send. Replies are read around the clock."
-      problem={(s) =>
-        !s.send_days.length ? "Pick at least one day" : s.send_end_hour <= s.send_start_hour ? "End time must be after start time" : null
-      }
+      problem={(s) => windowProblem({ days: s.send_days, start_hour: s.send_start_hour, end_hour: s.send_end_hour })}
     >
       {(s, update) => {
         const zones = TIMEZONES.includes(s.timezone) ? TIMEZONES : [s.timezone, ...TIMEZONES];
@@ -85,53 +66,10 @@ export default function SchedulePage() {
             </Section>
 
             <Section title="Send window" description="Emails due outside this window wait until it opens again.">
-              <Field label="Days" group>
-                {/* Seven columns as wide as the From/Until row below, so the week stays on one row on phones instead of breaking 4 + 3. */}
-                <div className="grid max-w-sm grid-cols-7 gap-1 sm:gap-1.5">
-                  {DAYS.map((label, i) => {
-                    const day = i + 1;
-                    const on = s.send_days.includes(day);
-                    return (
-                      <button
-                        key={day}
-                        type="button"
-                        aria-pressed={on}
-                        onClick={() =>
-                          update({ send_days: on ? s.send_days.filter((d) => d !== day) : [...s.send_days, day].sort((a, b) => a - b) })
-                        }
-                        className={cn(
-                          // A column is only about 30px wide on a 320px phone, where "Wed" at text-sm splits in two. Two letters fit, but
-                          // then the visible word isn't the button's name, which voice control users say aloud.
-                          "rounded-lg border py-2 text-sm font-medium whitespace-nowrap transition-colors max-sm:py-2.5 max-sm:text-xs",
-                          on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card hover:bg-accent",
-                        )}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </Field>
-              <div className="mt-5 grid max-w-sm grid-cols-2 gap-4">
-                <Field label="From">
-                  <Select value={s.send_start_hour} onChange={(e) => update({ send_start_hour: Number(e.target.value) })}>
-                    {Array.from({ length: 24 }, (_, h) => (
-                      <option key={h} value={h}>
-                        {hour(h)}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Until">
-                  <Select value={s.send_end_hour} onChange={(e) => update({ send_end_hour: Number(e.target.value) })}>
-                    {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => (
-                      <option key={h} value={h}>
-                        {hour(h)}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
+              <SendWindowFields
+                value={{ days: s.send_days, start_hour: s.send_start_hour, end_hour: s.send_end_hour }}
+                onChange={(w) => update({ send_days: w.days, send_start_hour: w.start_hour, send_end_hour: w.end_hour })}
+              />
               {valid && (
                 <p className="mt-5 flex items-center gap-2 rounded-xl bg-muted px-4 py-3 text-sm">
                   <CalendarClock className="size-4 text-muted-foreground" />

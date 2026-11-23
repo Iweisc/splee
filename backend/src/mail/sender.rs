@@ -91,6 +91,11 @@ pub struct SendHours {
 }
 
 impl SendHours {
+    /// A campaign's own days and hours, from its three columns, with the project's days off. None when it has none.
+    pub fn own(days: Option<Vec<i32>>, start_hour: Option<i32>, end_hour: Option<i32>, days_off: &[NaiveDate]) -> Option<Self> {
+        Some(Self { days: days?, days_off: days_off.to_vec(), start_hour: start_hour?, end_hour: end_hour? })
+    }
+
     /// Whether `now` in `tz` is on a send day and inside the send hours, and isn't a day off there.
     pub fn open(&self, tz: Tz, now: Ts) -> bool {
         let local = now.with_timezone(&tz);
@@ -175,11 +180,34 @@ async fn company_is_full(db: &sqlx::PgPool, email: Uuid, since: Ts, limit: Optio
     Ok(full.unwrap_or(true))
 }
 
+/// SQL for whose send window email `e` keeps to: its campaign's id when the campaign is in `own`, a parameter listing those with
+/// days and hours of their own, else the nil id for the project's. closed_zones pairs it with the lead's zone.
+fn window_of(own: &str) -> String {
+    format!("coalesce(case when e.segment_id = any({own}) then e.segment_id end, '00000000-0000-0000-0000-000000000000'::uuid)")
+}
+
+/// The project's campaigns with send days and hours of their own, which their first emails and follow-ups keep to instead of
+/// the project's.
+async fn own_hours(db: &sqlx::PgPool, p: &SendingProject) -> sqlx::Result<Vec<(Uuid, SendHours)>> {
+    type Row = (Uuid, Option<Vec<i32>>, Option<i32>, Option<i32>);
+    let rows: Vec<Row> =
+        sqlx::query_as("select id, send_days, send_start_hour, send_end_hour from segments where project_id = $1 and send_days is not null")
+            .bind(p.id)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().filter_map(|(id, days, start, end)| Some((id, SendHours::own(days, start, end, &p.hours.days_off)?))).collect())
+}
+
 async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()> {
     let now = Utc::now();
     let day_start = p.day_start(now);
-    // In leads' own time zones some lead's window may be open while the project's isn't, and the query below leaves out the rest.
-    let cold_slots = if !p.paused && (p.lead_time_zone || p.in_window(now)) {
+    let own = own_hours(&state.db, p).await?;
+    let own_ids: Vec<Uuid> = own.iter().map(|(id, _)| *id).collect();
+    let own_open: Vec<Uuid> = own.iter().filter(|(_, hours)| hours.open(p.tz(), now)).map(|(id, _)| *id).collect();
+    let project_open = p.in_window(now);
+    // In leads' own time zones some lead's window may be open while the project's isn't, and a campaign's own hours may be open
+    // too. The query below leaves out the emails whose window is closed.
+    let cold_slots = if !p.paused && (p.lead_time_zone || project_open || !own_open.is_empty()) {
         // Replies count toward the limit too, so a busy inbox slows cold sending rather than adding to it.
         let sent_today: i64 = sqlx::query_scalar(
             "select count(*) from email_messages where project_id = $1 and direction = 'outbound' and status = 'sent' and sent_at >= $2",
@@ -196,7 +224,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     // Replies first, then campaigns the optimizer marked as scaling. A campaign with a limit of its own takes no more of the
     // selection than what's left of it, so the rest goes to the others. A cancelled email doesn't use up its room, and the
     // next tick picks the one after it.
-    let closed = if p.lead_time_zone && cold_slots > 0 { closed_zones(&state.db, p, now).await? } else { Zones::default() };
+    let closed = if p.lead_time_zone && cold_slots > 0 { closed_zones(&state.db, p, &own, now).await? } else { Zones::default() };
     let due = sqlx::query_as::<_, EmailMessage>(&format!(
         "(select e.* from email_messages e
           where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
@@ -212,7 +240,10 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
               where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
                 and (e.scheduled_for is null or e.scheduled_for <= $7) and e.kind in ('initial', 'follow_up')
                 and s.status is distinct from 'paused' and s.archived_at is null
-                and (left(l.phone, 4), l.country_code) not in (select * from unnest($5::text[], $6::text[]))
+                and ({window}, left(l.phone, 4), l.country_code) not in (select * from unnest($12::uuid[], $5::text[], $6::text[]))
+                -- A campaign with days and hours of its own sends in them, the rest in the project's. In leads' own time zones
+                -- the line above has left out whoever's window is closed.
+                and ($9 or case when e.segment_id = any($10) then e.segment_id = any($11) else $13 end)
                 -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
                 and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
                                 and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
@@ -232,6 +263,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
           limit $3)",
         campaign_sent("$4"),
         company_full = company_full("$4", "$8"),
+        window = window_of("$10"),
     ))
     .bind(p.id)
     .bind(&REPLY_KINDS[..])
@@ -243,6 +275,11 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     // The tick's moment, which closed_zones looked at, so an email due since can't slip past it.
     .bind(now)
     .bind(p.company_daily_limit)
+    .bind(p.lead_time_zone)
+    .bind(&own_ids)
+    .bind(&own_open)
+    .bind(&closed.windows)
+    .bind(project_open)
     .fetch_all(&state.db)
     .await?;
 
@@ -284,30 +321,36 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     Ok(())
 }
 
-/// What a lead's time zone depends on: the first 4 characters of their phone number, a + and at most 3 digits of calling code,
-/// which is as long as phone::COUNTRIES' codes get, and their country.
+/// What a lead's send window depends on: whose days and hours their email keeps to (window_of), the first 4 characters of their
+/// phone number, a + and at most 3 digits of calling code, which is as long as phone::COUNTRIES' codes get, and their country.
 #[derive(Default)]
 struct Zones {
+    windows: Vec<Uuid>,
     phone_prefixes: Vec<String>,
     countries: Vec<String>,
 }
 
-/// The phone prefixes and countries, in pairs, of the project's leads with first emails or follow-ups due whose send window,
-/// in their own time zone or else the project's, is closed at `now`.
-async fn closed_zones(db: &sqlx::PgPool, p: &SendingProject, now: Ts) -> anyhow::Result<Zones> {
-    let pairs: Vec<(String, String)> = sqlx::query_as(
-        "select distinct left(l.phone, 4), l.country_code from email_messages e join leads l on l.id = e.lead_id
+/// The windows, phone prefixes and countries, in threes, of the project's leads with first emails or follow-ups due whose send
+/// window, their campaign's own or else the project's, in their own time zone or else the project's, is closed at `now`.
+async fn closed_zones(db: &sqlx::PgPool, p: &SendingProject, own: &[(Uuid, SendHours)], now: Ts) -> anyhow::Result<Zones> {
+    let own_ids: Vec<Uuid> = own.iter().map(|(id, _)| *id).collect();
+    let leads: Vec<(Uuid, String, String)> = sqlx::query_as(&format!(
+        "select distinct {}, left(l.phone, 4), l.country_code from email_messages e join leads l on l.id = e.lead_id
          where e.project_id = $1 and e.direction = 'outbound' and e.status in ('approved', 'scheduled')
            and (e.scheduled_for is null or e.scheduled_for <= $2) and e.kind in ('initial', 'follow_up')",
-    )
+        window_of("$3"),
+    ))
     .bind(p.id)
     .bind(now)
+    .bind(&own_ids)
     .fetch_all(db)
     .await?;
     let mut closed = Zones::default();
-    for (prefix, country) in pairs {
+    for (window, prefix, country) in leads {
+        let hours = own.iter().find(|(id, _)| *id == window).map_or(&p.hours, |(_, hours)| hours);
         let tz = crate::phone::time_zone(&prefix, &country).unwrap_or(p.tz());
-        if !p.hours.open(tz, now) {
+        if !hours.open(tz, now) {
+            closed.windows.push(window);
             closed.phone_prefixes.push(prefix);
             closed.countries.push(country);
         }
@@ -1137,6 +1180,71 @@ mod tests {
         super::tick(&state).await.unwrap();
         assert_eq!(status(in_japan).await.unwrap(), "cancelled", "sent in Tokyo's hours, from the page after the closed ones");
         assert_eq!(status(unknown).await.unwrap(), "approved", "a lead without a time zone keeps to the project's");
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_sends_in_its_own_hours_while_the_projects_are_closed(db: PgPool) {
+        use chrono::Timelike;
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        // The project's one hour is 3 hours from now in UTC, so it's closed both there and in Tokyo, 9 hours ahead.
+        let utc = chrono::Utc::now().hour() as i32;
+        let tokyo = chrono::Utc::now().with_timezone(&chrono_tz::Asia::Tokyo).hour() as i32;
+        sqlx::query(
+            "insert into project_settings (project_id, paused, timezone, send_days, send_start_hour, send_end_hour)
+             values ($1, false, 'UTC', '{1,2,3,4,5,6,7}', $2, $2 + 1)",
+        )
+        .bind(project)
+        .bind((utc + 3) % 24)
+        .execute(&db)
+        .await
+        .unwrap();
+        let campaign = |start: Option<i32>, end: Option<i32>| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into segments (project_id, name, status, send_days, send_start_hour, send_end_hour)
+                 values ($1, 'C', 'working', case when $2::int is not null then '{1,2,3,4,5,6,7}'::int[] end, $2, $3) returning id",
+            )
+            .bind(project)
+            .bind(start)
+            .bind(end)
+            .fetch_one(&db)
+        };
+        let (all_day, projects) = (campaign(Some(0), Some(24)).await.unwrap(), campaign(None, None).await.unwrap());
+        // Every address is on the do-not-contact list, so a send attempt cancels the email without SMTP, and one outside its
+        // hours stays approved.
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'held.example', 'domain', 'manual')").bind(org).execute(&db).await.unwrap();
+        let email = |segment: Uuid, address: &'static str, country: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "with l as (insert into leads (project_id, segment_id, email, country_code, status) values ($1, $2, $3, $4, 'queued') returning id)
+                 insert into email_messages (project_id, segment_id, lead_id, direction, kind, status) select $1, $2, id, 'outbound', 'initial', 'approved' from l
+                 returning id",
+            )
+            .bind(project)
+            .bind(segment)
+            .bind(address)
+            .bind(country)
+            .fetch_one(&db)
+        };
+        let (own, other) = (email(all_day, "ana@held.example", "").await.unwrap(), email(projects, "bo@held.example", "").await.unwrap());
+        let state = crate::autopilot::tests::state(db.clone());
+        let status = |id: Uuid| sqlx::query_scalar::<_, String>("select status from email_messages where id = $1").bind(id).fetch_one(&db);
+
+        super::tick(&state).await.unwrap();
+        assert_eq!(status(own).await.unwrap(), "cancelled", "sent in the campaign's own hours");
+        assert_eq!(status(other).await.unwrap(), "approved", "a campaign without its own keeps to the project's");
+
+        // In each lead's time zone, the campaign's own hours hold the current hour in Tokyo and not in UTC.
+        sqlx::query("update project_settings set lead_time_zone = true").execute(&db).await.unwrap();
+        let tokyo_hours = campaign(Some(tokyo), Some((tokyo + 2).min(24))).await.unwrap();
+        let (in_japan, unknown) =
+            (email(tokyo_hours, "aiko@held.example", "JP").await.unwrap(), email(tokyo_hours, "sam@held.example", "").await.unwrap());
+        super::tick(&state).await.unwrap();
+        assert_eq!(status(in_japan).await.unwrap(), "cancelled", "sent in the campaign's hours in Tokyo");
+        assert_eq!(status(unknown).await.unwrap(), "approved", "a lead without a time zone keeps to the campaign's hours in the project's");
+        assert_eq!(status(other).await.unwrap(), "approved");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

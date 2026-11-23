@@ -119,7 +119,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
     let tz = settings.timezone.parse().unwrap_or(Tz::UTC);
     let mut window = Window {
         tz,
-        hours: settings.send_hours(),
+        hours: segment.send_hours(settings),
         lead_zones: Vec::new(),
     };
     let mut closed = (Vec::new(), Vec::new());

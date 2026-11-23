@@ -123,6 +123,17 @@ pub(super) struct SettingsBody {
     assign_territories: Option<Vec<crate::ownership::Territory>>,
 }
 
+/// Send days, 1 (Monday) to 7, and the hours between, a project's or a campaign's.
+pub(super) fn check_send_window(days: &[i32], start: i32, end: i32) -> Result<(), &'static str> {
+    if days.iter().any(|d| !(1..=7).contains(d)) {
+        return Err("Send days must be between 1 (Monday) and 7 (Sunday)");
+    }
+    if !(0..=23).contains(&start) || !(1..=24).contains(&end) || start >= end {
+        return Err("Send window must start before it ends, within 0-24h");
+    }
+    Ok(())
+}
+
 /// Up to 5 follow-ups, a project's or a campaign's, each an email or a call 1 to 30 days after the step before, switched on or
 /// off. A call step opens a call for the lead's owner instead of sending anything. The writer and the schedulers read this shape,
 /// so a step missing `enabled` or `delay_days` would quietly stop the sequence.
@@ -254,13 +265,11 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
             return bad("Unknown timezone");
         }
     }
-    if body.send_days.as_ref().is_some_and(|days| days.iter().any(|d| !(1..=7).contains(d))) {
-        return bad("Send days must be between 1 (Monday) and 7 (Sunday)");
-    }
+    let days = body.send_days.as_deref().unwrap_or(&current.send_days[..]);
     let start = body.send_start_hour.unwrap_or(current.send_start_hour);
     let end = body.send_end_hour.unwrap_or(current.send_end_hour);
-    if !(0..=23).contains(&start) || !(1..=24).contains(&end) || start >= end {
-        return bad("Send window must start before it ends, within 0-24h");
+    if let Err(m) = check_send_window(days, start, end) {
+        return bad(m);
     }
     // Every settings page sends the whole form back, so only a change is checked. Steps saved before the check got stricter
     // don't block saving something else.
