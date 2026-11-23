@@ -540,6 +540,67 @@ async fn a_project_is_made_and_read_with_its_sender_name(db: PgPool) {
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn project_controls_refuse_a_schedule_limit_or_cap_out_of_range(db: PgPool) {
+    let [a, _] = seed(&db).await;
+    let api = Api::start(&db, LIMITS).await;
+    let project = format!("/v1/projects/{a}");
+    let day = |n: i64| (chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap() + chrono::Duration::days(n)).to_string();
+    assert_eq!(api.patch(&project, json!({ "send_start_hour": 9, "send_end_hour": 17 })).await.0, 200);
+    let before = api.get(&project).await.1["controls"].clone();
+
+    for body in [
+        json!({ "daily_email_limit": 0 }),
+        json!({ "daily_email_limit": 5001 }),
+        json!({ "daily_text_limit": 0 }),
+        json!({ "daily_text_limit": 1001 }),
+        json!({ "timezone": "Mars/Olympus_Mons" }),
+        json!({ "send_days": [0, 1] }),
+        json!({ "send_days": [8] }),
+        json!({ "send_start_hour": 17, "send_end_hour": 9 }),
+        json!({ "send_start_hour": 9, "send_end_hour": 25 }),
+        json!({ "send_start_hour": -1 }),
+        // A lone start or end is checked against the saved other end, 17 and 9.
+        json!({ "send_start_hour": 17 }),
+        json!({ "send_end_hour": 9 }),
+        json!({ "autopilot_budget_micros": -1 }),
+        json!({ "autopilot_budget_micros": 100_000_000_001_i64 }),
+        json!({ "autopilot_lead_cap": -1 }),
+        json!({ "autopilot_lead_cap": 100_001 }),
+        json!({ "review_window_hours": 0 }),
+        json!({ "review_window_hours": 73 }),
+        json!({ "monthly_cap_micros": 999_999 }),
+        json!({ "monthly_cap_micros": 1_000_000_000_001_i64 }),
+        json!({ "days_off": (0..101).map(day).collect::<Vec<_>>() }),
+    ] {
+        assert_eq!(api.patch(&project, body.clone()).await.0, 400, "{body}");
+    }
+    assert_eq!(api.get(&project).await.1["controls"], before, "a refusal saves nothing");
+
+    // Each end of each range is allowed.
+    for body in [
+        json!({ "daily_email_limit": 1, "daily_text_limit": 1000, "send_start_hour": 0, "send_end_hour": 1, "autopilot_budget_micros": 0,
+                "autopilot_lead_cap": 0, "review_window_hours": 1, "monthly_cap_micros": 1_000_000_000_000_i64, "days_off": (0..100).map(day).collect::<Vec<_>>() }),
+        json!({ "daily_email_limit": 5000, "daily_text_limit": 1, "timezone": "Asia/Kathmandu", "send_days": [1, 7], "send_start_hour": 23, "send_end_hour": 24,
+                "autopilot_budget_micros": 100_000_000_000_i64, "autopilot_lead_cap": 100_000, "review_window_hours": 72, "monthly_cap_micros": 1_000_000 }),
+    ] {
+        let (status, controls) = api.patch(&project, body.clone()).await;
+        assert_eq!(status, 200, "{body} {controls}");
+        for (field, value) in body.as_object().unwrap() {
+            assert_eq!(&controls[field], value, "{field} was saved");
+        }
+    }
+    // Days off are kept in order, once each.
+    let (_, controls) = api.patch(&project, json!({ "days_off": [day(9), day(0), day(9)] })).await;
+    assert_eq!(controls["days_off"], json!([day(0), day(9)]));
+    // A null clears the review window and the monthly cap, rather than leaving them as they were.
+    assert_eq!(api.patch(&project, json!({ "review_window_hours": null, "monthly_cap_micros": null })).await.0, 200);
+    let controls = api.get(&project).await.1["controls"].clone();
+    assert_eq!((controls["review_window_hours"].clone(), controls["monthly_cap_micros"].clone()), (Value::Null, Value::Null));
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn project_controls_take_only_fields_they_know(db: PgPool) {
     let [a, b] = seed(&db).await;
     let (segment, _) = campaign(&db, a, "draft").await;
