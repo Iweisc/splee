@@ -157,8 +157,9 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result
     .fetch_one(&mut *tx)
     .await?;
     crate::mail::end_sequence(&mut tx, lead.id, why).await?;
+    // In the same transaction, so a webhook retried after a failure here still finds the lead not replied yet.
+    crate::mail::stop_colleagues(&mut tx, lead).await?;
     tx.commit().await?;
-    crate::mail::stop_colleagues(db, lead).await?;
     let owner = crate::ownership::claim(db, lead.id).await;
     Ok(Lead { owner_id: updated.owner_id.or(owner), ..updated })
 }
@@ -322,7 +323,7 @@ mod tests {
         };
 
         // Off, a reply only stops the lead's own sequence.
-        assert_eq!(crate::mail::stop_colleagues(&db, &sam).await.unwrap(), 0);
+        assert_eq!(crate::mail::stop_colleagues(&mut db.acquire().await.unwrap(), &sam).await.unwrap(), 0);
         assert_eq!(follow_up(dana).await.unwrap().0, "approved");
         assert_eq!(unwritten().await, sorted(vec![lee, ava]));
 

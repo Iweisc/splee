@@ -818,11 +818,15 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
     let segments = segments_by_id(ctx, project_id).await?;
     let variants = variants_by_id(ctx, project_id).await?;
     let imported = imported_steps(ctx, project_id).await?;
-    let leads = sqlx::query_as::<_, Lead>("select * from leads where project_id = $1 and id = any($2) and status = 'contacted'")
-        .bind(project_id)
-        .bind(lead_ids)
-        .fetch_all(ctx.db())
-        .await?;
+    // Checked again here, since a colleague may have replied while the run was queued.
+    let leads = sqlx::query_as::<_, Lead>(&format!(
+        "select l.* from leads l where l.project_id = $1 and l.id = any($2) and l.status = 'contacted' and not {}",
+        crate::mail::COMPANY_REPLIED
+    ))
+    .bind(project_id)
+    .bind(lead_ids)
+    .fetch_all(ctx.db())
+    .await?;
     let languages = language::for_leads(ctx.db(), lead_ids).await?;
 
     let mut saved = 0;

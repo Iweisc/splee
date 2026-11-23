@@ -255,7 +255,7 @@ pub const COMPANY_REPLIED: &str = "exists (select 1 from project_settings cs joi
 
 /// `lead` replied, so with the project's stop_company_on_reply on, the sequence ends for its other leads still being contacted
 /// at the same company, the same company row or website. Returns how many.
-pub async fn stop_colleagues(db: &sqlx::PgPool, lead: &Lead) -> sqlx::Result<usize> {
+pub async fn stop_colleagues(conn: &mut sqlx::PgConnection, lead: &Lead) -> sqlx::Result<usize> {
     let colleagues: Vec<Uuid> = sqlx::query_scalar(
         "select l.id from leads l join project_settings ps on ps.project_id = l.project_id
          where l.project_id = $1 and ps.stop_company_on_reply and l.id <> $2 and l.status in ('new', 'queued', 'contacted')
@@ -265,18 +265,16 @@ pub async fn stop_colleagues(db: &sqlx::PgPool, lead: &Lead) -> sqlx::Result<usi
     .bind(lead.id)
     .bind(lead.company_id)
     .bind(&lead.company_domain)
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await?;
     if colleagues.is_empty() {
         return Ok(0);
     }
     let who = [&lead.full_name, lead.email.as_ref().unwrap_or(&String::new())].into_iter().find(|s| !s.is_empty()).cloned();
     let why = format!("{} at the same company replied", who.as_deref().unwrap_or("Someone"));
-    let mut tx = db.begin().await?;
     for id in &colleagues {
-        end_sequence(&mut tx, *id, &why).await?;
+        end_sequence(conn, *id, &why).await?;
     }
-    tx.commit().await?;
     Ok(colleagues.len())
 }
 
