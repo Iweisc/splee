@@ -50,7 +50,7 @@ function TestBotButton({ projectId, platform }: { projectId: string; platform: "
 /** The channels a bot can see, each picked on its own. The platform gives the list, read again with Refresh. */
 function BotChannels({ projectId, platform, empty }: { projectId: string; platform: "discord" | "telegram"; empty: React.ReactNode }) {
   const { data, error, mutate } = useSWR<SocialChannel[]>(`/projects/${projectId}/social-channels`, fetcher);
-  const { pending, run } = useAction();
+  const { pending, busy, run } = useAction();
   const channels = (data ?? []).filter((c) => c.platform === platform);
   const refresh = () =>
     run("refresh", async () => {
@@ -83,7 +83,7 @@ function BotChannels({ projectId, platform, empty }: { projectId: string; platfo
               <Switch
                 checked={c.picked}
                 onChange={(on) => pick(c, on)}
-                loading={pending === c.id}
+                loading={busy(c.id)}
                 disabled={!c.picked && !c.can_read && !c.can_send}
                 label={`Use ${platform === "discord" ? `#${c.name}` : c.name}`}
               />

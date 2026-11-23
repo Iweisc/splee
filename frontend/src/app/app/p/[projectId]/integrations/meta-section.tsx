@@ -26,7 +26,7 @@ function metaNote(c: SocialChannel) {
 /** The Pages and Instagram accounts the signed-in user manages, each picked on its own. Signing in again reads the list again. */
 function MetaAccounts({ projectId, signIn, signingIn }: { projectId: string; signIn: () => void; signingIn: boolean }) {
   const { data, error, mutate } = useSWR<SocialChannel[]>(`/projects/${projectId}/social-channels`, fetcher);
-  const { pending, run } = useAction();
+  const { busy, run } = useAction();
   // Each Instagram account right under its Page.
   const pages = (data ?? []).filter((c) => c.platform === "facebook");
   const accounts = pages.flatMap((p) => [p, ...(data ?? []).filter((c) => c.platform === "instagram" && c.guild_id === p.chat_id)]);
@@ -58,7 +58,7 @@ function MetaAccounts({ projectId, signIn, signingIn }: { projectId: string; sig
               <Switch
                 checked={c.picked}
                 onChange={(on) => pick(c, on)}
-                loading={pending === c.id}
+                loading={busy(c.id)}
                 disabled={!c.picked && !c.can_read && !c.can_send}
                 label={`Use ${label(c)}`}
               />

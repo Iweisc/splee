@@ -65,7 +65,7 @@ export default function MailboxesPage() {
   // A month of numbers barely moves in a minute, so this one loads with the page and isn't polled.
   const { data: stats } = useSWR<MailboxStats[]>("/mailboxes/stats", fetcher);
   const { data: warmup, mutate: mutateWarmup } = useSWR<WarmupHealth[]>("/mailboxes/warmup", fetcher, { refreshInterval: 60_000 });
-  const { pending, run } = useAction();
+  const { pending, busy, run } = useAction();
   const [editing, setEditing] = useState<Mailbox | "new" | null>(null);
   const { me } = useMe();
   const signIn = me?.mailbox_sign_in ?? [];
@@ -268,7 +268,7 @@ export default function MailboxesPage() {
                 <Warmup
                   m={m}
                   health={warmup?.find((h) => h.mailbox_id === m.id)}
-                  pending={pending}
+                  busy={busy}
                   toggle={() => patch("warmup", m, { warmup: !m.warmup })}
                   hold={() => patch("hold", m, { hold_until_warm: true })}
                 />
@@ -371,13 +371,13 @@ function Health({ stats }: { stats?: MailboxStats }) {
 function Warmup({
   m,
   health,
-  pending,
+  busy,
   toggle,
   hold,
 }: {
   m: Mailbox;
   health?: WarmupHealth;
-  pending: string | null;
+  busy: (key: string) => boolean;
   toggle: () => void;
   hold: () => void;
 }) {
@@ -387,7 +387,7 @@ function Warmup({
   return (
     <>
       <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <Switch checked={m.warmup} onChange={toggle} loading={pending === `warmup:${m.id}`} label="Warmup" />
+        <Switch checked={m.warmup} onChange={toggle} loading={busy(`warmup:${m.id}`)} label="Warmup" />
         <span className="text-sm font-medium">Warmup</span>
         {m.warmup ? <Badge tone={status.tone}>{status.label}</Badge> : <span className="text-xs text-muted-foreground">Off</span>}
         {heldForWarmup(m, health) && !spam && <span className="text-xs whitespace-nowrap text-muted-foreground">Campaigns wait until it&apos;s warm</span>}
@@ -422,7 +422,7 @@ function Warmup({
               : "Over 1 in 5 of its warmup emails landed in spam, and its campaign emails likely do too. Hold campaigns while warmup repairs it?"}
           </p>
           {!m.hold_until_warm && (
-            <Button variant="outline" size="sm" onClick={hold} loading={pending === `hold:${m.id}`}>
+            <Button variant="outline" size="sm" onClick={hold} loading={busy(`hold:${m.id}`)}>
               Hold campaigns
             </Button>
           )}

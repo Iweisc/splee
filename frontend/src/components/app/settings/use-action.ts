@@ -7,12 +7,12 @@ export function toastError(e: unknown) {
   toast.error(e instanceof Error ? e.message : "Something went wrong");
 }
 
-/** Runs a mutation, toasts the outcome, and exposes which key is in flight so the right button can spin. */
+/** Runs a mutation, toasts the outcome, and exposes which keys are in flight so the right buttons can spin. */
 export function useAction() {
-  const [pending, setPending] = useState<string | null>(null);
+  const [keys, setKeys] = useState<string[]>([]);
 
   const run = async (key: string, fn: () => Promise<unknown>, success?: string) => {
-    setPending(key);
+    setKeys((k) => [...k, key]);
     try {
       await fn();
       if (success) toast.success(success);
@@ -21,9 +21,11 @@ export function useAction() {
       toastError(e);
       return false;
     } finally {
-      setPending(null);
+      // Only this run's key: another row's save can still be in flight, like a second mailbox's warmup.
+      setKeys((k) => k.filter((_, i) => i !== k.indexOf(key)));
     }
   };
 
-  return { pending, run };
+  // `pending` is the latest still running, for callers with one thing to save at a time. `busy` is for rows that save apart.
+  return { pending: keys.at(-1) ?? null, busy: (key: string) => keys.includes(key), run };
 }

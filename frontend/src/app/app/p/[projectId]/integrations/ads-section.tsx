@@ -33,7 +33,7 @@ async function signInToAds(projectId: string, platform: AdPlatform) {
 export function AdAudiencesSection({ projectId }: { projectId: string }) {
   const key = `/projects/${projectId}/ads`;
   const { data, error, mutate } = useSWR<AdsStatus>(key, fetcher);
-  const { pending, run } = useAction();
+  const { pending, busy, run } = useAction();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -67,7 +67,7 @@ export function AdAudiencesSection({ projectId }: { projectId: string }) {
         {!!data.connections.length && (
           <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
             {data.connections.map((c) => (
-              <ConnectedAds key={c.platform} projectId={projectId} connection={c} hot={data.audiences.find((a) => a.platform === c.platform)} pending={pending} call={call} />
+              <ConnectedAds key={c.platform} projectId={projectId} connection={c} hot={data.audiences.find((a) => a.platform === c.platform)} busy={busy} call={call} />
             ))}
           </ul>
         )}
@@ -94,13 +94,13 @@ function ConnectedAds({
   projectId,
   connection: c,
   hot,
-  pending,
+  busy,
   call,
 }: {
   projectId: string;
   connection: AdConnection;
   hot: AdsStatus["audiences"][number] | undefined;
-  pending: string | null;
+  busy: (key: string) => boolean;
   call: AdsCall;
 }) {
   const name = AD_PLATFORM_NAMES[c.platform];
@@ -126,14 +126,14 @@ function ConnectedAds({
               Reconnect
             </Button>
           )}
-          <Button size="sm" variant="outline" onClick={disconnect} loading={pending === `${c.platform}:off`}>
+          <Button size="sm" variant="outline" onClick={disconnect} loading={busy(`${c.platform}:off`)}>
             Disconnect
           </Button>
         </div>
       </div>
       {c.ad_accounts.length > 1 && (
         <Field label="Ad account" hint="Audiences move to the account you pick." className="mt-3 sm:w-80">
-          <Select value={c.ad_account_id} disabled={c.needs_reconnect || pending === `${c.platform}:account`} onChange={(e) => pick(e.target.value)}>
+          <Select value={c.ad_account_id} disabled={c.needs_reconnect || busy(`${c.platform}:account`)} onChange={(e) => pick(e.target.value)}>
             {!c.ad_account_id && <option value="">Pick one</option>}
             {c.ad_accounts.map((a) => (
               <option key={a.id} value={a.id}>
@@ -147,7 +147,7 @@ function ConnectedAds({
         <Switch
           checked={!!hot}
           onChange={toggleHot}
-          loading={pending === `${c.platform}:hot`}
+          loading={busy(`${c.platform}:hot`)}
           disabled={!hot && (c.needs_reconnect || !c.ad_account_id)}
           label={`Hot leads audience in ${name}`}
         />
