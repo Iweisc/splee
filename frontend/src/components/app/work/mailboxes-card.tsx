@@ -34,7 +34,9 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
   // Its own pick starts as the project's, so switching it on changes nothing until someone ticks a box.
   const active = mailboxes?.filter((m) => m.status === "active").map((m) => m.id);
   const copy = settings && (settings.mailbox_ids ?? active);
-  const toggle = (id: string) => picked && save(picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id]);
+  const saving = pending === "mailbox_ids";
+  // Ignored while a save runs rather than disabled, so keyboard focus stays on the box.
+  const toggle = (id: string) => picked && !saving && save(picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id]);
 
   return (
     <Card className="flex flex-col gap-4 p-5">
@@ -62,7 +64,8 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
           <Switch
             checked={picked !== null}
             onChange={(on) => (on ? save(copy!, "This campaign has its own mailboxes") : save(null, "Back to the project's mailboxes"))}
-            disabled={pending === "mailbox_ids" || (picked === null && !copy?.length)}
+            disabled={picked === null && !copy?.length}
+            loading={saving}
             label="Its own mailboxes"
           />
         </li>
@@ -82,7 +85,7 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
                       type="checkbox"
                       checked={on}
                       onChange={() => toggle(m.id)}
-                      disabled={pending === "mailbox_ids" || last}
+                      disabled={last}
                       title={last ? "Keep at least one ticked, or switch it off to use the project's" : undefined}
                       className="accent-black"
                     />
