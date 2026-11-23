@@ -435,6 +435,8 @@ export interface ProjectSettings extends CrmStatus {
   match_provider: boolean;
   /** Send days and hours are counted in each lead's time zone, from their phone number or country, else in `timezone`. */
   lead_time_zone: boolean;
+  /** Once a lead replies, the sequence stops for the project's other leads at the same company (same company or website). */
+  stop_company_on_reply: boolean;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */

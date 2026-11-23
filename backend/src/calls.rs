@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::agent::{self, kind};
+use crate::mail::COMPANY_REPLIED;
 use crate::models::{Call, Lead, Ts};
 use crate::phone;
 use crate::state::AppState;
@@ -358,6 +359,7 @@ pub async fn schedule(db: &PgPool) -> sqlx::Result<u64> {
              and ps.follow_ups -> last.step ->> 'kind' = 'call'
              and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)
              and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
+             and not {COMPANY_REPLIED}
          )
          insert into calls (project_id, lead_id, segment_id, kind, step, instructions, owner_id, status, due_at, to_number, closed_at, cancel_reason)
          select project_id, lead_id, segment_id, 'sequence', step, instructions, owner_id, case when why is null then 'open' else 'skipped' end,

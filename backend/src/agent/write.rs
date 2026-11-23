@@ -285,13 +285,15 @@ pub async fn write_for_top_segment(ctx: &Ctx, project_id: Uuid, limit: Option<us
 }
 
 pub async fn leads_without_initial(db: &sqlx::PgPool, project_id: Uuid, segment_id: Option<Uuid>) -> sqlx::Result<Vec<Lead>> {
-    sqlx::query_as::<_, Lead>(
+    sqlx::query_as::<_, Lead>(&format!(
         "select l.* from leads l
          where l.project_id = $1 and ($2::uuid is null or l.segment_id = $2) and l.email is not null
            and l.status in ('new', 'queued')
            and not exists (select 1 from email_messages e where e.lead_id = l.id and e.kind = 'initial' and e.status <> 'cancelled')
+           and not {}
          order by l.created_at",
-    )
+        crate::mail::COMPANY_REPLIED
+    ))
     .bind(project_id)
     .bind(segment_id)
     .fetch_all(db)

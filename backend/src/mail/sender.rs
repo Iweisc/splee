@@ -849,11 +849,13 @@ pub(crate) async fn schedule_follow_ups(state: &AppState) -> anyhow::Result<()> 
                <= now() + interval '12 hours'
            and not exists (select 1 from email_messages f where f.lead_id = l.id and f.kind = 'follow_up' and f.step = last.step + 1)
            and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
+           and not {COMPANY_REPLIED}
            and not exists (select 1 from agent_runs r where r.kind = 'write_emails' and r.project_id = l.project_id
                            and (r.status in ('queued', 'running') or r.created_at > now() - interval '6 hours')
                            and r.input -> 'lead_ids' ? l.id::text)
          limit 200",
         LAST_STEP = crate::calls::LAST_STEP,
+        COMPANY_REPLIED = super::COMPANY_REPLIED,
     ))
     .fetch_all(&state.db)
     .await?;

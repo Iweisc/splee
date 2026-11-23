@@ -123,6 +123,20 @@ export default function FollowUpsPage() {
                   ))}
                 </ol>
               )}
+              <div className="mt-5 flex items-start justify-between gap-4">
+                <div className="text-sm">
+                  <p className="font-medium">Stop for the whole company</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    When a lead replies, your other leads at their company get nothing more from the sequence, including a first email. Out-of-office
+                    replies don&apos;t count.
+                  </p>
+                </div>
+                <Switch
+                  checked={s.stop_company_on_reply}
+                  onChange={(on) => update({ stop_company_on_reply: on })}
+                  label="Stop for the whole company"
+                />
+              </div>
             </Section>
             <TextSteps settings={s} update={update} />
             <RepliesSection<StepStats>
