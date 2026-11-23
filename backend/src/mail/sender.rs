@@ -198,7 +198,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                                                        where x.lead_id = e.lead_id and x.mailbox_id is not null
                                                          and (x.direction = 'inbound' or x.status = 'sent')
                                                        order by x.created_at desc limit 1))
-                    and {IN_GAP}))
+                    and m.status = 'active' and {IN_GAP}))
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
