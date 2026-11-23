@@ -101,9 +101,11 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
             {problem}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <fieldset disabled={saving} className="contents">
-              {draft.length > 0 && <AddStepButtons steps={draft} onChange={setDraft} />}
-            </fieldset>
+            {draft.length > 0 && (
+              <fieldset disabled={saving} className="contents">
+                <AddStepButtons steps={draft} onChange={setDraft} />
+              </fieldset>
+            )}
             {/* On phones the problem takes its own line above the buttons, or it squeezes to a word a line beside them. */}
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {problem && (
