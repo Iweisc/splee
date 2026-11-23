@@ -108,6 +108,11 @@ export function Field({
           <FieldDescription.Provider value={{ id: desc, invalid: !!error }}>{children}</FieldDescription.Provider>
         </label>
       )}
+      {/* Always mounted, so a screen reader is already listening when an error appears, like after a submit that leaves focus
+          on the button. Out of the flow, so it adds no gap. */}
+      <span role="status" className="sr-only">
+        {error}
+      </span>
       {error ? (
         <p id={descId} className="text-xs text-danger">
           {error}
