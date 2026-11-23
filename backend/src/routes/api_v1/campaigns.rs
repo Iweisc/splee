@@ -136,8 +136,8 @@ pub(in crate::routes) async fn import_campaign(
     }
     if body.followup_instructions.as_deref().is_some_and(|f| !f.trim().is_empty()) {
         return Err(AppError::Unprocessable(
-            "A campaign has no follow-up instructions of its own: every campaign in a project sends the project's follow-ups. Leave out \
-             followup_instructions and set them in the project's settings in the app"
+            "followup_instructions isn't taken here, since a campaign's follow-ups are steps, each with its own instructions. Leave it out, \
+             then give the campaign its own follow_ups with PATCH /v1/campaigns/{id}, or it follows the project's"
                 .into(),
         ));
     }
@@ -201,6 +201,9 @@ pub(in crate::routes) struct CampaignUpdate {
     lead_pages: Option<bool>,
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     daily_limit: Option<Option<i32>>,
+    /// Its own follow-ups, or null to follow the project's again.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    follow_ups: Option<Option<Value>>,
 }
 
 /// The lists the campaign page edits. Each one sent replaces that list and the others stay, so a typo in a key is a 422 rather
@@ -243,11 +246,12 @@ pub(in crate::routes) async fn update_campaign(
         segments::check_language(language)?;
     }
     segments::check_daily_limit(body.daily_limit)?;
+    segments::check_follow_ups(&state.db, segment.id, &body.follow_ups).await?;
     sqlx::query(
         "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{}'),
            pain_points = coalesce($5, pain_points), angle = coalesce($6, angle), language = coalesce($7, language),
            track_clicks = coalesce($8, track_clicks), track_opens = coalesce($9, track_opens), lead_pages = coalesce($10, lead_pages),
-           daily_limit = case when $11 then $12 else daily_limit end
+           daily_limit = case when $11 then $12 else daily_limit end, follow_ups = case when $13 then $14 else follow_ups end
          where id = $1",
     )
     .bind(segment.id)
@@ -262,12 +266,14 @@ pub(in crate::routes) async fn update_campaign(
     .bind(body.lead_pages)
     .bind(body.daily_limit.is_some())
     .bind(body.daily_limit.flatten())
+    .bind(body.follow_ups.is_some())
+    .bind(body.follow_ups.flatten())
     .execute(&state.db)
     .await?;
     get_campaign(State(state), auth, Path(id)).await
 }
 
-/// A campaign as its page shows it, with the project's schedule and follow-ups it sends on.
+/// A campaign as its page shows it, with the project's schedule and the follow-ups it sends.
 #[derive(Serialize)]
 pub(in crate::routes) struct CampaignDetail {
     #[serde(flatten)]
@@ -289,8 +295,10 @@ pub(in crate::routes) struct CampaignDetail {
     /// Its own cap on first emails and follow-ups a day, on top of the project's daily_email_limit, or null for none.
     daily_limit: Option<i32>,
     schedule: Schedule,
-    /// The project's follow-ups after the first email, each an email or a call some days later.
+    /// The follow-ups after the first email, each an email or a call some days later: its own, else the project's.
     follow_ups: Value,
+    /// Whether follow_ups are the campaign's own rather than the project's.
+    own_follow_ups: bool,
     /// The tool an imported campaign came from, or null for one made in Splee.
     imported_from: Option<String>,
     /// An imported campaign's emails. Empty for one made in Splee.
@@ -338,10 +346,12 @@ pub(in crate::routes) async fn get_campaign(
     .await?;
     let mut read_only = vec![
         ReadOnly { field: "schedule", reason: "Every campaign in the project shares it. Change it with PATCH /v1/projects/{id}".into() },
-        ReadOnly { field: "follow_ups", reason: "Every campaign in the project shares them. Change them in the project's settings in the app".into() },
     ];
     if let Some(tool) = &imported.imported_from {
         read_only.push(ReadOnly { field: "sequence", reason: format!("It came from {tool}, and Splee sends these emails as written") });
+    }
+    if !imported.steps.is_empty() {
+        read_only.push(ReadOnly { field: "follow_ups", reason: "It sends the steps it came with instead".into() });
     }
     Ok(Json(CampaignDetail {
         status_reason: status_reason(&segment, !settings.paused, by_optimizer),
@@ -364,7 +374,8 @@ pub(in crate::routes) async fn get_campaign(
             send_end_hour: settings.send_end_hour,
             daily_email_limit: settings.daily_email_limit,
         },
-        follow_ups: settings.follow_ups,
+        own_follow_ups: segment.follow_ups.is_some(),
+        follow_ups: segment.follow_ups.unwrap_or(settings.follow_ups),
         imported_from: imported.imported_from,
         sequence: imported.steps,
         read_only,

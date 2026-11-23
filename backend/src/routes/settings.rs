@@ -123,11 +123,27 @@ pub(super) struct SettingsBody {
     assign_territories: Option<Vec<crate::ownership::Territory>>,
 }
 
-/// Each follow-up is an email or a call. A call step opens a call for the lead's owner instead of sending anything.
-fn check_follow_ups(steps: &Value) -> Result<(), &'static str> {
+/// Up to 5 follow-ups, a project's or a campaign's, each an email or a call 1 to 30 days after the step before, switched on or
+/// off. A call step opens a call for the lead's owner instead of sending anything. The writer and the schedulers read this shape,
+/// so a step missing `enabled` or `delay_days` would quietly stop the sequence.
+pub(super) fn check_follow_ups(steps: &Value) -> Result<(), &'static str> {
     let steps = steps.as_array().ok_or("follow_ups must be a list")?;
-    if steps.iter().any(|s| !matches!(s.get("kind").map(|k| k.as_str()), None | Some(Some("email" | "call")))) {
-        return Err("Each follow-up is an email or a call");
+    if steps.len() > 5 {
+        return Err("A sequence can have up to 5 follow-ups");
+    }
+    for step in steps {
+        if !matches!(step.get("kind").map(|k| k.as_str()), None | Some(Some("email" | "call"))) {
+            return Err("Each follow-up is an email or a call");
+        }
+        if !step["delay_days"].as_i64().is_some_and(|d| (1..=30).contains(&d)) {
+            return Err("Each follow-up's delay must be 1 to 30 days");
+        }
+        if !step["enabled"].is_boolean() {
+            return Err("Each follow-up needs enabled, true or false");
+        }
+        if !matches!(step.get("instructions"), None | Some(Value::String(_))) {
+            return Err("A follow-up's instructions must be text");
+        }
     }
     Ok(())
 }
@@ -246,7 +262,9 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if !(0..=23).contains(&start) || !(1..=24).contains(&end) || start >= end {
         return bad("Send window must start before it ends, within 0-24h");
     }
-    if let Some(Err(m)) = body.follow_ups.as_ref().map(check_follow_ups) {
+    // Every settings page sends the whole form back, so only a change is checked. Steps saved before the check got stricter
+    // don't block saving something else.
+    if let Some(Err(m)) = body.follow_ups.as_ref().filter(|f| **f != current.follow_ups).map(check_follow_ups) {
         return bad(m);
     }
     if let Some(Err(m)) = body.text_steps.as_ref().map(check_text_steps) {

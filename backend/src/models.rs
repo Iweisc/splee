@@ -537,6 +537,9 @@ pub struct Segment {
     /// Its own cap on first emails and follow-ups a day, on top of the project's limit. Null leaves it to the project's.
     #[sqlx(default)]
     pub daily_limit: Option<i32>,
+    /// Its own follow-ups, shaped like the project's. Null follows the project's (mail::FOLLOW_UPS).
+    #[sqlx(default)]
+    pub follow_ups: Option<Value>,
 }
 
 /// One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief.

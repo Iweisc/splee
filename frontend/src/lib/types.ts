@@ -880,6 +880,8 @@ export interface Segment {
   archived_at: Ts | null;
   /** Its own cap on first emails and follow-ups a day, on top of the project's limit. Null leaves it to the project's. */
   daily_limit: number | null;
+  /** Its own follow-ups instead of the project's. Null follows the project's. */
+  follow_ups: FollowUp[] | null;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */

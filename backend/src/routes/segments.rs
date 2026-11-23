@@ -142,6 +142,20 @@ pub(super) struct SegmentBody {
     /// The campaign's own daily limit, where null takes it off and leaves out keeps it.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     daily_limit: Option<Option<i32>>,
+    /// The campaign's own follow-ups, where null goes back to the project's and leaves out keeps them.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    follow_ups: Option<Option<Value>>,
+}
+
+/// A campaign's own follow-ups, or a 400. One brought over from another tool sends the steps it came with, so it can't have any.
+pub(super) async fn check_follow_ups(db: &PgPool, segment: Uuid, follow_ups: &Option<Option<Value>>) -> AppResult<()> {
+    let Some(Some(steps)) = follow_ups else { return Ok(()) };
+    super::settings::check_follow_ups(steps).map_err(|m| AppError::BadRequest(m.into()))?;
+    let imported: bool = sqlx::query_scalar("select exists (select 1 from segment_steps where segment_id = $1)").bind(segment).fetch_one(db).await?;
+    if imported {
+        return Err(AppError::BadRequest("This campaign came from another tool and sends the steps it came with".into()));
+    }
+    Ok(())
 }
 
 /// A campaign's own daily limit, or a 400.
@@ -266,6 +280,7 @@ async fn update(
 ) -> AppResult<Json<SegmentWithStats>> {
     let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
     body.validate()?;
+    check_follow_ups(&state.db, segment.id, &body.follow_ups).await?;
     if body.status.is_some() {
         ensure_not_archived(&segment)?;
     }
@@ -285,7 +300,8 @@ async fn update(
            track_opens = coalesce($13, track_opens),
            language = coalesce($14, language),
            lead_pages = coalesce($15, lead_pages),
-           daily_limit = case when $16 then $17 else daily_limit end
+           daily_limit = case when $16 then $17 else daily_limit end,
+           follow_ups = case when $18 then $19 else follow_ups end
          where id = $1 returning *",
     )
     .bind(segment.id)
@@ -305,6 +321,8 @@ async fn update(
     .bind(body.lead_pages)
     .bind(body.daily_limit.is_some())
     .bind(body.daily_limit.flatten())
+    .bind(body.follow_ups.is_some())
+    .bind(body.follow_ups.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))

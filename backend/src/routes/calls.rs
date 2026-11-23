@@ -745,6 +745,39 @@ pub(crate) mod tests {
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]
     #[ignore = "needs Postgres"]
+    async fn a_campaign_with_its_own_follow_ups_skips_the_projects_call(db: PgPool) {
+        let s = Seeded::start(db).await;
+        // The project starts with a call. Ana's campaign starts with an email 2 days on instead, and Kai's has no follow-ups.
+        let in_campaign = |name: &'static str, phone: &'static str, follow_ups: Value| {
+            let s = &s;
+            async move {
+                let lead = emailed_lead(s.db(), s.project, name, phone, None).await;
+                sqlx::query(
+                    "with c as (insert into segments (project_id, name, status, follow_ups) values ($1, $2, 'working', $3) returning id)
+                     update leads set segment_id = (select id from c) where id = $4",
+                )
+                .bind(s.project)
+                .bind(name)
+                .bind(follow_ups)
+                .bind(lead)
+                .execute(s.db())
+                .await
+                .unwrap();
+                lead
+            }
+        };
+        let ana = in_campaign("Ana", "+14155550135", json!([{ "delay_days": 2, "enabled": true, "instructions": "" }])).await;
+        let kai = in_campaign("Kai", "+14155550136", json!([])).await;
+
+        // Sam's and Beta's lead's calls, as before, and none for Ana or Kai.
+        assert_eq!(calls::schedule(s.db()).await.unwrap(), 2);
+        crate::mail::sender::schedule_follow_ups(&s.state).await.unwrap();
+        assert_eq!((write_runs_for(s.db(), ana).await, write_runs_for(s.db(), kai).await, write_runs_for(s.db(), s.sam).await), (1, 0, 0));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
     async fn the_nav_counts_the_open_calls_that_are_yours_or_nobodys(db: PgPool) {
         let s = Seeded::start(db).await;
         let path = format!("/projects/{}/calls/due", s.project);

@@ -142,6 +142,10 @@ export function endpoints(projectId: string): Endpoint[] {
         ],
         ["track_clicks, track_opens, lead_pages", "true or false"],
         ["daily_limit", "the most first emails and follow-ups it sends a day, 1 to 5,000, on top of the project's daily limit every campaign shares. null takes it off"],
+        [
+          "follow_ups",
+          "its own follow-ups instead of the project's: up to 5 steps, each { kind: email or call, delay_days: 1 to 30 after the step before, enabled, instructions }. [] sends none, null goes back to the project's. An imported campaign sends the steps it came with, so it's a 400",
+        ],
       ],
       body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "daily_limit": 25 }`,
       response: `{
@@ -156,7 +160,7 @@ export function endpoints(projectId: string): Endpoint[] {
       method: "GET",
       path: "/campaigns/5d0a…",
       summary:
-        "Everything the campaign's page shows: its funnel like the list above, why it has its status, who it targets, the brief its emails are written from, the project's schedule and follow-ups it sends on, and an imported campaign's emails. read_only says what can't be changed and why.",
+        "Everything the campaign's page shows: its funnel like the list above, why it has its status, who it targets, the brief its emails are written from, the project's schedule, the follow-ups it sends (its own when own_follow_ups is true, else the project's), and an imported campaign's emails. read_only says what can't be changed and why.",
       response: `{
   "id": "5d0a…",
   "project_id": "${projectId}",
@@ -170,6 +174,7 @@ export function endpoints(projectId: string): Endpoint[] {
   "daily_limit": 25,
   "schedule": { "sending": true, "timezone": "America/New_York", "send_days": [1, 2, 3, 4, 5], "send_start_hour": 9, "send_end_hour": 17, "daily_email_limit": 50 },
   "follow_ups": [{ "delay_days": 3, "enabled": true, "instructions": "" }],
+  "own_follow_ups": false,
   "imported_from": null,
   "sequence": [],
   "read_only": [{ "field": "schedule", "reason": "Every campaign in the project shares it. Change it with PATCH /v1/projects/{id}" }],
