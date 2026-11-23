@@ -46,10 +46,10 @@ export function StartLater({ segment }: { segment: Segment }) {
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   // Scheduling swaps Start later for the Starts button and cancelling swaps it back, so the X that had focus, or the button
-  // the picker would hand focus back to, is gone. Focus goes to the button in its place, if it was on the X or in the picker
-  // just before the swap and hasn't landed anywhere since. `changed` makes this run once after every change, even a no-op.
+  // the picker would hand focus back to, is gone. Focus goes to the button in its place, if it was in here (the picker
+  // included) just before the swap and hasn't landed anywhere since. `changed` makes this run once after every change.
+  const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const cancel = useRef<HTMLButtonElement>(null);
   const ours = useRef(false);
   const [changed, setChanged] = useState(0);
   useEffect(() => {
@@ -60,8 +60,7 @@ export function StartLater({ segment }: { segment: Segment }) {
     setBusy(true);
     try {
       await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
-      // From the picker `picking` is true, and it's modal, so nothing else can have taken focus.
-      ours.current = picking || document.activeElement === cancel.current;
+      ours.current = !!root.current?.contains(document.activeElement);
       await mutate(() => true);
       toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
       setPicking(false);
@@ -74,7 +73,7 @@ export function StartLater({ segment }: { segment: Segment }) {
   };
 
   return (
-    <>
+    <span ref={root} className="contents">
       {segment.start_at ? (
         // It comes after Start, so on a phone it wraps to a full row of its own under the other actions.
         <span className="inline-flex items-center max-sm:basis-full">
@@ -88,7 +87,6 @@ export function StartLater({ segment }: { segment: Segment }) {
             <CalendarClock className="size-3.5" /> Starts {dayTime(segment.start_at)}
           </Button>
           <Button
-            ref={cancel}
             variant="outline"
             size="icon"
             className="size-10 rounded-l-none border-l-0"
@@ -115,7 +113,7 @@ export function StartLater({ segment }: { segment: Segment }) {
           onClose={() => setPicking(false)}
         />
       )}
-    </>
+    </span>
   );
 }
 
