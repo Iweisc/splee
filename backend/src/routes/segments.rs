@@ -382,7 +382,7 @@ async fn update(
     let status = body.status.as_deref().unwrap_or(&segment.status);
     let (set, start_at, by_user, by_key) = start_columns(&segment, status, (&auth).into(), body.start_at)?;
     let starts = if set { start_at } else { segment.start_at };
-    let (set_pause, pause_at, pause_user, pause_key) = pause_columns(&segment, status, starts, set, (&auth).into(), body.pause_at)?;
+    let (pausing, pause_at, pause_user, pause_key) = pause_columns(&segment, status, starts, set, (&auth).into(), body.pause_at)?;
     let mailbox_ids = check_mailboxes(&state.db, auth.org_id, body.mailbox_ids).await?;
     let segment = sqlx::query_as::<_, Segment>(&format!(
         "update segments set
@@ -441,7 +441,7 @@ async fn update(
     .bind(by_key)
     .bind(mailbox_ids.is_some())
     .bind(mailbox_ids.flatten())
-    .bind(set_pause)
+    .bind(pausing)
     .bind(pause_at)
     .bind(pause_user)
     .bind(pause_key)
