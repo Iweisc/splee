@@ -76,6 +76,7 @@ export function Field({
   hint,
   error,
   group,
+  quiet,
   children,
   className,
 }: {
@@ -83,6 +84,8 @@ export function Field({
   hint?: React.ReactNode;
   error?: string | null;
   group?: boolean;
+  /** Its error isn't read out as it appears, for a form whose save bar already reads out the same problem. */
+  quiet?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -110,9 +113,11 @@ export function Field({
       )}
       {/* Always mounted, so a screen reader is already listening when an error appears, like after a submit that leaves focus
           on the button. Out of the flow, so it adds no gap. */}
-      <span role="status" className="sr-only">
-        {error}
-      </span>
+      {!quiet && (
+        <span role="status" className="sr-only">
+          {error}
+        </span>
+      )}
       {error ? (
         <p id={descId} className="text-xs text-danger">
           {error}
