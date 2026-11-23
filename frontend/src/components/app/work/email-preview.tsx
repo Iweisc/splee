@@ -218,7 +218,8 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
               {flagged.map((word, i) => (
                 <span key={word}>
                   {i > 0 && (i === flagged.length - 1 ? " and " : ", ")}
-                  <span className="font-medium text-foreground">{word}</span>
+                  {/* Quoted, because the weight alone doesn't reach screen readers, and "catch free" reads oddly without them. */}
+                  <span className="font-medium whitespace-nowrap text-foreground">“{word}”</span>
                 </span>
               ))}
               . Rewording {flagged.length === 1 ? "it" : "them"} helps this email reach the inbox.
