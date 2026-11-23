@@ -134,8 +134,8 @@ export default function PipelinePage({ searchParams }: PageProps<"/app/pipeline"
                 { value: "forecast", label: "Forecast" },
                 { value: "targets", label: "Targets" },
               ]}
-              // Six tabs don't fit beside Edit stages on a phone, so they get their own row and scroll.
-              className="max-sm:basis-full max-sm:[&>button]:flex-1"
+              // Six tabs need about 440px, so on a phone they sit three to a row rather than scroll Targets out of sight.
+              className="max-sm:grid max-sm:basis-full max-sm:grid-cols-3"
             />
             {admin && data && (
               <Button variant="outline" size="sm" onClick={() => setEditing(true)}>

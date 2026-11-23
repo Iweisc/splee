@@ -61,7 +61,8 @@ export default function CustomersPage({ searchParams }: PageProps<"/app/customer
                 { value: "expansion", label: "Expansion" },
                 { value: "referrals", label: "Referrals" },
               ]}
-              className="max-sm:flex-1 max-sm:[&>button]:flex-1"
+              // Five tabs need about 420px, so on a phone they sit three over two rather than scroll Referrals out of sight.
+              className="max-sm:grid max-sm:basis-full max-sm:grid-cols-6 max-sm:*:col-span-2 max-sm:*:nth-[n+4]:col-span-3"
             />
           </>
         }
