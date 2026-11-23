@@ -198,3 +198,220 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
     sqlx::query("delete from plays where id = $1").bind(play.id).execute(&state.db).await?;
     Ok(Json(json!({ "ok": true })))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::{Duration, Utc};
+
+    use super::*;
+    use crate::config::Config;
+
+    struct Seeded {
+        state: AppState,
+        org: Uuid,
+        project: Uuid,
+        segment: Uuid,
+        /// Another org's project and campaign.
+        other_org: Uuid,
+        other_project: Uuid,
+        other_segment: Uuid,
+    }
+
+    async fn seed(db: PgPool) -> Seeded {
+        let mut ids = Vec::new();
+        for name in ["Acme", "Other"] {
+            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(&db).await.unwrap();
+            let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id").bind(org).bind(name).fetch_one(&db).await.unwrap();
+            let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Funded') returning id").bind(project).fetch_one(&db).await.unwrap();
+            ids.push((org, project, segment));
+        }
+        let [(org, project, segment), (other_org, other_project, other_segment)] = ids[..] else { unreachable!() };
+        let state = AppState { db, cfg: Arc::new(Config::test()), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
+        Seeded { state, org, project, segment, other_org, other_project, other_segment }
+    }
+
+    fn owner(org_id: Uuid) -> Auth {
+        Auth { user_id: Uuid::new_v4(), org_id, role: "owner".into(), token_hash: String::new() }
+    }
+
+    fn body(value: Value) -> Json<PlayBody> {
+        Json(serde_json::from_value(value).unwrap())
+    }
+
+    async fn make(s: &Seeded, org: Uuid, project: Uuid, value: Value) -> AppResult<PlayRow> {
+        create(State(s.state.clone()), owner(org), Path(project), body(value)).await.map(|Json(row)| row)
+    }
+
+    async fn edit(s: &Seeded, org: Uuid, id: Uuid, value: Value) -> AppResult<PlayRow> {
+        update(State(s.state.clone()), owner(org), Path(id), body(value)).await.map(|Json(row)| row)
+    }
+
+    async fn count(s: &Seeded) -> i64 {
+        sqlx::query_scalar("select count(*) from plays").fetch_one(&s.state.db).await.unwrap()
+    }
+
+    /// Whether `at` is within a minute of `days` days ago.
+    fn about(at: Ts, days: i64) -> bool {
+        (at - (Utc::now() - Duration::days(days))).num_seconds().abs() < 60
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_play_is_saved_only_when_its_whole_rule_holds(db: PgPool) {
+        let s = seed(db).await;
+        let good = json!({ "name": "Raised money", "trigger": "funding", "action": "add_to_campaign", "segment_id": s.segment });
+        let with = |change: Value| {
+            let mut value = good.clone();
+            value.as_object_mut().unwrap().extend(change.as_object().unwrap().clone());
+            value
+        };
+        let refused = [
+            with(json!({ "name": "  " })),
+            with(json!({ "name": "x".repeat(81) })),
+            json!({ "name": "Raised money", "action": "notify" }),
+            with(json!({ "trigger": "rain" })),
+            with(json!({ "action": "call" })),
+            with(json!({ "action": "write_email" })),
+            json!({ "name": "Hot lead", "trigger": "score", "action": "add_to_campaign", "segment_id": s.segment }),
+            with(json!({ "min_score": -1 })),
+            with(json!({ "min_score": 101 })),
+            with(json!({ "daily_cap": 0 })),
+            with(json!({ "daily_cap": 201 })),
+            with(json!({ "segment_id": null })),
+            with(json!({ "segment_id": "" })),
+            with(json!({ "segment_id": s.other_segment })),
+            with(json!({ "segment_id": Uuid::new_v4() })),
+        ];
+        for value in refused {
+            let result = make(&s, s.org, s.project, value.clone()).await;
+            assert!(matches!(result, Err(AppError::BadRequest(_))), "{value}: {:?}", result.map(|p| p.name));
+        }
+        assert!(matches!(make(&s, s.org, s.other_project, good.clone()).await, Err(AppError::NotFound)), "another org's project");
+        assert_eq!(count(&s).await, 0);
+
+        // Left out, a play is on, catches any score up to 20 a day and acts only on what happens from now on.
+        let play = make(&s, s.org, s.project, with(json!({ "name": "  Raised money  " }))).await.unwrap();
+        assert_eq!((play.name.as_str(), play.segment_name.as_deref(), play.project_id), ("Raised money", Some("Funded"), s.project));
+        assert_eq!((play.min_score, play.daily_cap, play.enabled, play.fired_today, play.fired_month), (0, 20, true, 0, 0));
+        assert!(about(play.checked_at, 0), "{}", play.checked_at);
+
+        // A notify play needs no campaign, and both ends of each range are fine.
+        let edges = [(0, 1, "n".repeat(80), 30, 30), (100, 200, "Visit".into(), 45, 30), (50, 5, "Old visit".into(), -3, 0)];
+        for (min_score, daily_cap, name, backfill_days, days) in edges {
+            let value = json!({ "name": name, "trigger": "visit", "action": "notify", "min_score": min_score, "daily_cap": daily_cap,
+                                "backfill_days": backfill_days, "enabled": false });
+            let play = make(&s, s.org, s.project, value).await.unwrap();
+            assert_eq!((play.min_score, play.daily_cap, play.name, play.enabled, play.segment_id), (min_score, daily_cap, name, false, None));
+            assert!(about(play.checked_at, days), "backfill {backfill_days} checked from {}", play.checked_at);
+        }
+
+        // Up to 20 plays a project.
+        for n in count(&s).await..MAX_PLAYS {
+            make(&s, s.org, s.project, with(json!({ "name": format!("Play {n}") }))).await.unwrap();
+        }
+        let over = make(&s, s.org, s.project, good.clone()).await;
+        assert!(matches!(&over, Err(AppError::BadRequest(m)) if m == "A project can have up to 20 plays"), "{:?}", over.map(|p| p.name));
+        assert_eq!(count(&s).await, MAX_PLAYS);
+        assert!(matches!(make(&s, s.other_org, s.other_project, good.clone()).await, Err(AppError::BadRequest(_))), "needs its own project's campaign");
+        assert!(make(&s, s.other_org, s.other_project, with(json!({ "segment_id": s.other_segment }))).await.is_ok(), "the limit is per project");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn editing_a_play_keeps_its_rule_and_turning_it_back_on_starts_from_now(db: PgPool) {
+        let s = seed(db).await;
+        let play = make(&s, s.org, s.project, json!({ "name": "Raised money", "trigger": "funding", "action": "add_to_campaign", "segment_id": s.segment, "backfill_days": 7 }))
+            .await
+            .unwrap();
+        let other_play = make(&s, s.other_org, s.other_project, json!({ "name": "Visit", "trigger": "visit", "action": "notify" })).await.unwrap();
+
+        for value in [json!({ "name": "" }), json!({ "min_score": 101 }), json!({ "daily_cap": 0 }), json!({ "segment_id": s.other_segment })] {
+            let result = edit(&s, s.org, play.id, value.clone()).await;
+            assert!(matches!(result, Err(AppError::BadRequest(_))), "{value}: {:?}", result.map(|p| p.name));
+        }
+        assert!(matches!(edit(&s, s.other_org, play.id, json!({ "name": "Mine" })).await, Err(AppError::NotFound)));
+        assert!(matches!(edit(&s, s.org, other_play.id, json!({ "name": "Mine" })).await, Err(AppError::NotFound)));
+        let unchanged = one(&s.state.db, play.id).await.unwrap();
+        assert_eq!((unchanged.name.as_str(), unchanged.min_score, unchanged.daily_cap, unchanged.segment_id), ("Raised money", 0, 20, Some(s.segment)));
+        assert!(about(unchanged.checked_at, 7));
+
+        // The trigger and action stay, a blank campaign keeps the one it has, and the rest changes.
+        let new_segment: Uuid =
+            sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Hiring') returning id").bind(s.project).fetch_one(&s.state.db).await.unwrap();
+        let edited = edit(&s, s.org, play.id, json!({ "name": " Funded ", "trigger": "score", "action": "notify", "min_score": 100, "daily_cap": 200, "segment_id": new_segment }))
+            .await
+            .unwrap();
+        assert_eq!((edited.name.as_str(), edited.trigger.as_str(), edited.action.as_str()), ("Funded", "funding", "add_to_campaign"));
+        assert_eq!((edited.min_score, edited.daily_cap, edited.segment_name.as_deref()), (100, 200, Some("Hiring")));
+        assert_eq!(edit(&s, s.org, play.id, json!({ "segment_id": "" })).await.unwrap().segment_id, Some(new_segment));
+        assert_eq!(edited.checked_at, unchanged.checked_at, "an edit that leaves it on keeps where it got to");
+
+        // Off and on again, it starts from now. Turning on a play that's already on keeps where it got to.
+        let off = edit(&s, s.org, play.id, json!({ "enabled": false })).await.unwrap();
+        assert_eq!((off.enabled, off.checked_at), (false, unchanged.checked_at));
+        let on = edit(&s, s.org, play.id, json!({ "enabled": true })).await.unwrap();
+        assert!(on.enabled && about(on.checked_at, 0), "{}", on.checked_at);
+        let earlier: Ts = sqlx::query_scalar("update plays set checked_at = now() - interval '3 days' where id = $1 returning checked_at")
+            .bind(play.id)
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
+        let again = edit(&s, s.org, play.id, json!({ "enabled": true })).await.unwrap();
+        assert_eq!(again.checked_at, earlier);
+
+        // Only the org's own play can be deleted.
+        assert!(matches!(remove(State(s.state.clone()), owner(s.other_org), Path(play.id)).await, Err(AppError::NotFound)));
+        assert_eq!(remove(State(s.state.clone()), owner(s.org), Path(play.id)).await.unwrap().0, json!({ "ok": true }));
+        assert!(matches!(remove(State(s.state.clone()), owner(s.org), Path(play.id)).await, Err(AppError::NotFound)));
+        assert_eq!(count(&s).await, 1);
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_list_counts_each_plays_firings_for_a_day_and_a_month(db: PgPool) {
+        let s = seed(db).await;
+        let visit = make(&s, s.org, s.project, json!({ "name": "Visit", "trigger": "visit", "action": "notify" })).await.unwrap();
+        let funding = make(&s, s.org, s.project, json!({ "name": "Funding", "trigger": "funding", "action": "notify" })).await.unwrap();
+        let theirs = make(&s, s.other_org, s.other_project, json!({ "name": "Theirs", "trigger": "visit", "action": "notify" })).await.unwrap();
+        sqlx::query("update plays set created_at = now() - interval '1 day' where id = $1").bind(funding.id).execute(&s.state.db).await.unwrap();
+        let fire = |play: Uuid, project: Uuid, subject: String, hours_ago: i64| {
+            let db = s.state.db.clone();
+            async move {
+                sqlx::query(
+                    "insert into play_firings (play_id, project_id, subject, domain, what, outcome, created_at)
+                     values ($1, $2, $3, $3 || '.example', 'Visited the pricing page', 'done', now() - make_interval(hours => $4::int))",
+                )
+                .bind(play)
+                .bind(project)
+                .bind(subject)
+                .bind(hours_ago)
+                .execute(&db)
+                .await
+                .unwrap();
+            }
+        };
+        // Visit: 2 in the last day, one of them skipped, 3 more in the month, 50 older. Funding: 1 a week ago.
+        for (n, hours) in [1, 23].into_iter().chain([25, 24 * 10, 24 * 29]).chain((0..50).map(|n| 24 * 31 + n)).enumerate() {
+            fire(visit.id, s.project, format!("v{n}"), hours).await;
+        }
+        fire(funding.id, s.project, "f".into(), 24 * 7).await;
+        sqlx::query("update play_firings set outcome = 'skipped' where subject = 'v1'").execute(&s.state.db).await.unwrap();
+        fire(theirs.id, s.other_project, "t".into(), 0).await;
+
+        assert!(matches!(list(State(s.state.clone()), owner(s.other_org), Path(s.project)).await, Err(AppError::NotFound)));
+        let Json(page) = list(State(s.state.clone()), owner(s.org), Path(s.project)).await.unwrap();
+        let counts: Vec<_> = page.plays.iter().map(|p| (p.name.as_str(), p.fired_today, p.fired_month)).collect();
+        assert_eq!(counts, [("Funding", 0, 1), ("Visit", 2, 5)], "oldest play first");
+
+        // The 50 latest firings, newest first, from this project only.
+        assert_eq!(page.firings.len(), 50);
+        assert!(page.firings.windows(2).all(|w| w[0].created_at >= w[1].created_at));
+        let subjects: Vec<_> = page.firings.iter().map(|f| (f.play_name.clone(), f.domain.clone().unwrap_or_default())).collect();
+        let visit_firing = |n: usize| ("Visit".to_string(), format!("v{n}.example"));
+        let newest: Vec<_> = (0..3).map(visit_firing).chain([("Funding".into(), "f.example".into())]).chain((3..49).map(visit_firing)).collect();
+        assert_eq!(subjects, newest);
+        assert!(page.firings.iter().all(|f| f.play_id != theirs.id));
+    }
+}
