@@ -709,6 +709,8 @@ pub struct Mailbox {
     pub ramp_up: bool,
     /// The least minutes between two emails it sends, 0 for none. See sender::mailboxes_with_room.
     pub min_gap_minutes: i32,
+    /// Another of the org's mailboxes that emails from this one ask replies to go to, null for this one.
+    pub reply_to_mailbox_id: Option<Uuid>,
     pub first_sent_on: Option<chrono::NaiveDate>,
     /// Trade warmup emails with the other warming mailboxes in this Splee. See mail::warmup.
     pub warmup: bool,

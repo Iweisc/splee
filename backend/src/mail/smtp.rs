@@ -56,6 +56,8 @@ pub struct Outgoing<'a> {
     pub html: Option<&'a str>,
     pub cc: &'a [String],
     pub files: &'a [OutgoingFile<'a>],
+    /// Sent as Reply-To, for a mailbox whose replies go to another of the org's mailboxes.
+    pub reply_to: Option<&'a str>,
 }
 
 pub struct OutgoingFile<'a> {
@@ -96,6 +98,9 @@ pub fn build(mb: &Mailbox, email: &Outgoing) -> anyhow::Result<Message> {
     }
     if let Some(token) = email.warmup {
         builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str(super::warmup::HEADER), token.to_string()));
+    }
+    if let Some(reply_to) = email.reply_to {
+        builder = builder.reply_to(Address::new(None, reply_to.parse().with_context(|| format!("invalid Reply-To address {reply_to}"))?));
     }
     for cc in email.cc {
         builder = builder.cc(Address::new(None, cc.parse().with_context(|| format!("invalid CC address {cc}"))?));
@@ -217,6 +222,7 @@ mod tests {
                 html: None,
                 cc: &cc,
                 files: &files,
+                reply_to: Some("dana@main.test"),
             },
         )
         .unwrap();
@@ -229,6 +235,7 @@ mod tests {
         let copied: Vec<&str> = parsed.cc().unwrap().iter().filter_map(|a| a.address()).collect();
         assert_eq!(copied, ["kim@beta.test", "ops@beta.test"]);
         assert_eq!(parsed.in_reply_to().as_text(), Some("r1@beta.test"));
+        assert_eq!(parsed.reply_to().and_then(|r| r.first()).and_then(|a| a.address()), Some("dana@main.test"));
         let threaded: Vec<&str> = parsed.references().as_text_list().unwrap().iter().map(|r| r.as_ref()).collect();
         assert_eq!(threaded, ["first@alpha.test", "r1@beta.test"]);
         assert_eq!(parsed.body_text(0).unwrap().trim(), "Here it is.");

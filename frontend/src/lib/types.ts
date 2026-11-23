@@ -2062,6 +2062,8 @@ export interface Mailbox {
   ramp_up: boolean;
   /** The least minutes between two emails it sends, 0 for none. Replies don't wait for it. */
   min_gap_minutes: number;
+  /** Another of the org's mailboxes that replies go to, by Reply-To. Null for this one. */
+  reply_to_mailbox_id: string | null;
   /** "2026-11-09", the UTC day it first sent. */
   first_sent_on: string | null;
   /** Trades warmup emails with the other warming mailboxes in this Splee. */
@@ -2291,6 +2293,8 @@ export interface MailboxInput {
   cost_per_email_micros: number;
   ramp_up: boolean;
   min_gap_minutes: number;
+  /** Only saved on edit. */
+  reply_to_mailbox_id?: string | null;
   warmup: boolean;
   warmup_daily_cap: number;
   total_daily_limit: number;

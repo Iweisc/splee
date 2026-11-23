@@ -165,6 +165,7 @@ pub async fn send_from(
             html,
             cc: &[],
             files: &[],
+            reply_to: None,
         },
     )?;
     smtp::send(&smtp::transport(state, mb).await?, message).await?;
