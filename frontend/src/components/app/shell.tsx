@@ -116,12 +116,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <PageTitle title={pageTitle} />
       <ShortcutsDialog />
       {/* The first Tab stop, past the 40 or more sidebar links. Focus moves into the page without changing the URL, or scrolling
-          the page title under the phone header. */}
+          the page title under the phone header. The page takes focus only for this, so a click on empty space in it doesn't
+          start Tab over from its top. */}
       <a
         href="#content"
+        inert={menuOpen}
         onClick={(e) => {
           e.preventDefault();
-          mainRef.current?.focus({ preventScroll: true });
+          const main = mainRef.current;
+          if (!main) return;
+          main.tabIndex = -1;
+          main.addEventListener("blur", () => main.removeAttribute("tabindex"), { once: true });
+          main.focus({ preventScroll: true });
         }}
         className="fixed top-3 left-3 z-50 -translate-y-24 rounded-lg bg-card px-3 py-2 text-sm font-medium shadow-pop focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-brand-600"
       >
@@ -215,7 +221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main ref={mainRef} id="content" tabIndex={-1} inert={menuOpen} className="min-w-0 flex-1 outline-none">
+      <main ref={mainRef} id="content" inert={menuOpen} className="min-w-0 flex-1 outline-none">
         <SWRConfig value={swrConfig}>{children}</SWRConfig>
       </main>
       <Toasts />
