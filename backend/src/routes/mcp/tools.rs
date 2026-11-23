@@ -628,7 +628,8 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "list_emails_to_approve",
             "List emails to approve",
-            "Draft emails waiting for approval, oldest first, with the full subject and body. Show them to the user before approving.",
+            "Draft emails waiting for approval, oldest first, with the full subject and body, and spam_words, words in them spam filters \
+             often catch. Show them to the user before approving, with any spam_words.",
             page_props(json!({
                 "project_id": id_prop("Optional. Only this project"),
                 "campaign_id": id_prop("Optional. Only this campaign"),

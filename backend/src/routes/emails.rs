@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/emails/{id}", get(get_one).patch(update))
         .route("/emails/{id}/regenerate", post(regenerate))
         .route("/emails/{id}/test", post(send_test))
+        .route("/spam-words", get(spam_words))
 }
 
 #[derive(Serialize, FromRow)]
@@ -128,6 +129,11 @@ async fn load(db: &PgPool, id: Uuid, org_id: Uuid) -> AppResult<EmailRow> {
         .fetch_optional(db)
         .await?
         .ok_or(AppError::NotFound)
+}
+
+/// The draft editor matches these as you type. See spam_words.rs.
+async fn spam_words(_: Auth) -> Json<&'static [&'static str]> {
+    Json(crate::spam_words::WORDS)
 }
 
 async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<EmailRow>> {

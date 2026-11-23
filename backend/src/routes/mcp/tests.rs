@@ -726,6 +726,19 @@ async fn tools_act_for_the_keys_organization_only(db: PgPool) {
     assert_eq!(status, "draft");
     let (_, text) = server.call(KEY, "list_emails_to_approve", json!({})).await;
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["total"], 0);
+    // A draft of the key's own organization comes with the words spam filters often catch in it.
+    sqlx::query(
+        "with l as (insert into leads (project_id, segment_id, full_name, email) values ($1, $2, 'Ana', 'ana@x.com') returning id)
+         insert into email_messages (project_id, lead_id, segment_id, direction, kind, subject, body, status)
+         select $1, l.id, $2, 'outbound', 'initial', 'A free audit', 'Act now, click here.', 'draft' from l",
+    )
+    .bind(project)
+    .bind(segment)
+    .execute(&db)
+    .await
+    .unwrap();
+    let (_, text) = server.call(KEY, "list_emails_to_approve", json!({})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["items"][0]["spam_words"], json!(["act now", "click here", "free"]));
 
     let (is_error, text) = server.call(KEY, "list_campaigns", json!({})).await;
     assert_eq!((is_error, text.as_str()), (true, "Pass project_id as an id"));

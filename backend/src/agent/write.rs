@@ -17,7 +17,8 @@ use crate::{hiring, tech};
 
 const WRITER: &str = "You are the email writer of Splee, an outbound sales tool. You write short, specific, honest B2B cold emails \
 that read like a thoughtful person wrote them by hand. Use only facts from the prompt. Never invent results, clients, numbers or \
-offers. Never use placeholders such as [Name] or {company}. Plain text only.";
+offers. Never use placeholders such as [Name] or {company}. Plain text only. Keep clear of words spam filters hold against cold \
+email, like free, guarantee, act now, click here or limited time.";
 
 /// The subset of project_settings the writer uses. Demo projects have no settings row and get the defaults.
 #[derive(sqlx::FromRow)]

@@ -2,13 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { Check, RefreshCw, Send, Sparkles, X } from "lucide-react";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/form";
 import { Address, Message, Spinner } from "@/components/ui/misc";
+import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { languageName } from "@/lib/languages";
+import { spamWords } from "@/lib/spam-words";
 import type { EmailRow } from "@/lib/types";
 import { dateTime, timeAgo } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
@@ -75,6 +77,8 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
   });
 
   const isDraft = email.status === "draft";
+  const { data: words } = useSWR<string[]>(isDraft ? "/spam-words" : null, fetcher, { revalidateOnFocus: false });
+  const flagged = words ? spamWords(`${subject}\n${body}`, words) : [];
   const dirty = subject !== email.subject || body !== email.body;
   useEffect(() => {
     if (dirty) sessionStorage.setItem(editsKey, JSON.stringify({ was: [email.subject, email.body], subject, body }));
@@ -208,6 +212,18 @@ export function EmailPreview({ email, showProject }: { email: EmailRow; showProj
           <Input value={subject} onChange={(e) => setSubject(e.target.value)} aria-label="Subject" className="font-medium" />
           {/* Grows to show the whole email. The 20-line cap keeps the card, which is sticky on laptops, inside an 800px-tall screen. */}
           <Textarea value={body} onChange={(e) => setBody(e.target.value)} aria-label="Body" className="max-h-[calc(20lh+1.125rem)] min-h-72 field-sizing-content" />
+          {flagged.length > 0 && (
+            <p className="text-sm text-pretty text-muted-foreground">
+              Spam filters often catch{" "}
+              {flagged.map((word, i) => (
+                <span key={word}>
+                  {i > 0 && (i === flagged.length - 1 ? " and " : ", ")}
+                  <span className="font-medium text-foreground">{word}</span>
+                </span>
+              ))}
+              . Rewording {flagged.length === 1 ? "it" : "them"} helps this email reach the inbox.
+            </p>
+          )}
         </div>
       ) : (
         <div className="rounded-xl border border-border">
