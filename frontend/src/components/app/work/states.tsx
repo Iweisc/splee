@@ -2,16 +2,41 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-react";
+import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, LinkButton } from "@/components/ui/button";
 import { EmptyState, Skeleton } from "@/components/ui/misc";
-import { ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { cn, num } from "@/lib/utils";
 
 export const PER_PAGE = 50;
 
 export function toastError(e: unknown) {
   toast.error(e instanceof Error ? e.message : "Something went wrong");
+}
+
+/** A deal card's actions: `busy` names the one running, for its buttons to wait on, and a failure shows as a toast. One that works
+ * reloads the card through `onChanged` and every other SWR key `refresh` matches, so each view of it agrees. `send`
+ * approves the card's drafted email, which sends it. */
+export function useDealActions(onChanged: () => unknown, refresh: (key: string) => boolean) {
+  const { mutate } = useSWRConfig();
+  const [busy, setBusy] = useState<string | null>(null);
+  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
+    setBusy(what);
+    try {
+      await call();
+      if (done) toast.success(done);
+      await onChanged();
+      mutate((k) => typeof k === "string" && refresh(k));
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const send = (emailId: string | null) =>
+    act("send", () => api(`/emails/${emailId}`, { method: "PATCH", body: { status: "approved" } }), "Approved. It goes out in the thread shortly.");
+  return { busy, act, send };
 }
 
 export function MicroLabel({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {

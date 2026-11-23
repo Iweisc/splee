@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { Check, Copy, Eye, HeartHandshake, Loader2, PenLine, UserPlus, X } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR from "swr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState, Favicon, Skeleton } from "@/components/ui/misc";
@@ -11,7 +10,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, Referral, ReferralView } from "@/lib/types";
 import { plural } from "@/lib/utils";
-import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, useDealActions } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const ready = (r: Referral) => r.status === "drafted";
@@ -19,31 +18,12 @@ const pageUrl = (r: Referral) => `${window.location.origin}/r/${r.token}`;
 
 /** Writing the ask now, dropping it and sending the draft, each refreshing every view of it. */
 function useActions(dealId: string, onChanged: () => unknown) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
-    setBusy(what);
-    try {
-      await call();
-      if (done) toast.success(done);
-      await onChanged();
-      mutate((k) => typeof k === "string" && k.includes("/referral"));
-    } catch (e) {
-      toastError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const { busy, act, send } = useDealActions(onChanged, (k) => k.includes("/referral"));
   return {
     busy,
     write: () => act("write", () => api(`/deals/${dealId}/referral`, { method: "POST" })),
     drop: (r: Referral) => act("drop", () => api(`/referrals/${r.id}`, { method: "PATCH", body: { dismissed: true } })),
-    send: (r: Referral) =>
-      act(
-        "send",
-        () => api(`/emails/${r.email_id}`, { method: "PATCH", body: { status: "approved" } }),
-        "Approved. It goes out in the thread shortly.",
-      ),
+    send: (r: Referral) => send(r.email_id),
   };
 }
 

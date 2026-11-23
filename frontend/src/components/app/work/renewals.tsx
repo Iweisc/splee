@@ -1,10 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { CalendarClock, Check, Loader2, RefreshCw } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
-import { toast } from "sonner";
+import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { Badge, type BadgeTone, Card, EmptyState, Skeleton } from "@/components/ui/misc";
@@ -12,7 +10,7 @@ import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { Deal, Renewal, RenewalView } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
-import { LoadError, MicroLabel, toastError } from "./states";
+import { LoadError, MicroLabel, useDealActions } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const RISK: Record<NonNullable<Renewal["risk"]>, { label: string; tone: BadgeTone }> = {
@@ -31,31 +29,12 @@ const inDays = (n: number) => (n === 0 ? "today" : n === 1 ? "tomorrow" : `in ${
 
 /** Prepping now, setting the date and sending the draft, each refreshing every view of it. */
 function useActions(dealId: string, onChanged: () => unknown) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
-    setBusy(what);
-    try {
-      await call();
-      if (done) toast.success(done);
-      await onChanged();
-      mutate((k) => typeof k === "string" && (k.includes("/renewal") || k.endsWith("/customers")));
-    } catch (e) {
-      toastError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const { busy, act, send } = useDealActions(onChanged, (k) => k.includes("/renewal") || k.endsWith("/customers"));
   return {
     busy,
     prep: () => act("write", () => api(`/deals/${dealId}/renewal`, { method: "POST" })),
     setDate: (renews_on: string | null) => act("date", () => api(`/deals/${dealId}/renewal`, { method: "PUT", body: { renews_on } })),
-    send: (r: Renewal) =>
-      act(
-        "send",
-        () => api(`/emails/${r.email_id}`, { method: "PATCH", body: { status: "approved" } }),
-        "Approved. It goes out in the thread shortly.",
-      ),
+    send: (r: Renewal) => send(r.email_id),
   };
 }
 

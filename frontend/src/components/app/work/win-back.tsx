@@ -3,8 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Check, Loader2, PenLine, RotateCcw, Send, Sparkles, X } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
-import { toast } from "sonner";
+import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { Card, EmptyState, Skeleton } from "@/components/ui/misc";
@@ -13,7 +12,7 @@ import { api } from "@/lib/api";
 import type { Deal, WinBack, WinBackView } from "@/lib/types";
 import { cn, dealMoney, plural } from "@/lib/utils";
 import { reasonLabel } from "./deal-review";
-import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, useDealActions } from "./states";
 
 const busyStatus = (w: WinBack) => w.status === "planning" || w.status === "writing";
 const day = (d: string, year = false) =>
@@ -23,21 +22,7 @@ const sent = (w: WinBack) => w.status === "drafted" && w.email_status !== "draft
 
 /** Writing it now, moving its day, dropping it and sending the draft, each refreshing every view of it. */
 function useActions(dealId: string, onChanged: () => unknown) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
-    setBusy(what);
-    try {
-      await call();
-      if (done) toast.success(done);
-      await onChanged();
-      mutate((k) => typeof k === "string" && k.includes("/win-back"));
-    } catch (e) {
-      toastError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const { busy, act, send } = useDealActions(onChanged, (k) => k.includes("/win-back"));
   return {
     busy,
     write: () => act("write", () => api(`/deals/${dealId}/win-back`, { method: "POST" })),
@@ -48,12 +33,7 @@ function useActions(dealId: string, onChanged: () => unknown) {
         () => api(`/win-backs/${w.id}`, { method: "PATCH", body: { dismissed: true } }),
         "Dropped. The agent won't write to them about this deal.",
       ),
-    send: (w: WinBack) =>
-      act(
-        "send",
-        () => api(`/emails/${w.email_id}`, { method: "PATCH", body: { status: "approved" } }),
-        "Approved. It goes out in the thread shortly.",
-      ),
+    send: (w: WinBack) => send(w.email_id),
   };
 }
 

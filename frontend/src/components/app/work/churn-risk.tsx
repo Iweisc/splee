@@ -1,17 +1,15 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, Check, Loader2, ShieldCheck, X } from "lucide-react";
-import useSWR, { useSWRConfig } from "swr";
-import { toast } from "sonner";
+import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Badge, type BadgeTone, Card, EmptyState, Skeleton } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { ChurnRisk, ChurnRiskView, Deal } from "@/lib/types";
 import { dealMoney } from "@/lib/utils";
-import { CardHeader, CardHeaderText, LoadError, MicroLabel, toastError } from "./states";
+import { CardHeader, CardHeaderText, LoadError, MicroLabel, useDealActions } from "./states";
 import { Kpi, ThreadDraft } from "./win-back";
 
 const RISK: Record<NonNullable<ChurnRisk["risk"]>, { label: string; tone: BadgeTone }> = {
@@ -28,31 +26,12 @@ const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { day: "n
 
 /** Checking again, dropping one and sending the draft, each refreshing every view of it. */
 function useActions(dealId: string, onChanged: () => unknown) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (what: string, call: () => Promise<unknown>, done?: string) => {
-    setBusy(what);
-    try {
-      await call();
-      if (done) toast.success(done);
-      await onChanged();
-      mutate((k) => typeof k === "string" && k.includes("/churn-risk"));
-    } catch (e) {
-      toastError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const { busy, act, send } = useDealActions(onChanged, (k) => k.includes("/churn-risk"));
   return {
     busy,
     check: () => act("write", () => api(`/deals/${dealId}/churn-risk`, { method: "POST" })),
     drop: (r: ChurnRisk) => act("drop", () => api(`/churn-risks/${r.id}`, { method: "PATCH", body: { dismissed: true } })),
-    send: (r: ChurnRisk) =>
-      act(
-        "send",
-        () => api(`/emails/${r.email_id}`, { method: "PATCH", body: { status: "approved" } }),
-        "Approved. It goes out in the thread shortly.",
-      ),
+    send: (r: ChurnRisk) => send(r.email_id),
   };
 }
 
