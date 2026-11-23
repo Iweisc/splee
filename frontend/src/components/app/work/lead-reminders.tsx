@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
 import { api } from "@/lib/api";
 import type { LeadReminder } from "@/lib/types";
-import { cn, dayTime, isPast } from "@/lib/utils";
+import { cn, dayTime, isPast, timeAgo } from "@/lib/utils";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { LoadError, toastError } from "./states";
 
@@ -70,28 +70,37 @@ export function LeadReminders({ leadId }: { leadId: string }) {
         <div key={r.id} className="flex items-start gap-3 rounded-lg border border-border px-3 py-2 text-sm">
           <div className="min-w-0 flex-1">
             <p>
-              <span className={cn("font-medium", isPast(r.due_at) && "text-red-700")}>{dayTime(r.due_at)}</span>
+              {/* Says it's late in words, not only in red, like Today's reminders card. */}
+              <span className={cn("font-medium", isPast(r.due_at) && "text-red-700")}>{isPast(r.due_at) ? `Due ${timeAgo(r.due_at)}` : dayTime(r.due_at)}</span>
               <span className="text-muted-foreground"> · {r.user_id === me?.user.id ? "You" : r.user_name}</span>
             </p>
             {r.note && <p className="text-pretty text-muted-foreground">{r.note}</p>}
           </div>
           {r.user_id === me?.user.id && (
-            <Button size="sm" variant="ghost" className="-my-1 shrink-0" onClick={() => done(r.id)} loading={busy === r.id}>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="-my-1 shrink-0"
+              onClick={() => done(r.id)}
+              loading={busy === r.id}
+              aria-label={`Done, the reminder for ${dayTime(r.due_at)}`}
+            >
               <Check className="size-3.5" /> Done
             </Button>
           )}
         </div>
       ))}
       <form onSubmit={add} className="flex flex-wrap gap-2">
-        <Input type="date" value={day} min={localDay(0)} onChange={(e) => setDay(e.target.value)} aria-label="Remind me on" className="w-40" required />
         <Input
           value={note}
           onChange={(e) => setNote(e.target.value)}
           maxLength={500}
           placeholder="What to do, like call about the pilot"
           aria-label="What to do"
-          className="min-w-48 flex-1"
+          // On phones the note takes a row of its own, so its example isn't cut off.
+          className="min-w-48 flex-1 max-sm:basis-full"
         />
+        <Input type="date" value={day} min={localDay(0)} onChange={(e) => setDay(e.target.value)} aria-label="Remind me on" className="w-40" required />
         <Button type="submit" variant="outline" loading={busy === "add"} disabled={!day}>
           Remind me
         </Button>
