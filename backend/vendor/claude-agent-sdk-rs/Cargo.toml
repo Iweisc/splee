@@ -75,12 +75,6 @@ version = "0.3"
 [dependencies.paste]
 version = "1.0"
 
-[dependencies.path-absolutize]
-version = "3.1"
-
-[dependencies.pin-project]
-version = "1.1"
-
 [dependencies.rand]
 version = "0.8"
 optional = true
