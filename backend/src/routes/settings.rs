@@ -109,6 +109,9 @@ pub(super) struct SettingsBody {
     /// Sorted and deduplicated on save.
     days_off: Option<Vec<NaiveDate>>,
     stop_company_on_reply: Option<bool>,
+    /// A present null removes the limit.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    company_daily_limit: Option<Option<i32>>,
     /// Deduplicated on save. A present null for all of the org's mailboxes.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     mailbox_ids: Option<Option<Vec<Uuid>>>,
@@ -173,6 +176,9 @@ pub(super) struct Controls {
     lead_time_zone: Option<bool>,
     days_off: Option<Vec<NaiveDate>>,
     stop_company_on_reply: Option<bool>,
+    /// A present null removes the limit.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    company_daily_limit: Option<Option<i32>>,
     sender_name: Option<String>,
 }
 
@@ -195,6 +201,7 @@ impl From<Controls> for SettingsBody {
             lead_time_zone: c.lead_time_zone,
             days_off: c.days_off,
             stop_company_on_reply: c.stop_company_on_reply,
+            company_daily_limit: c.company_daily_limit,
             sender_name: c.sender_name,
             ..Default::default()
         }
@@ -271,6 +278,9 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     }
     if body.monthly_cap_micros.flatten().is_some_and(|m| !(1_000_000..=1_000_000_000_000).contains(&m)) {
         return bad("The monthly cap must be between $1 and $1,000,000");
+    }
+    if body.company_daily_limit.flatten().is_some_and(|n| !(1..=50).contains(&n)) {
+        return bad("First emails per company must be between 1 and 50 a day");
     }
     let days_off = body.days_off.clone().map(|mut days| {
         days.sort();
@@ -380,7 +390,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            lead_time_zone = coalesce($50, lead_time_zone),
            days_off = coalesce($51, days_off),
            stop_company_on_reply = coalesce($52, stop_company_on_reply),
-           mailbox_ids = case when $53 then $54 else mailbox_ids end
+           mailbox_ids = case when $53 then $54 else mailbox_ids end,
+           company_daily_limit = case when $55 then $56 else company_daily_limit end
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -437,6 +448,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.stop_company_on_reply)
     .bind(body.mailbox_ids.is_some())
     .bind(mailbox_ids)
+    .bind(body.company_daily_limit.is_some())
+    .bind(body.company_daily_limit.flatten())
     .fetch_one(db)
     .await?;
     Ok(settings)

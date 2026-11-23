@@ -17,10 +17,15 @@ const MAX = 5000;
 // Most projects sit well under this, so the slider stays precise. Larger limits go in the number box.
 const SLIDER_MAX = 1000;
 const CAP_USD = { min: 1, max: 1_000_000, start: 100 };
+const PER_COMPANY = { min: 1, max: 50, start: 2 };
 
 function problem(s: ProjectSettings) {
   if (s.daily_email_limit < MIN || s.daily_email_limit > MAX) return `Daily limit must be between ${MIN} and ${num(MAX)}`;
   if (s.mailbox_ids?.length === 0) return "Pick at least one mailbox to send from";
+  const perCompany = s.company_daily_limit;
+  if (perCompany !== null && !(perCompany >= PER_COMPANY.min && perCompany <= PER_COMPANY.max)) {
+    return `First emails per company must be between ${PER_COMPANY.min} and ${PER_COMPANY.max} a day`;
+  }
   const cap = s.monthly_cap_micros;
   if (cap !== null && !(cap >= CAP_USD.min * 1_000_000 && cap <= CAP_USD.max * 1_000_000)) {
     return `The monthly cap must be between $${CAP_USD.min} and ${money(CAP_USD.max * 1_000_000, { cents: false })}`;
@@ -143,6 +148,35 @@ export default function DailyLimitPage() {
                     ))}
                   </ul>
                 ))}
+            </Section>
+
+            <Section
+              title="First emails per company"
+              description="The most people at one company, by company or website, who get their first email from this project on the same day. The rest wait for the next day, so a company doesn't see several of your emails land at once. Follow-ups and replies never wait."
+              toggle={
+                <Switch
+                  checked={s.company_daily_limit !== null}
+                  onChange={(on) => update({ company_daily_limit: on ? PER_COMPANY.start : null })}
+                  label="Limit first emails per company"
+                />
+              }
+            >
+              {s.company_daily_limit !== null && (
+                <Field label="Per company">
+                  <div className="relative w-32">
+                    <NumberInput
+                      min={PER_COMPANY.min}
+                      max={PER_COMPANY.max}
+                      step={1}
+                      value={s.company_daily_limit}
+                      onValueChange={(n) => update({ company_daily_limit: Math.round(n) })}
+                      className="pr-12 tabular-nums"
+                      aria-label="First emails per company a day"
+                    />
+                    <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-muted-foreground">/day</span>
+                  </div>
+                </Field>
+              )}
             </Section>
 
             <Section

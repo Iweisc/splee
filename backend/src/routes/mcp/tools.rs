@@ -966,6 +966,8 @@ pub(super) fn tools() -> Vec<Value> {
                               "description": "Optional. Dates like 2026-12-25 when no first emails, follow-ups, texts or LinkedIn steps go out" },
                 "stop_company_on_reply": { "type": "boolean",
                                            "description": "Optional. Once a lead replies, stop the sequence for other leads at their company" },
+                "company_daily_limit": { "type": ["integer", "null"], "minimum": 1, "maximum": 50,
+                                         "description": "Optional. The most first emails a day to one company. null for no limit" },
                 "sender_name": { "type": "string", "maxLength": 100,
                                  "description": "Optional. The name the agent signs emails with, not an address. Empty for the team" },
             }),

@@ -649,6 +649,9 @@ async fn project_controls_take_only_fields_they_know(db: PgPool) {
     assert_eq!(api.patch(&project, json!({ "match_provider": true })).await.1["match_provider"], true);
     assert_eq!(api.patch(&project, json!({ "lead_time_zone": true })).await.1["lead_time_zone"], true);
     assert_eq!(api.patch(&project, json!({ "stop_company_on_reply": true })).await.1["stop_company_on_reply"], true);
+    assert_eq!(api.patch(&project, json!({ "company_daily_limit": 2 })).await.1["company_daily_limit"], 2);
+    assert_eq!(api.patch(&project, json!({ "company_daily_limit": 0 })).await.0, 400);
+    assert_eq!(api.patch(&project, json!({ "company_daily_limit": null })).await.1["company_daily_limit"], Value::Null);
     let days_off = json!({ "days_off": ["2026-12-26", "2026-12-25", "2026-12-26"] });
     assert_eq!(api.patch(&project, days_off).await.1["days_off"], json!(["2026-12-25", "2026-12-26"]), "sorted, each once");
     let too_many: Vec<String> = (0..101).map(|d| (chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap() + chrono::Days::new(d)).to_string()).collect();

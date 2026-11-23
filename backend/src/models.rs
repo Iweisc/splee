@@ -401,6 +401,8 @@ pub struct ProjectSettings {
     pub lead_time_zone: bool,
     /// Once a lead replies, the sequence stops for the project's other leads at the same company.
     pub stop_company_on_reply: bool,
+    /// The most first emails it sends to one company a day, or null for no limit. Follow-ups and replies never wait for it.
+    pub company_daily_limit: Option<i32>,
     /// The org mailboxes its first emails go out from, null for all of them. Threads keep their mailbox.
     pub mailbox_ids: Option<Vec<Uuid>>,
     /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
