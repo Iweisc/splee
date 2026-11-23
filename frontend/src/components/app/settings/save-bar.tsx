@@ -6,9 +6,33 @@ import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
+type Saving = Pick<ProjectSettingsForm, "dirty" | "saving" | "save">;
+// The text-like fields a browser submits a form from on Enter. Not date ones, since Enter in Days off adds the picked date.
+const SUBMITS = new Set(["text", "email", "number", "password", "search", "tel", "url"]);
+
+/** Enter alone, not mid-composition and not already used by the field itself. */
+export const isPlainEnter = (e: React.KeyboardEvent) =>
+  e.key === "Enter" && !e.defaultPrevented && !e.nativeEvent.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+
+/**
+ * A keydown handler for the column around a SaveBar's fields, so Enter in one saves like it would in a form. The pages aren't
+ * forms, since Button has no default type and every one in a form would submit it. The contains check is there because React
+ * bubbles a portal's events, like a dialog's, through the column too.
+ */
+export function saveOnEnter(form: Saving, problem?: string | null) {
+  return (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const t = e.target;
+    if (!isPlainEnter(e) || !(t instanceof HTMLInputElement) || !SUBMITS.has(t.type) || t.form || !e.currentTarget.contains(t)) return;
+    e.preventDefault();
+    // A cleared or half-typed NumberInput keeps its text to itself, so saving now would save the number it showed before.
+    const unread = t.type === "number" && (t.value === "" || t.validity.badInput);
+    if (form.dirty && !form.saving && !problem && !unread) form.save();
+  };
+}
+
 /** `problem` blocks saving and replaces the "Unsaved changes" text. */
 /** Takes any form with these four, not only the project settings one. */
-export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "dirty" | "saving" | "save" | "reset">; problem?: string | null }) {
+export function SaveBar({ form, problem }: { form: Saving & Pick<ProjectSettingsForm, "reset">; problem?: string | null }) {
   useLeaveGuard(form.dirty);
   const status = useId();
   // Saving or discarding from the keyboard leaves focus on the bar, so it stays on screen until focus moves on, or the focus

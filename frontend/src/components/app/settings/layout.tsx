@@ -5,7 +5,7 @@ import { Card, Skeleton } from "@/components/ui/misc";
 import { LoadError as LoadErrorState } from "@/components/app/work/states";
 import type { ProjectSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { SaveBar } from "./save-bar";
+import { SaveBar, saveOnEnter } from "./save-bar";
 import { useProjectSettings, type ProjectSettingsForm } from "./use-project-settings";
 
 export function SettingsColumn({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -84,13 +84,14 @@ export function ProjectSettingsPage({
 }) {
   const form = useProjectSettings();
   const s = form.settings;
+  const issue = s && problem ? problem(s) : null;
   return (
     <>
       <PageHeader title={title} description={description} />
       <PageBody>
-        <SettingsColumn>
+        <SettingsColumn onKeyDown={saveOnEnter(form, issue)}>
           {s ? children(s, form.update, form.dirty) : form.error ? <LoadError error={form.error} what="settings" retry={form.retry} /> : <SectionsSkeleton />}
-          <SaveBar form={form} problem={s && problem ? problem(s) : null} />
+          <SaveBar form={form} problem={issue} />
         </SettingsColumn>
       </PageBody>
     </>
