@@ -278,16 +278,29 @@ async fn competitors(ctx: &Ctx, project_id: Uuid) -> anyhow::Result<()> {
         .take(12)
         .collect();
 
+    // A rerun replaces what research found before, but keeps competitors someone added and any with a battlecard, which may
+    // hold what the team learned from won and lost deals.
+    let domains: Vec<&str> = kept.iter().map(|(d, _)| d.as_str()).collect();
     let mut tx = ctx.db().begin().await?;
-    sqlx::query("delete from competitors where project_id = $1").bind(project_id).execute(&mut *tx).await?;
+    sqlx::query(
+        "delete from competitors c where c.project_id = $1 and not c.added_by_hand and c.domain <> all($2::citext[])
+           and not exists (select 1 from battlecards b where b.competitor_id = c.id)",
+    )
+    .bind(project_id)
+    .bind(&domains)
+    .execute(&mut *tx)
+    .await?;
     for (domain, c) in &kept {
-        sqlx::query("insert into competitors (project_id, domain, name, note) values ($1, $2, $3, $4) on conflict do nothing")
-            .bind(project_id)
-            .bind(domain)
-            .bind(c.name.trim())
-            .bind(c.note.trim())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "insert into competitors (project_id, domain, name, note) values ($1, $2, $3, $4)
+             on conflict (project_id, domain) do update set name = excluded.name, note = excluded.note where not competitors.added_by_hand",
+        )
+        .bind(project_id)
+        .bind(domain)
+        .bind(c.name.trim())
+        .bind(c.note.trim())
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     ctx.log(format!("keeping the {} closest…", kept.len())).await?;
@@ -490,4 +503,68 @@ pub async fn segment_from_prompt_run(ctx: &Ctx) -> anyhow::Result<Outcome> {
     .execute(ctx.db())
     .await?;
     Ok(Outcome::new(format!("Campaign \"{}\" is ready", s.name.trim())))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicI32;
+
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::models::AgentRun;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn researching_again_keeps_competitors_added_by_hand_and_ones_with_a_battlecard(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Acme') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name, domain, company) values ($1, 'Fieldnote', 'fieldnote.example', '{\"name\": \"Fieldnote\"}') returning id")
+                .bind(org)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let add = |domain: &'static str, note: &'static str, by_hand: bool| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into competitors (project_id, domain, name, note, added_by_hand) values ($1, $2, $2, $3, $4) returning id",
+            )
+            .bind(project)
+            .bind(domain)
+            .bind(note)
+            .bind(by_hand)
+            .fetch_one(&db)
+        };
+        add("gone.example", "", false).await.unwrap();
+        let carded = add("chorus.example", "", false).await.unwrap();
+        add("mine.example", "Our note", true).await.unwrap();
+        add("gong.example", "Old note", false).await.unwrap();
+        sqlx::query("insert into battlecards (project_id, competitor_id) values ($1, $2)").bind(project).bind(carded).execute(&db).await.unwrap();
+
+        let run = sqlx::query_as::<_, AgentRun>("insert into agent_runs (org_id, project_id, kind, status) values ($1, $2, 'explore', 'running') returning *")
+            .bind(org)
+            .bind(project)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let ctx = Ctx { state: crate::autopilot::tests::state(db.clone()), run, step: AtomicI32::new(0) };
+        super::super::fake::answer_with(ctx.run.id, |_| {
+            json!({"competitors": [
+                { "domain": "gong.example", "name": "Gong", "note": "New note" },
+                { "domain": "mine.example", "name": "Mine", "note": "Research note" },
+                { "domain": "new.example", "name": "New", "note": "Found now" }
+            ]})
+        });
+        competitors(&ctx, project).await.unwrap();
+
+        let listed: Vec<(String, String)> = sqlx::query_as("select domain::text, note from competitors where project_id = $1 order by domain")
+            .bind(project)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        let expected = [("chorus.example", ""), ("gong.example", "New note"), ("mine.example", "Our note"), ("new.example", "Found now")];
+        assert_eq!(listed, expected.map(|(d, n)| (d.to_string(), n.to_string())));
+        let cards: i64 = sqlx::query_scalar("select count(*) from battlecards where competitor_id = $1").bind(carded).fetch_one(&db).await.unwrap();
+        assert_eq!(cards, 1);
+    }
 }
