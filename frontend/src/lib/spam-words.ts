@@ -1,7 +1,7 @@
 /** The words in `text` from GET /spam-words, which spam filters often hold against a cold email. Matches like
- *  backend/src/spam_words.rs: any case, whole words, so "free" counts in "free trial" but not in "freelance".
- *  Unlike the backend, a word only ever found inside a longer one that matched, like "free" in "100% free" or "risk-free",
- *  is left out, so the editor names that phrase once. */
+ *  backend/src/spam_words.rs: any case, whole words, so "free" counts in "free trial" but not in "freelance", and a word
+ *  only ever found inside a longer one that matched, like "free" in "100% free" or "risk-free", is left out, so the editor
+ *  names that phrase once. */
 export function spamWords(text: string, words: readonly string[]): string[] {
   const lower = text.toLowerCase();
   // Whole characters, not UTF-16 halves, and the letters and numbers Rust's is_alphanumeric counts. Two code units hold

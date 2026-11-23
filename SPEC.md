@@ -1326,7 +1326,7 @@ Auth is `Authorization: Bearer …` with an API key (`splee_…`, checked like `
 | find_email, find_emails, get_email_batch | `POST /v1/projects/:id/enrich/email`, `POST /v1/projects/:id/enrich/email/batch` (→ `{task_id, total, next}`), `GET /v1/enrich/email/batch/:task_id` |
 | find_phone | `POST /v1/projects/:id/enrich/phone` |
 | list_companies | `GET /v1/projects/:id/companies` (id, name, domain, campaign, country, employees, status, score fields, hiring, tech, news; `min_score`, `sort`) |
-| list_emails_to_approve | `GET /v1/emails` with status `draft`, each item with `spam_words` (`spam_words::found` on its subject and body) |
+| list_emails_to_approve | `GET /v1/emails` with status `draft`, each item with `spam_words` (`spam_words::found` on its subject and body, leaving out a word only found inside a longer one, like `free` in `100% free`, as the editor does) |
 | approve_email, skip_email | `POST /v1/emails/:id/approve`, `/skip` |
 | list_replies | `GET /v1/inbox` (`owner` as for list_leads, `campaign_id` as `segment_id`) |
 | get_thread, reply_to_lead | `GET /v1/leads/:id/thread`, `POST /v1/leads/:id/reply` (`body_text`, `cc_emails`, `reply_all`) |
