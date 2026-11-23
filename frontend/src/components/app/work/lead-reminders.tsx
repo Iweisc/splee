@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -29,6 +29,17 @@ export function LeadReminders({ leadId }: { leadId: string }) {
   const [day, setDay] = useState(() => localDay(1));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  // Where a done reminder's Done was, when it still had focus as its row left the list. Focus goes to the Done now in that
+  // place, or the last one, or the note, so someone on the keyboard isn't sent back to the top of the page.
+  const refocus = useRef<number | null>(null);
+  useEffect(() => {
+    const at = refocus.current;
+    refocus.current = null;
+    if (at === null || !root.current) return;
+    const dones = root.current.querySelectorAll<HTMLElement>("[data-done]");
+    (dones[at] ?? dones[dones.length - 1] ?? root.current.querySelector("input"))?.focus();
+  }, [reminders]);
 
   const refresh = async () => {
     await mutate();
@@ -51,10 +62,14 @@ export function LeadReminders({ leadId }: { leadId: string }) {
     }
   };
 
-  const done = async (id: string) => {
+  const done = async (id: string, button: HTMLElement) => {
     setBusy(id);
     try {
       await api(`/reminders/${id}/done`, { body: {} });
+      toast.success("Reminder done");
+      // The row goes at once rather than with the refresh, so whether its Done still has focus is known as it leaves.
+      if (button === document.activeElement) refocus.current = [...(root.current?.querySelectorAll("[data-done]") ?? [])].indexOf(button);
+      await mutate((list) => list?.filter((r) => r.id !== id), { revalidate: false });
       await refresh();
     } catch (err) {
       toastError(err);
@@ -64,7 +79,7 @@ export function LeadReminders({ leadId }: { leadId: string }) {
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div ref={root} className="flex flex-col gap-2">
       {error && !reminders && <LoadError error={error} retry={() => void mutate()} what="reminders" />}
       {reminders?.map((r) => (
         <div key={r.id} className="flex items-start gap-3 rounded-lg border border-border px-3 py-2 text-sm">
@@ -81,9 +96,10 @@ export function LeadReminders({ leadId }: { leadId: string }) {
               size="sm"
               variant="ghost"
               className="-my-1 shrink-0"
-              onClick={() => done(r.id)}
+              onClick={(e) => done(r.id, e.currentTarget)}
               loading={busy === r.id}
               aria-label={`Done, the reminder for ${dayTime(r.due_at)}`}
+              data-done
             >
               <Check className="size-3.5" /> Done
             </Button>
