@@ -149,7 +149,8 @@ function RangeButton({ active, onClick, children }: { active: boolean; onClick: 
     <button
       onClick={onClick}
       aria-pressed={active}
-      className={cn("h-8 rounded-md px-2 text-sm font-medium whitespace-nowrap transition-colors sm:px-3", active ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground")}
+      // Like Tabs: muted text on the grey track is 4.4:1, under the 4.5:1 this size needs.
+      className={cn("h-8 rounded-md px-2 text-sm font-medium whitespace-nowrap transition-colors sm:px-3", active ? "bg-card shadow-sm" : "text-foreground/60 hover:text-foreground")}
     >
       {children}
     </button>

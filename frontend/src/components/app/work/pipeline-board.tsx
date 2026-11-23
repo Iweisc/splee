@@ -231,7 +231,7 @@ export function PipelineBoard({
                           aria-pressed={lifted}
                           onKeyDown={(e) => gripKeys(e, deal)}
                           onBlur={() => lifted && setHeld(null)}
-                          className="-m-1 shrink-0 cursor-grab rounded-md p-1 text-subtle-foreground hover:bg-accent hover:text-foreground"
+                          className="-m-1 shrink-0 cursor-grab rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                         >
                           <GripVertical className="size-4" />
                         </button>

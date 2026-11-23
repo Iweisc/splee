@@ -6,7 +6,8 @@
   --foreground: #0b0b0b;
   --card: #ffffff;
   --muted: #efeeeb;
-  --muted-foreground: #737373;
+  /* Darker than explee's #737373, which is 4.35:1 on the background, under the 4.5:1 text needs. This is 4.9:1, and 4.6:1 on muted. */
+  --muted-foreground: #6b6b6b;
   --subtle-foreground: #a3a3a3;
   --border: rgb(0 0 0 / 0.08);
   --border-strong: rgb(0 0 0 / 0.16);
