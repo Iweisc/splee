@@ -551,6 +551,10 @@ pub struct Segment {
     /// it clears all three.
     #[sqlx(default)]
     pub start_at: Option<Ts>,
+    /// When it pauses itself, as its Pause button would, in the name of pause_by_user or pause_by_key. Pausing or archiving it
+    /// clears all three, and starting it doesn't.
+    #[sqlx(default)]
+    pub pause_at: Option<Ts>,
     /// The mailboxes its first emails go out from, in place of the project's mailbox_ids. Null follows the project's.
     #[sqlx(default)]
     pub mailbox_ids: Option<Vec<Uuid>>,

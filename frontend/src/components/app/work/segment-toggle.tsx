@@ -40,14 +40,50 @@ export function SegmentToggle({ segment, size = "sm" }: { segment: Segment; size
   );
 }
 
+const LATER = {
+  start: {
+    idle: "Start later",
+    set: "Starts",
+    title: "Start this campaign later",
+    action: "Schedule start",
+    done: (name: string, at: string) => `${name} starts by itself on ${at}`,
+    cancelled: "Scheduled start cancelled",
+    cancel: "Cancel the scheduled start",
+  },
+  pause: {
+    idle: "Pause later",
+    set: "Pauses",
+    title: "Pause this campaign later",
+    action: "Schedule pause",
+    done: (name: string, at: string) => `${name} pauses by itself on ${at}`,
+    cancelled: "Scheduled pause cancelled",
+    cancel: "Cancel the scheduled pause",
+  },
+};
+
 /** Beside Start on a campaign that isn't sending: pick a time for it to start by itself, as Start would then, or change or
  *  cancel the one picked. Start and Archive cancel it too. */
 export function StartLater({ segment }: { segment: Segment }) {
+  return <Later segment={segment} kind="start" />;
+}
+
+/** Beside Pause on a campaign that's sending, or set to start: pick a time for it to pause by itself, as Pause would then.
+ *  Pause and Archive cancel it, and a start doesn't, so with Start later it makes a sending window. */
+export function PauseLater({ segment }: { segment: Segment }) {
+  return <Later segment={segment} kind="pause" />;
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+function Later({ segment, kind }: { segment: Segment; kind: keyof typeof LATER }) {
+  const text = LATER[kind];
+  const field = kind === "start" ? "start_at" : "pause_at";
+  const at = segment[field];
   const { mutate } = useSWRConfig();
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Scheduling swaps Start later for the Starts button and cancelling swaps it back, so the X that had focus, or the button
-  // the picker would hand focus back to, is gone. Focus goes to the button in its place, if it was in here (the picker
+  // Scheduling swaps the Later button for the one with the time and cancelling swaps it back, so the X that had focus, or the
+  // button the picker would hand focus back to, is gone. Focus goes to the button in its place, if it was in here (the picker
   // included) just before the swap and hasn't landed anywhere since. `changed` makes this run once after every change.
   const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -57,13 +93,13 @@ export function StartLater({ segment }: { segment: Segment }) {
     if (ours.current && document.activeElement === document.body) trigger.current?.focus();
     ours.current = false;
   }, [changed]);
-  const set = async (start_at: string | null) => {
+  const set = async (to: string | null) => {
     setBusy(true);
     try {
-      await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
+      await api(`/segments/${segment.id}`, { method: "PATCH", body: { [field]: to } });
       ours.current = !!root.current?.contains(document.activeElement);
       await mutate(() => true);
-      toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
+      toast.success(to ? text.done(segment.name, dayTime(to)) : text.cancelled);
       setPicking(false);
       setChanged((n) => n + 1);
     } catch (err) {
@@ -72,20 +108,22 @@ export function StartLater({ segment }: { segment: Segment }) {
       setBusy(false);
     }
   };
+  // A pause starts a week after a scheduled start, so the first pick is already after it.
+  const initial = at ? new Date(at) : kind === "pause" && segment.start_at ? new Date(new Date(segment.start_at).getTime() + 7 * DAY) : tomorrowMorning();
 
   return (
     <span ref={root} className="contents">
-      {segment.start_at ? (
-        // It comes after Start, so on a phone it wraps to a full row of its own under the other actions.
+      {at ? (
+        // It comes after Start or Pause, so on a phone it wraps to a full row of its own under the other actions.
         <span className="inline-flex items-center max-sm:basis-full">
           <Button
             ref={trigger}
             variant="outline"
             className="rounded-r-none max-sm:flex-1"
             onClick={() => setPicking(true)}
-            aria-label={`Starts ${dayTime(segment.start_at)}. Change it`}
+            aria-label={`${text.set} ${dayTime(at)}. Change it`}
           >
-            <CalendarClock className="size-3.5" /> Starts {dayTime(segment.start_at)}
+            <CalendarClock className="size-3.5" /> {text.set} {dayTime(at)}
           </Button>
           <Button
             variant="outline"
@@ -93,26 +131,19 @@ export function StartLater({ segment }: { segment: Segment }) {
             className="size-10 rounded-l-none border-l-0"
             onClick={() => set(null)}
             loading={busy}
-            aria-label="Cancel the scheduled start"
-            title="Cancel the scheduled start"
+            aria-label={text.cancel}
+            title={text.cancel}
           >
             <X className="size-4" />
           </Button>
         </span>
       ) : (
         <Button ref={trigger} variant="outline" onClick={() => setPicking(true)}>
-          <CalendarClock className="size-3.5" /> Start later
+          <CalendarClock className="size-3.5" /> {text.idle}
         </Button>
       )}
       {picking && (
-        <TimePicker
-          title="Start this campaign later"
-          action="Schedule start"
-          initial={segment.start_at ? new Date(segment.start_at) : tomorrowMorning()}
-          days={365}
-          onPick={set}
-          onClose={() => setPicking(false)}
-        />
+        <TimePicker title={text.title} action={text.action} initial={initial} days={365} onPick={set} onClose={() => setPicking(false)} />
       )}
     </span>
   );

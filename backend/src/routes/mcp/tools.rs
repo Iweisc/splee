@@ -803,7 +803,8 @@ pub(super) fn tools() -> Vec<Value> {
              targeting list sent replaces that list, and the others stay. Emails already written keep their brief and language \
              until they're rewritten. The time zone and daily limit are the project's. follow_ups and send_hours give the campaign its \
              own instead of the project's, and null goes back to the project's. start_at has a campaign that isn't sending start \
-             itself then, as start_campaign would.",
+             itself then, as start_campaign would, and pause_at has one that's sending, or set to start, pause itself then, as \
+             stop_campaign would.",
             json!({
                 "campaign_id": campaign,
                 "name": { "type": "string" },
@@ -845,6 +846,10 @@ pub(super) fn tools() -> Vec<Value> {
                 "start_at": {
                     "type": ["string", "null"], "format": "date-time",
                     "description": "When it starts itself, within the next year, like 2026-12-01T09:00:00Z. null cancels it, and starting or archiving it does too"
+                },
+                "pause_at": {
+                    "type": ["string", "null"], "format": "date-time",
+                    "description": "When it pauses itself, within the next year and after start_at, like 2026-12-15T17:00:00Z. null cancels it, and pausing or archiving it does too"
                 },
                 "send_hours": {
                     "type": ["object", "null"],

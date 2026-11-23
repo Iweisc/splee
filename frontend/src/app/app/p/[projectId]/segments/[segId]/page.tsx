@@ -18,7 +18,7 @@ import { SendStateCard } from "@/components/app/work/send-state-card";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
-import { ArchiveToggle, DuplicateButton, SegmentToggle, StartLater } from "@/components/app/work/segment-toggle";
+import { ArchiveToggle, DuplicateButton, PauseLater, SegmentToggle, StartLater } from "@/components/app/work/segment-toggle";
 import { DailyLimitCard } from "@/components/app/work/daily-limit-card";
 import { MailboxesCard } from "@/components/app/work/mailboxes-card";
 import { FollowUpsCard } from "@/components/app/work/follow-ups-card";
@@ -108,7 +108,15 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
               <>
                 <ArchiveToggle segment={segment} />
                 <SegmentToggle segment={segment} size="md" />
-                {segment.status !== "working" && segment.status !== "scaling" && <StartLater segment={segment} />}
+                {segment.status === "working" || segment.status === "scaling" ? (
+                  <PauseLater segment={segment} />
+                ) : (
+                  <>
+                    <StartLater segment={segment} />
+                    {/* With a start set, a pause makes a sending window. One left from before stays to be cancelled. */}
+                    {(segment.start_at || segment.pause_at) && <PauseLater segment={segment} />}
+                  </>
+                )}
               </>
             )}
           </>

@@ -888,6 +888,8 @@ export interface Segment {
   send_end_hour: number | null;
   /** When it starts by itself, as Start would. Starting or archiving it clears this. */
   start_at: Ts | null;
+  /** When it pauses by itself, as Pause would. Pausing or archiving it clears this, and starting it doesn't. */
+  pause_at: Ts | null;
   /** The mailboxes that send its first emails instead of the project's pick. Null sends from the project's. */
   mailbox_ids: UUID[] | null;
 }

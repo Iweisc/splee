@@ -71,7 +71,7 @@ pub fn spawn_workers(state: AppState) {
     tokio::spawn(async move { every(Duration::from_secs(600), || crate::autopilot::tick(&s), "autopilot").await });
     // Starting a campaign only approves its emails, so it runs with sending off too, and the sender holds them.
     let s = state.clone();
-    tokio::spawn(async move { every(Duration::from_secs(60), || crate::routes::segments::start_scheduled(&s.db), "scheduled campaign starts").await });
+    tokio::spawn(async move { every(Duration::from_secs(60), || crate::routes::segments::run_scheduled(&s.db), "scheduled campaign starts and pauses").await });
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::hooks::announce_due_reminders(&s), "reminder alerts").await });
     let s = state.clone();
