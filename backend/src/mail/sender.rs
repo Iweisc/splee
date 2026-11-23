@@ -252,15 +252,14 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                 -- A follow-up waiting out its thread's mailbox gap would only be put back, so it can't take a first email's place.
                 and not (e.kind = 'follow_up' and exists (
                   select 1 from mailboxes m
-                  where m.id = coalesce(e.mailbox_id, (select x.mailbox_id from email_messages x
-                                                       where x.lead_id = e.lead_id and x.mailbox_id is not null
-                                                         and (x.direction = 'inbound' or x.status = 'sent')
-                                                       order by x.created_at desc limit 1))
-                    and m.status = 'active' and {IN_GAP}))
+                  where m.id = {THREAD_MAILBOX} and m.status = 'active' and {IN_GAP}))
                 -- A first email to a company that had its first emails for today waits too, so it can't hold back other companies.
                 and not {company_full}
-                -- So does one whose picked mailboxes are all full, so it can't hold back a campaign that picks others.
-                and not (e.kind = 'initial' and case when e.segment_id = any($14) then e.segment_id = any($15) else $16 end)
+                -- So does one whose picked mailboxes are all full, so it can't hold back a campaign that picks others. A follow-up
+                -- goes from the pick too once its thread's mailbox is gone, rather than active or held by Deliverability (pick_from).
+                and not ((e.kind = 'initial' or not exists (select 1 from mailboxes t where t.id = {THREAD_MAILBOX}
+                                                            and (t.status = 'active' or (t.status = 'paused' and t.health_held_at is not null))))
+                         and case when e.segment_id = any($14) then e.segment_id = any($15) else $16 end)
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
@@ -629,6 +628,12 @@ async fn own_mailboxes(db: &sqlx::PgPool, project: Uuid) -> anyhow::Result<HashM
         .await?;
     Ok(rows.into_iter().collect())
 }
+
+/// The mailbox the email's thread goes out from, as pick_from finds it, for the due query in send_project.
+const THREAD_MAILBOX: &str = "coalesce(e.mailbox_id, (select x.mailbox_id from email_messages x
+                                                     where x.lead_id = e.lead_id and x.mailbox_id is not null
+                                                       and (x.direction = 'inbound' or x.status = 'sent')
+                                                     order by x.created_at desc limit 1))";
 
 /// The campaigns with a pick of their own, those of them none of whose mailboxes has room, and whether that's so for the
 /// project's pick. Without any pick nothing is full here, so a first email still reaches the checks that cancel it.
@@ -1377,24 +1382,31 @@ mod tests {
         let (stuck, open) = (campaign(Some(vec![paused])).await.unwrap(), campaign(None).await.unwrap());
         // On the do-not-contact list, so an email the tick picks is cancelled without SMTP or DNS, and one it leaves stays approved.
         sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'held.example', 'domain', 'manual')").bind(org).execute(&db).await.unwrap();
-        let email = |segment: Uuid, n: i32| {
+        // A follow-up whose thread has no mailbox left goes from the pick too, and sorts ahead of first emails.
+        let email = |segment: Uuid, n: i32, kind: &'static str| {
             sqlx::query_scalar::<_, Uuid>(
-                "with l as (insert into leads (project_id, segment_id, email, status) values ($1, $2, 'p' || $3 || '@held.example', 'queued') returning id)
+                "with l as (insert into leads (project_id, segment_id, email, status)
+                            values ($1, $2, 'p' || $3 || '@held.example', case when $4 = 'initial' then 'queued' else 'contacted' end) returning id)
                  insert into email_messages (project_id, segment_id, lead_id, direction, kind, status, created_at)
-                 select $1, $2, id, 'outbound', 'initial', 'approved', now() + make_interval(secs => $3) from l
+                 select $1, $2, id, 'outbound', $4, 'approved', now() + make_interval(secs => $3) from l
                  returning id",
             )
             .bind(project)
             .bind(segment)
             .bind(n)
+            .bind(kind)
             .fetch_one(&db)
         };
-        let (waiting, other) = (email(stuck, 0).await.unwrap(), email(open, 1).await.unwrap());
+        let waiting = [email(stuck, 0, "initial").await.unwrap(), email(stuck, 1, "follow_up").await.unwrap()];
+        let other = email(open, 2, "initial").await.unwrap();
         let state = crate::autopilot::tests::state(db.clone());
         let status = |id: Uuid| sqlx::query_scalar::<_, String>("select status from email_messages where id = $1").bind(id).fetch_one(&db);
 
         super::tick(&state).await.unwrap();
-        assert_eq!((status(waiting).await.unwrap(), status(other).await.unwrap()), ("approved".into(), "cancelled".into()));
+        for id in waiting {
+            assert_eq!(status(id).await.unwrap(), "approved");
+        }
+        assert_eq!(status(other).await.unwrap(), "cancelled");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
