@@ -509,7 +509,8 @@ function OwnerField({ value, onChange }: { value: string | null | undefined; onC
 /** Sends with Reply-To set to another mailbox, so replies to a secondary domain land in the main inbox. */
 function ReplyToField({ mailbox, value, onChange }: { mailbox: Mailbox; value: string | null; onChange: (id: string | null) => void }) {
   const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
-  const others = mailboxes?.filter((other) => other.id !== mailbox.id) ?? [];
+  // Only mailboxes Splee reads replies from, so it still sees them.
+  const others = mailboxes?.filter((other) => other.id !== mailbox.id && other.imap_host) ?? [];
   if (!others.length && !value) return null;
   return (
     <Field label="Replies go to" hint="Replies to this mailbox's emails go to the inbox you pick. Splee reads that inbox too.">

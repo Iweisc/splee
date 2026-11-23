@@ -266,13 +266,13 @@ async fn update(
     }
     // Replies have to land in a mailbox Splee reads, or it can't stop the sequence or show them in the inbox.
     if let Some(Some(target)) = body.reply_to_mailbox_id {
-        let theirs: bool = sqlx::query_scalar("select exists (select 1 from mailboxes where id = $1 and org_id = $2)")
+        let theirs: bool = sqlx::query_scalar("select exists (select 1 from mailboxes where id = $1 and org_id = $2 and imap_host <> '')")
             .bind(target)
             .bind(auth.org_id)
             .fetch_one(&state.db)
             .await?;
         if !theirs || target == mailbox.id {
-            return Err(AppError::BadRequest("Replies can go to another of your connected mailboxes".into()));
+            return Err(AppError::BadRequest("Replies can go to another of your mailboxes that Splee reads".into()));
         }
     }
     let secret = &state.cfg.app_secret;
