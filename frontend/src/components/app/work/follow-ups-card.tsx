@@ -13,8 +13,11 @@ import { api } from "@/lib/api";
 import type { FollowUp, ProjectSettings, SegmentSteps, SegmentWithStats } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
+import { useKeepFocus } from "@/hooks/use-keep-focus";
 import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { MicroLabel, toastError } from "./states";
+
+const LABEL = "Its own follow-ups";
 
 /** Whether the campaign follows the project's follow-ups or has its own. Its own start as a copy of the project's, saved at
  *  once so nothing changes until someone edits them, and edits wait for Save. The page keys it on the saved steps, so a save
@@ -28,6 +31,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const problemId = useId();
+  const root = useKeepFocus<HTMLDivElement>(`follow-ups:${segment.id}`, LABEL);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
   if (!imported || imported.steps.length > 0) return null;
@@ -53,7 +57,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
   );
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card ref={root} className="flex flex-col gap-4 p-5">
       <div className="min-w-0">
         <MicroLabel className="flex items-center gap-1.5">
           <Repeat className="size-3.5" /> Follow-ups
@@ -77,8 +81,9 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
           <Switch
             checked={!!saved}
             onChange={(on) => (on ? save(settings!.follow_ups, "This campaign has its own follow-ups") : save(null, "Back to the project's follow-ups"))}
-            disabled={saving || !settings}
-            label="Its own follow-ups"
+            disabled={!settings}
+            loading={saving}
+            label={LABEL}
           />
         </li>
       </ul>

@@ -37,7 +37,7 @@ export function LeadPagesCard({ segment }: { segment: SegmentWithStats }) {
           </MicroLabel>
           <p className="mt-1 text-sm font-medium">A page written for each lead</p>
         </div>
-        <Switch checked={segment.lead_pages} onChange={save} disabled={pending === "lead_pages"} label="A page written for each lead" />
+        <Switch checked={segment.lead_pages} onChange={save} loading={pending === "lead_pages"} label="A page written for each lead" />
       </div>
       <p className="mt-0.5 text-sm text-pretty text-muted-foreground">
         The writer adds a short page to each first email: a headline about their company, three ways you&apos;d help them, proof from your materials and

@@ -98,11 +98,13 @@ export function Switch({
   checked,
   onChange,
   disabled,
+  loading,
   label,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  loading?: boolean;
   label?: string;
 }) {
   return (
@@ -112,10 +114,12 @@ export function Switch({
       aria-checked={checked}
       aria-label={label}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      // While it saves it stays focusable and ignores presses, like Button's loading, so keyboard focus isn't dropped to the page.
+      aria-disabled={loading || undefined}
+      onClick={() => !loading && onChange(!checked)}
       // Drawn in system colors in Windows high contrast, which would otherwise drop the track and the thumb, both backgrounds.
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 aria-disabled:opacity-50",
         "forced-color-adjust-none forced-colors:border forced-colors:border-[ButtonText]",
         checked ? "bg-brand-600 forced-colors:border-[Highlight] forced-colors:bg-[Highlight]" : "bg-black/15 forced-colors:bg-[Canvas]",
       )}

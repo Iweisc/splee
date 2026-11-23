@@ -6,6 +6,7 @@ import { useSWRConfig } from "swr";
 import { NumberInput, Switch } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
 import { useAction } from "@/components/app/settings/use-action";
+import { useKeepFocus } from "@/hooks/use-keep-focus";
 import { api } from "@/lib/api";
 import type { SegmentWithStats } from "@/lib/types";
 import { MicroLabel } from "./states";
@@ -16,9 +17,12 @@ const FIRST = 20;
 
 /** The campaign's own cap on emails a day, on top of the project's limit. Saved when it's switched, and when the number loses
  * focus. The page keys it on the saved limit, so a change from elsewhere starts the number over. */
+const LABEL = "Its own daily limit";
+
 export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
   const { mutate } = useSWRConfig();
   const { pending, run } = useAction();
+  const root = useKeepFocus<HTMLDivElement>(`daily-limit:${segment.id}`, LABEL);
   const [draft, setDraft] = useState(segment.daily_limit ?? FIRST);
   const on = segment.daily_limit !== null;
 
@@ -33,7 +37,7 @@ export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
   };
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card ref={root} className="flex flex-col gap-4 p-5">
       <div className="min-w-0">
         <MicroLabel className="flex items-center gap-1.5">
           <Gauge className="size-3.5" /> Daily limit
@@ -48,7 +52,7 @@ export function DailyLimitCard({ segment }: { segment: SegmentWithStats }) {
             <p className="text-sm font-medium">Its own limit</p>
             <p className="text-xs text-pretty text-muted-foreground">Counts its first emails and follow-ups. Replies to leads don&apos;t count.</p>
           </div>
-          <Switch checked={on} onChange={(v) => save(v ? draft : null)} disabled={pending === "daily_limit"} label="Its own daily limit" />
+          <Switch checked={on} onChange={(v) => save(v ? draft : null)} loading={pending === "daily_limit"} label={LABEL} />
         </li>
         {on && (
           // The input leaves blur to NumberInput, so the save listens here, where focus leaving it bubbles up to.
