@@ -14,6 +14,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::hooks::{self, Alert};
+use crate::mail::SendHours;
 use crate::models::{Lead, LinkedinMessage, Ts};
 use crate::routes::linkedin::mark;
 use crate::social::Failure as Posting;
@@ -466,10 +467,8 @@ struct Sender {
     unipile_token_enc: String,
     unipile_account_id: String,
     timezone: String,
-    send_days: Vec<i32>,
-    days_off: Vec<chrono::NaiveDate>,
-    send_start_hour: i32,
-    send_end_hour: i32,
+    #[sqlx(flatten)]
+    hours: SendHours,
 }
 
 /// What a webhook post from Unipile means for the project's leads: someone writing back stops their sequence and emails,
@@ -559,7 +558,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
         if failed.contains(&s.unipile_account_id) {
             continue;
         }
-        if !crate::mail::in_window(s.timezone.parse().unwrap_or(Tz::UTC), &s.send_days, &s.days_off, s.send_start_hour, s.send_end_hour, Utc::now()) {
+        if !s.hours.open(s.timezone.parse().unwrap_or(Tz::UTC), Utc::now()) {
             continue;
         }
         let token = match crate::crypto::decrypt(&state.cfg.app_secret, &s.unipile_token_enc) {

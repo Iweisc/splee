@@ -214,7 +214,7 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/** Start of the next sending window, or null while inside one. Mirrors in_window and window_opens in backend/src/mail/sender.rs. */
+/** Start of the next sending window, or null while inside one. Mirrors SendHours::open and SendHours::opens in backend/src/mail/sender.rs. */
 function nextSendWindow(s: ProjectSettings, now: Date): Date | null {
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: s.timezone, weekday: "short", hour: "numeric", hourCycle: "h23" });
   // en-CA writes dates as 2026-12-25, as days_off has them.

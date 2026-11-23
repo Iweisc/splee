@@ -45,10 +45,8 @@ struct SendingProject {
     org_id: Uuid,
     daily_email_limit: i32,
     timezone: String,
-    send_days: Vec<i32>,
-    days_off: Vec<NaiveDate>,
-    send_start_hour: i32,
-    send_end_hour: i32,
+    #[sqlx(flatten)]
+    hours: SendHours,
     paused: bool,
     autopilot: bool,
     autopilot_lead_cap: i32,
@@ -63,7 +61,7 @@ impl SendingProject {
     }
 
     fn in_window(&self, now: Ts) -> bool {
-        in_window(self.tz(), &self.send_days, &self.days_off, self.send_start_hour, self.send_end_hour, now)
+        self.hours.open(self.tz(), now)
     }
 
     fn day_start(&self, now: Ts) -> Ts {
@@ -77,32 +75,46 @@ pub fn day_start(tz: Tz, now: Ts) -> Ts {
     tz.from_local_datetime(&midnight).earliest().map(|d| d.with_timezone(&Utc)).unwrap_or(now)
 }
 
-/// Whether a project's send days and hours, in its timezone, include now, and it isn't one of its days off there. LinkedIn
-/// sends keep to the same window.
-pub fn in_window(tz: Tz, days: &[i32], days_off: &[NaiveDate], start_hour: i32, end_hour: i32, now: Ts) -> bool {
-    let local = now.with_timezone(&tz);
-    let day = local.weekday().number_from_monday() as i32;
-    let hour = local.hour() as i32;
-    days.contains(&day) && hour >= start_hour && hour < end_hour && !days_off.contains(&local.date_naive())
+/// A project's send days, hours and days off. They're read in the project's time zone, or with lead_time_zone in each
+/// lead's, so the zone is passed in rather than kept here. LinkedIn sends and sequence texts keep to the same hours.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SendHours {
+    #[sqlx(rename = "send_days")]
+    pub days: Vec<i32>,
+    pub days_off: Vec<NaiveDate>,
+    #[sqlx(rename = "send_start_hour")]
+    pub start_hour: i32,
+    #[sqlx(rename = "send_end_hour")]
+    pub end_hour: i32,
 }
 
-/// `from` when it's in the send window, else the start of the next one within a week, plus a week for each day off, or None for a window
-/// that never opens. Mirrors nextSendWindow on the project page.
-pub fn window_opens(tz: Tz, days: &[i32], days_off: &[NaiveDate], start_hour: i32, end_hour: i32, from: Ts) -> Option<Ts> {
-    if in_window(tz, days, days_off, start_hour, end_hour, from) {
-        return Some(from);
+impl SendHours {
+    /// Whether `now` in `tz` is on a send day and inside the send hours, and isn't a day off there.
+    pub fn open(&self, tz: Tz, now: Ts) -> bool {
+        let local = now.with_timezone(&tz);
+        let day = local.weekday().number_from_monday() as i32;
+        let hour = local.hour() as i32;
+        self.days.contains(&day) && hour >= self.start_hour && hour < self.end_hour && !self.days_off.contains(&local.date_naive())
     }
-    // Quarter-hour steps, because some timezones are offset by 30 or 45 minutes.
-    let quarter = chrono::Duration::minutes(15);
-    let mut t = from.with_minute(from.minute() / 15 * 15).and_then(|t| t.with_second(0)).and_then(|t| t.with_nanosecond(0)).unwrap_or(from);
-    // A day off can take a whole week's only send day, so each adds a week to how far it looks.
-    for _ in 0..(8 + 7 * days_off.len()) * 24 * 4 {
-        t += quarter;
-        if in_window(tz, days, days_off, start_hour, end_hour, t) {
-            return Some(t);
+
+    /// `from` when the hours are open then, else the start of the next opening within eight days, plus a week for each day off, or
+    /// None for hours that never open. Mirrors nextSendWindow on the project page.
+    pub fn opens(&self, tz: Tz, from: Ts) -> Option<Ts> {
+        if self.open(tz, from) {
+            return Some(from);
         }
+        // Quarter-hour steps, because some timezones are offset by 30 or 45 minutes.
+        let quarter = chrono::Duration::minutes(15);
+        let mut t = from.with_minute(from.minute() / 15 * 15).and_then(|t| t.with_second(0)).and_then(|t| t.with_nanosecond(0)).unwrap_or(from);
+        // A day off can take a whole week's only send day, so each adds a week to how far it looks.
+        for _ in 0..(8 + 7 * self.days_off.len()) * 24 * 4 {
+            t += quarter;
+            if self.open(tz, t) {
+                return Some(t);
+            }
+        }
+        None
     }
-    None
 }
 
 pub async fn tick(state: &AppState) -> anyhow::Result<()> {
@@ -254,7 +266,7 @@ async fn closed_zones(db: &sqlx::PgPool, p: &SendingProject, now: Ts) -> anyhow:
     let mut closed = Zones::default();
     for (prefix, country) in pairs {
         let tz = crate::phone::time_zone(&prefix, &country).unwrap_or(p.tz());
-        if !in_window(tz, &p.send_days, &p.days_off, p.send_start_hour, p.send_end_hour, now) {
+        if !p.hours.open(tz, now) {
             closed.phone_prefixes.push(prefix);
             closed.countries.push(country);
         }

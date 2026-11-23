@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::models::{EmailMessage, Mailbox, ProjectSettings, Segment, Ts};
+use crate::mail::SendHours;
 use crate::{agent, autopilot, mail, monthly_cap};
 
 #[derive(Serialize, Debug)]
@@ -60,10 +61,7 @@ struct Queue {
 
 struct Window {
     tz: Tz,
-    days: Vec<i32>,
-    days_off: Vec<chrono::NaiveDate>,
-    start_hour: i32,
-    end_hour: i32,
+    hours: SendHours,
     /// With lead_time_zone, each time zone the campaign's queued emails go out in and the soonest one of them is due there.
     /// Empty when sending hours are the project's.
     lead_zones: Vec<(Tz, Ts)>,
@@ -73,11 +71,10 @@ impl Window {
     /// The first moment from `from` that an email can go out, which with lead_time_zone is the first in any lead zone at or
     /// after an email there is due.
     fn opens(&self, from: Ts) -> Option<Ts> {
-        let opens = |tz: Tz, from: Ts| mail::window_opens(tz, &self.days, &self.days_off, self.start_hour, self.end_hour, from);
         if self.lead_zones.is_empty() {
-            return opens(self.tz, from);
+            return self.hours.opens(self.tz, from);
         }
-        self.lead_zones.iter().filter_map(|&(tz, due)| opens(tz, from.max(due))).min()
+        self.lead_zones.iter().filter_map(|&(tz, due)| self.hours.opens(tz, from.max(due))).min()
     }
 
     fn tomorrow(&self, now: Ts) -> Ts {
@@ -122,10 +119,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
     let tz = settings.timezone.parse().unwrap_or(Tz::UTC);
     let mut window = Window {
         tz,
-        days: settings.send_days.clone(),
-        days_off: settings.days_off.clone(),
-        start_hour: settings.send_start_hour,
-        end_hour: settings.send_end_hour,
+        hours: settings.send_hours(),
         lead_zones: Vec::new(),
     };
     let mut closed = (Vec::new(), Vec::new());
@@ -205,7 +199,7 @@ async fn lead_zones(db: &PgPool, segment_id: Uuid, project: &Window, follow_ups_
             Some((_, soonest)) => *soonest = (*soonest).min(due),
             None => zones.push((tz, due)),
         }
-        if !mail::in_window(tz, &project.days, &project.days_off, project.start_hour, project.end_hour, now) {
+        if !project.hours.open(tz, now) {
             closed.0.push(phone);
             closed.1.push(country);
         }
@@ -370,7 +364,11 @@ mod tests {
             campaign_limit: None,
             cap_resumes_at: None,
             lead_cap_reached: false,
-            window: Window { tz: chrono_tz::Europe::London, days: vec![1, 2, 3, 4, 5], days_off: Vec::new(), start_hour: 9, end_hour: 17, lead_zones: Vec::new() },
+            window: Window {
+                tz: chrono_tz::Europe::London,
+                hours: SendHours { days: vec![1, 2, 3, 4, 5], days_off: Vec::new(), start_hour: 9, end_hour: 17 },
+                lead_zones: Vec::new(),
+            },
         }
     }
 
@@ -412,7 +410,7 @@ mod tests {
         assert_eq!(state(&|f| (f.campaign_limit, f.queue.sent) = (Some(5), 5)), "campaign_limit_reached");
         assert_eq!(state(&|f| (f.campaign_limit, f.queue.sent) = (Some(5), 4)), "sending");
         assert_eq!(state(&|f| f.mailbox_ready = false), "mailboxes_full");
-        assert_eq!(state(&|f| f.window.start_hour = 13), "outside_hours");
+        assert_eq!(state(&|f| f.window.hours.start_hour = 13), "outside_hours");
     }
 
     #[test]
@@ -423,7 +421,7 @@ mod tests {
             let s = decide(&f, noon());
             (s.state, s.today.next_send_at, s.message)
         };
-        let (state, next, message) = at(&|f| f.window.start_hour = 13);
+        let (state, next, message) = at(&|f| f.window.hours.start_hour = 13);
         assert_eq!((state, next), ("outside_hours", Some(Utc.with_ymd_and_hms(2026, 11, 18, 13, 0, 0).unwrap())));
         assert_eq!(message, "Outside sending hours. The next emails go out Wed Nov 18, 13:00 Europe/London");
         // Tomorrow's window, and Monday's from a Friday.
@@ -484,18 +482,18 @@ mod tests {
     fn days_off_hold_cold_emails_until_the_next_working_day() {
         let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
         let mut f = sending();
-        f.window.days_off = vec![day(18), day(19), day(20)];
+        f.window.hours.days_off = vec![day(18), day(19), day(20)];
         let s = decide(&f, noon());
         assert_eq!((s.state, s.today.next_send_at), ("outside_hours", Some(Utc.with_ymd_and_hms(2026, 11, 23, 9, 0, 0).unwrap())), "Monday");
 
-        // Two weeks off still finds the window after them, past the week window_opens looks ahead without days off.
-        f.window.days_off = (18..=30).map(day).collect();
+        // Two weeks off still finds the window after them, past the week SendHours::opens looks ahead without days off.
+        f.window.hours.days_off = (18..=30).map(day).collect();
         let s = decide(&f, noon());
         assert_eq!(s.today.next_send_at, Some(Utc.with_ymd_and_hms(2026, 12, 1, 9, 0, 0).unwrap()), "Tuesday, December 1");
 
         // Sending only on Mondays, with the next two off, waits three weeks.
-        f.window.days = vec![1];
-        f.window.days_off = vec![day(23), day(30)];
+        f.window.hours.days = vec![1];
+        f.window.hours.days_off = vec![day(23), day(30)];
         let s = decide(&f, noon());
         assert_eq!(s.today.next_send_at, Some(Utc.with_ymd_and_hms(2026, 12, 7, 9, 0, 0).unwrap()), "Monday, December 7");
     }

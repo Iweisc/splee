@@ -18,6 +18,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::agent::{self, kind};
+use crate::mail::SendHours;
 use crate::models::{Lead, TextMessage, Ts};
 use crate::phone;
 use crate::state::AppState;
@@ -456,10 +457,8 @@ struct Outgoing {
     org_id: Uuid,
     paused: bool,
     timezone: String,
-    send_days: Vec<i32>,
-    days_off: Vec<chrono::NaiveDate>,
-    send_start_hour: i32,
-    send_end_hour: i32,
+    #[sqlx(flatten)]
+    hours: SendHours,
     daily_text_limit: i32,
     lead_country: String,
     /// Why it can't go out at all, like a number on the do-not-contact list, which cancels it.
@@ -519,7 +518,7 @@ async fn send_due(state: &AppState) -> anyhow::Result<()> {
         }
         if t.kind == "sequence" {
             let tz = phone::time_zone(&t.to_number, &row.lead_country).unwrap_or(row.timezone.parse().unwrap_or(Tz::UTC));
-            if row.paused || !crate::mail::in_window(tz, &row.send_days, &row.days_off, row.send_start_hour, row.send_end_hour, now) {
+            if row.paused || !row.hours.open(tz, now) {
                 continue;
             }
         }

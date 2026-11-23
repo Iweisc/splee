@@ -205,7 +205,7 @@ async fn update_settings(
     Ok(Json(apply(&state.db, auth.org_id, id, body).await?))
 }
 
-/// Each one stretches how far ahead mail::window_opens looks, so keep it to a few years of holidays.
+/// Each one stretches how far ahead mail::SendHours::opens looks, so keep it to a few years of holidays.
 const MAX_DAYS_OFF: usize = 100;
 
 /// Saves the fields the body fills in, with the settings page's checks, for a project the caller already checked.
