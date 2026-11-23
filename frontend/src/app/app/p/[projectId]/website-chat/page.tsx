@@ -9,7 +9,7 @@ import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ChipInput } from "@/components/app/settings/chip-input";
 import { CodeBlock } from "@/components/app/settings/code-block";
 import { LoadError, Section, SectionsSkeleton, SettingsColumn } from "@/components/app/settings/layout";
-import { SaveBar } from "@/components/app/settings/save-bar";
+import { SaveBar, saveOnEnter } from "@/components/app/settings/save-bar";
 import { toastError } from "@/components/app/settings/use-action";
 import { Field, Input, NumberInput, Switch, Textarea } from "@/components/ui/form";
 import { Tabs } from "@/components/ui/misc";
@@ -74,7 +74,7 @@ export default function WebsiteChatPage({ params }: PageProps<"/app/p/[projectId
         description="A chat on your site that answers visitors from your product description, materials and FAQ, and turns interested ones into leads."
       />
       <PageBody>
-        <SettingsColumn>
+        <SettingsColumn onKeyDown={saveOnEnter({ dirty, saving, save }, problem)}>
           {error ? (
             <LoadError error={error} what="the chat settings" retry={() => mutate()} />
           ) : !s || !data ? (

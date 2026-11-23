@@ -6,9 +6,28 @@ import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
+type Saving = Pick<ProjectSettingsForm, "dirty" | "saving" | "save">;
+// The text-like fields a browser submits a form from on Enter.
+const SUBMITS = new Set(["text", "email", "number", "password", "search", "tel", "url", "date", "time", "datetime-local", "month", "week"]);
+
+/**
+ * A keydown handler for the column around a SaveBar's fields, so Enter in one saves like it would in a form. The pages aren't
+ * forms, since every Button in one would submit it. A field in its own form (integrations) or using Enter itself (ChipInput)
+ * keeps it. With a problem showing, Enter does nothing, as Save is disabled.
+ */
+export function saveOnEnter(form: Saving, problem?: string | null) {
+  return (e: React.KeyboardEvent) => {
+    const t = e.target;
+    if (e.key !== "Enter" || e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!(t instanceof HTMLInputElement) || !SUBMITS.has(t.type) || t.form) return;
+    e.preventDefault();
+    if (form.dirty && !form.saving && !problem) form.save();
+  };
+}
+
 /** `problem` blocks saving and replaces the "Unsaved changes" text. */
 /** Takes any form with these four, not only the project settings one. */
-export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "dirty" | "saving" | "save" | "reset">; problem?: string | null }) {
+export function SaveBar({ form, problem }: { form: Saving & Pick<ProjectSettingsForm, "reset">; problem?: string | null }) {
   useLeaveGuard(form.dirty);
   const status = useId();
   // Saving or discarding from the keyboard leaves focus on the bar, so it stays on screen until focus moves on, or the focus

@@ -95,6 +95,7 @@ export default function SchedulePage() {
 
 function DaysOff({ days, onChange }: { days: string[]; onChange: (days: string[]) => void }) {
   const [picked, setPicked] = useState("");
+  const can = !!picked && !days.includes(picked) && days.length < MAX_DAYS_OFF;
   const add = () => {
     onChange([...days, picked].sort());
     setPicked("");
@@ -105,8 +106,20 @@ function DaysOff({ days, onChange }: { days: string[]; onChange: (days: string[]
       description="No first emails, follow-ups, texts or LinkedIn steps go out on these dates, like holidays. Replies still do."
     >
       <div className="flex max-w-sm gap-2">
-        <Input type="date" value={picked} onChange={(e) => setPicked(e.target.value)} aria-label="Day off" className="flex-1" />
-        <Button variant="outline" onClick={add} disabled={!picked || days.includes(picked) || days.length >= MAX_DAYS_OFF}>
+        {/* Enter adds the day, like Add, rather than saving the page. */}
+        <Input
+          type="date"
+          value={picked}
+          onChange={(e) => setPicked(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+            e.preventDefault();
+            if (can) add();
+          }}
+          aria-label="Day off"
+          className="flex-1"
+        />
+        <Button variant="outline" onClick={add} disabled={!can}>
           Add
         </Button>
       </div>
