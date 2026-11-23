@@ -119,7 +119,7 @@ export function GoogleSheetsSection({ projectId }: { projectId: string }) {
 
 function ConnectionRow({ projectId, connection: c, onChange }: { projectId: string; connection: SheetConnection; onChange: (s: SheetsStatus) => void }) {
   const { mutate } = useSWRConfig();
-  const { pending, run } = useAction();
+  const { busy, run } = useAction();
   const path = `/projects/${projectId}/sheets/connections/${c.id}`;
   const isImport = c.kind === "import";
   const patch = (body: Record<string, unknown>, done: string) => run("patch", async () => onChange(await api<SheetsStatus>(path, { method: "PATCH", body })), done);
@@ -155,7 +155,7 @@ function ConnectionRow({ projectId, connection: c, onChange }: { projectId: stri
             {done}, {when}.
           </p>
         </div>
-        <Button size="icon" variant="ghost" onClick={remove} loading={pending === "remove"} aria-label={`Remove ${c.tab}`} title="Remove" className="-mt-1.5 -mr-1.5 shrink-0">
+        <Button size="icon" variant="ghost" onClick={remove} loading={busy("remove")} aria-label={`Remove ${c.tab}`} title="Remove" className="-mt-1.5 -mr-1.5 shrink-0">
           <Trash2 className="size-4" />
         </Button>
       </div>
@@ -165,17 +165,17 @@ function ConnectionRow({ projectId, connection: c, onChange }: { projectId: stri
             <Switch
               checked={c.keep_importing}
               onChange={(on) => patch({ keep_importing: on }, on ? "New rows import every 15 minutes" : "Stopped importing new rows")}
-              loading={pending === "patch"}
+              loading={busy("patch")}
               label="Keep importing"
             />
             <span className="text-sm text-pretty">Keep importing new rows every 15 minutes</span>
           </div>
-          <Button size="sm" variant="outline" onClick={importNow} loading={pending === "import"}>
+          <Button size="sm" variant="outline" onClick={importNow} loading={busy("import")}>
             Import now
           </Button>
         </div>
       ) : (
-        <EventChecks value={c.events} onChange={(events) => patch({ events }, "Saved")} disabled={pending === "patch"} />
+        <EventChecks value={c.events} onChange={(events) => patch({ events }, "Saved")} disabled={busy("patch")} />
       )}
       {c.error && (
         <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-pretty text-red-700">

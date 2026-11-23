@@ -35,7 +35,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
   const call = async (path: string, method: "PUT" | "DELETE", body?: Record<string, unknown>) => {
     await mutate(await api<Finders>(`${key}/${path}`, { method, body }), { revalidate: false });
   };
-  const { pending, run } = useAction();
+  const { busy, run } = useAction();
   const list = data?.finders ?? [];
   const open = (Object.keys(FINDER_NAMES) as FinderName[]).filter((p) => !list.some((f) => f.provider === p));
   const [picked, setPicked] = useState<FinderName>("hunter");
@@ -75,7 +75,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
                         <span className="w-5 text-sm text-muted-foreground tabular-nums">{i + 1}.</span>
                         <p className="min-w-0 flex-1 text-sm font-medium">{name}</p>
                         <div className="flex">
-                          <Button size="icon" variant="ghost" className="size-8" aria-label={`Move ${name} up`} disabled={i === 0} loading={pending === `move-up-${f.provider}`} onClick={() => move(i, -1)}>
+                          <Button size="icon" variant="ghost" className="size-8" aria-label={`Move ${name} up`} disabled={i === 0} loading={busy(`move-up-${f.provider}`)} onClick={() => move(i, -1)}>
                             <ArrowUp className="size-4" />
                           </Button>
                           <Button
@@ -84,7 +84,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
                             className="size-8"
                             aria-label={`Move ${name} down`}
                             disabled={i === list.length - 1}
-                            loading={pending === `move-down-${f.provider}`}
+                            loading={busy(`move-down-${f.provider}`)}
                             onClick={() => move(i, 1)}
                           >
                             <ArrowDown className="size-4" />
@@ -94,7 +94,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
                             variant="ghost"
                             className="size-8"
                             aria-label={`Disconnect ${name}`}
-                            loading={pending === `remove-${f.provider}`}
+                            loading={busy(`remove-${f.provider}`)}
                             onClick={() => disconnect(name, f.provider)}
                           >
                             <Trash2 className="size-4" />
@@ -126,7 +126,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
               <Switch
                 checked={data.find_phones}
                 onChange={(on) => run("phones", () => call("phones", "PUT", { on }), on ? "Finding phone numbers too" : "Not finding phone numbers")}
-                loading={pending === "phones"}
+                loading={busy("phones")}
                 label="Find phone numbers too"
               />
             </div>
