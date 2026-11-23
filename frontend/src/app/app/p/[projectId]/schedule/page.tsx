@@ -7,7 +7,7 @@ import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Switch } from "@/components/ui/form";
 import type { HourStats, WeekdayStats } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, zoneName } from "@/lib/utils";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const TIMEZONES = Intl.supportedValuesOf("timeZone");
@@ -47,7 +47,7 @@ export default function SchedulePage() {
       {(s, update) => {
         const zones = TIMEZONES.includes(s.timezone) ? TIMEZONES : [s.timezone, ...TIMEZONES];
         const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const zone = s.timezone.replaceAll("_", " ");
+        const zone = zoneName(s.timezone);
         const valid = s.send_days.length > 0 && s.send_end_hour > s.send_start_hour;
         return (
           <>
@@ -63,13 +63,13 @@ export default function SchedulePage() {
                 <Select value={s.timezone} onChange={(e) => update({ timezone: e.target.value })} className="flex-1" aria-label="Time zone">
                   {zones.map((z) => (
                     <option key={z} value={z}>
-                      {z.replaceAll("_", " ")}
+                      {zoneName(z)}
                     </option>
                   ))}
                 </Select>
                 {browserZone !== s.timezone && (
                   <Button variant="outline" onClick={() => update({ timezone: browserZone })}>
-                    Use {browserZone.replaceAll("_", " ")}
+                    Use {zoneName(browserZone)}
                   </Button>
                 )}
               </div>
