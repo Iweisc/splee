@@ -53,6 +53,7 @@ struct SendingProject {
     monthly_cap_micros: Option<i64>,
     match_provider: bool,
     lead_time_zone: bool,
+    mailbox_ids: Option<Vec<Uuid>>,
 }
 
 impl SendingProject {
@@ -126,7 +127,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     let projects = sqlx::query_as::<_, SendingProject>(
         "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.days_off, s.send_start_hour, s.send_end_hour, s.paused,
                 s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros, s.match_provider,
-                s.lead_time_zone
+                s.lead_time_zone, s.mailbox_ids
          from projects p join project_settings s on s.project_id = p.id
          where p.org_id is not null and exists (
              select 1 from email_messages e where e.project_id = p.id and e.direction = 'outbound'
@@ -411,19 +412,29 @@ pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid, spaced:
 }
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
-async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage, prefer: Option<Family>) -> anyhow::Result<Option<Mailbox>> {
-    pick_from(db, mailboxes_with_room(db, org_id, true).await?, email, prefer).await
+async fn pick_mailbox(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    email: &EmailMessage,
+    prefer: Option<Family>,
+    only: Option<&[Uuid]>,
+) -> anyhow::Result<Option<Mailbox>> {
+    pick_from(db, mailboxes_with_room(db, org_id, true).await?, email, prefer, only).await
 }
 
 /// pick_mailbox's choice among `available`, the organization's mailboxes_with_room. A first email goes out from the least
 /// used one, or with `prefer`, the least used one on that provider when one has room, so matching never holds it back.
+/// `only` is the project's `mailbox_ids`, None for all. It picks who starts a thread, never moves one already going.
 pub(crate) async fn pick_from(
     db: &sqlx::PgPool,
     available: Vec<Mailbox>,
     email: &EmailMessage,
     prefer: Option<Family>,
+    only: Option<&[Uuid]>,
 ) -> anyhow::Result<Option<Mailbox>> {
+    let allowed = |m: &Mailbox| only.is_none_or(|ids| ids.contains(&m.id));
     if email.kind == "initial" {
+        let available: Vec<Mailbox> = available.into_iter().filter(allowed).collect();
         let matched = prefer.and_then(|f| available.iter().position(|m| providers::mailbox_family(&m.provider, &m.smtp_host) == Some(f)));
         return Ok(available.into_iter().nth(matched.unwrap_or(0)));
     }
@@ -438,7 +449,7 @@ pub(crate) async fn pick_from(
         .await?
         .flatten(),
     };
-    let Some(wanted) = thread_mailbox else { return Ok(available.into_iter().next()) };
+    let Some(wanted) = thread_mailbox else { return Ok(available.into_iter().find(allowed)) };
     if let Some(mb) = available.iter().find(|m| m.id == wanted) {
         return Ok(Some(mb.clone()));
     }
@@ -459,7 +470,7 @@ pub(crate) async fn pick_from(
         Some(mb) if REPLY_KINDS.contains(&email.kind.as_str()) => Ok(Some(mb)),
         // A follow-up waits for the thread's mailbox to have room again rather than switch senders mid-thread.
         Some(_) => Ok(None),
-        None => Ok(available.into_iter().next()),
+        None => Ok(available.into_iter().find(allowed)),
     }
 }
 
@@ -543,7 +554,7 @@ async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> a
         return release(state, &email, skip).await;
     }
     let prefer = if p.match_provider && email.kind == "initial" { lead_family(&lead).await? } else { None };
-    let Some(mb) = pick_mailbox(&state.db, org_id, &email, prefer).await? else {
+    let Some(mb) = pick_mailbox(&state.db, org_id, &email, prefer, p.mailbox_ids.as_deref()).await? else {
         return release(state, &email, Skip::Wait).await;
     };
     let to = lead.email.clone().unwrap_or_default();
@@ -1377,7 +1388,7 @@ mod tests {
             .fetch_one(&db)
         };
         let pool = &db;
-        let picks = |email: EmailMessage| async move { pick_mailbox(pool, org, &email, None).await.unwrap().map(|m| m.id) };
+        let picks = |email: EmailMessage| async move { pick_mailbox(pool, org, &email, None, None).await.unwrap().map(|m| m.id) };
 
         // 9 minutes after its last email, cold email waits, a reply doesn't, and the campaign's status doesn't count it as full.
         assert_eq!(picks(queued("initial").await.unwrap()).await, None);
@@ -1388,6 +1399,60 @@ mod tests {
         sqlx::query("update email_messages set sent_at = now() - interval '11 minutes' where id = $1").bind(sent).execute(&db).await.unwrap();
         assert_eq!(picks(queued("initial").await.unwrap()).await, Some(mailbox));
         assert_eq!(picks(queued("follow_up").await.unwrap()).await, Some(mailbox));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_project_starts_threads_only_from_its_mailboxes_and_keeps_the_ones_going(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc)
+                 values ($1, $2, 'smtp.example.test', $2, 'x') returning id",
+            )
+            .bind(org)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (other, picked) = (mailbox("other@example.test").await.unwrap(), mailbox("picked@example.test").await.unwrap());
+        let lead = || sqlx::query_scalar::<_, Uuid>("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db);
+        let (started, fresh) = (lead().await.unwrap(), lead().await.unwrap());
+        // `started` heard from `other` earlier, and `picked` sent one today, so `other` is the least used.
+        for (lead, mailbox, at) in [(started, other, "now() - interval '2 days'"), (fresh, picked, "now()")] {
+            sqlx::query(&format!(
+                "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+                 values ($1, $2, $3, 'outbound', 'initial', 'sent', {at})"
+            ))
+            .bind(project)
+            .bind(lead)
+            .bind(mailbox)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let queued = |lead: Uuid, kind: &'static str| {
+            sqlx::query_as::<_, EmailMessage>(
+                "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', $3, 'approved') returning *",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(kind)
+            .fetch_one(&db)
+        };
+        let pool = &db;
+        let picks = |email: EmailMessage, only: Option<Vec<Uuid>>| async move {
+            pick_mailbox(pool, org, &email, None, only.as_deref()).await.unwrap().map(|m| m.id)
+        };
+
+        let first = queued(fresh, "initial").await.unwrap();
+        assert_eq!(picks(first.clone(), None).await, Some(other));
+        assert_eq!(picks(first, Some(vec![picked])).await, Some(picked));
+        assert_eq!(picks(queued(started, "follow_up").await.unwrap(), Some(vec![picked])).await, Some(other), "the thread keeps its mailbox");
+        // Its only mailbox deleted, the project starts no threads rather than send from the rest.
+        assert_eq!(picks(queued(fresh, "initial").await.unwrap(), Some(vec![])).await, None);
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -1429,10 +1494,10 @@ mod tests {
 
         for kind in ["manual_reply", "auto_reply"] {
             let reply = queued(kind).await.unwrap();
-            assert_eq!(pick_mailbox(&db, org, &reply, None).await.unwrap().map(|m| m.id), Some(mailbox), "{kind}");
+            assert_eq!(pick_mailbox(&db, org, &reply, None, None).await.unwrap().map(|m| m.id), Some(mailbox), "{kind}");
         }
         let follow_up = queued("follow_up").await.unwrap();
-        assert!(pick_mailbox(&db, org, &follow_up, None).await.unwrap().is_none());
+        assert!(pick_mailbox(&db, org, &follow_up, None, None).await.unwrap().is_none());
 
         // Held by Deliverability, the thread waits for it even with another mailbox free, replies included.
         sqlx::query("update mailboxes set status = 'paused', health_held_at = now() where id = $1").bind(mailbox).execute(&db).await.unwrap();
@@ -1442,7 +1507,7 @@ mod tests {
             .await
             .unwrap();
         for kind in ["follow_up", "manual_reply"] {
-            assert!(pick_mailbox(&db, org, &queued(kind).await.unwrap(), None).await.unwrap().is_none(), "{kind}");
+            assert!(pick_mailbox(&db, org, &queued(kind).await.unwrap(), None, None).await.unwrap().is_none(), "{kind}");
         }
     }
 
@@ -1486,7 +1551,7 @@ mod tests {
         .await
         .unwrap();
 
-        let pick = |prefer| pick_mailbox(&db, org, &first, prefer);
+        let pick = |prefer| pick_mailbox(&db, org, &first, prefer, None);
         assert_eq!(pick(None).await.unwrap().map(|m| m.id), Some(google));
         assert_eq!(pick(Some(Family::Microsoft)).await.unwrap().map(|m| m.id), Some(microsoft));
         // With no Microsoft mailbox free, matching doesn't hold the email back.

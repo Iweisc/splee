@@ -109,6 +109,9 @@ pub(super) struct SettingsBody {
     /// Sorted and deduplicated on save.
     days_off: Option<Vec<NaiveDate>>,
     stop_company_on_reply: Option<bool>,
+    /// Deduplicated on save. A present null for all of the org's mailboxes.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    mailbox_ids: Option<Option<Vec<Uuid>>>,
     text_steps: Option<Value>,
     daily_text_limit: Option<i32>,
     assign_rule: Option<String>,
@@ -283,6 +286,18 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if control || sender_name.as_deref().is_some_and(|n| n.chars().count() > 100 || n.contains('@')) {
         return bad("The sender name must be a person's or team's name of up to 100 characters, not an email address");
     }
+    let mailbox_ids = body.mailbox_ids.clone().flatten().map(|mut ids| {
+        ids.sort();
+        ids.dedup();
+        ids
+    });
+    if let Some(ids) = &mailbox_ids {
+        let theirs: i64 =
+            sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(ids).fetch_one(db).await?;
+        if theirs != ids.len() as i64 {
+            return bad("Pick mailboxes connected to this organization");
+        }
+    }
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
     }
@@ -364,7 +379,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
            match_provider = coalesce($49, match_provider),
            lead_time_zone = coalesce($50, lead_time_zone),
            days_off = coalesce($51, days_off),
-           stop_company_on_reply = coalesce($52, stop_company_on_reply)
+           stop_company_on_reply = coalesce($52, stop_company_on_reply),
+           mailbox_ids = case when $53 then $54 else mailbox_ids end
          where project_id = $1 returning *",
     )
     .bind(id)
@@ -419,6 +435,8 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     .bind(body.lead_time_zone)
     .bind(days_off)
     .bind(body.stop_company_on_reply)
+    .bind(body.mailbox_ids.is_some())
+    .bind(mailbox_ids)
     .fetch_one(db)
     .await?;
     Ok(settings)
