@@ -3,12 +3,14 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// The filled ones get a border in Windows high contrast, which drops their fill and would leave a Save or Approve looking
+// like plain text.
 const variants = {
-  primary: "bg-primary text-primary-foreground hover:bg-black/85",
-  brand: "bg-brand-600 text-white hover:bg-brand-700",
+  primary: "bg-primary text-primary-foreground hover:bg-black/85 forced-colors:border",
+  brand: "bg-brand-600 text-white hover:bg-brand-700 forced-colors:border",
   outline: "border border-border-strong bg-card text-foreground hover:bg-accent",
   ghost: "text-foreground hover:bg-accent",
-  danger: "bg-danger text-white hover:bg-red-700",
+  danger: "bg-danger text-white hover:bg-red-700 forced-colors:border",
   link: "text-foreground underline-offset-4 hover:underline px-0",
 };
 
