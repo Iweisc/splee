@@ -17,6 +17,7 @@ import { ListSkeleton, LoadError, MicroLabel, toastError } from "./states";
 import { CallCard } from "./calls";
 import { MeetingCard } from "./meetings";
 import { LeadDeal } from "./deal-dialog";
+import { LeadReminders } from "./lead-reminders";
 import { OwnerMenu } from "./owner-menu";
 import { LeadNews } from "./news";
 import { LeadPageLink } from "./lead-page";
@@ -271,6 +272,11 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
       <div>
         <MicroLabel className="mb-2">Notes</MicroLabel>
         <LeadNotes key={lead.id} lead={lead} onSaved={() => mutateAll((k) => typeof k === "string" && (k.includes("/leads") || k.startsWith("/inbox")))} />
+      </div>
+
+      <div>
+        <MicroLabel className="mb-2">Reminders</MicroLabel>
+        <LeadReminders leadId={lead.id} />
       </div>
 
       {(lead.personalization.hook || !!lead.personalization.facts?.length || lead.company?.fit_reason) && (

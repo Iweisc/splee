@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, ShieldAlert, Sun, Trophy } from "lucide-react";
+import { BellRing, CalendarClock, FileCheck2, Headset, Hourglass, MessageSquareReply, PhoneCall, ShieldAlert, Sun, Trophy } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ended, endsLine, standing } from "@/components/app/work/contests";
@@ -41,13 +41,14 @@ export default function TodayPage() {
     !data.meetings.total &&
     !data.quiet.total &&
     !data.practice.total &&
+    !data.reminders.total &&
     !running.length &&
     !approvals?.length;
   return (
     <>
       <PageHeader
         title="Today"
-        description="What's waiting on you across your projects: replies to answer, calls and meetings coming up, drafts to approve, deals gone quiet and practice you were assigned."
+        description="What's waiting on you across your projects: replies to answer, reminders you set, calls and meetings coming up, drafts to approve, deals gone quiet and practice you were assigned."
         actions={
           <Select value={owner} onChange={(e) => setOwner(e.target.value as Owner)} className="h-9 w-auto" aria-label="Whose leads">
             <option value="mine_or_unassigned">Mine and unassigned</option>
@@ -68,7 +69,7 @@ export default function TodayPage() {
         ) : empty ? (
           <Card>
             <EmptyState icon={<Sun className="size-5" />} title="Nothing is waiting on you">
-              Replies, calls, meetings, drafts, quiet deals and assigned practice show up here as they come in.
+              Replies, reminders, calls, meetings, drafts, quiet deals and assigned practice show up here as they come in.
             </EmptyState>
           </Card>
         ) : (
@@ -89,6 +90,20 @@ export default function TodayPage() {
                       {r.classification && <ClassificationBadge value={r.classification} />}
                       <span className="text-xs text-muted-foreground">{r.project_name}</span>
                     </div>
+                  </Row>
+                ))}
+              </Part>
+            )}
+            {data.reminders.total > 0 && (
+              <Part icon={BellRing} title="Your reminders" total={data.reminders.total} shown={data.reminders.items.length}>
+                {data.reminders.items.map((r) => (
+                  <Row key={r.id} onClick={() => setLead(r.lead_id)}>
+                    <Who
+                      name={r.name}
+                      company={r.company}
+                      aside={<span className={cn(isPast(r.due_at) && "text-red-700")}>{isPast(r.due_at) ? `Due ${timeAgo(r.due_at)}` : dayTime(r.due_at)}</span>}
+                    />
+                    {r.note && <p className="mt-0.5 line-clamp-2 text-sm text-pretty text-muted-foreground">{r.note}</p>}
                   </Row>
                 ))}
               </Part>

@@ -2810,6 +2810,20 @@ export interface Today {
   }>;
   /** Practice calls a 1:1 prep assigned to you, on deals still open, until one's scored. */
   practice: TodayPart<PracticeAssignment>;
+  /** Your own reminders on leads, due in the next 12 hours or overdue, until you mark them done. */
+  reminders: TodayPart<{ id: UUID; lead_id: UUID; project_id: UUID; name: string; company: string; note: string; due_at: Ts }>;
+}
+
+/** A reminder a member set themselves on a lead. Open ones show on the lead for the whole team. */
+export interface LeadReminder {
+  id: UUID;
+  lead_id: UUID;
+  user_id: UUID;
+  /** Who set it, their name or else their email. */
+  user_name: string;
+  due_at: Ts;
+  note: string;
+  created_at: Ts;
 }
 
 export interface TodayPart<T> {
