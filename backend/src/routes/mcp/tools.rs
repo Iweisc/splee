@@ -804,7 +804,7 @@ pub(super) fn tools() -> Vec<Value> {
              until they're rewritten. The time zone and daily limit are the project's. follow_ups and send_hours give the campaign its \
              own instead of the project's, and null goes back to the project's. start_at has a campaign that isn't sending start \
              itself then, as start_campaign would, and pause_at has one that's sending, or set to start, pause itself then, as \
-             stop_campaign would.
+             stop_campaign would.",
             json!({
                 "campaign_id": campaign,
                 "name": { "type": "string" },
