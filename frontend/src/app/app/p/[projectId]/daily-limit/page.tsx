@@ -118,41 +118,8 @@ export default function DailyLimitPage() {
             </Section>
 
             <Section
-              title="Send from"
-              description="The mailboxes that send this project's first emails, so mailboxes on another brand's domain stay off it. Follow-ups and replies stay with the mailbox the lead already talks to."
-              toggle={
-                <Switch
-                  checked={picked !== null}
-                  onChange={(on) => update({ mailbox_ids: on ? (mailboxes ?? []).map((m) => m.id) : null })}
-                  label="Only the mailboxes I pick"
-                />
-              }
-            >
-              {picked !== null &&
-                (!mailboxes ? (
-                  <Skeleton className="h-24 w-full" />
-                ) : (
-                  <ul className="divide-y divide-border rounded-xl border border-border">
-                    {mailboxes.map((m) => (
-                      <li key={m.id}>
-                        <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
-                          <input type="checkbox" checked={picked.includes(m.id)} onChange={() => toggle(m.id)} className="accent-black" />
-                          <span className="min-w-0 flex-1 truncate font-medium">{m.email}</span>
-                          {m.status === "active" ? (
-                            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{num(todayLimit(m))}/day</span>
-                          ) : (
-                            <span className="shrink-0 text-xs text-muted-foreground capitalize">{m.status}</span>
-                          )}
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                ))}
-            </Section>
-
-            <Section
               title="First emails per company"
-              description="The most people at one company, by company or website, who get their first email from this project on the same day. The rest wait for the next day, so a company doesn't see several of your emails land at once. Follow-ups and replies never wait."
+              description="The most leads with the same company or website domain who get their first email from this project on the same day. The rest wait for the next day, so a company doesn't see several of your emails land at once. Follow-ups and replies never wait."
               toggle={
                 <Switch
                   checked={s.company_daily_limit !== null}
@@ -224,6 +191,39 @@ export default function DailyLimitPage() {
                   )}
                 </>
               )}
+            </Section>
+
+            <Section
+              title="Send from"
+              description="The mailboxes that send this project's first emails, so mailboxes on another brand's domain stay off it. Follow-ups and replies stay with the mailbox the lead already talks to."
+              toggle={
+                <Switch
+                  checked={picked !== null}
+                  onChange={(on) => update({ mailbox_ids: on ? (mailboxes ?? []).map((m) => m.id) : null })}
+                  label="Only the mailboxes I pick"
+                />
+              }
+            >
+              {picked !== null &&
+                (!mailboxes ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : (
+                  <ul className="divide-y divide-border rounded-xl border border-border">
+                    {mailboxes.map((m) => (
+                      <li key={m.id}>
+                        <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
+                          <input type="checkbox" checked={picked.includes(m.id)} onChange={() => toggle(m.id)} className="accent-black" />
+                          <span className="min-w-0 flex-1 truncate font-medium">{m.email}</span>
+                          {m.status === "active" ? (
+                            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{num(todayLimit(m))}/day</span>
+                          ) : (
+                            <span className="shrink-0 text-xs text-muted-foreground capitalize">{m.status}</span>
+                          )}
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
             </Section>
 
             <Section
