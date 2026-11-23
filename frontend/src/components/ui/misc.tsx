@@ -37,23 +37,27 @@ export function Skeleton({ className }: { className?: string }) {
   return <div className={cn("animate-pulse rounded-md bg-black/[0.06]", className)} />;
 }
 
+/** With `page`, it stands in for a whole page, so its title is the page's heading for someone moving by headings. */
 export function EmptyState({
   icon,
   title,
   children,
   action,
+  page,
   className,
 }: {
   icon?: React.ReactNode;
   title: string;
   children?: React.ReactNode;
   action?: React.ReactNode;
+  page?: boolean;
   className?: string;
 }) {
+  const Title = page ? "h1" : "p";
   return (
     <div className={cn("flex flex-col items-center justify-center gap-2 px-6 py-14 text-center", className)}>
       {icon && <div className="mb-1 text-muted-foreground">{icon}</div>}
-      <p className="font-medium text-balance">{title}</p>
+      <Title className="font-medium text-balance">{title}</Title>
       {children && <div className="max-w-sm text-sm text-balance text-muted-foreground">{children}</div>}
       {action && <div className="mt-3">{action}</div>}
     </div>

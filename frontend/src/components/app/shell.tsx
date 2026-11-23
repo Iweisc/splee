@@ -86,7 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [me, pathname, router]);
 
   // Without this, a server error or an unreachable backend left the spinner below up forever.
-  if (!me && error) return <LoadError error={error} what="your account" retry={() => mutate()} className="min-h-screen" />;
+  if (!me && error) return <LoadError error={error} what="your account" retry={() => mutate()} page className="min-h-screen" />;
 
   if (isLoading || !me) {
     return (

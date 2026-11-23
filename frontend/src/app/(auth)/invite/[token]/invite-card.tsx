@@ -40,7 +40,7 @@ export function InviteCard({ token }: { token: string }) {
   if (error && !(error instanceof ApiError && error.status === 404)) {
     return (
       <Card className="w-full max-w-[400px]">
-        <LoadError error={error} retry={() => retry()} what="the invite" />
+        <LoadError error={error} retry={() => retry()} what="the invite" page />
       </Card>
     );
   }
