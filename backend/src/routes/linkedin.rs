@@ -165,7 +165,7 @@ pub async fn stop_for_reply(db: &PgPool, lead: &Lead, why: &str) -> sqlx::Result
 }
 
 /// Unipile's posts for the project's LinkedIn account. The token in the URL picks the project, like a booking webhook.
-async fn unipile_event(State(state): State<AppState>, Path(token): Path<String>, Json(body): Json<Value>) -> AppResult<Json<Value>> {
+pub(super) async fn unipile_event(State(state): State<AppState>, Path(token): Path<String>, Json(body): Json<Value>) -> AppResult<Json<Value>> {
     let (project_id, account): (Uuid, String) =
         sqlx::query_as("select project_id, unipile_account_id from project_settings where unipile_webhook_token = $1 and unipile_token_enc <> ''")
             .bind(&token)

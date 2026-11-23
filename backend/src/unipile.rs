@@ -215,7 +215,8 @@ pub async fn find_account(base: &str, token: &str) -> anyhow::Result<(String, St
     Ok((id.to_string(), account["name"].as_str().unwrap_or_default().to_string()))
 }
 
-/// Has Unipile post the account's LinkedIn messages and new connections to `url`. Returns the webhooks' ids.
+/// Has Unipile post the account's LinkedIn messages and new connections to `url`. Returns the webhooks' ids. When one
+/// fails, the one made before it is removed, so it's both or neither.
 pub async fn add_webhooks(base: &str, token: &str, account: &str, url: &str) -> anyhow::Result<Vec<String>> {
     let u = Unipile::new(base, token, account)?;
     let mut ids = Vec::new();
@@ -225,8 +226,14 @@ pub async fn add_webhooks(base: &str, token: &str, account: &str, url: &str) -> 
             "request_url": url, "name": "Splee", "source": source, "events": [event], "account_ids": [account], "format": "json", "enabled": true,
             "headers": [{ "key": "Content-Type", "value": "application/json" }],
         });
-        let made = u.call(u.client.post(format!("{base}/webhooks")).json(&hook)).await.map_err(Failure::into_error)?;
-        ids.push(made["webhook_id"].as_str().context("Unipile didn't return the webhook's id")?.to_string());
+        let made = u.call(u.client.post(format!("{base}/webhooks")).json(&hook)).await.map_err(Failure::into_error);
+        match made.and_then(|made| Ok(made["webhook_id"].as_str().context("Unipile didn't return the webhook's id")?.to_string())) {
+            Ok(id) => ids.push(id),
+            Err(e) => {
+                remove_webhooks(base, token, &ids).await;
+                return Err(e);
+            }
+        }
     }
     Ok(ids)
 }
