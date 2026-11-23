@@ -181,7 +181,9 @@ function LeadBody({ leadId, onClose, openLead }: { leadId: string; onClose: () =
         <Detail label="Email" icon={<Mail className="size-3.5" />} wide>
           {lead.email ? (
             <>
-              <Address email={lead.email} /> <span className="text-xs text-muted-foreground">({lead.email_status})</span>
+              {/* "unknown" is the address's check, not the address: never verified, or the verifier couldn't tell. */}
+              <Address email={lead.email} />{" "}
+              <span className="text-xs text-muted-foreground">({lead.email_status === "unknown" ? "not verified" : lead.email_status})</span>
             </>
           ) : (
             <span className="text-muted-foreground">{lead.email_search === "queued" ? "Finding an email…" : "No email found"}</span>
