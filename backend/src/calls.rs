@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::agent::{self, kind};
-use crate::mail::COMPANY_REPLIED;
+use crate::mail::{COMPANY_REPLIED, FOLLOW_UPS};
 use crate::models::{Call, Lead, Ts};
 use crate::phone;
 use crate::state::AppState;
@@ -336,15 +336,15 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Opens the call step of each lead whose step is due now, for the lead's owner. A lead with no number, or whose number is on
-/// the do-not-contact list, gets it skipped instead, so their sequence goes on. Campaigns brought over from another tool keep
-/// their own steps, which are all emails.
+/// Opens the call step of each lead whose step is due now, in its campaign's follow-ups or else the project's, for the lead's
+/// owner. A lead with no number, or whose number is on the do-not-contact list, gets it skipped instead, so their sequence goes
+/// on. Campaigns brought over from another tool keep their own steps, which are all emails.
 pub async fn schedule(db: &PgPool) -> sqlx::Result<u64> {
     let done = sqlx::query(&format!(
         "with due as (
            select l.id as lead_id, l.project_id, l.segment_id, l.owner_id, l.phone, last.step + 1 as step,
-                  coalesce(ps.follow_ups -> last.step ->> 'instructions', '') as instructions,
-                  last.at + make_interval(days => greatest(1, coalesce((ps.follow_ups -> last.step ->> 'delay_days')::int, 3))) as due_at,
+                  coalesce({FOLLOW_UPS} -> last.step ->> 'instructions', '') as instructions,
+                  last.at + make_interval(days => greatest(1, coalesce(({FOLLOW_UPS} -> last.step ->> 'delay_days')::int, 3))) as due_at,
                   case when l.phone = '' then 'No phone number'
                        when exists (select 1 from suppressions x where x.org_id = p.org_id and x.kind = 'phone' and x.value = l.phone)
                          then 'Their number is on the do-not-contact list' end as why
@@ -355,9 +355,9 @@ pub async fn schedule(db: &PgPool) -> sqlx::Result<u64> {
            join {LAST_STEP} on true
            where p.org_id is not null and not ps.paused and l.status = 'contacted' and coalesce(s.status, 'working') <> 'paused'
              and not exists (select 1 from segment_steps x where x.segment_id = l.segment_id)
-             and jsonb_typeof(ps.follow_ups) = 'array' and jsonb_array_length(ps.follow_ups) > last.step
-             and ps.follow_ups -> last.step ->> 'kind' = 'call'
-             and coalesce((ps.follow_ups -> last.step ->> 'enabled')::boolean, false)
+             and jsonb_typeof({FOLLOW_UPS}) = 'array' and jsonb_array_length({FOLLOW_UPS}) > last.step
+             and {FOLLOW_UPS} -> last.step ->> 'kind' = 'call'
+             and coalesce(({FOLLOW_UPS} -> last.step ->> 'enabled')::boolean, false)
              and not exists (select 1 from email_messages i where i.lead_id = l.id and i.direction = 'inbound')
              and not {COMPANY_REPLIED}
          )

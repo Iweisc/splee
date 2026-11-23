@@ -801,7 +801,8 @@ pub(super) fn tools() -> Vec<Value> {
             "Update campaign",
             "Changes a campaign's definition as its page does and returns it as get_campaign does. Pass only what changes. Each \
              targeting list sent replaces that list, and the others stay. Emails already written keep their brief and language \
-             until they're rewritten. The schedule and follow-ups are the project's, so they're refused here.",
+             until they're rewritten. The schedule is the project's, so it's refused here. follow_ups gives the campaign its own \
+             instead of the project's, and null goes back to the project's.",
             json!({
                 "campaign_id": campaign,
                 "name": { "type": "string" },
@@ -823,6 +824,22 @@ pub(super) fn tools() -> Vec<Value> {
                 "daily_limit": {
                     "type": ["integer", "null"], "minimum": 1, "maximum": 5000,
                     "description": "The most first emails and follow-ups it sends a day, on top of the project's limit. null takes it off"
+                },
+                "follow_ups": {
+                    "type": ["array", "null"],
+                    "maxItems": 5,
+                    "description": "Its own follow-ups after the first email, in order, replacing the project's. [] sends none, null follows the project's",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["delay_days", "enabled"],
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["email", "call"], "description": "email (the default) or call, which opens a call for the lead's owner" },
+                            "delay_days": { "type": "integer", "minimum": 1, "maximum": 30, "description": "Days after the step before" },
+                            "enabled": { "type": "boolean" },
+                            "instructions": { "type": "string", "description": "What this follow-up should say, or what to talk about on the call" },
+                        },
+                    },
                 },
             }),
             &["campaign_id"],

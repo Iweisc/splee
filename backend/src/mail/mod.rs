@@ -247,6 +247,9 @@ pub async fn end_sequence(conn: &mut sqlx::PgConnection, lead_id: Uuid, why: &st
     Ok(())
 }
 
+/// The follow-ups lead `l` gets: its campaign `s`'s own, else the project's settings `ps`. Used where both are joined.
+pub const FOLLOW_UPS: &str = "coalesce(s.follow_ups, ps.follow_ups)";
+
 /// Lead `l` works where another of the project's leads replied, booked or said no, and the project stops a company's sequence
 /// on a reply (stop_company_on_reply). The places that write sequence steps check it, so none are written for them.
 pub const COMPANY_REPLIED: &str = "exists (select 1 from project_settings cs join leads o on o.project_id = cs.project_id

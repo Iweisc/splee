@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import useSWR from "swr";
-import { ArrowDown, ArrowUp, Phone, Plus, Repeat, Smartphone, Trash2 } from "lucide-react";
+import { Plus, Smartphone, Trash2 } from "lucide-react";
+import { AddStepButtons, delayProblem, FollowUpSteps, MAX_DELAY_DAYS, MAX_STEPS } from "@/components/app/settings/follow-up-steps";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
 import { Button } from "@/components/ui/button";
@@ -10,10 +11,6 @@ import { NumberInput, Select, Switch, Textarea } from "@/components/ui/form";
 import { Card, EmptyState } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import type { FollowUp, ProjectSettings, StepStats, TextStep, TwilioStatus } from "@/lib/types";
-import { cn } from "@/lib/utils";
-
-const MAX_STEPS = 5;
-const MAX_DELAY_DAYS = 30;
 
 export default function FollowUpsPage() {
   return (
@@ -21,108 +18,28 @@ export default function FollowUpsPage() {
       title="Follow-ups"
       description="If a lead doesn't reply, the agent writes a short follow-up in the same email thread, or someone on your team calls them. A reply of any kind stops the sequence."
       problem={(s) =>
-        [...s.follow_ups, ...s.text_steps].some((f) => !Number.isInteger(f.delay_days) || f.delay_days < 1 || f.delay_days > MAX_DELAY_DAYS)
-          ? `Each delay must be 1 to ${MAX_DELAY_DAYS} days`
-          : !Number.isInteger(s.daily_text_limit) || s.daily_text_limit < 1 || s.daily_text_limit > 1000
-            ? "Texts a day must be 1 to 1,000"
-            : null
+        delayProblem([...s.follow_ups, ...s.text_steps]) ??
+        (!Number.isInteger(s.daily_text_limit) || s.daily_text_limit < 1 || s.daily_text_limit > 1000 ? "Texts a day must be 1 to 1,000" : null)
       }
     >
       {(s, update) => {
         const steps = s.follow_ups;
         const set = (next: FollowUp[]) => update({ follow_ups: next });
-        const patch = (i: number, p: Partial<FollowUp>) => set(steps.map((f, j) => (j === i ? { ...f, ...p } : f)));
-        const move = (i: number, to: number) => {
-          const next = [...steps];
-          [next[i], next[to]] = [next[to]!, next[i]!];
-          set(next);
-        };
-        const add = (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => set([...steps, { delay_days: steps.at(-1)?.delay_days ?? 3, enabled: true, instructions: "" }])}
-              disabled={steps.length >= MAX_STEPS}
-            >
-              <Plus className="size-4" /> Add follow-up
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => set([...steps, { kind: "call", delay_days: steps.at(-1)?.delay_days ?? 3, enabled: true, instructions: "" }])}
-              disabled={steps.length >= MAX_STEPS}
-            >
-              <Phone className="size-4" /> Add call
-            </Button>
-          </>
-        );
 
         return (
           <>
             <Section
               title="Sequence"
-              description={`Up to ${MAX_STEPS} follow-ups and calls. Each delay counts from the step before. A call waits on the Calls page until someone logs or skips it.`}
-              actions={steps.length > 0 && <div className="flex flex-wrap gap-2">{add}</div>}
+              description={`Up to ${MAX_STEPS} follow-ups and calls. Each delay counts from the step before. A call waits on the Calls page until someone logs or skips it. Every campaign follows these unless it has its own, set on its page.`}
+              actions={
+                steps.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    <AddStepButtons steps={steps} onChange={set} />
+                  </div>
+                )
+              }
             >
-              {steps.length === 0 ? (
-                <EmptyState icon={<Repeat className="size-6" />} title="No follow-ups" action={<div className="flex flex-wrap justify-center gap-2">{add}</div>} className="py-8">
-                  Only the first email is sent to each lead.
-                </EmptyState>
-              ) : (
-                <ol className="space-y-3">
-                  {steps.map((f, i) => (
-                    <li key={i}>
-                      <Card className={cn("p-4 shadow-none ring-1 ring-border", !f.enabled && "bg-muted")}>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <Switch checked={f.enabled} onChange={(enabled) => patch(i, { enabled })} label={`Enable step ${i + 1}`} />
-                          {f.kind === "call" ? (
-                            <span className="flex items-center gap-1.5 font-medium">
-                              <Phone className="size-4 text-muted-foreground" /> Call
-                            </span>
-                          ) : (
-                            <span className="font-medium">Follow-up {i + 1}</span>
-                          )}
-                          <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                            after
-                            <NumberInput
-                              min={1}
-                              max={MAX_DELAY_DAYS}
-                              value={f.delay_days}
-                              onValueChange={(delay_days) => patch(i, { delay_days })}
-                              className="h-8 w-16 text-center tabular-nums"
-                              aria-label={`Delay for step ${i + 1} in days`}
-                            />
-                            {f.delay_days === 1 ? "day" : "days"}
-                          </span>
-                          <div className="ml-auto flex items-center gap-1">
-                            <Button variant="ghost" size="icon" onClick={() => move(i, i - 1)} disabled={i === 0} aria-label="Move up">
-                              <ArrowUp className="size-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon" onClick={() => move(i, i + 1)} disabled={i === steps.length - 1} aria-label="Move down">
-                              <ArrowDown className="size-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon" onClick={() => set(steps.filter((_, j) => j !== i))} aria-label="Remove step">
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
-                        </div>
-                        {/* At least two lines, and taller when the hint or the instructions need it, as the hint does on phones. 1.125rem is the padding plus border. */}
-                        <Textarea
-                          value={f.instructions}
-                          onChange={(e) => patch(i, { instructions: e.target.value })}
-                          placeholder={
-                            f.kind === "call"
-                              ? "Optional: what to talk about on the call, e.g. ask how they book appointments today."
-                              : "Optional: what this follow-up should say, e.g. share a case study, or ask if someone else handles this."
-                          }
-                          className="mt-3 min-h-[calc(2lh+1.125rem)] bg-card field-sizing-content"
-                        />
-                      </Card>
-                    </li>
-                  ))}
-                </ol>
-              )}
+              <FollowUpSteps steps={steps} onChange={set} />
               {/* A line above, so it reads as a setting for the whole sequence rather than part of the last step. */}
               <div className="mt-5 flex items-start justify-between gap-4 border-t border-border pt-5">
                 <div className="text-sm">

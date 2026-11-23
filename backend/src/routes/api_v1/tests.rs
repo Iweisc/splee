@@ -296,8 +296,9 @@ async fn campaigns_start_stop_and_approve_like_the_app_buttons(db: PgPool) {
     assert!(detail["status_reason"].as_str().unwrap().starts_with("Not started"), "{detail}");
     assert_eq!((detail["schedule"]["sending"].clone(), detail["schedule"]["daily_email_limit"].is_number()), (json!(false), true));
     assert!(detail["follow_ups"].is_array() && detail["targeting"].is_object(), "{detail}");
+    assert_eq!(detail["own_follow_ups"], false, "the project's until it has its own");
     let read_only: Vec<&str> = detail["read_only"].as_array().unwrap().iter().map(|r| r["field"].as_str().unwrap()).collect();
-    assert_eq!(read_only, ["schedule", "follow_ups"]);
+    assert_eq!(read_only, ["schedule"]);
 
     // Another organization's campaign looks like one that doesn't exist, and nothing happens to it.
     assert_eq!(api.get(&format!("/v1/campaigns/{theirs}")).await.0, 404);
@@ -349,7 +350,10 @@ async fn campaigns_start_stop_and_approve_like_the_app_buttons(db: PgPool) {
         .unwrap();
     let (_, detail) = api.get(&format!("/v1/campaigns/{segment}")).await;
     assert_eq!((detail["imported_from"].as_str(), detail["sequence"][0]["body"].as_str()), (Some("Instantly"), Some("Hi {first_name}")));
-    assert_eq!(detail["read_only"][2]["field"], "sequence", "{detail}");
+    let read_only: Vec<&str> = detail["read_only"].as_array().unwrap().iter().map(|r| r["field"].as_str().unwrap()).collect();
+    assert_eq!(read_only, ["schedule", "sequence", "follow_ups"]);
+    let steps = json!([{ "delay_days": 3, "enabled": true }]);
+    assert_eq!(api.patch(&format!("/v1/campaigns/{segment}"), json!({ "follow_ups": steps })).await.0, 400, "it sends the steps it came with");
 }
 
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
@@ -384,6 +388,11 @@ async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
     assert_eq!(api.patch(&path, json!({ "daily_limit": 25 })).await.1["daily_limit"], 25);
     assert_eq!(api.patch(&path, json!({ "angle": "Fewer no-shows" })).await.1["daily_limit"], 25, "left out, it stays");
     assert_eq!(api.patch(&path, json!({ "daily_limit": null })).await.1["daily_limit"], Value::Null, "null takes it off");
+    let own = json!([{ "kind": "call", "delay_days": 2, "enabled": true, "instructions": "Ask about the new clinic" }]);
+    let (_, detail) = api.patch(&path, json!({ "follow_ups": own })).await;
+    assert_eq!((detail["follow_ups"].clone(), detail["own_follow_ups"].clone()), (own, json!(true)), "{detail}");
+    let (_, detail) = api.patch(&path, json!({ "follow_ups": null })).await;
+    assert_eq!((detail["own_follow_ups"].clone(), detail["follow_ups"].is_array()), (json!(false), true), "null goes back to the project's");
 
     // A refused body changes nothing, and another organization's campaign looks like one that doesn't exist.
     for (body, status) in [
@@ -393,6 +402,9 @@ async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
         (json!({ "angle": "New", "language": "xx" }), 400),
         (json!({ "angle": "New", "daily_limit": 0 }), 400),
         (json!({ "angle": "New", "daily_limit": 5001 }), 400),
+        (json!({ "angle": "New", "follow_ups": [{ "delay_days": 0, "enabled": true }] }), 400),
+        (json!({ "angle": "New", "follow_ups": [{ "delay_days": 3 }] }), 400),
+        (json!({ "angle": "New", "follow_ups": [{ "kind": "text", "delay_days": 3, "enabled": true }] }), 400),
     ] {
         assert_eq!(api.patch(&path, body.clone()).await.0, status, "{body}");
     }

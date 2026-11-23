@@ -20,6 +20,7 @@ import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
 import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
 import { DailyLimitCard } from "@/components/app/work/daily-limit-card";
+import { FollowUpsCard } from "@/components/app/work/follow-ups-card";
 import { LanguageCard } from "@/components/app/work/language-card";
 import { TrackingCard } from "@/components/app/work/tracking-card";
 import { LeadPagesCard } from "@/components/app/work/lead-page";
@@ -142,6 +143,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
           <ImportedSequence segmentId={segId} />
           <MyCopyCard scope={{ kind: "campaign", segmentId: segId }} />
           <AbTestCard segmentId={segId} />
+          <FollowUpsCard key={JSON.stringify(segment.follow_ups)} segment={segment} />
           <AdAudiencesCard projectId={projectId} segmentId={segId} />
           <DailyLimitCard key={segment.daily_limit ?? "none"} segment={segment} />
           <LanguageCard segment={segment} />

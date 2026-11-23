@@ -823,8 +823,13 @@ struct FollowUpRule {
 async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrite: bool, instructions: &str) -> anyhow::Result<usize> {
     let (project, profile) = load_project(ctx, project_id).await?;
     let settings = WriterSettings::load(ctx, project_id).await?;
-    let rules: Vec<FollowUpRule> = serde_json::from_value(settings.follow_ups.clone()).unwrap_or_default();
+    let project_rules: Vec<FollowUpRule> = serde_json::from_value(settings.follow_ups.clone()).unwrap_or_default();
     let segments = segments_by_id(ctx, project_id).await?;
+    // A campaign with follow-ups of its own follows them instead of the project's, as mail::FOLLOW_UPS does.
+    let campaign_rules: HashMap<Uuid, Vec<FollowUpRule>> = segments
+        .values()
+        .filter_map(|s| Some((s.id, serde_json::from_value(s.follow_ups.clone()?).unwrap_or_default())))
+        .collect();
     let variants = variants_by_id(ctx, project_id).await?;
     let imported = imported_steps(ctx, project_id).await?;
     // Checked again here, since a colleague may have replied while the run was queued.
@@ -866,6 +871,7 @@ async fn write_follow_ups(ctx: &Ctx, project_id: Uuid, lead_ids: &[Uuid], rewrit
         // It only sends the steps it came with, never the project's follow-ups after them.
         let own = lead.segment_id.and_then(|id| imported.get(&(id, step)));
         let is_imported = lead.segment_id.is_some_and(|id| imported.contains_key(&(id, 0)));
+        let rules = lead.segment_id.and_then(|id| campaign_rules.get(&id)).unwrap_or(&project_rules);
         let rule = if is_imported { None } else { rules.get(step as usize - 1).filter(|r| r.enabled && r.kind.as_deref() != Some("call")) };
         if rule.is_none() && own.is_none() {
             continue;
@@ -1344,6 +1350,54 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!((step, subject.as_str(), variant), (1, "Re: Hi", Some(c.variants[0])));
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaigns_own_follow_ups_replace_the_projects(db: PgPool) {
+        let c = seed(&db, 0).await;
+        sqlx::query(
+            "insert into project_settings (project_id, paused, follow_ups)
+             values ($1, false, '[{\"delay_days\": 3, \"enabled\": true, \"instructions\": \"Share the pricing page\"}]')",
+        )
+        .bind(c.project)
+        .execute(&db)
+        .await
+        .unwrap();
+        let ctx = ctx(&db, c.project).await;
+        let leads = add_leads(&db, &c, 3).await;
+        let segment = sqlx::query_as("select * from segments where id = $1").bind(c.segment).fetch_one(&db).await.unwrap();
+        for lead in &leads {
+            save_initial(&ctx, lead, Some(&segment), "Hi", "Hello", ENGLISH, None).await.unwrap();
+        }
+        sqlx::query("update email_messages set status = 'sent', sent_at = now() - interval '4 days', message_id = gen_random_uuid()::text")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("update leads set status = 'contacted' where project_id = $1").bind(c.project).execute(&db).await.unwrap();
+
+        // The first lead's campaign has a follow-up of its own, the second's has none at all, and the third's follows the project.
+        let own = json!([{ "delay_days": 2, "enabled": true, "instructions": "Mention the founders' dinner" }]);
+        sqlx::query("update segments set follow_ups = $2 where id = $1").bind(c.segment).bind(own).execute(&db).await.unwrap();
+        for (lead, follow_ups) in [(&leads[1], Some(json!([]))), (&leads[2], None)] {
+            let other: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status, follow_ups) values ($1, 'Other', 'working', $2) returning id")
+                .bind(c.project)
+                .bind(follow_ups)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            sqlx::query("update leads set segment_id = $2 where id = $1").bind(lead.id).bind(other).execute(&db).await.unwrap();
+        }
+        let ctx = run_ctx(&db, c.project, "write_emails", json!({})).await;
+        fake::answer_with(ctx.run.id, written);
+        let ids: Vec<Uuid> = leads.iter().map(|l| l.id).collect();
+        assert_eq!(super::write_follow_ups(&ctx, c.project, &ids, false, "").await.unwrap(), 2);
+        let prompts = fake::prompts(ctx.run.id);
+        let own = prompt_for(&prompts, &leads[0]);
+        assert!(own.contains("Mention the founders' dinner") && !own.contains("Share the pricing page"), "{own}");
+        assert!(prompt_for(&prompts, &leads[2]).contains("Share the pricing page"));
+        assert!(!prompts.iter().any(|p| p.contains(&leads[1].id.to_string())), "no follow-ups of its own means none");
     }
 
     #[sqlx::test]
