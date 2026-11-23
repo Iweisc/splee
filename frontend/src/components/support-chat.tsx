@@ -159,7 +159,7 @@ export function SupportChat({ inSidebar = false }: { inSidebar?: boolean }) {
       {panel}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex size-14 items-center justify-center rounded-full bg-brand-600 text-white shadow-pop transition-transform hover:scale-105"
+        className="flex size-14 items-center justify-center rounded-full bg-brand-600 text-white shadow-pop transition-transform hover:scale-105 forced-colors:border"
         aria-label={open ? "Close support chat" : "Open support chat"}
         aria-expanded={open}
       >

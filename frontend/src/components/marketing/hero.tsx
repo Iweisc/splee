@@ -110,7 +110,7 @@ function WebsiteForm() {
             type="submit"
             aria-label="Find my leads"
             className={cn(
-              "flex shrink-0 items-center justify-center rounded-lg px-3.5 py-3 transition-all duration-300",
+              "flex shrink-0 items-center justify-center rounded-lg px-3.5 py-3 transition-all duration-300 forced-colors:border",
               valid ? "bg-primary text-primary-foreground hover:scale-105" : "bg-accent text-muted-foreground",
             )}
           >
