@@ -30,15 +30,17 @@ export function LeadReminders({ leadId }: { leadId: string }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
-  // Where a focused Done was, once its reminder leaves the list and takes focus with it. Focus goes to the Done now in that
-  // place, or the last one, or the note, so someone on the keyboard isn't sent back to the top of the page.
-  const refocus = useRef<number | null>(null);
+  // A done reminder whose Done had focus, and where that Done was. Once its row leaves the list and takes focus with it, focus
+  // goes to the Done now in that place, or the last one, or the note, so someone on the keyboard isn't sent back to the top of
+  // the page. Someone who moved focus elsewhere meanwhile keeps it there.
+  const refocus = useRef<{ id: string; at: number } | null>(null);
   useEffect(() => {
-    const at = refocus.current;
+    const pending = refocus.current;
+    if (!pending || reminders?.some((r) => r.id === pending.id)) return;
     refocus.current = null;
-    if (at === null || !root.current || root.current.contains(document.activeElement)) return;
+    if (!root.current || document.activeElement !== document.body) return;
     const dones = root.current.querySelectorAll<HTMLElement>("[data-done]");
-    (dones[at] ?? dones[dones.length - 1] ?? root.current.querySelector("input"))?.focus();
+    (dones[pending.at] ?? dones[dones.length - 1] ?? root.current.querySelector("input"))?.focus();
   }, [reminders]);
 
   const refresh = async () => {
@@ -67,7 +69,7 @@ export function LeadReminders({ leadId }: { leadId: string }) {
     setBusy(id);
     try {
       await api(`/reminders/${id}/done`, { body: {} });
-      if (at >= 0) refocus.current = at;
+      if (at >= 0) refocus.current = { id, at };
       toast.success("Reminder done");
       await refresh();
     } catch (err) {
