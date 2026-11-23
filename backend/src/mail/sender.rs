@@ -163,14 +163,16 @@ fn company_full(since: &str, limit: &str) -> String {
     )
 }
 
-/// company_full for one email.
+/// company_full for one email. One deleted since the pass picked it counts as full, so the pass skips it.
 async fn company_is_full(db: &sqlx::PgPool, email: Uuid, since: Ts, limit: Option<i32>) -> sqlx::Result<bool> {
-    sqlx::query_scalar(&format!("select {} from email_messages e join leads l on l.id = e.lead_id where e.id = $1", company_full("$2", "$3")))
-        .bind(email)
-        .bind(since)
-        .bind(limit)
-        .fetch_one(db)
-        .await
+    let full: Option<bool> =
+        sqlx::query_scalar(&format!("select {} from email_messages e join leads l on l.id = e.lead_id where e.id = $1", company_full("$2", "$3")))
+            .bind(email)
+            .bind(since)
+            .bind(limit)
+            .fetch_optional(db)
+            .await?;
+    Ok(full.unwrap_or(true))
 }
 
 async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()> {
