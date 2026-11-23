@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { useAction } from "@/components/app/settings/use-action";
 import { Button } from "@/components/ui/button";
 import { Address, Badge, Card, EmptyState, Message, Modal, type BadgeTone } from "@/components/ui/misc";
 import { fetcher, useMe } from "@/hooks/use-me";
+import { useOrigin } from "@/hooks/use-origin";
 import { api } from "@/lib/api";
 import { Switch } from "@/components/ui/form";
 import type { Mailbox, MailboxInput, MailboxStats, SignInProvider, WarmupHealth } from "@/lib/types";
@@ -43,13 +44,11 @@ const isLoopback = (url: string) => {
   }
 };
 
-const noSubscription = () => () => {};
-
 /** Unsubscribe and invite links in emails use the backend's PUBLIC_URL. Left on its localhost default on a server, nobody can open them. */
 function PublicUrlWarning() {
   const { me } = useMe();
-  // null on the server, so the warning only renders in the browser, where the address is known.
-  const here = useSyncExternalStore(noSubscription, () => window.location.origin, () => null);
+  // Empty on the server, so the warning only renders in the browser, where the address is known.
+  const here = useOrigin();
   if (!me || !here || !isLoopback(me.public_url) || isLoopback(here)) return null;
   return (
     <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">

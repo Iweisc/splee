@@ -46,10 +46,6 @@ export function Select({ className, ...props }: React.SelectHTMLAttributes<HTMLS
   return <select className={cn(field, "h-10 max-w-full pr-8", className)} {...props} />;
 }
 
-export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
-  return <label className={cn("text-sm font-medium text-foreground", className)} {...props} />;
-}
-
 const FieldLabelId = createContext<string | undefined>(undefined);
 
 /** The id of the enclosing `group` Field's label, for an input inside it to name itself with. */
