@@ -547,6 +547,10 @@ pub struct Segment {
     pub send_start_hour: Option<i32>,
     #[sqlx(default)]
     pub send_end_hour: Option<i32>,
+    /// When it starts itself, as its Start button would, in the name of start_by_user or start_by_key. Starting or archiving
+    /// it clears all three.
+    #[sqlx(default)]
+    pub start_at: Option<Ts>,
 }
 
 impl Segment {

@@ -207,6 +207,9 @@ pub(in crate::routes) struct CampaignUpdate {
     /// Its own send days and hours, or null to send in the project's again.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     send_hours: Option<Option<segments::SendHoursBody>>,
+    /// When it starts itself, or null to cancel that.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    start_at: Option<Option<Ts>>,
 }
 
 /// The lists the campaign page edits. Each one sent replaces that list and the others stay, so a typo in a key is a 422 rather
@@ -252,15 +255,17 @@ pub(in crate::routes) async fn update_campaign(
     segments::check_follow_ups(&state.db, segment.id, &body.follow_ups).await?;
     let send_hours = body.send_hours.map(|h| h.map(segments::SendHoursBody::checked).transpose()).transpose()?;
     let (days, start, end) = segments::SendHoursBody::columns(send_hours.as_ref().and_then(Option::as_ref));
-    sqlx::query(
-        "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{}'),
+    let (set, start_at, by_user, by_key) = segments::start_columns(&segment, &segment.status, (&auth).into(), body.start_at)?;
+    sqlx::query(&format!(
+        "update segments set name = coalesce($2, name), description = coalesce($3, description), targeting = targeting || coalesce($4, '{{}}'),
            pain_points = coalesce($5, pain_points), angle = coalesce($6, angle), language = coalesce($7, language),
            track_clicks = coalesce($8, track_clicks), track_opens = coalesce($9, track_opens), lead_pages = coalesce($10, lead_pages),
            daily_limit = case when $11 then $12 else daily_limit end, follow_ups = case when $13 then $14 else follow_ups end,
            send_days = case when $15 then $16 else send_days end, send_start_hour = case when $15 then $17 else send_start_hour end,
-           send_end_hour = case when $15 then $18 else send_end_hour end
+           send_end_hour = case when $15 then $18 else send_end_hour end, {}
          where id = $1",
-    )
+        segments::set_start(19, "status"),
+    ))
     .bind(segment.id)
     .bind(name)
     .bind(body.description)
@@ -279,6 +284,10 @@ pub(in crate::routes) async fn update_campaign(
     .bind(days)
     .bind(start)
     .bind(end)
+    .bind(set)
+    .bind(start_at)
+    .bind(by_user)
+    .bind(by_key)
     .execute(&state.db)
     .await?;
     get_campaign(State(state), auth, Path(id)).await
@@ -305,6 +314,8 @@ pub(in crate::routes) struct CampaignDetail {
     lead_pages: bool,
     /// Its own cap on first emails and follow-ups a day, on top of the project's daily_email_limit, or null for none.
     daily_limit: Option<i32>,
+    /// When it starts itself, or null.
+    start_at: Option<Ts>,
     schedule: Schedule,
     /// The follow-ups after the first email, each an email or a call some days later: its own, else the project's.
     follow_ups: Value,
@@ -385,6 +396,7 @@ pub(in crate::routes) async fn get_campaign(
         track_opens: segment.track_opens,
         lead_pages: segment.lead_pages,
         daily_limit: segment.daily_limit,
+        start_at: segment.start_at,
         schedule: Schedule {
             sending: !settings.paused,
             send_days: hours.days,
@@ -404,6 +416,9 @@ pub(in crate::routes) async fn get_campaign(
 }
 
 fn status_reason(segment: &Segment, project_sending: bool, by_optimizer: bool) -> String {
+    if let Some(at) = segment.start_at.filter(|_| !segments::running(segment)) {
+        return format!("Not sending yet. It starts by itself on {}", at.format("%b %-d, %Y at %H:%M UTC"));
+    }
     match (segment.status.as_str(), segment.auto_paused_at) {
         ("draft", _) => "Not started. Starting it approves its drafts for sending".into(),
         ("paused", Some(at)) if by_optimizer => format!(

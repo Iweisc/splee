@@ -150,6 +150,10 @@ export function endpoints(projectId: string): Endpoint[] {
           "send_hours",
           "its own days and hours for first emails and follow-ups instead of the project's: { days: 1 (Monday) to 7, start_hour: 0 to 23, end_hour: 1 to 24 }, in the project's time zone, or each lead's when the project sends in theirs. Days off stay the project's. null goes back to the project's",
         ],
+        [
+          "start_at",
+          "a time within the next year when a campaign that isn't sending starts by itself, as POST /campaigns/{id}/start would, like 2026-12-01T09:00:00Z. null cancels it, and so do start and archive",
+        ],
       ],
       body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "daily_limit": 25 }`,
       response: `{
@@ -176,6 +180,7 @@ export function endpoints(projectId: string): Endpoint[] {
   "pain_points": "Chasing late invoices",
   "angle": "Get paid on time without awkward emails",
   "daily_limit": 25,
+  "start_at": null,
   "schedule": { "sending": true, "timezone": "America/New_York", "send_days": [1, 2, 3, 4, 5], "send_start_hour": 9, "send_end_hour": 17, "own_send_hours": false, "daily_email_limit": 50 },
   "follow_ups": [{ "delay_days": 3, "enabled": true, "instructions": "" }],
   "own_follow_ups": false,

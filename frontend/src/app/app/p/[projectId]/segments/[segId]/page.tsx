@@ -18,7 +18,7 @@ import { SendStateCard } from "@/components/app/work/send-state-card";
 import { type Kpi, KpiCard, replyRate } from "@/components/app/work/kpi-card";
 import { isActive, RunProgress, useProjectRuns } from "@/components/app/work/run-progress";
 import { SegmentFields, type SegmentDraft } from "@/components/app/work/segment-form";
-import { ArchiveToggle, SegmentToggle } from "@/components/app/work/segment-toggle";
+import { ArchiveToggle, SegmentToggle, StartLater } from "@/components/app/work/segment-toggle";
 import { DailyLimitCard } from "@/components/app/work/daily-limit-card";
 import { FollowUpsCard } from "@/components/app/work/follow-ups-card";
 import { SendHoursCard } from "@/components/app/work/send-hours-card";
@@ -105,6 +105,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
             ) : (
               <>
                 <ArchiveToggle segment={segment} />
+                {segment.status !== "working" && segment.status !== "scaling" && <StartLater segment={segment} />}
                 <SegmentToggle segment={segment} size="md" />
               </>
             )}
