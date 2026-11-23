@@ -682,24 +682,30 @@ pub(super) fn set_pause(n: usize) -> String {
 }
 
 /// The campaign, its organization, and the time and member or API key of the schedule it had.
-type Due = (Uuid, Uuid, Ts, Option<Uuid>, Option<Uuid>);
+/// And for a start, whether its pause had passed too.
+type Due = (Uuid, Uuid, Ts, Option<Uuid>, Option<Uuid>, bool);
 
 /// Claims the campaigns whose `{which}_at` (start or pause) has come by clearing it, so two servers can't both act on one.
-/// A pause waits while a start is still due, so start_scheduled sees the window it belongs to.
+/// A pause waits while a start is still due. A start whose pause has passed too, its whole window gone while nothing ran,
+/// takes the pause with it under the same lock, so the pause job can't drop it while the start is under way.
 async fn claim_due(db: &PgPool, which: &str) -> sqlx::Result<Vec<Due>> {
-    let waits = if which == "pause" { "and start_at is null" } else { "" };
+    let (waits, lapsed) = if which == "pause" { ("and start_at is null", "false") } else { ("", "coalesce(pause_at <= now(), false)") };
+    let clear = |col: &str| format!("{col} = case when due.lapsed then null else s.{col} end");
     sqlx::query_as(&format!(
-        "with due as (select id, {which}_at as at, {which}_by_user as by_user, {which}_by_key as by_key from segments
-                      where {which}_at <= now() {waits} for update skip locked)
-         update segments s set {which}_at = null, {which}_by_user = null, {which}_by_key = null from due, projects p
-         where s.id = due.id and p.id = s.project_id returning s.id, p.org_id, due.at, due.by_user, due.by_key"
+        "with due as (select id, {which}_at as at, {which}_by_user as by_user, {which}_by_key as by_key, {lapsed} as lapsed
+                      from segments where {which}_at <= now() {waits} for update skip locked)
+         update segments s set {which}_at = null, {which}_by_user = null, {which}_by_key = null, {}, {}, {} from due, projects p
+         where s.id = due.id and p.id = s.project_id returning s.id, p.org_id, due.at, due.by_user, due.by_key, due.lapsed",
+        clear("pause_at"),
+        clear("pause_by_user"),
+        clear("pause_by_key"),
     ))
     .fetch_all(db)
     .await
 }
 
 /// Puts back a claimed schedule whose action failed, for the next minute, unless it was set again meanwhile.
-async fn unclaim(db: &PgPool, which: &str, (id, _, at, user, key): Due) -> sqlx::Result<()> {
+async fn unclaim(db: &PgPool, which: &str, (id, _, at, user, key, _): Due) -> sqlx::Result<()> {
     sqlx::query(&format!(
         "update segments set {which}_at = $2, {which}_by_user = $3, {which}_by_key = $4 where id = $1 and {which}_at is null"
     ))
@@ -712,19 +718,24 @@ async fn unclaim(db: &PgPool, which: &str, (id, _, at, user, key): Due) -> sqlx:
     Ok(())
 }
 
+/// The minute job for scheduled starts and pauses, starts first, so a start and pause due together are seen as one window.
+pub async fn run_scheduled(db: &PgPool) -> anyhow::Result<()> {
+    start_scheduled(db).await?;
+    pause_scheduled(db).await
+}
+
 /// Starts each campaign whose start_at has come, as its Start button would, in the name of whoever set it. A campaign that's
 /// sending or archived by then is left as it is.
 pub async fn start_scheduled(db: &PgPool) -> anyhow::Result<()> {
     for due in claim_due(db, "start").await? {
-        let (id, org_id, _, user, key) = due;
+        let (id, org_id, _, user, key, lapsed) = due;
+        // Its window passed while nothing ran, after downtime say, so it stays as it is rather than send with no end.
+        if lapsed {
+            continue;
+        }
         // Deleted since it was claimed, or started or archived by hand.
         let segment: Option<Segment> = sqlx::query_as("select * from segments where id = $1").bind(id).fetch_optional(db).await?;
         let Some(segment) = segment.filter(|s| !running(s) && s.archived_at.is_none()) else { continue };
-        // Its window passed while nothing ran, after downtime say, so it stays paused rather than send with no end.
-        if segment.pause_at.is_some_and(|at| at <= chrono::Utc::now()) {
-            sqlx::query(&format!("update segments set {CANCEL_PAUSE} where id = $1")).bind(id).execute(db).await?;
-            continue;
-        }
         if let Err(e) = launch(db, Who::stored(org_id, user, key), &segment).await {
             tracing::error!(error = ?e, segment_id = %id, "could not start a scheduled campaign");
             unclaim(db, "start", due).await?;
@@ -737,7 +748,7 @@ pub async fn start_scheduled(db: &PgPool) -> anyhow::Result<()> {
 /// isn't sending by then, paused or archived by hand, is left as it is.
 pub async fn pause_scheduled(db: &PgPool) -> anyhow::Result<()> {
     for due in claim_due(db, "pause").await? {
-        let (id, org_id, _, user, key) = due;
+        let (id, org_id, _, user, key, _) = due;
         let segment: Option<Segment> = sqlx::query_as("select * from segments where id = $1").bind(id).fetch_optional(db).await?;
         let Some(segment) = segment.filter(|s| running(s) && s.archived_at.is_none()) else { continue };
         if let Err(e) = hold(db, Who::stored(org_id, user, key), &segment).await {
@@ -885,7 +896,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{Archived, get_send_state, update, with_stats};
+    use super::{Archived, claim_due, get_send_state, pause_scheduled, update, with_stats};
     use crate::auth::Auth;
     use crate::error::AppError;
     use crate::routes::stats::tests::seed_costs;
@@ -974,5 +985,32 @@ mod tests {
         assert_eq!(bad(patch(serde_json::json!({ "mailbox_ids": [a, foreign] })).await), "Pick mailboxes connected to this organization");
         let Json(back) = patch(serde_json::json!({ "mailbox_ids": null })).await.unwrap();
         assert_eq!(back.segment.mailbox_ids, None, "null goes back to the project's");
+    }
+
+    // The pause job runs apart from the start on another server, so a start claimed but not yet launched mustn't leave a
+    // lapsed pause for it to drop.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_start_claimed_after_its_pause_passed_takes_the_pause_with_it(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Ours') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let campaign = |pause: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(&format!(
+                "insert into segments (project_id, name, status, start_at, pause_at) values ($1, 'C', 'draft', now() - interval '2 hours', {pause})
+                 returning id"
+            ))
+            .bind(project)
+            .fetch_one(&db)
+        };
+        let (lapsed, open) = (campaign("now() - interval '1 hour'").await.unwrap(), campaign("now() + interval '1 hour'").await.unwrap());
+
+        let mut claimed: Vec<(Uuid, bool)> = claim_due(&db, "start").await.unwrap().into_iter().map(|d| (d.0, d.5)).collect();
+        claimed.sort_by_key(|(id, _)| *id != lapsed);
+        assert_eq!(claimed, [(lapsed, true), (open, false)]);
+        pause_scheduled(&db).await.unwrap();
+        let pauses: Vec<(Uuid, bool, String)> =
+            sqlx::query_as("select id, pause_at is not null, status from segments order by id = $1 desc").bind(lapsed).fetch_all(&db).await.unwrap();
+        assert_eq!(pauses, [(lapsed, false, "draft".into()), (open, true, "draft".into())], "the open window keeps its pause");
     }
 }
