@@ -2060,6 +2060,8 @@ export interface Mailbox {
   created_at: Ts;
   recheck_at: Ts | null;
   ramp_up: boolean;
+  /** The least minutes between two emails it sends, 0 for none. Replies don't wait for it. */
+  min_gap_minutes: number;
   /** "2026-11-09", the UTC day it first sent. */
   first_sent_on: string | null;
   /** Trades warmup emails with the other warming mailboxes in this Splee. */
@@ -2288,6 +2290,7 @@ export interface MailboxInput {
   daily_limit: number;
   cost_per_email_micros: number;
   ramp_up: boolean;
+  min_gap_minutes: number;
   warmup: boolean;
   warmup_daily_cap: number;
   total_daily_limit: number;

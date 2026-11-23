@@ -191,6 +191,14 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                 -- Hold the lead while the agent rewrites its emails, so the old text can't go out mid-run.
                 and not exists (select 1 from agent_runs r where r.project_id = e.project_id and r.kind = 'write_emails'
                                 and r.status in ('queued', 'running') and r.input -> 'lead_ids' ? e.lead_id::text)
+                -- A follow-up waiting out its thread's mailbox gap would only be put back, so it can't take a first email's place.
+                and not (e.kind = 'follow_up' and exists (
+                  select 1 from mailboxes m
+                  where m.id = coalesce(e.mailbox_id, (select x.mailbox_id from email_messages x
+                                                       where x.lead_id = e.lead_id and x.mailbox_id is not null
+                                                         and (x.direction = 'inbound' or x.status = 'sent')
+                                                       order by x.created_at desc limit 1))
+                    and m.status = 'active' and {IN_GAP}))
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
@@ -377,10 +385,15 @@ async fn replace_guessed(db: &sqlx::PgPool, lead: &Lead, found: &verify::Found) 
 const TODAY_LIMIT: &str = "case when m.ramp_up then least(m.daily_limit, 10 + 4 * (current_date - coalesce(m.first_sent_on, current_date)))
                            else m.daily_limit end";
 
+/// Mailbox `m` sent an email less than its min_gap_minutes ago, so cold email from it waits.
+const IN_GAP: &str = "(m.min_gap_minutes > 0 and exists (select 1 from email_messages g
+                       where g.mailbox_id = m.id and g.status = 'sent' and g.sent_at > now() - make_interval(mins => m.min_gap_minutes)))";
+
 /// Mailboxes of the org that may still send campaigns today, least used first. A warming mailbox also stays under its
 /// total with today's warmup emails. One held until warm sends none in its first 14 days of warmup, or while its warmup
-/// emails land in spam.
-pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyhow::Result<Vec<Mailbox>> {
+/// emails land in spam. With `spaced`, so is one that sent within its min_gap_minutes: a first email goes from another
+/// mailbox, a follow-up waits for its thread's, and a reply still goes (pick_from).
+pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid, spaced: bool) -> anyhow::Result<Vec<Mailbox>> {
     Ok(sqlx::query_as::<_, Mailbox>(&format!(
         "select m.* from mailboxes m
          left join lateral (select count(*) as sent, max(sent_at) as last_sent from email_messages e
@@ -388,16 +401,18 @@ pub(crate) async fn mailboxes_with_room(db: &sqlx::PgPool, org_id: Uuid) -> anyh
          where m.org_id = $1 and m.status = 'active' and coalesce(t.sent, 0) < {TODAY_LIMIT}
            and (not m.warmup or coalesce(t.sent, 0) + ({WARMUP_SENT_TODAY}) < m.total_daily_limit)
            and not (m.warmup and m.hold_until_warm and (coalesce(current_date - m.warmup_started_on, 0) < {HOLD_DAYS} or {LANDING_IN_SPAM}))
+           and not ($2 and {IN_GAP})
          order by coalesce(t.sent, 0), t.last_sent nulls first",
     ))
     .bind(org_id)
+    .bind(spaced)
     .fetch_all(db)
     .await?)
 }
 
 /// Follow-ups and replies go out from the mailbox the lead already talks to, so the thread stays together.
 async fn pick_mailbox(db: &sqlx::PgPool, org_id: Uuid, email: &EmailMessage, prefer: Option<Family>) -> anyhow::Result<Option<Mailbox>> {
-    pick_from(db, mailboxes_with_room(db, org_id).await?, email, prefer).await
+    pick_from(db, mailboxes_with_room(db, org_id, true).await?, email, prefer).await
 }
 
 /// pick_mailbox's choice among `available`, the organization's mailboxes_with_room. A first email goes out from the least
@@ -1225,7 +1240,7 @@ mod tests {
             .bind(n)
             .execute(&db)
         };
-        let has_room = || async { !mailboxes_with_room(&db, org).await.unwrap().is_empty() };
+        let has_room = || async { !mailboxes_with_room(&db, org, true).await.unwrap().is_empty() };
 
         // Its first day: 10.
         send(9).await.unwrap();
@@ -1293,7 +1308,7 @@ mod tests {
             .execute(&db)
         };
         let set = |sql: &'static str| sqlx::query(sql).bind(warming).execute(&db);
-        let has_room = || async { !mailboxes_with_room(&db, org).await.unwrap().is_empty() };
+        let has_room = || async { !mailboxes_with_room(&db, org, true).await.unwrap().is_empty() };
 
         // 30 warmup and 29 campaign emails today, under the total of 60 and the daily limit of 50.
         warmup(30, "", 0).await.unwrap();
@@ -1318,6 +1333,55 @@ mod tests {
         assert!(!has_room().await);
         set("update mailboxes set hold_until_warm = false where id = $1").await.unwrap();
         assert!(has_room().await);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_mailbox_waits_its_minutes_between_emails_except_for_replies(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead: Uuid = sqlx::query_scalar("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let mailbox: Uuid = sqlx::query_scalar(
+            "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc, min_gap_minutes)
+             values ($1, 'paced@example.test', 'smtp.example.test', 'paced', 'x', 10) returning id",
+        )
+        .bind(org)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let sent: Uuid = sqlx::query_scalar(
+            "insert into email_messages (project_id, lead_id, mailbox_id, direction, kind, status, sent_at)
+             values ($1, $2, $3, 'outbound', 'initial', 'sent', now() - interval '9 minutes') returning id",
+        )
+        .bind(project)
+        .bind(lead)
+        .bind(mailbox)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let queued = |kind: &'static str| {
+            sqlx::query_as::<_, EmailMessage>(
+                "insert into email_messages (project_id, lead_id, direction, kind, status) values ($1, $2, 'outbound', $3, 'approved') returning *",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(kind)
+            .fetch_one(&db)
+        };
+        let pool = &db;
+        let picks = |email: EmailMessage| async move { pick_mailbox(pool, org, &email, None).await.unwrap().map(|m| m.id) };
+
+        // 9 minutes after its last email, cold email waits, a reply doesn't, and the campaign's status doesn't count it as full.
+        assert_eq!(picks(queued("initial").await.unwrap()).await, None);
+        assert_eq!(picks(queued("follow_up").await.unwrap()).await, None);
+        assert_eq!(picks(queued("manual_reply").await.unwrap()).await, Some(mailbox));
+        assert_eq!(mailboxes_with_room(&db, org, false).await.unwrap().len(), 1);
+
+        sqlx::query("update email_messages set sent_at = now() - interval '11 minutes' where id = $1").bind(sent).execute(&db).await.unwrap();
+        assert_eq!(picks(queued("initial").await.unwrap()).await, Some(mailbox));
+        assert_eq!(picks(queued("follow_up").await.unwrap()).await, Some(mailbox));
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

@@ -160,7 +160,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         archived: segment.archived_at.is_some(),
         project_paused: settings.paused,
         active_mailboxes,
-        mailbox_ready: mailbox_ready(db, mail::sender::mailboxes_with_room(db, org_id).await?, segment.id, lead_cap_reached, &closed, now).await?,
+        mailbox_ready: mailbox_ready(db, mail::sender::mailboxes_with_room(db, org_id, false).await?, segment.id, lead_cap_reached, &closed, now).await?,
         queue,
         unwritten: agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.len(),
         project_sent,

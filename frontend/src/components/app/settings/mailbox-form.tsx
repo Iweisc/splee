@@ -46,6 +46,7 @@ const EMPTY: MailboxInput = {
   daily_limit: 30,
   cost_per_email_micros: 0,
   ramp_up: true,
+  min_gap_minutes: 0,
   dkim_selector: "",
   warmup: true,
   warmup_daily_cap: 40,
@@ -55,7 +56,8 @@ const EMPTY: MailboxInput = {
 
 function toInput(m: Mailbox): MailboxInput {
   const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username } = m;
-  const { daily_limit, cost_per_email_micros, ramp_up, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id } = m;
+  const { daily_limit, cost_per_email_micros, ramp_up, min_gap_minutes, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id } =
+    m;
   return {
     email,
     from_name,
@@ -74,6 +76,7 @@ function toInput(m: Mailbox): MailboxInput {
     daily_limit,
     cost_per_email_micros,
     ramp_up,
+    min_gap_minutes,
     dkim_selector,
     warmup,
     warmup_daily_cap,
@@ -297,9 +300,24 @@ export function MailboxForm({
         </>
       )}
 
-      <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
-        <NumberInput required min={1} value={m.daily_limit} onValueChange={(daily_limit) => set({ daily_limit })} className="w-28 tabular-nums" />
-      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Daily limit" hint="Emails per day from this mailbox. Start around 30 for a new domain and raise it slowly.">
+          <NumberInput required min={1} value={m.daily_limit} onValueChange={(daily_limit) => set({ daily_limit })} className="w-28 tabular-nums" />
+        </Field>
+        <Field
+          label="Minutes between emails"
+          hint="At least this long between two emails from this mailbox, so they don't go out in a burst. Replies don't wait. 0 for no gap."
+        >
+          <NumberInput
+            required
+            min={0}
+            max={60}
+            value={m.min_gap_minutes}
+            onValueChange={(min_gap_minutes) => set({ min_gap_minutes })}
+            className="w-28 tabular-nums"
+          />
+        </Field>
+      </div>
 
       <div className="flex items-start justify-between gap-4">
         <div>
