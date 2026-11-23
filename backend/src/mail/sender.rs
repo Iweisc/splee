@@ -573,8 +573,9 @@ async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> a
     let cc: Vec<String> = email.cc_emails.iter().filter(|c| !suppressed.contains(c) && !c.eq_ignore_ascii_case(&to)).cloned().collect();
     let stored = attachments::for_sending(&state.db, email.id).await?;
     let files: Vec<smtp::OutgoingFile> = stored.iter().map(|(filename, content_type, data)| smtp::OutgoingFile { filename, content_type, data }).collect();
+    // Only to a mailbox Splee still reads, or the replies would never reach it. Otherwise they come back to this one.
     let reply_to: Option<String> = match mb.reply_to_mailbox_id {
-        Some(id) => sqlx::query_scalar("select email::text from mailboxes where id = $1").bind(id).fetch_optional(&state.db).await?,
+        Some(id) => sqlx::query_scalar("select email::text from mailboxes where id = $1 and imap_host <> ''").bind(id).fetch_optional(&state.db).await?,
         None => None,
     };
 
