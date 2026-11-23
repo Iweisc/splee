@@ -46,11 +46,11 @@ export function Button({ variant, size, loading, className, children, disabled, 
     // so whoever pressed it from the keyboard would start over from the top. The click is swallowed, which also stops a form
     // submitting twice on Enter.
     <button
+      {...props}
       className={buttonClass(variant, size, className)}
       disabled={disabled}
-      aria-disabled={loading || undefined}
+      aria-disabled={loading || props["aria-disabled"]}
       onClick={(e) => (loading ? e.preventDefault() : onClick?.(e))}
-      {...props}
     >
       {loading && <Loader2 className={cn("size-4", icon?.props.className, "animate-spin")} />}
       {loading && icon ? rest : children}
