@@ -104,7 +104,7 @@ function WebsiteForm() {
               setValue(e.target.value);
               setError(null);
             }}
-            className="min-w-0 flex-1 bg-transparent py-3 text-left outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent py-3 text-left focus:outline-hidden placeholder:text-muted-foreground"
           />
           <button
             type="submit"

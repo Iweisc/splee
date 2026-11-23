@@ -104,7 +104,7 @@ export function Explorer({ defaultCountry = "", placeholder = "e.g. wholesale co
             onChange={(e) => setQuery(e.target.value)}
             placeholder={placeholder}
             aria-label="Describe the companies you want"
-            className="h-10 min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
+            className="h-10 min-w-0 flex-1 bg-transparent focus:outline-hidden placeholder:text-muted-foreground"
           />
         </div>
         <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Any country" aria-label="Country or region" className="sm:w-44" />

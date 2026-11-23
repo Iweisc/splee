@@ -178,7 +178,7 @@ function AskPanel({ projectId, onClose }: { projectId: string; onClose: () => vo
           rows={1}
           maxLength={2000}
           placeholder={turns.length ? "Ask a follow-up…" : "Ask about your pipeline…"}
-          className="max-h-[calc(5lh+1.125rem)] min-h-9 flex-1 resize-none field-sizing-content rounded-lg border border-border-strong px-3 py-2 text-sm outline-none focus:border-foreground/40"
+          className="max-h-[calc(5lh+1.125rem)] min-h-9 flex-1 resize-none field-sizing-content rounded-lg border border-border-strong px-3 py-2 text-sm focus:outline-hidden focus:border-foreground/40"
         />
         <button
           type="submit"

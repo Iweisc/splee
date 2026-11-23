@@ -88,7 +88,7 @@ export function ChipInput({
         aria-label={label}
         aria-invalid={wrong || undefined}
         placeholder={value.length ? undefined : placeholder}
-        className="h-7 min-w-12 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground"
+        className="h-7 min-w-12 flex-1 bg-transparent px-1 text-sm focus:outline-hidden placeholder:text-muted-foreground"
       />
     </div>
   );
