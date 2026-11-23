@@ -45,23 +45,27 @@ export function StartLater({ segment }: { segment: Segment }) {
   const { mutate } = useSWRConfig();
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Scheduling swaps Start later for the Starts button and cancelling swaps it back, so the button that had focus, or that
-  // the picker would hand it back to, is gone. Focus goes to the one in its place, unless it has moved on meanwhile.
+  // Scheduling swaps Start later for the Starts button and cancelling swaps it back, so the X that had focus, or the button
+  // the picker would hand focus back to, is gone. Focus goes to the button in its place, if it was on the X or in the picker
+  // just before the swap and hasn't landed anywhere since. `changed` makes this run once after every change, even a no-op.
   const trigger = useRef<HTMLButtonElement>(null);
-  const refocus = useRef(false);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const ours = useRef(false);
+  const [changed, setChanged] = useState(0);
   useEffect(() => {
-    if (!refocus.current || picking) return;
-    refocus.current = false;
-    if (document.activeElement === document.body) trigger.current?.focus();
-  }, [segment.start_at, picking]);
+    if (ours.current && document.activeElement === document.body) trigger.current?.focus();
+    ours.current = false;
+  }, [changed]);
   const set = async (start_at: string | null) => {
     setBusy(true);
     try {
       await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
-      refocus.current = true;
+      const active = document.activeElement;
+      ours.current = active === cancel.current || !!active?.closest("dialog");
       await mutate(() => true);
       toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
       setPicking(false);
+      setChanged((n) => n + 1);
     } catch (err) {
       toastError(err);
     } finally {
@@ -72,8 +76,8 @@ export function StartLater({ segment }: { segment: Segment }) {
   return (
     <>
       {segment.start_at ? (
-        // On a phone it takes a row of its own under the other actions, rather than one between them, which made three.
-        <span className="inline-flex items-center max-sm:order-last max-sm:basis-full">
+        // It comes after Start, so on a phone it wraps to a full row of its own under the other actions.
+        <span className="inline-flex items-center max-sm:basis-full">
           <Button
             ref={trigger}
             variant="outline"
@@ -84,6 +88,7 @@ export function StartLater({ segment }: { segment: Segment }) {
             <CalendarClock className="size-3.5" /> Starts {dayTime(segment.start_at)}
           </Button>
           <Button
+            ref={cancel}
             variant="outline"
             size="icon"
             className="size-10 rounded-l-none border-l-0"
