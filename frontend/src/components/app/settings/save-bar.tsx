@@ -12,15 +12,18 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
   useLeaveGuard(form.dirty);
   const status = useId();
   // Saving or discarding from the keyboard leaves focus on the bar, so it stays on screen until focus moves on, or the focus
-  // would sit on a button nobody can see. A mouse click hides it at once, as it always has.
+  // would sit on a button nobody can see. A mouse click hides it at once, as it always has. A key press counts too, for
+  // someone who clicked Save, saw it fail and pressed Enter to retry: that fires no new focus event.
   const [keyboard, setKeyboard] = useState(false);
   const shown = form.dirty || keyboard;
+  const blocked = form.dirty && problem;
   return (
     <>
       {/* Always in the page and outside the hidden bar, so a screen reader is already listening when the first edit is
-          also the first problem. Only problems are read out, not every "Unsaved changes". */}
+          also the first problem. Only problems are read out, not every "Unsaved changes", and the clean state once Save or
+          Discard leaves focus in the bar. */}
       <span role="status" className="sr-only">
-        {form.dirty ? problem : null}
+        {form.dirty ? problem : keyboard && "No unsaved changes"}
       </span>
       <div
         className={cn(
@@ -29,6 +32,7 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
         )}
         aria-hidden={!shown}
         onFocus={(e) => setKeyboard(e.target.matches(":focus-visible"))}
+        onKeyDown={() => setKeyboard(true)}
         onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setKeyboard(false)}
       >
         {/* A long problem message would squeeze into a narrow column beside the buttons on phones, so the buttons wrap
@@ -40,8 +44,8 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
           )}
         >
           {/* Describes a disabled Save too, for a screen reader user who browses to it rather than tabbing, which skips it. */}
-          <span id={status} className={problem ? "text-amber-300" : "text-white/80"}>
-            {problem ?? (form.dirty ? "Unsaved changes" : "No unsaved changes")}
+          <span id={status} className={blocked ? "text-amber-300" : "text-white/80"}>
+            {form.dirty ? (problem ?? "Unsaved changes") : "No unsaved changes"}
           </span>
           <div className="ml-auto flex gap-1">
             <Button
@@ -60,9 +64,9 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
               className="bg-white text-foreground hover:bg-white/90"
               onClick={form.dirty ? form.save : undefined}
               loading={form.saving}
-              disabled={!!problem}
+              disabled={!!blocked}
               aria-disabled={!form.dirty || undefined}
-              aria-describedby={problem ? status : undefined}
+              aria-describedby={blocked ? status : undefined}
               tabIndex={shown ? 0 : -1}
             >
               Save
