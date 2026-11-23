@@ -12,7 +12,7 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
   useLeaveGuard(form.dirty);
   const status = useId();
   // Saving or discarding from the keyboard leaves focus on the bar, so it stays on screen until focus moves on, or the focus
-  // would sit on a button nobody can see. A mouse click hides it at once, as it always has. A key press counts too, for
+  // would sit on a button nobody can see. A mouse click hides it at once, as it always has. Enter or Space counts too, for
   // someone who clicked Save, saw it fail and pressed Enter to retry: that fires no new focus event.
   const [keyboard, setKeyboard] = useState(false);
   const shown = form.dirty || keyboard;
@@ -32,7 +32,7 @@ export function SaveBar({ form, problem }: { form: Pick<ProjectSettingsForm, "di
         )}
         aria-hidden={!shown}
         onFocus={(e) => setKeyboard(e.target.matches(":focus-visible"))}
-        onKeyDown={() => setKeyboard(true)}
+        onKeyDown={(e) => !e.nativeEvent.isComposing && (e.key === "Enter" || e.key === " ") && setKeyboard(true)}
         onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setKeyboard(false)}
       >
         {/* A long problem message would squeeze into a narrow column beside the buttons on phones, so the buttons wrap
