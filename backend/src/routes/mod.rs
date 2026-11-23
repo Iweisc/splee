@@ -32,6 +32,7 @@ mod churn;
 mod customers;
 mod practice;
 pub(crate) mod targets;
+mod reminders;
 mod today;
 mod buyers;
 mod coaching;
@@ -224,6 +225,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .merge(ask::router())
         .merge(committee::router())
         .merge(today::router())
+        .merge(reminders::router())
         .merge(reports::router())
         .merge(variants::router())
         .merge(my_copy::router())

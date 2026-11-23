@@ -1,7 +1,7 @@
 //! The Today page: what's waiting on you across the organization's projects. Replies to answer, emails to approve, calls
 //! due, meetings in the next day, deals gone quiet and practice calls assigned to you, each with its count and the first
 //! few. `owner` narrows everything but approvals and practice to whose leads they are, mine and unassigned by default like
-//! the Inbox count.
+//! the Inbox count. Reminders you set yourself on leads come once they're due.
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -95,6 +95,17 @@ struct Quiet {
     nudge_ready: bool,
 }
 
+#[derive(Serialize, FromRow)]
+struct ReminderDue {
+    id: Uuid,
+    lead_id: Uuid,
+    project_id: Uuid,
+    name: String,
+    company: String,
+    note: String,
+    due_at: Ts,
+}
+
 #[derive(Serialize)]
 struct Today {
     replies: Part<Reply>,
@@ -105,6 +116,8 @@ struct Today {
     quiet: Part<Quiet>,
     /// Practice calls a 1:1 prep or a ramp assigned to you, on deals still open, until they're done. A 1:1's goes after 30 days.
     practice: Part<Assigned>,
+    /// Your own reminders on leads, due by the end of the next 12 hours or overdue, until you mark them done. See reminders.rs.
+    reminders: Part<ReminderDue>,
 }
 
 async fn today(State(state): State<AppState>, auth: Auth, Query(q): Query<TodayQuery>) -> AppResult<Json<Today>> {
@@ -148,6 +161,7 @@ async fn today(State(state): State<AppState>, auth: Auth, Query(q): Query<TodayQ
         meetings: meetings(db, auth.org_id, &owner).await?,
         quiet: quiet(db, auth.org_id, &owner).await?,
         practice: practice(db, auth.org_id, auth.user_id).await?,
+        reminders: reminders(db, auth.org_id, auth.user_id).await?,
     }))
 }
 
@@ -160,6 +174,22 @@ async fn approvals(db: &PgPool, org_id: Uuid) -> sqlx::Result<Vec<Waiting>> {
     .bind(org_id)
     .fetch_all(db)
     .await
+}
+
+/// Your open reminders due by the end of the next 12 hours, the most overdue first. Always yours, like practice.
+async fn reminders(db: &PgPool, org_id: Uuid, user_id: Uuid) -> sqlx::Result<Part<ReminderDue>> {
+    let from = "from lead_reminders r join leads l on l.id = r.lead_id join projects p on p.id = l.project_id
+                where p.org_id = $1 and r.user_id = $2 and r.done_at is null and r.due_at < now() + interval '12 hours'";
+    let total = sqlx::query_scalar(&format!("select count(*) {from}")).bind(org_id).bind(user_id).fetch_one(db).await?;
+    let items = sqlx::query_as(&format!(
+        "select r.id, r.lead_id, l.project_id, l.full_name as name, l.company_name as company, r.note, r.due_at {from} order by r.due_at limit $3"
+    ))
+    .bind(org_id)
+    .bind(user_id)
+    .bind(SHOWN)
+    .fetch_all(db)
+    .await?;
+    Ok(Part { total, items })
 }
 
 /// Open calls due by the end of the next 12 hours, the most overdue first.
@@ -256,6 +286,39 @@ async fn practice(db: &PgPool, org_id: Uuid, user_id: Uuid) -> sqlx::Result<Part
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn your_reminders_come_on_today_once_due_until_done(db: PgPool) {
+        use crate::agent::practice::fixture;
+        let t = fixture::team(&db).await;
+        let lead: Uuid = sqlx::query_scalar("select lead_id from deals where id = $1").bind(t.deal).fetch_one(&db).await.unwrap();
+        let remind = |user: Uuid, due: &'static str, note: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into lead_reminders (lead_id, user_id, due_at, note) values ($1, $2, now() + $3::interval, $4) returning id",
+            )
+            .bind(lead)
+            .bind(user)
+            .bind(due)
+            .bind(note)
+            .fetch_one(&db)
+        };
+        let overdue = remind(t.dana, "-1 day", "Send the pilot terms").await.unwrap();
+        remind(t.dana, "3 hours", "Call about the budget").await.unwrap();
+        remind(t.dana, "3 days", "Not yet").await.unwrap();
+        remind(t.sam, "1 hour", "Sam's own").await.unwrap();
+
+        let part = reminders(&db, t.org, t.dana).await.unwrap();
+        let notes: Vec<&str> = part.items.iter().map(|r| r.note.as_str()).collect();
+        assert_eq!((part.total, notes), (2, vec!["Send the pilot terms", "Call about the budget"]));
+        assert_eq!(part.items[0].company, "Lumenfold");
+
+        sqlx::query("update lead_reminders set done_at = now() where id = $1").bind(overdue).execute(&db).await.unwrap();
+        assert_eq!(reminders(&db, t.org, t.dana).await.unwrap().total, 1);
+        let other_org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Other') returning id").fetch_one(&db).await.unwrap();
+        assert_eq!(reminders(&db, other_org, t.dana).await.unwrap().total, 0);
+    }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
     #[sqlx::test]

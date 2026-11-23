@@ -1031,11 +1031,21 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 ### Today
 
-`routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, open deals quiet for more than 14 days with whether a nudge waits for approval, and practice calls assigned to you that aren't done yet. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
+`routes/today.rs` and the Today page, first under All projects in the sidebar. It lists what's waiting on you across the organization's projects: replies that need one (the inbox's `needs_reply` filter), open calls due in the next 12 hours or overdue, meetings from an hour ago to a day ahead with whether their brief is ready, open deals quiet for more than 14 days with whether a nudge waits for approval, practice calls assigned to you that aren't done yet, and your own lead reminders due in the next 12 hours or overdue. Each part has its total and the first 5. Drafts waiting for approval are counted by project and kind for everyone, since approving is the team's job.
 
 | method | path | body | returns |
 |---|---|---|---|
-| GET | /today?owner= | | `{replies: {total, items: [{lead_id, project_id, project_name, name, company, classification, snippet, at}]}, approvals: [{project_id, project_name, kind, count}], calls: {total, items: [{id, lead_id, project_id, name, company, due_at}]}, meetings: {total, items: [{lead_id, project_id, name, company, meeting_at, brief}]}, quiet: {total, items: [{deal_id, lead_id, project_id, name, company, stage, value_cents, currency, last_touch_at, nudge_ready}]}, practice: {total, items: [Assigned]}}`. `owner` narrows all but approvals and practice, which is always yours. It's `mine_or_unassigned` (the default), `mine`, `unassigned`, `everyone` or a user id |
+| GET | /today?owner= | | `{replies: {total, items: [{lead_id, project_id, project_name, name, company, classification, snippet, at}]}, approvals: [{project_id, project_name, kind, count}], calls: {total, items: [{id, lead_id, project_id, name, company, due_at}]}, meetings: {total, items: [{lead_id, project_id, name, company, meeting_at, brief}]}, quiet: {total, items: [{deal_id, lead_id, project_id, name, company, stage, value_cents, currency, last_touch_at, nudge_ready}]}, practice: {total, items: [Assigned]}, reminders: {total, items: [{id, lead_id, project_id, name, company, note, due_at}]}}`. `owner` narrows all but approvals, practice and reminders, which are always yours. It's `mine_or_unassigned` (the default), `mine`, `unassigned`, `everyone` or a user id |
+
+### Lead reminders
+
+`routes/reminders.rs`, migration 0222, the Reminders section of the lead window and Your reminders on Today. A member sets themselves a reminder on a lead, a day and an optional note of up to 500 characters (`lead_reminders`). The lead window sends 9:00 on the picked day in the browser's time zone as `due_at`. Open reminders show on the lead to the whole team, with who set them, and each member's come on Today once due in the next 12 hours or overdue, until they mark it done. Only whoever set a reminder can mark it done. The v1 API and MCP don't have them, since an API key acts for the organization rather than a person.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | /leads/:id/reminders | | `Reminder[]`, the lead's open reminders, soonest first: `{id, lead_id, user_id, user_name, due_at, note, created_at}`. 404 for another organization's lead |
+| POST | /leads/:id/reminders | `{due_at, note?}` | `Reminder`, yours. 400 for a note over 500 characters or a `due_at` more than a year ahead |
+| POST | /reminders/:id/done | | `{ok}`. 404 unless it's your open reminder |
 
 ### Job changes
 
