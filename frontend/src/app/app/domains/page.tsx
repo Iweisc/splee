@@ -387,7 +387,7 @@ function Warmup({
   return (
     <>
       <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <Switch checked={m.warmup} onChange={toggle} disabled={pending === `warmup:${m.id}`} label="Warmup" />
+        <Switch checked={m.warmup} onChange={toggle} loading={pending === `warmup:${m.id}`} label="Warmup" />
         <span className="text-sm font-medium">Warmup</span>
         {m.warmup ? <Badge tone={status.tone}>{status.label}</Badge> : <span className="text-xs text-muted-foreground">Off</span>}
         {heldForWarmup(m, health) && !spam && <span className="text-xs whitespace-nowrap text-muted-foreground">Campaigns wait until it&apos;s warm</span>}

@@ -83,7 +83,8 @@ function BotChannels({ projectId, platform, empty }: { projectId: string; platfo
               <Switch
                 checked={c.picked}
                 onChange={(on) => pick(c, on)}
-                disabled={pending === c.id || (!c.picked && !c.can_read && !c.can_send)}
+                loading={pending === c.id}
+                disabled={!c.picked && !c.can_read && !c.can_send}
                 label={`Use ${platform === "discord" ? `#${c.name}` : c.name}`}
               />
             </li>

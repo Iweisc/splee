@@ -94,7 +94,8 @@ export function AdAudiencesCard({ projectId, segmentId }: { projectId: string; s
                 <Switch
                   checked={!!audience}
                   onChange={(on) => toggle(c, on)}
-                  disabled={pending === c.platform || (blocked && !audience)}
+                  loading={pending === c.platform}
+                  disabled={blocked && !audience}
                   label={`${name} audience for this campaign`}
                 />
               </li>

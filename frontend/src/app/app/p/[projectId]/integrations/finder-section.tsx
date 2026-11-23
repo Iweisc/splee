@@ -126,7 +126,7 @@ export function FinderSection({ projectId }: { projectId: string }) {
               <Switch
                 checked={data.find_phones}
                 onChange={(on) => run("phones", () => call("phones", "PUT", { on }), on ? "Finding phone numbers too" : "Not finding phone numbers")}
-                disabled={pending === "phones"}
+                loading={pending === "phones"}
                 label="Find phone numbers too"
               />
             </div>

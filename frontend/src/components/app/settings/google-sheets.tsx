@@ -165,7 +165,7 @@ function ConnectionRow({ projectId, connection: c, onChange }: { projectId: stri
             <Switch
               checked={c.keep_importing}
               onChange={(on) => patch({ keep_importing: on }, on ? "New rows import every 15 minutes" : "Stopped importing new rows")}
-              disabled={pending === "patch"}
+              loading={pending === "patch"}
               label="Keep importing"
             />
             <span className="text-sm text-pretty">Keep importing new rows every 15 minutes</span>

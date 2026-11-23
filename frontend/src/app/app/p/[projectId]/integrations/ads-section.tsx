@@ -147,7 +147,8 @@ function ConnectedAds({
         <Switch
           checked={!!hot}
           onChange={toggleHot}
-          disabled={pending === `${c.platform}:hot` || (!hot && (c.needs_reconnect || !c.ad_account_id))}
+          loading={pending === `${c.platform}:hot`}
+          disabled={!hot && (c.needs_reconnect || !c.ad_account_id)}
           label={`Hot leads audience in ${name}`}
         />
         <span className="min-w-0">

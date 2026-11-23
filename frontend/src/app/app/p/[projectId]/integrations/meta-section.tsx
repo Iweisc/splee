@@ -58,7 +58,8 @@ function MetaAccounts({ projectId, signIn, signingIn }: { projectId: string; sig
               <Switch
                 checked={c.picked}
                 onChange={(on) => pick(c, on)}
-                disabled={pending === c.id || (!c.picked && !c.can_read && !c.can_send)}
+                loading={pending === c.id}
+                disabled={!c.picked && !c.can_read && !c.can_send}
                 label={`Use ${label(c)}`}
               />
             </li>
