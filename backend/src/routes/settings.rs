@@ -712,56 +712,83 @@ async fn connect_unipile(
     if token.is_empty() {
         return Err(AppError::BadRequest("Paste your Unipile access token".into()));
     }
-    let (account, name) =
-        unipile::find_account(&base, token).await.map_err(|e| AppError::BadRequest(format!("Unipile didn't accept that: {e:#}")))?;
-    remove_unipile_webhooks(&state, id).await?;
-    let hook_token: String =
-        sqlx::query_scalar("select unipile_webhook_token from project_settings where project_id = $1").bind(id).fetch_one(&state.db).await?;
+    connect_unipile_at(&state, &auth, id, &base, token).await
+}
+
+/// Makes the new webhooks before removing the old ones, so a reconnect that fails leaves the saved connection as it was.
+/// Each connection gets its own callback token, saved with it, so webhooks a failed or overtaken attempt left in Unipile
+/// get a 404 rather than delivering replies twice.
+async fn connect_unipile_at(state: &AppState, auth: &Auth, id: Uuid, base: &str, token: &str) -> AppResult<Json<ProjectSettings>> {
+    let (account, name) = unipile::find_account(base, token).await.map_err(|e| AppError::BadRequest(format!("Unipile didn't accept that: {e:#}")))?;
+    let hook_token = crypto::random_token();
     let url = format!("{}/api/unipile/{hook_token}", state.cfg.public_url.trim_end_matches('/'));
-    let hooks = unipile::add_webhooks(&base, token, &account, &url)
+    let hooks = unipile::add_webhooks(base, token, &account, &url)
         .await
         .map_err(|e| AppError::BadRequest(format!("Unipile didn't take Splee's webhook for LinkedIn replies: {e:#}")))?;
-    let saved = set_unipile(&state.db, id, &base, &crypto::encrypt(&state.cfg.app_secret, token), &account, &name, &hooks).await?;
-    audit::integration(&state.db, &auth, Some(id), "LinkedIn (Unipile)", true).await;
+    let token_enc = crypto::encrypt(&state.cfg.app_secret, token);
+    let link = UnipileLink { dsn: base, token_enc: &token_enc, account: &account, name: &name, hooks: &hooks, hook_token: Some(&hook_token) };
+    let saved = match set_unipile(state, id, link).await {
+        Ok(saved) => saved,
+        Err(e) => {
+            unipile::remove_webhooks(base, token, &hooks).await;
+            return Err(e);
+        }
+    };
+    audit::integration(&state.db, auth, Some(id), "LinkedIn (Unipile)", true).await;
     Ok(saved)
 }
 
+/// Clears the connection before removing its webhooks, so a clear that fails leaves replies coming in.
 async fn disconnect_unipile(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<ProjectSettings>> {
     auth.project(&state.db, id).await?;
     load_or_create(&state.db, id).await?;
-    remove_unipile_webhooks(&state, id).await?;
-    let saved = set_unipile(&state.db, id, "", "", "", "", &[]).await?;
+    let saved = set_unipile(&state, id, UnipileLink::default()).await?;
     audit::integration(&state.db, &auth, Some(id), "LinkedIn (Unipile)", false).await;
     Ok(saved)
 }
 
-/// The webhooks a previous connection made, so a reconnect or disconnect doesn't leave Unipile posting to Splee.
-async fn remove_unipile_webhooks(state: &AppState, id: Uuid) -> AppResult<()> {
-    let (base, enc, ids): (String, String, Vec<String>) =
-        sqlx::query_as("select unipile_dsn, unipile_token_enc, unipile_webhook_ids from project_settings where project_id = $1")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
-    if let (false, Ok(token)) = (ids.is_empty(), crypto::decrypt(&state.cfg.app_secret, &enc)) {
-        unipile::remove_webhooks(&base, &token, &ids).await;
-    }
-    Ok(())
+/// A Unipile connection as project_settings keeps it. The default is none.
+#[derive(Default)]
+struct UnipileLink<'a> {
+    dsn: &'a str,
+    token_enc: &'a str,
+    account: &'a str,
+    name: &'a str,
+    hooks: &'a [String],
+    /// None keeps the saved one.
+    hook_token: Option<&'a str>,
 }
 
-async fn set_unipile(db: &PgPool, id: Uuid, base: &str, enc: &str, account: &str, name: &str, hooks: &[String]) -> AppResult<Json<ProjectSettings>> {
+/// Saves the connection, then removes the webhooks it replaced. They're read under the row lock the save takes, so when two
+/// saves race, each removes the pair the other had saved and none is left behind.
+async fn set_unipile(state: &AppState, id: Uuid, link: UnipileLink<'_>) -> AppResult<Json<ProjectSettings>> {
+    let mut tx = state.db.begin().await?;
+    let (base, enc, ids): (String, String, Vec<String>) =
+        sqlx::query_as("select unipile_dsn, unipile_token_enc, unipile_webhook_ids from project_settings where project_id = $1 for update")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
     let settings = sqlx::query_as::<_, ProjectSettings>(
         "update project_settings set unipile_dsn = $2, unipile_token_enc = $3, unipile_account_id = $4, unipile_account_name = $5,
-           unipile_webhook_ids = $6, unipile_error = null, unipile_failed_at = null
+           unipile_webhook_ids = $6, unipile_webhook_token = coalesce($7, unipile_webhook_token), unipile_error = null, unipile_failed_at = null
          where project_id = $1 returning *",
     )
     .bind(id)
-    .bind(base)
-    .bind(enc)
-    .bind(account)
-    .bind(name)
-    .bind(hooks)
-    .fetch_one(db)
+    .bind(link.dsn)
+    .bind(link.token_enc)
+    .bind(link.account)
+    .bind(link.name)
+    .bind(link.hooks)
+    .bind(link.hook_token)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
+    if !ids.is_empty() {
+        match crypto::decrypt(&state.cfg.app_secret, &enc) {
+            Ok(token) => unipile::remove_webhooks(&base, &token, &ids).await,
+            Err(e) => tracing::warn!(project_id = %id, error = %e, "couldn't read the Unipile token to remove its webhooks"),
+        }
+    }
     Ok(Json(settings))
 }
 
@@ -1210,5 +1237,193 @@ mod tests {
         assert_eq!(refused(s.save(json!({ "assign_members": [team[0], outsider] })).await), not_on_team);
         assert_eq!(refused(s.save(json!({ "assign_territories": [{ "owner": outsider, "countries": ["FR"] }] })).await), not_on_team);
         assert_eq!(s.row().await, before);
+    }
+
+    /// What the fake Unipile does with the next webhooks it's asked for: make this many, then fail or answer without an id.
+    #[derive(Clone)]
+    struct Hooks {
+        make: u32,
+        then: &'static str,
+        /// Holds each attempt's first webhook until this many attempts have asked, so racing attempts really overlap.
+        gate: Option<Arc<tokio::sync::Barrier>>,
+    }
+
+    type Fake = (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::Mutex<Hooks>>, PgPool, Uuid);
+
+    /// Unipile with one LinkedIn account. It notes each webhook it makes or refuses, with the token in its callback URL, and
+    /// each one removed, with the webhooks the project had saved at that moment.
+    async fn fake_unipile(db: PgPool, project: Uuid) -> (String, Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::Mutex<Hooks>>) {
+        use axum::extract::State as Shared;
+        use axum::http::StatusCode;
+        use axum::routing::delete;
+        async fn accounts() -> Json<Value> {
+            Json(json!({ "items": [{ "id": "ACC", "type": "LINKEDIN", "name": "Ana Lopez", "sources": [{ "status": "OK" }] }] }))
+        }
+        async fn hook(Shared((calls, hooks, _, _)): Shared<Fake>, Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+            let source = body["source"].as_str().unwrap().to_string();
+            let callback = body["request_url"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
+            let gate = if source == "messaging" { hooks.lock().unwrap().gate.clone() } else { None };
+            if let Some(gate) = gate {
+                gate.wait().await;
+            }
+            let mut hooks = hooks.lock().unwrap();
+            let mut calls = calls.lock().unwrap();
+            if hooks.make == 0 {
+                calls.push(format!("refused {source}"));
+                return match hooks.then {
+                    "blank" => (StatusCode::CREATED, Json(json!({ "object": "WebhookCreated" }))),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "title": "Webhooks are down" }))),
+                };
+            }
+            hooks.make -= 1;
+            let id = format!("wh{}", calls.iter().filter(|c| c.starts_with("made")).count() + 1);
+            calls.push(format!("made {id} {source} {callback}"));
+            (StatusCode::CREATED, Json(json!({ "webhook_id": id })))
+        }
+        async fn unhook(Shared((calls, _, db, project)): Shared<Fake>, Path(id): Path<String>) -> Json<Value> {
+            let saved: Vec<String> =
+                sqlx::query_scalar("select unipile_webhook_ids from project_settings where project_id = $1").bind(project).fetch_one(&db).await.unwrap();
+            calls.lock().unwrap().push(format!("removed {id} while saved {}", saved.join(",")));
+            Json(json!({ "object": "WebhookDeleted" }))
+        }
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hooks = Arc::new(std::sync::Mutex::new(Hooks { make: 2, then: "down", gate: None }));
+        let app = axum::Router::new()
+            .route("/api/v1/accounts", get(accounts))
+            .route("/api/v1/webhooks", post(hook))
+            .route("/api/v1/webhooks/{id}", delete(unhook))
+            .with_state((calls.clone(), hooks.clone(), db, project));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls, hooks)
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_failed_unipile_reconnect_keeps_the_saved_connection_and_its_webhooks(db: PgPool) {
+        let s = seed(db).await;
+        load_or_create(&s.state.db, s.project).await.unwrap();
+        let (base, calls, hooks) = fake_unipile(s.state.db.clone(), s.project).await;
+        let connect = |token: &'static str| connect_unipile_at(&s.state, &s.auth, s.project, &base, token);
+        let saved = || async {
+            sqlx::query_as::<_, (Vec<String>, String, String)>(
+                "select unipile_webhook_ids, unipile_token_enc, unipile_webhook_token from project_settings where project_id = $1",
+            )
+            .bind(s.project)
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap()
+        };
+        let calls_from = |from: usize| calls.lock().unwrap()[from..].to_vec();
+        let set_hooks = |make: u32, then: &'static str| *hooks.lock().unwrap() = Hooks { make, then, gate: None };
+        // Whether Unipile posting to this callback reaches the project.
+        let delivers = |callback: String| {
+            let event = crate::routes::linkedin::unipile_event(State(s.state.clone()), Path(callback), Json(json!({})));
+            async move {
+                match event.await {
+                    Ok(_) => true,
+                    Err(AppError::NotFound) => false,
+                    Err(e) => panic!("{e:?}"),
+                }
+            }
+        };
+        let callbacks_from = |from: usize| -> Vec<String> {
+            calls_from(from).iter().filter(|c| c.starts_with("made")).map(|c| c.rsplit(' ').next().unwrap().to_string()).collect()
+        };
+
+        let original = saved().await.2;
+        let Json(first) = connect("FIRST").await.unwrap();
+        assert_eq!((first.unipile_connected, first.unipile_account_name.as_str()), (true, "Ana Lopez"));
+        let (ids, enc, callback) = saved().await;
+        assert_eq!(ids, ["wh1", "wh2"]);
+        assert_eq!(crypto::decrypt(&s.state.cfg.app_secret, &enc).unwrap(), "FIRST");
+        assert_ne!(callback, original, "each connection gets its own callback");
+        assert_eq!(calls_from(0), [format!("made wh1 messaging {callback}"), format!("made wh2 users {callback}")]);
+        assert!(delivers(callback.clone()).await);
+        let before = s.row().await;
+        let failed_from = calls.lock().unwrap().len();
+
+        // Unipile won't make any webhooks: the old ones stay, and so does the saved connection.
+        set_hooks(0, "down");
+        let error = refused(connect("SECOND").await);
+        assert!(error.starts_with("Unipile didn't take Splee's webhook for LinkedIn replies"), "{error}");
+        assert_eq!(calls_from(2), ["refused messaging"]);
+        // It makes one and then fails, or answers without an id: the one it made is removed, and the old ones stay.
+        for then in ["down", "blank"] {
+            set_hooks(1, then);
+            let at = calls.lock().unwrap().len();
+            refused(connect("SECOND").await);
+            let made = calls_from(at)[0].split(' ').nth(1).unwrap().to_string();
+            assert_eq!(calls_from(at)[1..], ["refused users".to_string(), format!("removed {made} while saved wh1,wh2")], "{then}");
+        }
+        assert_eq!(s.row().await, before);
+
+        // Saving fails after the new ones are made: they're removed, and the old ones stay.
+        sqlx::query("create function refuse_save() returns trigger language plpgsql as $$ begin raise exception 'refused'; end $$").execute(&s.state.db).await.unwrap();
+        sqlx::query("create trigger refuse_save before update on project_settings for each row execute function refuse_save()").execute(&s.state.db).await.unwrap();
+        set_hooks(2, "down");
+        let at = calls.lock().unwrap().len();
+        assert!(connect("SECOND").await.is_err());
+        let removed: Vec<String> = calls_from(at).into_iter().filter(|c| c.starts_with("removed")).collect();
+        assert_eq!(removed, ["removed wh5 while saved wh1,wh2", "removed wh6 while saved wh1,wh2"]);
+        sqlx::query("drop trigger refuse_save on project_settings").execute(&s.state.db).await.unwrap();
+        assert_eq!(s.row().await, before);
+        let failed = callbacks_from(failed_from);
+        assert_eq!(failed.len(), 4);
+        for attempt in failed {
+            assert!(!delivers(attempt).await, "a failed attempt's webhooks don't deliver");
+        }
+        assert!(delivers(callback.clone()).await, "the saved connection still does");
+
+        set_hooks(2, "down");
+        let at = calls.lock().unwrap().len();
+        assert!(connect("THIRD").await.unwrap().0.unipile_connected);
+        let (ids, enc, new_callback) = saved().await;
+        assert_eq!(ids, ["wh7", "wh8"]);
+        assert_eq!(crypto::decrypt(&s.state.cfg.app_secret, &enc).unwrap(), "THIRD");
+        assert_ne!(new_callback, callback, "the old webhooks' callback no longer finds the project");
+        assert_eq!(calls_from(at), [
+            format!("made wh7 messaging {new_callback}"),
+            format!("made wh8 users {new_callback}"),
+            "removed wh1 while saved wh7,wh8".to_string(),
+            "removed wh2 while saved wh7,wh8".to_string(),
+        ], "the old ones go once the new ones are saved");
+        assert!(!delivers(callback).await, "the replaced connection's callback no longer finds the project");
+        assert!(delivers(new_callback.clone()).await);
+
+        // Two reconnects at once: each removes the pair the other had saved, so only the one saved last is left.
+        let at = calls.lock().unwrap().len();
+        *hooks.lock().unwrap() = Hooks { make: 4, then: "down", gate: Some(Arc::new(tokio::sync::Barrier::new(2))) };
+        let (x, y) = tokio::join!(connect("X"), connect("Y"));
+        assert!(x.is_ok() && y.is_ok());
+        let (ids, _, last_callback) = saved().await;
+        let raced = calls_from(at);
+        let made_for = |callback: &str| -> Vec<String> {
+            raced.iter().filter(|c| c.starts_with("made") && c.ends_with(callback)).map(|c| c.split(' ').nth(1).unwrap().to_string()).collect()
+        };
+        assert_eq!(ids, made_for(&last_callback), "the saved callback is the saved webhooks'");
+        let lost: Vec<String> = callbacks_from(at).into_iter().filter(|c| *c != last_callback).collect();
+        assert_eq!(lost.len(), 2, "the other attempt's two webhooks share one callback");
+        assert_eq!(lost[0], lost[1]);
+        let id_of = |c: &String| c.split(' ').nth(1).unwrap().to_string();
+        let mut made: Vec<String> = raced.iter().filter(|c| c.starts_with("made")).map(id_of).collect();
+        let mut gone: Vec<String> = raced.iter().filter(|c| c.starts_with("removed")).map(id_of).chain(ids.clone()).collect();
+        made.extend(["wh7".to_string(), "wh8".to_string()]);
+        made.sort();
+        gone.sort();
+        assert_eq!(gone, made, "every pair but the saved one is removed, each once");
+        assert!(delivers(last_callback.clone()).await);
+        assert!(!delivers(lost[0].clone()).await, "the overtaken attempt's callback doesn't deliver");
+        assert!(!delivers(new_callback).await);
+
+        // Disconnecting clears the connection first, then removes its webhooks.
+        let at = calls.lock().unwrap().len();
+        assert!(!disconnect_unipile(State(s.state.clone()), s.auth.clone(), Path(s.project)).await.unwrap().0.unipile_connected);
+        let removed: Vec<String> = ids.iter().map(|id| format!("removed {id} while saved ")).collect();
+        assert_eq!(calls_from(at), removed);
+        assert!(!delivers(last_callback).await, "a disconnected project takes no LinkedIn posts");
+        let audit: Vec<String> = s.audit().await.into_iter().map(|(action, _)| action).collect();
+        assert_eq!(audit, ["integration.connected"; 4].into_iter().chain(["integration.disconnected"]).collect::<Vec<_>>(), "only what went through");
     }
 }
