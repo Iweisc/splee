@@ -47,10 +47,18 @@ export default function SchedulePage() {
       {(s, update) => {
         const zones = TIMEZONES.includes(s.timezone) ? TIMEZONES : [s.timezone, ...TIMEZONES];
         const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const zone = s.timezone.replaceAll("_", " ");
         const valid = s.send_days.length > 0 && s.send_end_hour > s.send_start_hour;
         return (
           <>
-            <Section title="Time zone" description="Send days and hours are counted in this time zone. Use the one most of your leads are in.">
+            <Section
+              title="Time zone"
+              description={
+                s.lead_time_zone
+                  ? "Send days and hours are counted in each lead's own time zone, and in this one for leads whose zone isn't known."
+                  : "Send days and hours are counted in this time zone. Use the one most of your leads are in."
+              }
+            >
               <div className="flex items-center gap-2">
                 <Select value={s.timezone} onChange={(e) => update({ timezone: e.target.value })} className="flex-1" aria-label="Time zone">
                   {zones.map((z) => (
@@ -129,7 +137,7 @@ export default function SchedulePage() {
                 <p className="mt-5 flex items-center gap-2 rounded-xl bg-muted px-4 py-3 text-sm">
                   <CalendarClock className="size-4 text-muted-foreground" />
                   Sends {formatDays(s.send_days)}, {hour(s.send_start_hour)}–{hour(s.send_end_hour)}{" "}
-                  {s.lead_time_zone ? `in each lead's time zone, else ${s.timezone}` : s.timezone}
+                  {s.lead_time_zone ? `in each lead's time zone, else ${zone}` : zone}
                 </p>
               )}
             </Section>

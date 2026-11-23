@@ -195,7 +195,8 @@ function BounceNotice() {
 function SendWindowNotice({ projectId, settings }: { projectId: string; settings: ProjectSettings }) {
   // Read the clock once per mount. "in N min" goes stale if the page sits open, which is fine for a hint.
   const [now] = useState(() => new Date());
-  const next = nextSendWindow(settings, now);
+  // With each lead's own time zone, the project's hours say nothing about a lead elsewhere, so each campaign's own card says when.
+  const next = settings.lead_time_zone ? null : nextSendWindow(settings, now);
   if (!next) return null;
   const yours = next.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
   const theirs = next.toLocaleString("en-US", { timeZone: settings.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -203,7 +204,7 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <Clock className="size-4 text-muted-foreground" />
       <p className="min-w-0 flex-1 basis-64">
-        Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone}), {timeAgo(next.toISOString())}.
+        Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone.replaceAll("_", " ")}), {timeAgo(next.toISOString())}.
       </p>
       <LinkButton href={`/app/p/${projectId}/schedule`} variant="outline" size="sm" className="max-sm:grow">
         Change hours
