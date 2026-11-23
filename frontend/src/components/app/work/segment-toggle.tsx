@@ -60,8 +60,8 @@ export function StartLater({ segment }: { segment: Segment }) {
     setBusy(true);
     try {
       await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
-      const active = document.activeElement;
-      ours.current = active === cancel.current || !!active?.closest("dialog");
+      // From the picker `picking` is true, and it's modal, so nothing else can have taken focus.
+      ours.current = picking || document.activeElement === cancel.current;
       await mutate(() => true);
       toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
       setPicking(false);
