@@ -98,6 +98,7 @@ struct MailboxBody {
     cost_per_email_micros: Option<i64>,
     status: Option<String>,
     ramp_up: Option<bool>,
+    min_gap_minutes: Option<i32>,
     /// Only for a provider that signs with a selector of its own. Empty clears it.
     dkim_selector: Option<String>,
     warmup: Option<bool>,
@@ -131,6 +132,9 @@ impl MailboxBody {
         // Like isUrl in the form and the project's booking link, http is let through.
         if trimmed(&self.booking_link).is_some_and(|l| !Url::parse(l).is_ok_and(|u| matches!(u.scheme(), "https" | "http") && u.host_str().is_some())) {
             return Err(AppError::BadRequest("Booking link must be a full URL starting with https://".into()));
+        }
+        if self.min_gap_minutes.is_some_and(|g| !(0..=60).contains(&g)) {
+            return Err(AppError::BadRequest("Minutes between emails must be between 0 and 60".into()));
         }
         if self.warmup_daily_cap.is_some_and(|c| !(1..=200).contains(&c)) {
             return Err(AppError::BadRequest("Warmup emails a day must be between 1 and 200".into()));
@@ -201,10 +205,10 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     let mailbox = sqlx::query_as::<_, Mailbox>(
         "insert into mailboxes (org_id, email, from_name, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password_enc,
            imap_host, imap_port, imap_username, imap_password_enc, daily_limit, status, cost_per_email_micros, ramp_up, signature, booking_link,
-           dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id)
+           dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id, min_gap_minutes)
          values ($1, $2, coalesce($3, ''), $4, coalesce($5, 587), coalesce($6, 'starttls'), $7, $8,
            $9, coalesce($10, 993), $11, $12, coalesce($13, 30), coalesce($14, 'active'), coalesce($15, 0), coalesce($16, true), coalesce($17, ''), coalesce($18, ''),
-           coalesce($19, ''), coalesce($20, true), coalesce($21, 40), coalesce($22, 80), coalesce($23, true), $24)
+           coalesce($19, ''), coalesce($20, true), coalesce($21, 40), coalesce($22, 80), coalesce($23, true), $24, coalesce($25, 0))
          returning *",
     )
     .bind(auth.org_id)
@@ -231,6 +235,7 @@ async fn create(State(state): State<AppState>, auth: Auth, Json(body): Json<Mail
     .bind(body.total_daily_limit)
     .bind(body.hold_until_warm)
     .bind(owner)
+    .bind(body.min_gap_minutes)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match AppError::from(e) {
@@ -297,7 +302,8 @@ async fn update(
            hold_until_warm = coalesce($23, hold_until_warm),
            health_ack = coalesce($24, health_ack),
            health_held_at = case when $14 = 'active' then null else health_held_at end,
-           owner_id = case when $25 then $26 else owner_id end
+           owner_id = case when $25 then $26 else owner_id end,
+           min_gap_minutes = coalesce($27, min_gap_minutes)
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -326,6 +332,7 @@ async fn update(
     .bind(resumed_through)
     .bind(body.owner_id.is_some())
     .bind(body.owner_id.flatten())
+    .bind(body.min_gap_minutes)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

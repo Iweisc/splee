@@ -707,6 +707,8 @@ pub struct Mailbox {
     pub recheck_at: Option<Ts>,
     /// Start at a few emails a day and work up to daily_limit. See sender::TODAY_LIMIT.
     pub ramp_up: bool,
+    /// The least minutes between two emails it sends, 0 for none. See sender::mailboxes_with_room.
+    pub min_gap_minutes: i32,
     pub first_sent_on: Option<chrono::NaiveDate>,
     /// Trade warmup emails with the other warming mailboxes in this Splee. See mail::warmup.
     pub warmup: bool,
