@@ -121,7 +121,8 @@ function SegmentCard({ projectId, segment: s }: { projectId: string; segment: Se
             <p className="line-clamp-2 font-medium">{s.name}</p>
             <div className="mt-0.5 flex items-center gap-3">
               <SegmentStatusDot status={s.status} />
-              <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">~{compact(s.est_size)} companies</span>
+              {/* Size and fit stay 0 until research estimates them, as on a campaign made by hand. A real 0 wouldn't tell anyone much. */}
+              {s.est_size > 0 && <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">~{compact(s.est_size)} companies</span>}
             </div>
           </div>
         </div>
@@ -129,8 +130,12 @@ function SegmentCard({ projectId, segment: s }: { projectId: string; segment: Se
         {/* Start sits here, not beside the name: there it took a third of the row, so names wrapped on laptops, some cards
             in a row grew a line, and their fit scores no longer lined up. */}
         <div className="mt-3 mb-4 flex items-center gap-2">
-          <MicroLabel>Fit</MicroLabel>
-          <FitScore value={s.fit_score} />
+          {s.fit_score > 0 && (
+            <>
+              <MicroLabel>Fit</MicroLabel>
+              <FitScore value={s.fit_score} />
+            </>
+          )}
           <div className="ml-auto">{s.archived_at ? <ArchiveToggle segment={s} /> : <SegmentToggle segment={s} />}</div>
         </div>
         <dl className="mt-auto grid grid-cols-3 gap-x-3 gap-y-2 border-t border-border pt-3 text-sm">
