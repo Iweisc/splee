@@ -1500,23 +1500,25 @@ mod tests {
                 .bind(domain)
                 .fetch_one(&db)
         };
-        let email = |lead: Uuid, kind: &'static str, status: &'static str, sent: &'static str| {
-            sqlx::query_scalar::<_, Uuid>(&format!(
+        // `ago` is how long before now it was sent, or None for not yet.
+        let email = |lead: Uuid, kind: &'static str, status: &'static str, ago: Option<&'static str>| {
+            sqlx::query_scalar::<_, Uuid>(
                 "insert into email_messages (project_id, lead_id, direction, kind, status, sent_at)
-                 values ($1, $2, 'outbound', $3, $4, {sent}) returning id"
-            ))
+                 values ($1, $2, 'outbound', $3, $4, now() - $5::interval) returning id",
+            )
             .bind(project)
             .bind(lead)
             .bind(kind)
             .bind(status)
+            .bind(ago)
             .fetch_one(&db)
         };
         let (sam, ana, bo) = (lead("acme.example").await.unwrap(), lead("ACME.example").await.unwrap(), lead("other.example").await.unwrap());
-        email(sam, "initial", "sent", "now() - interval '1 hour'").await.unwrap();
+        email(sam, "initial", "sent", Some("1 hour")).await.unwrap();
         // Ana works at Sam's company, by website in another case. Bo doesn't.
-        let ana_first = email(ana, "initial", "approved", "null").await.unwrap();
-        let ana_follow_up = email(ana, "follow_up", "approved", "null").await.unwrap();
-        let bo_first = email(bo, "initial", "approved", "null").await.unwrap();
+        let ana_first = email(ana, "initial", "approved", None).await.unwrap();
+        let ana_follow_up = email(ana, "follow_up", "approved", None).await.unwrap();
+        let bo_first = email(bo, "initial", "approved", None).await.unwrap();
         let today = chrono::Utc::now() - chrono::Duration::hours(2);
         let full = |email: Uuid, limit: Option<i32>| company_is_full(&db, email, today, limit);
         let full_since = |email: Uuid, since| company_is_full(&db, email, since, Some(1));
