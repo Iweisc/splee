@@ -119,7 +119,8 @@ export function RerunModal({ projectId, open, onClose }: { projectId: string; op
   return (
     <Modal open={open} onClose={onClose} title="Re-run research">
       <p className="mb-4 text-sm text-muted-foreground">
-        The agent runs the research again from step 1: company, competitors, campaigns, customers, people and emails.
+        The agent runs the research again from step 1: company, competitors, campaigns, customers, people and emails. It replaces
+        any competitors, including ones you added yourself, and deletes every battlecard. It also deletes draft campaigns that have no leads yet.
       </p>
       <Field label="What did it get wrong?" hint="Optional. The agent uses this as a correction.">
         <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="We sell to hospitals, not private clinics." />

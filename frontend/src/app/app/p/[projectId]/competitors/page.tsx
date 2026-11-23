@@ -87,7 +87,7 @@ export default function CompetitorsPage({ params, searchParams }: PageProps<"/ap
     <>
       <PageHeader
         title="Competitors"
-        description="Companies that sell what you sell. The agent reads this list when it plans campaigns, and writes a battlecard for each one you win or lose a deal against. Running the research again replaces the list."
+        description="Companies that sell what you sell. The agent reads this list when it plans campaigns, and writes a battlecard for each one you win or lose a deal against."
       />
       <PageBody>
         <SettingsColumn>
@@ -134,7 +134,7 @@ export default function CompetitorsPage({ params, searchParams }: PageProps<"/ap
 
           {/* Waits for the list: drawn under the skeleton, it jumped down by the list's height when that loaded. */}
           {data && (
-            <Section title="Add a competitor" description="One the research missed.">
+            <Section title="Add a competitor" description="Running the research again replaces the whole list, including any you add here, and deletes every battlecard.">
               <form
                 className="grid gap-4 sm:grid-cols-[1fr_1fr]"
                 onSubmit={(e) => {
