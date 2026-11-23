@@ -10,7 +10,7 @@ import { useAction } from "@/components/app/settings/use-action";
 import { api } from "@/lib/api";
 import { todayLimit } from "@/lib/mailbox";
 import type { Mailbox, ProjectSettings, SegmentWithStats } from "@/lib/types";
-import { num } from "@/lib/utils";
+import { cn, num } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 import { MicroLabel } from "./states";
 
@@ -38,6 +38,8 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
   const copy = settings && (settings.mailbox_ids ?? active);
   const saving = pending === "mailbox_ids";
   // Ignored while a save runs rather than disabled, so keyboard focus stays on the box.
+  // The one ticked mailbox can't be unticked. Only once the list has loaded and shows it, so the hint never stands alone.
+  const locked = picked?.length === 1 && mailboxes?.some((m) => m.id === picked[0]) ? picked[0] : null;
   const toggle = (id: string) => picked && !saving && save(picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id]);
 
   return (
@@ -79,10 +81,10 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
           ) : (
             mailboxes.map((m) => {
               const on = picked.includes(m.id);
-              const last = on && picked.length === 1;
+              const last = m.id === locked;
               return (
                 <li key={m.id}>
-                  <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
+                  <label className={cn("flex items-center gap-3 px-3 py-2.5 text-sm", !last && "cursor-pointer")}>
                     {/* The last ticked box stays focusable and says why it can't be unticked, rather than being skipped by Tab
                         with its reason only in a title. */}
                     <input
@@ -105,7 +107,7 @@ export function MailboxesCard({ segment }: { segment: SegmentWithStats }) {
             })
           ))}
       </ul>
-      {picked?.length === 1 && (
+      {locked && (
         <p id={lastId} className="-mt-2 text-xs text-pretty text-muted-foreground">
           Keep at least one ticked, or switch it off to use the project&apos;s.
         </p>
