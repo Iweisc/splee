@@ -1039,7 +1039,7 @@ Every 5 minutes the worker reads each enabled play's events after its `checked_a
 
 ### Lead reminders
 
-`routes/reminders.rs`, migration 0222, the Reminders section of the lead window and Your reminders on Today. A member sets themselves a reminder on a lead, a day and an optional note of up to 500 characters (`lead_reminders`). The lead window sends 9:00 on the picked day in the browser's time zone as `due_at`. Open reminders show on the lead to the whole team, with who set them, and each member's come on Today once due in the next 12 hours or overdue, until they mark it done. Only whoever set a reminder can mark it done. The v1 API and MCP don't have them, since an API key acts for the organization rather than a person.
+`routes/reminders.rs`, migration 0222, the Reminders section of the lead window and Your reminders on Today. This is separate from the inbox's Remind (`leads.remind_at`), which brings a reply thread back to needs reply for the whole team. A member sets themselves a reminder on a lead, a day and an optional note of up to 500 characters (`lead_reminders`). The lead window sends 9:00 on the picked day in the browser's time zone as `due_at`. Open reminders show on the lead to the whole team, with who set them, and each member's come on Today once due in the next 12 hours or overdue, until they mark it done. Only whoever set a reminder can mark it done. The v1 API and MCP don't have them, since an API key acts for the organization rather than a person.
 
 | method | path | body | returns |
 |---|---|---|---|
