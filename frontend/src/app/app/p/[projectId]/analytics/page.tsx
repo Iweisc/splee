@@ -41,7 +41,7 @@ function span(from: string, to: string) {
 
 export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/analytics">) {
   const { projectId } = use(params);
-  const { data: detail } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
+  const { data: detail, error: detailError, mutate: retryDetail } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
   const { data: segments } = useSWR<SegmentWithStats[]>(`/projects/${projectId}/segments?archived=true`, fetcher);
   const { data: mailboxList } = useSWR<Mailbox[]>("/mailboxes", fetcher);
   const [range, setRange] = useState<Range>({ days: 30 });
@@ -57,6 +57,8 @@ export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/
   const query = new URLSearchParams({ ...(from && { from }), ...(to && { to }), ...(segmentId && { segment_id: segmentId }), ...(mailboxId && { mailbox_id: mailboxId }) });
   const key = from && to && !invalid ? `/projects/${projectId}/analytics?${query}` : null;
   const { data, error, mutate, isValidating } = useSWR<Analytics>(key, fetcher, { keepPreviousData: true });
+  // The default dates wait for the project's time zone, so without the project nothing else loads and the skeleton would stay.
+  const loadError = error ?? ("days" in range && !detail && detailError);
 
   const filtered = Boolean(segmentId || mailboxId);
   const t = data?.totals;
@@ -68,7 +70,7 @@ export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/
         title="Analytics"
         description="Which campaigns, mailboxes, follow-ups and send times get replies, next to the period before."
         actions={
-          <Button variant="outline" onClick={() => setSharing(true)}>
+          <Button variant="outline" onClick={() => setSharing(true)} disabled={!detail}>
             <Share2 className="size-4" /> Share with a client
           </Button>
         }
@@ -124,9 +126,9 @@ export default function AnalyticsPage({ params }: PageProps<"/app/p/[projectId]/
           )
         )}
 
-        {error ? (
+        {loadError ? (
           <Card>
-            <LoadError error={error} retry={() => mutate()} />
+            <LoadError error={loadError} retry={() => (error ? mutate() : retryDetail())} />
           </Card>
         ) : empty ? (
           <Card>
