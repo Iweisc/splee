@@ -410,6 +410,7 @@ async fn deliver(
             html: None,
             cc: &[],
             files: &[],
+            reply_to: None,
         },
     );
     let message = match built {

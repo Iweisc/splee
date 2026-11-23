@@ -108,6 +108,9 @@ struct MailboxBody {
     /// Whose mailbox it is, or a present null for nobody. A new one is whoever connects it, unless this says otherwise.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     owner_id: Option<Option<Uuid>>,
+    /// Another of the org's mailboxes that replies should go to, or a present null for this one. Only on a PATCH.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    reply_to_mailbox_id: Option<Option<Uuid>>,
 }
 
 fn trimmed(value: &Option<String>) -> Option<&str> {
@@ -261,6 +264,17 @@ async fn update(
     if let Some(owner) = body.owner_id {
         crate::ownership::check_member(&state.db, auth.org_id, owner).await?;
     }
+    // Replies have to land in a mailbox Splee reads, or it can't stop the sequence or show them in the inbox.
+    if let Some(Some(target)) = body.reply_to_mailbox_id {
+        let theirs: bool = sqlx::query_scalar("select exists (select 1 from mailboxes where id = $1 and org_id = $2)")
+            .bind(target)
+            .bind(auth.org_id)
+            .fetch_one(&state.db)
+            .await?;
+        if !theirs || target == mailbox.id {
+            return Err(AppError::BadRequest("Replies can go to another of your connected mailboxes".into()));
+        }
+    }
     let secret = &state.cfg.app_secret;
     let encrypt_new = |p: &Option<String>| p.as_deref().filter(|p| !p.is_empty()).map(|p| encrypt(secret, p));
     // Resuming a mailbox the Deliverability check held sends through the problems it has now. Only a new one holds it again.
@@ -303,7 +317,8 @@ async fn update(
            health_ack = coalesce($24, health_ack),
            health_held_at = case when $14 = 'active' then null else health_held_at end,
            owner_id = case when $25 then $26 else owner_id end,
-           min_gap_minutes = coalesce($27, min_gap_minutes)
+           min_gap_minutes = coalesce($27, min_gap_minutes),
+           reply_to_mailbox_id = case when $28 then $29 else reply_to_mailbox_id end
          where id = $1 returning *",
     )
     .bind(mailbox.id)
@@ -333,6 +348,8 @@ async fn update(
     .bind(body.owner_id.is_some())
     .bind(body.owner_id.flatten())
     .bind(body.min_gap_minutes)
+    .bind(body.reply_to_mailbox_id.is_some())
+    .bind(body.reply_to_mailbox_id.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(mailbox))

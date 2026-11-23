@@ -573,6 +573,10 @@ async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> a
     let cc: Vec<String> = email.cc_emails.iter().filter(|c| !suppressed.contains(c) && !c.eq_ignore_ascii_case(&to)).cloned().collect();
     let stored = attachments::for_sending(&state.db, email.id).await?;
     let files: Vec<smtp::OutgoingFile> = stored.iter().map(|(filename, content_type, data)| smtp::OutgoingFile { filename, content_type, data }).collect();
+    let reply_to: Option<String> = match mb.reply_to_mailbox_id {
+        Some(id) => sqlx::query_scalar("select email::text from mailboxes where id = $1").bind(id).fetch_optional(&state.db).await?,
+        None => None,
+    };
 
     let built = smtp::build(
         &mb,
@@ -589,6 +593,7 @@ async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> a
             html: tracked.html.as_deref(),
             cc: &cc,
             files: &files,
+            reply_to: reply_to.as_deref(),
         },
     );
     let message = match built {

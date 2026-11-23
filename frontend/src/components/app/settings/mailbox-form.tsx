@@ -58,6 +58,7 @@ function toInput(m: Mailbox): MailboxInput {
   const { email, from_name, signature, booking_link, smtp_host, smtp_port, smtp_security, smtp_username, imap_host, imap_port, imap_username } = m;
   const { daily_limit, cost_per_email_micros, ramp_up, min_gap_minutes, dkim_selector, warmup, warmup_daily_cap, total_daily_limit, hold_until_warm, owner_id } =
     m;
+  const { reply_to_mailbox_id } = m;
   return {
     email,
     from_name,
@@ -77,6 +78,7 @@ function toInput(m: Mailbox): MailboxInput {
     cost_per_email_micros,
     ramp_up,
     min_gap_minutes,
+    reply_to_mailbox_id,
     dkim_selector,
     warmup,
     warmup_daily_cap,
@@ -218,6 +220,9 @@ export function MailboxForm({
       </Field>
       <BookingLinkField mailbox={mailbox} value={m.booking_link} onChange={(booking_link) => set({ booking_link })} />
       <OwnerField value={m.owner_id} onChange={(owner_id) => set({ owner_id })} />
+      {mailbox && (
+        <ReplyToField mailbox={mailbox} value={m.reply_to_mailbox_id ?? null} onChange={(reply_to_mailbox_id) => set({ reply_to_mailbox_id })} />
+      )}
 
       {!signedIn && (
         <>
@@ -494,6 +499,25 @@ function OwnerField({ value, onChange }: { value: string | null | undefined; onC
         {members?.map((member) => (
           <option key={member.user_id} value={member.user_id}>
             {member.name || member.email}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** Sends with Reply-To set to another mailbox, so replies to a secondary domain land in the main inbox. */
+function ReplyToField({ mailbox, value, onChange }: { mailbox: Mailbox; value: string | null; onChange: (id: string | null) => void }) {
+  const { data: mailboxes } = useSWR<Mailbox[]>("/mailboxes", fetcher);
+  const others = mailboxes?.filter((other) => other.id !== mailbox.id) ?? [];
+  if (!others.length && !value) return null;
+  return (
+    <Field label="Replies go to" hint="Replies to this mailbox's emails go to the inbox you pick. Splee reads that inbox too.">
+      <Select value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}>
+        <option value="">This mailbox</option>
+        {others.map((other) => (
+          <option key={other.id} value={other.id}>
+            {other.email}
           </option>
         ))}
       </Select>
