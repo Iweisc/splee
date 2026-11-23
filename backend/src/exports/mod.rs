@@ -36,6 +36,8 @@ pub const QUIET_HOUR: u32 = 3;
 /// How many times a day the daily export is tried, an hour apart, before it waits for the next day.
 const DAILY_TRIES: i64 = 3;
 const RESTARTED: &str = "Splee restarted during this export. It runs again on its own.";
+/// Takes the organization's export lock until the transaction ends, or says another backend holds it. $1 is the organization.
+const LOCK: &str = "select pg_try_advisory_xact_lock(hashtextextended('data-export:' || $1::text, 0))";
 pub const PAGE: &str = "/app/data-export";
 
 /// The settings as the database holds them, the secret still encrypted.
@@ -138,22 +140,37 @@ pub struct Started {
 /// Notes a new run for the UTC day of `now`, unless one is running already or, for a daily run, the day isn't due. The caller
 /// runs it with `finish`.
 pub async fn start(db: &PgPool, org_id: Uuid, trigger: &str, now: Ts) -> Result<Started, StartError> {
-    let failed = |e: sqlx::Error| {
-        tracing::error!(error = %e, "data export: couldn't start the run");
-        StartError::Db
-    };
     // Held until the run is saved, so a second backend on the database neither starts the same export nor closes this one.
-    let mut lock = db.begin().await.map_err(failed)?;
-    let owned: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended('data-export:' || $1::text, 0))")
-        .bind(org_id)
-        .fetch_one(&mut *lock)
-        .await
-        .map_err(failed)?;
+    let mut lock = db.begin().await.map_err(failed_to_start)?;
+    let owned: bool = sqlx::query_scalar(LOCK).bind(org_id).fetch_one(&mut *lock).await.map_err(failed_to_start)?;
     if !owned {
         return Err(StartError::Running);
     }
-    let set_up: bool =
-        sqlx::query_scalar("select exists (select 1 from export_settings where org_id = $1)").bind(org_id).fetch_one(db).await.map_err(failed)?;
+    match new_run(db, org_id, trigger, now).await {
+        Ok(run) => Ok(Started { run, lock }),
+        Err(e) => {
+            // Dropping the transaction would only queue its rollback, which sqlx sends from a spawned task returning the
+            // connection to the pool. Until then the lock would turn away an Export now as Running.
+            if let Err(e) = lock.rollback().await {
+                tracing::warn!(error = %e, "data export: couldn't release the lock");
+            }
+            Err(e)
+        }
+    }
+}
+
+fn failed_to_start(e: sqlx::Error) -> StartError {
+    tracing::error!(error = %e, "data export: couldn't start the run");
+    StartError::Db
+}
+
+/// start's work under the lock.
+async fn new_run(db: &PgPool, org_id: Uuid, trigger: &str, now: Ts) -> Result<Run, StartError> {
+    let set_up: bool = sqlx::query_scalar("select exists (select 1 from export_settings where org_id = $1)")
+        .bind(org_id)
+        .fetch_one(db)
+        .await
+        .map_err(failed_to_start)?;
     if !set_up {
         return Err(StartError::NotSetUp);
     }
@@ -163,11 +180,11 @@ pub async fn start(db: &PgPool, org_id: Uuid, trigger: &str, now: Ts) -> Result<
         .bind(RESTARTED)
         .execute(db)
         .await
-        .map_err(failed)?;
-    if trigger == "daily" && !due(db, org_id, now).await.map_err(failed)? {
+        .map_err(failed_to_start)?;
+    if trigger == "daily" && !due(db, org_id, now).await.map_err(failed_to_start)? {
         return Err(StartError::NotDue);
     }
-    let run = sqlx::query_as(&format!("insert into export_runs (org_id, dt, trigger, started_at) values ($1, $2, $3, $4) returning {RUN_COLUMNS}"))
+    sqlx::query_as(&format!("insert into export_runs (org_id, dt, trigger, started_at) values ($1, $2, $3, $4) returning {RUN_COLUMNS}"))
         .bind(org_id)
         .bind(now.date_naive())
         .bind(trigger)
@@ -176,9 +193,8 @@ pub async fn start(db: &PgPool, org_id: Uuid, trigger: &str, now: Ts) -> Result<
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(d) if d.constraint() == Some("export_runs_running_idx") => StartError::Running,
-            e => failed(e),
-        })?;
-    Ok(Started { run, lock })
+            e => failed_to_start(e),
+        })
 }
 
 /// Whether the daily export should run now: past QUIET_HOUR, with no finished export of the day, daily or Export now, and one
@@ -229,15 +245,15 @@ pub async fn finish(state: &AppState, org_id: Uuid, started: Started) {
     .execute(&state.db)
     .await;
     if let Err(e) = saved {
-        return tracing::error!(error = %e, "data export: couldn't save how the run went");
-    }
-    // Still under the lock, so no other run lands between this one and the check for a second failure.
-    if let Err(e) = &result {
+        tracing::error!(error = %e, "data export: couldn't save how the run went");
+    } else if let Err(e) = &result {
+        // Still under the lock, so no other run lands between this one and the check for a second failure.
         tracing::info!(org = %org_id, error = e, "data export failed");
         if let Err(e) = alert_second_failure(state, org_id, e).await {
             tracing::warn!(error = %e, "data export: couldn't check for a second failure");
         }
     }
+    // Ended here rather than dropped, which would hold the lock until sqlx flushed the queued rollback on the way back to the pool.
     if let Err(e) = lock.commit().await {
         tracing::warn!(error = %e, "data export: couldn't release the lock");
     }

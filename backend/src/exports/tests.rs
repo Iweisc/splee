@@ -623,6 +623,23 @@ async fn the_team_chat_hears_when_an_export_fails_twice_in_a_row(db: PgPool) {
 
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn a_start_that_finds_nothing_to_do_lets_go_of_the_lock_at_once(db: PgPool) {
+    let s = Server::start(db).await;
+    s.save(settings(&["leads"])).await;
+    let today = Utc::now().date_naive();
+    // A dropped transaction holds the lock only until its connection is back in the pool, which is quick, so try often.
+    for _ in 0..200 {
+        assert_eq!(start(&s.db, s.acme, "daily", at(today, QUIET_HOUR - 1)).await.err(), Some(StartError::NotDue));
+        // Export now, right after the worker found the daily export not due.
+        let mut tx = s.db.begin().await.unwrap();
+        let free: bool = sqlx::query_scalar(LOCK).bind(s.acme).fetch_one(&mut *tx).await.unwrap();
+        assert!(free, "the lock outlived the start that didn't run");
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn a_second_backend_neither_starts_nor_closes_a_running_export(db: PgPool) {
     let s = Server::start(db).await;
     s.save(settings(&["leads"])).await;
