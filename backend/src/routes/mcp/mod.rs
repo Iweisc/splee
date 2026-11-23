@@ -48,7 +48,7 @@ A typical loop: list_projects (or create_project for a new business), then list_
 turns a sentence into its filters) and add_companies, find_people, write_emails, then list_emails_to_approve and approve_email or skip_email. \
 get_campaign reads a campaign's whole definition and update_campaign changes it, start_campaign, stop_campaign and approve_campaign run it, \
 get_campaign_send_state says whether it's sending and what holds it, archive_campaign puts away one that's done and unarchive_campaign brings it \
-back, and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
+back, duplicate_campaign copies one as a new draft, and update_project_controls sets the project's sending, limits, schedule, autopilot, review window and monthly cap, which get_monthly_cap \
 checks against the month's email spend. \
 list_hot_leads and get_inbox_changes follow what comes back, and list_erased_leads the leads deleted since. \
 find_lookalikes and add_lookalikes find companies like the user's customers. \

@@ -472,6 +472,13 @@ pub(in crate::routes) async fn archive_campaign(State(state): State<AppState>, a
     Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &segment).await?)))
 }
 
+/// A new draft campaign with this one's brief, targeting and settings, and no leads or emails. See segments::duplicate.
+pub(in crate::routes) async fn duplicate_campaign(State(state): State<AppState>, auth: ApiKeyAuth, Path(id): Path<Uuid>) -> AppResult<Json<Campaign>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    let copy = segments::duplicate(&state.db, &segment).await?;
+    Ok(Json(Campaign::from(segments::one_with_stats(&state.db, &copy).await?)))
+}
+
 /// Lists the campaign again, paused. It sends once it's started.
 pub(in crate::routes) async fn unarchive_campaign(
     State(state): State<AppState>,

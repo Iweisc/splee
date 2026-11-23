@@ -971,6 +971,17 @@ pub(super) fn tools() -> Vec<Value> {
             control.clone(),
         ),
         tool(
+            "duplicate_campaign",
+            "Duplicate campaign",
+            "Makes a new draft campaign named \"<name> (copy)\" with this one's brief, targeting and settings: language, tracking, \
+             lead pages, daily limit, follow-ups, send hours, its own first email, its A/B variants that aren't paused and an \
+             imported campaign's sequence. No leads, emails or results come with it, and it sends nothing until start_campaign. \
+             Returns the new campaign.",
+            json!({ "campaign_id": campaign }),
+            &["campaign_id"],
+            control.clone(),
+        ),
+        tool(
             "update_project_controls",
             "Update project controls",
             "Changes a project's sending controls and returns them all. Pass only what changes, or nothing to read them. sending \

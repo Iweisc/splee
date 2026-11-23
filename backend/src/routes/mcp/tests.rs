@@ -113,7 +113,8 @@ async fn handshake_and_tool_list(db: PgPool) {
                  "mark_replied", "search_local_businesses", "add_local_businesses", "list_sheet_connections", "import_from_sheet",
                  "list_job_changes", "add_to_watch_list", "set_lead_language", "set_campaign_language", "find_lookalikes",
                  "add_lookalikes", "list_company_signals", "add_research_question", "research_companies", "list_research", "get_campaign",
-                 "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "update_project_controls",
+                 "start_campaign", "stop_campaign", "approve_campaign", "archive_campaign", "unarchive_campaign", "duplicate_campaign",
+                 "update_project_controls",
                  "list_hot_leads", "get_inbox_changes", "find_companies_by_domains", "get_monthly_cap",
                  "update_campaign",
                  "list_erased_leads",
@@ -1008,6 +1009,8 @@ async fn campaigns_run_and_replies_follow_through_mcp(db: PgPool) {
     let (is_error, text) = server.call(KEY, "unarchive_campaign", json!({ "campaign_id": segment })).await;
     assert!(!is_error && parsed(&text)["archived_at"].is_null() && parsed(&text)["status"] == "paused", "{text}");
     assert_eq!(listed(false).await, vec![json!(segment)]);
+    let (is_error, text) = server.call(KEY, "duplicate_campaign", json!({ "campaign_id": segment })).await;
+    assert!(!is_error && parsed(&text)["name"].as_str().unwrap().ends_with(" (copy)") && parsed(&text)["status"] == "draft", "{text}");
 
     let (is_error, text) = server.call(KEY, "update_project_controls", json!({ "project_id": project, "daily_email_limit": 70, "review_window_hours": 12 })).await;
     assert!(!is_error && parsed(&text)["daily_email_limit"] == 70 && parsed(&text)["review_window_hours"] == 12, "{text}");
@@ -1032,6 +1035,7 @@ async fn campaigns_run_and_replies_follow_through_mcp(db: PgPool) {
         ("approve_campaign", json!({ "campaign_id": other_segment })),
         ("archive_campaign", json!({ "campaign_id": other_segment })),
         ("unarchive_campaign", json!({ "campaign_id": other_segment })),
+        ("duplicate_campaign", json!({ "campaign_id": other_segment })),
         ("update_project_controls", json!({ "project_id": other_project, "daily_email_limit": 70 })),
         ("get_inbox_changes", json!({ "project_id": other_project })),
         ("list_hot_leads", json!({ "project_id": other_project })),

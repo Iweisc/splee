@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/segments/{id}/pause", post(pause))
         .route("/segments/{id}/archive", post(archive_route))
         .route("/segments/{id}/unarchive", post(unarchive_route))
+        .route("/segments/{id}/duplicate", post(duplicate_route))
         .route("/segments/{id}/send-state", get(get_send_state))
 }
 
@@ -286,6 +287,50 @@ pub(super) async fn insert(db: &mut PgConnection, org_id: Uuid, id: Uuid, body: 
         None => None,
     };
     Ok((segment, run_id))
+}
+
+async fn duplicate_route(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Segment>> {
+    let segment: Segment = util_scope::load(&state.db, "segments", id, auth.org_id).await?;
+    Ok(Json(duplicate(&state.db, &segment).await?))
+}
+
+/// A new draft campaign, last in the project, named "<name> (copy)", with the campaign's brief, targeting and settings, its
+/// own first email, its A/B variants that aren't paused, and an imported campaign's steps. No leads, emails or results come
+/// with it, and it starts paused like any new campaign, so it sends nothing until someone starts it. An archived campaign
+/// can be copied too. POST /v1/campaigns/{id}/duplicate calls it.
+pub(super) async fn duplicate(db: &PgPool, segment: &Segment) -> AppResult<Segment> {
+    let mut tx = db.begin().await?;
+    let copy = sqlx::query_as::<_, Segment>(
+        "insert into segments (project_id, name, description, icon, est_size, fit_score, targeting, pain_points, angle, position, language,
+                               track_clicks, track_opens, lead_pages, daily_limit, follow_ups, send_days, send_start_hour, send_end_hour,
+                               my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from)
+         select project_id, name || ' (copy)', description, icon, est_size, fit_score, targeting, pain_points, angle,
+                (select max(position) + 1 from segments where project_id = s.project_id), language,
+                track_clicks, track_opens, lead_pages, daily_limit, follow_ups, send_days, send_start_hour, send_end_hour,
+                my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from
+         from segments s where id = $1 returning *",
+    )
+    .bind(segment.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "insert into segment_variants (segment_id, name, instructions, position)
+         select $2, name, instructions, position from segment_variants where segment_id = $1 and paused_at is null",
+    )
+    .bind(segment.id)
+    .bind(copy.id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "insert into segment_steps (segment_id, position, delay_days, subject, body)
+         select $2, position, delay_days, subject, body from segment_steps where segment_id = $1",
+    )
+    .bind(segment.id)
+    .bind(copy.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(copy)
 }
 
 async fn get_one(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<SegmentWithStats>> {

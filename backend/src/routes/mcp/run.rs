@@ -229,6 +229,7 @@ pub(super) async fn run(state: &AppState, auth: ApiKeyAuth, name: &str, mut args
         "approve_campaign" => async { value(v1::approve_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "archive_campaign" => async { value(v1::archive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "unarchive_campaign" => async { value(v1::unarchive_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
+        "duplicate_campaign" => async { value(v1::duplicate_campaign(st(), auth, id(a, "segment_id")?).await?) }.await,
         "update_project_controls" => async {
             value(v1::update_project(st(), auth, id(a, "project_id")?, Json(patch_body(a, "project_id"))).await?)
         }

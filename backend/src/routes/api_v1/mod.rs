@@ -58,6 +58,7 @@ pub fn router_with(state: &AppState, model: Arc<dyn Model>) -> Router<AppState> 
         .route("/v1/campaigns/{id}/approve", post(approve_campaign))
         .route("/v1/campaigns/{id}/archive", post(archive_campaign))
         .route("/v1/campaigns/{id}/unarchive", post(unarchive_campaign))
+        .route("/v1/campaigns/{id}/duplicate", post(duplicate_campaign))
         .route("/v1/campaigns/{id}/my-copy", get(campaign_my_copy).patch(update_campaign_my_copy))
         .route("/v1/campaigns/{id}/my-copy/source", put(set_my_copy_source))
         .route("/v1/campaigns/{id}/my-copy/preview", get(preview_my_copy))

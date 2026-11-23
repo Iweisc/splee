@@ -410,6 +410,41 @@ async fn a_campaign_set_to_start_later_starts_itself_then_in_the_name_of_the_key
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn a_duplicated_campaign_is_a_draft_with_the_same_brief_and_settings_and_no_leads(db: PgPool) {
+    let [a, b] = seed(&db).await;
+    let (segment, _) = campaign(&db, a, "working").await;
+    let (theirs, _) = campaign(&db, b, "working").await;
+    sqlx::query(
+        "update segments set angle = 'Fewer no-shows', targeting = '{\"roles\": [\"Practice Manager\"]}', daily_limit = 25, follow_ups = '[]',
+           send_days = '{6,7}', send_start_hour = 10, send_end_hour = 14, auto_paused_at = now() where id = $1",
+    )
+    .bind(segment)
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("insert into segment_variants (segment_id, name, paused_at) values ($1, 'Short', null), ($1, 'Long', now())")
+        .bind(segment)
+        .execute(&db)
+        .await
+        .unwrap();
+    let api = Api::start(&db, LIMITS).await;
+
+    let (status, _, copy) = api.post(KEYS[0], &format!("/v1/campaigns/{segment}/duplicate"), None, json!({})).await;
+    assert_eq!((status, copy["name"].as_str(), copy["status"].as_str(), copy["leads"].as_i64()), (200, Some("Dentists (copy)"), Some("draft"), Some(0)), "{copy}");
+    let (_, detail) = api.get(&format!("/v1/campaigns/{}", copy["id"].as_str().unwrap())).await;
+    assert_eq!((detail["angle"].as_str(), detail["daily_limit"].as_i64(), detail["follow_ups"].clone()), (Some("Fewer no-shows"), Some(25), json!([])), "{detail}");
+    assert_eq!((detail["targeting"]["roles"].clone(), detail["schedule"]["send_days"].clone()), (json!(["Practice Manager"]), json!([6, 7])));
+    assert!(detail["status_reason"].as_str().unwrap().starts_with("Not started"), "the optimizer's pause stays with the original: {detail}");
+    let variants: Vec<String> =
+        sqlx::query_scalar("select name from segment_variants where segment_id = $1::text::uuid").bind(copy["id"].as_str()).fetch_all(&db).await.unwrap();
+    assert_eq!(variants, ["Short"], "a paused variant stays behind");
+    assert_eq!(api.post(KEYS[0], &format!("/v1/campaigns/{theirs}/duplicate"), None, json!({})).await.0, 404);
+    assert_eq!(count(&db, "select count(*) from segments").await, 3);
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn a_campaign_patch_changes_only_the_fields_it_sends(db: PgPool) {
     let [a, b] = seed(&db).await;
     let (segment, _) = campaign(&db, a, "draft").await;

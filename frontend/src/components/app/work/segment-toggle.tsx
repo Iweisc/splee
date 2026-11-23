@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, CalendarClock, Pause, Play, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Archive, ArchiveRestore, CalendarClock, Copy, Pause, Play, X } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import { Button, type ButtonSize } from "@/components/ui/button";
@@ -148,6 +149,30 @@ export function ArchiveToggle({ segment, size = "sm" }: { segment: Segment; size
   return (
     <Button variant="ghost" size="icon" className="size-10" onClick={toggle} loading={busy} aria-label="Archive campaign" title="Archive campaign">
       <Archive className="size-4" />
+    </Button>
+  );
+}
+
+/** Copies the campaign as a new draft with its brief, targeting and settings, and no leads or emails, and opens it. */
+export function DuplicateButton({ segment }: { segment: Segment }) {
+  const router = useRouter();
+  const { mutate } = useSWRConfig();
+  const [busy, setBusy] = useState(false);
+  const duplicate = async () => {
+    setBusy(true);
+    try {
+      const copy = await api<Segment>(`/segments/${segment.id}/duplicate`, { method: "POST" });
+      await mutate((key) => typeof key === "string" && key.startsWith(`/projects/${segment.project_id}/segments`));
+      toast.success(`${copy.name} is a new draft. Find companies or people for it, then start it.`);
+      router.push(`/app/p/${segment.project_id}/segments/${copy.id}`);
+    } catch (err) {
+      toastError(err);
+      setBusy(false);
+    }
+  };
+  return (
+    <Button variant="ghost" size="icon" className="size-10" onClick={duplicate} loading={busy} aria-label="Duplicate campaign" title="Duplicate campaign">
+      <Copy className="size-4" />
     </Button>
   );
 }
