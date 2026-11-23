@@ -551,6 +551,9 @@ pub struct Segment {
     /// it clears all three.
     #[sqlx(default)]
     pub start_at: Option<Ts>,
+    /// The mailboxes its first emails go out from, in place of the project's mailbox_ids. Null follows the project's.
+    #[sqlx(default)]
+    pub mailbox_ids: Option<Vec<Uuid>>,
 }
 
 impl Segment {
