@@ -31,11 +31,12 @@ export default function OnboardingRunPage({ params }: PageProps<"/app/onboarding
 
   const { data: detail, error, mutate } = useSWR<ProjectDetail>(projectId ? `/projects/${projectId}` : null, fetcher);
 
-  if (listError) return <LoadError error={listError} retry={() => retryList()} className="min-h-[60vh]" />;
-  if (error) return <LoadError error={error} retry={() => mutate()} className="min-h-[60vh]" />;
+  if (listError) return <LoadError error={listError} retry={() => retryList()} page className="min-h-[60vh]" />;
+  if (error) return <LoadError error={error} retry={() => mutate()} page className="min-h-[60vh]" />;
   if (projects && !projectId) {
     return (
       <EmptyState
+        page
         className="min-h-[60vh]"
         title="Project not found"
         action={

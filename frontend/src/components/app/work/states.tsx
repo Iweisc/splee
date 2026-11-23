@@ -53,11 +53,25 @@ export function CardHeaderText({ className, ...props }: React.HTMLAttributes<HTM
   return <div className={cn("min-w-0 flex-1 basis-56", className)} {...props} />;
 }
 
-export function LoadError({ error, retry, what = "this", className }: { error: unknown; retry?: () => void; what?: string; className?: string }) {
+/** `page` when it takes the place of the whole page, like EmptyState's. */
+export function LoadError({
+  error,
+  retry,
+  what = "this",
+  page,
+  className,
+}: {
+  error: unknown;
+  retry?: () => void;
+  what?: string;
+  page?: boolean;
+  className?: string;
+}) {
   // A deleted project or campaign, or an old link to one. Trying again can't help, so offer a way back instead.
   const notFound = error instanceof ApiError && error.status === 404;
   return (
     <EmptyState
+      page={page}
       className={className}
       icon={<TriangleAlert className="size-5 text-danger" />}
       title={notFound ? `Couldn't find ${what}` : `Couldn't load ${what}`}

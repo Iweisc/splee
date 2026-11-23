@@ -49,7 +49,7 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
 
   const run = runs?.find((r) => r.input.segment_id === segId && isActive(r)) ?? null;
 
-  if (error) return <LoadError error={error} retry={() => mutate()} className="min-h-[60vh]" />;
+  if (error) return <LoadError error={error} retry={() => mutate()} page className="min-h-[60vh]" />;
   if (!segment) {
     return (
       <PageBody className="flex flex-col gap-4 pt-8">

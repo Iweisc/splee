@@ -30,7 +30,7 @@ export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">
   const { data: detail, error, mutate } = useSWR<ProjectDetail>(`/projects/${projectId}`, fetcher);
   const { active } = useProjectRuns(projectId);
 
-  if (error) return <LoadError error={error} retry={() => mutate()} className="min-h-[60vh]" />;
+  if (error) return <LoadError error={error} retry={() => mutate()} page className="min-h-[60vh]" />;
   if (!detail) {
     return (
       <>

@@ -23,7 +23,7 @@ export default function AppHome() {
     router.replace(`/app/p/${target.id}`);
   }, [projects, router]);
 
-  if (error) return <LoadError error={error} retry={() => mutate()} className="min-h-[60vh]" />;
+  if (error) return <LoadError error={error} retry={() => mutate()} page className="min-h-[60vh]" />;
   return (
     <div className="flex min-h-[60vh] items-center justify-center">
       <Spinner className="size-6" />
