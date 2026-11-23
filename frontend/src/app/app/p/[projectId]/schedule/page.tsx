@@ -4,6 +4,7 @@ import { CalendarClock, X } from "lucide-react";
 import { useState } from "react";
 import { ProjectSettingsPage, Section } from "@/components/app/settings/layout";
 import { RepliesSection } from "@/components/app/settings/replies-section";
+import { isPlainEnter } from "@/components/app/settings/save-bar";
 import { Button } from "@/components/ui/button";
 import { DAYS, formatDays, hour, SendWindowFields, windowProblem } from "@/components/app/settings/send-window";
 import { Input, Select, Switch } from "@/components/ui/form";
@@ -106,15 +107,15 @@ function DaysOff({ days, onChange }: { days: string[]; onChange: (days: string[]
       description="No first emails, follow-ups, texts or LinkedIn steps go out on these dates, like holidays. Replies still do."
     >
       <div className="flex max-w-sm gap-2">
-        {/* Enter adds the day, like Add, rather than saving the page. */}
+        {/* Enter adds the day, like Add. */}
         <Input
           type="date"
           value={picked}
           onChange={(e) => setPicked(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+            if (!isPlainEnter(e) || !can) return;
             e.preventDefault();
-            if (can) add();
+            add();
           }}
           aria-label="Day off"
           className="flex-1"

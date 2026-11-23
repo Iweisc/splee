@@ -7,21 +7,26 @@ import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
 type Saving = Pick<ProjectSettingsForm, "dirty" | "saving" | "save">;
-// The text-like fields a browser submits a form from on Enter.
-const SUBMITS = new Set(["text", "email", "number", "password", "search", "tel", "url", "date", "time", "datetime-local", "month", "week"]);
+// The text-like fields a browser submits a form from on Enter. Not date ones: Enter in Days off's adds the day.
+const SUBMITS = new Set(["text", "email", "number", "password", "search", "tel", "url"]);
+
+/** Enter alone, not mid-composition and not already used by the field itself. */
+export const isPlainEnter = (e: React.KeyboardEvent) =>
+  e.key === "Enter" && !e.defaultPrevented && !e.nativeEvent.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
 
 /**
  * A keydown handler for the column around a SaveBar's fields, so Enter in one saves like it would in a form. The pages aren't
- * forms, since every Button in one would submit it. A field in its own form (integrations) or using Enter itself (ChipInput)
- * keeps it. With a problem showing, Enter does nothing, as Save is disabled.
+ * forms, since every Button in one would submit it. A field in its own form (integrations), using Enter itself (ChipInput)
+ * or in a portal, like a dialog's, keeps it. With a problem showing, Enter does nothing, as Save is disabled.
  */
 export function saveOnEnter(form: Saving, problem?: string | null) {
-  return (e: React.KeyboardEvent) => {
+  return (e: React.KeyboardEvent<HTMLDivElement>) => {
     const t = e.target;
-    if (e.key !== "Enter" || e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    if (!(t instanceof HTMLInputElement) || !SUBMITS.has(t.type) || t.form) return;
+    if (!isPlainEnter(e) || !(t instanceof HTMLInputElement) || !SUBMITS.has(t.type) || t.form || !e.currentTarget.contains(t)) return;
     e.preventDefault();
-    if (form.dirty && !form.saving && !problem) form.save();
+    // A cleared or half-typed NumberInput keeps its text to itself, so saving now would save the number it showed before.
+    const unread = t.type === "number" && (t.value === "" || t.validity.badInput);
+    if (form.dirty && !form.saving && !problem && !unread) form.save();
   };
 }
 
