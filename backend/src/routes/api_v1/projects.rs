@@ -84,6 +84,8 @@ pub(in crate::routes) struct ProjectControls {
     days_off: Vec<chrono::NaiveDate>,
     /// Once a lead replies, the sequence stops for the project's other leads at the same company.
     stop_company_on_reply: bool,
+    /// The most first emails a day to one company (company row or website), or null for no limit.
+    company_daily_limit: Option<i32>,
     /// The name the agent writes and signs emails as, unless the sending mailbox has its own. Empty for "the team at" the company.
     sender_name: String,
 }
@@ -109,6 +111,7 @@ impl From<ProjectSettings> for ProjectControls {
             lead_time_zone: s.lead_time_zone,
             days_off: s.days_off,
             stop_company_on_reply: s.stop_company_on_reply,
+            company_daily_limit: s.company_daily_limit,
             sender_name: s.sender_name,
         }
     }

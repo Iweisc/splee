@@ -54,6 +54,7 @@ struct SendingProject {
     match_provider: bool,
     lead_time_zone: bool,
     mailbox_ids: Option<Vec<Uuid>>,
+    company_daily_limit: Option<i32>,
 }
 
 impl SendingProject {
@@ -127,7 +128,7 @@ pub async fn tick(state: &AppState) -> anyhow::Result<()> {
     let projects = sqlx::query_as::<_, SendingProject>(
         "select p.id, p.org_id, s.daily_email_limit, s.timezone, s.send_days, s.days_off, s.send_start_hour, s.send_end_hour, s.paused,
                 s.autopilot, s.autopilot_lead_cap, s.monthly_cap_micros, s.match_provider,
-                s.lead_time_zone, s.mailbox_ids
+                s.lead_time_zone, s.mailbox_ids, s.company_daily_limit
          from projects p join project_settings s on s.project_id = p.id
          where p.org_id is not null and exists (
              select 1 from email_messages e where e.project_id = p.id and e.direction = 'outbound'
@@ -149,6 +150,29 @@ fn campaign_sent(since: &str) -> String {
         "select count(*) from email_messages x where x.segment_id = s.id and x.direction = 'outbound' and x.kind in ('initial', 'follow_up')
            and x.status = 'sent' and x.sent_at >= {since}"
     )
+}
+
+/// SQL for whether the lead `l` of email `e`, a first email, is at a company that got `limit` first emails from the project since
+/// `since`, both parameters, by company row or website like mail::COMPANY_REPLIED. False with a null limit.
+fn company_full(since: &str, limit: &str) -> String {
+    format!(
+        "({limit}::int is not null and e.kind = 'initial' and (
+           select count(*) from email_messages x join leads o on o.id = x.lead_id
+           where x.project_id = e.project_id and x.direction = 'outbound' and x.kind = 'initial' and x.status = 'sent' and x.sent_at >= {since}
+             and (o.company_id = l.company_id or (l.company_domain <> '' and o.company_domain = l.company_domain))) >= {limit}::int)"
+    )
+}
+
+/// company_full for one email. One deleted since the pass picked it counts as full, so the pass skips it.
+async fn company_is_full(db: &sqlx::PgPool, email: Uuid, since: Ts, limit: Option<i32>) -> sqlx::Result<bool> {
+    let full: Option<bool> =
+        sqlx::query_scalar(&format!("select {} from email_messages e join leads l on l.id = e.lead_id where e.id = $1", company_full("$2", "$3")))
+            .bind(email)
+            .bind(since)
+            .bind(limit)
+            .fetch_optional(db)
+            .await?;
+    Ok(full.unwrap_or(true))
 }
 
 async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()> {
@@ -200,11 +224,14 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
                                                          and (x.direction = 'inbound' or x.status = 'sent')
                                                        order by x.created_at desc limit 1))
                     and m.status = 'active' and {IN_GAP}))
+                -- A first email to a company that had its first emails for today waits too, so it can't hold back other companies.
+                and not {company_full}
             ) r on r.id = e.id
           where r.room is null or r.nth <= r.room
           order by r.scaling desc nulls last, e.kind = 'follow_up' desc, e.scheduled_for nulls first, e.created_at
           limit $3)",
-        campaign_sent("$4")
+        campaign_sent("$4"),
+        company_full = company_full("$4", "$8"),
     ))
     .bind(p.id)
     .bind(&REPLY_KINDS[..])
@@ -215,6 +242,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
     .bind(&closed.countries)
     // The tick's moment, which closed_zones looked at, so an email due since can't slip past it.
     .bind(now)
+    .bind(p.company_daily_limit)
     .fetch_all(&state.db)
     .await?;
 
@@ -238,6 +266,10 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
         }
         if email.kind == "initial" {
             if new_leads <= 0 {
+                continue;
+            }
+            // The query leaves out companies that were full when it ran. One it picked twice is full after the first send.
+            if p.company_daily_limit.is_some() && company_is_full(&state.db, email.id, day_start, p.company_daily_limit).await? {
                 continue;
             }
             new_leads -= 1;
@@ -956,8 +988,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Family, MAX_DEFERRALS, campaign_status, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin, replace_guessed, rewrite,
-        swap_link, swap_signature, with_footer,
+        Family, MAX_DEFERRALS, campaign_status, company_is_full, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin,
+        replace_guessed, rewrite, swap_link, swap_signature, with_footer,
     };
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
@@ -1453,6 +1485,51 @@ mod tests {
         assert_eq!(picks(queued(started, "follow_up").await.unwrap(), Some(vec![picked])).await, Some(other), "the thread keeps its mailbox");
         // Its only mailbox deleted, the project starts no threads rather than send from the rest.
         assert_eq!(picks(queued(fresh, "initial").await.unwrap(), Some(vec![])).await, None);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_company_gets_its_first_emails_for_the_day_and_the_rest_wait(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let lead = |domain: &'static str| {
+            sqlx::query_scalar::<_, Uuid>("insert into leads (project_id, company_domain) values ($1, $2) returning id")
+                .bind(project)
+                .bind(domain)
+                .fetch_one(&db)
+        };
+        // `ago` is how long before now it was sent, or None for not yet.
+        let email = |lead: Uuid, kind: &'static str, status: &'static str, ago: Option<&'static str>| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into email_messages (project_id, lead_id, direction, kind, status, sent_at)
+                 values ($1, $2, 'outbound', $3, $4, now() - $5::interval) returning id",
+            )
+            .bind(project)
+            .bind(lead)
+            .bind(kind)
+            .bind(status)
+            .bind(ago)
+            .fetch_one(&db)
+        };
+        let (sam, ana, bo) = (lead("acme.example").await.unwrap(), lead("ACME.example").await.unwrap(), lead("other.example").await.unwrap());
+        email(sam, "initial", "sent", Some("1 hour")).await.unwrap();
+        // Ana works at Sam's company, by website in another case. Bo doesn't.
+        let ana_first = email(ana, "initial", "approved", None).await.unwrap();
+        let ana_follow_up = email(ana, "follow_up", "approved", None).await.unwrap();
+        let bo_first = email(bo, "initial", "approved", None).await.unwrap();
+        let today = chrono::Utc::now() - chrono::Duration::hours(2);
+        let full = |email: Uuid, limit: Option<i32>| company_is_full(&db, email, today, limit);
+        let full_since = |email: Uuid, since| company_is_full(&db, email, since, Some(1));
+
+        assert!(full(ana_first, Some(1)).await.unwrap());
+        assert!(!full(ana_first, Some(2)).await.unwrap());
+        assert!(!full(ana_first, None).await.unwrap());
+        assert!(!full(ana_follow_up, Some(1)).await.unwrap(), "follow-ups never wait");
+        assert!(!full(bo_first, Some(1)).await.unwrap());
+        // With the day starting after Sam's email went out, Ana's company has had none today.
+        assert!(!full_since(ana_first, chrono::Utc::now()).await.unwrap());
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

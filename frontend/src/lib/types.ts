@@ -439,6 +439,8 @@ export interface ProjectSettings extends CrmStatus {
   stop_company_on_reply: boolean;
   /** The mailboxes that send its first emails, or null for all of the organization's. Threads keep their mailbox. */
   mailbox_ids: string[] | null;
+  /** The most first emails a day to one company (company row or website), or null for no limit. Follow-ups never wait. */
+  company_daily_limit: number | null;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */
