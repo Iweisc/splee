@@ -44,6 +44,10 @@ export default function DailyLimitPage() {
         // When nothing can send, the Emails per day card already says so, so this stays quiet.
         const missing = !capacity ? [] : (["google", "microsoft"] as const).filter((f) => !families.has(f));
         const picked = s.mailbox_ids;
+        // Matching only looks at the picked mailboxes, so an unpicked one on that provider is the fix, not a new one.
+        const unpicked = new Set(mailboxes?.filter((m) => m.status === "active" && !active?.includes(m)).map(mailboxFamily));
+        const pickable = missing.some((f) => unpicked.has(f));
+        const whose = picked ? "the active mailboxes it sends from" : "your active mailboxes";
         const toggle = (id: string) => picked && update({ mailbox_ids: picked.includes(id) ? picked.filter((m) => m !== id) : [...picked, id] });
         return (
           <>
@@ -100,7 +104,9 @@ export default function DailyLimitPage() {
                 capacity !== undefined &&
                 capacity < s.daily_email_limit && (
                   <p className="mt-3 text-sm text-muted-foreground">
-                    Your mailboxes&apos; own limits are lower, so this project will send at most {num(capacity)} a day, shared with your other projects.
+                    {/* With a pick, follow-ups can still leave from an unpicked thread mailbox, so only first emails stop here. */}
+                    {picked ? "The picked" : "Your"} mailboxes&apos; own limits are lower, so this project will send at most {num(capacity)}
+                    {picked && " first emails"} a day, shared with your other projects.
                   </p>
                 )
               )}
@@ -127,7 +133,11 @@ export default function DailyLimitPage() {
                         <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
                           <input type="checkbox" checked={picked.includes(m.id)} onChange={() => toggle(m.id)} className="accent-black" />
                           <span className="min-w-0 flex-1 truncate font-medium">{m.email}</span>
-                          {m.status !== "active" && <span className="shrink-0 text-xs text-muted-foreground capitalize">{m.status}</span>}
+                          {m.status === "active" ? (
+                            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{num(todayLimit(m))}/day</span>
+                          ) : (
+                            <span className="shrink-0 text-xs text-muted-foreground capitalize">{m.status}</span>
+                          )}
                         </label>
                       </li>
                     ))}
@@ -190,11 +200,19 @@ export default function DailyLimitPage() {
               {s.match_provider && missing.length > 0 && (
                 <p className="text-sm text-muted-foreground">
                   {missing.length === 2
-                    ? "None of your active mailboxes are on Google or Microsoft, so this changes nothing until you "
-                    : `None of your active mailboxes are on ${SIGN_IN_LABEL[missing[0]]}, so leads on ${SIGN_IN_LABEL[missing[0]]} get first emails from whichever mailbox has room until you `}
-                  <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
-                    connect one
-                  </Link>
+                    ? `None of ${whose} are on Google or Microsoft, so this changes nothing until you `
+                    : `None of ${whose} are on ${SIGN_IN_LABEL[missing[0]]}, so leads on ${SIGN_IN_LABEL[missing[0]]} get first emails from whichever mailbox has room until you `}
+                  {pickable ? (
+                    "pick one under Send from"
+                  ) : (
+                    <>
+                      <Link href="/app/domains" className="font-medium whitespace-nowrap text-foreground hover:underline">
+                        connect one
+                      </Link>
+                      {/* A mailbox connected later isn't in the pick until someone ticks it. */}
+                      {picked && " and pick it under Send from"}
+                    </>
+                  )}
                   .
                 </p>
               )}
