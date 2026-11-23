@@ -4,8 +4,20 @@ import { cn } from "@/lib/utils";
 const field =
   "w-full rounded-lg border border-border-strong bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden transition-shadow focus:border-foreground/40 focus:ring-4 focus:ring-black/5 disabled:opacity-60";
 
+// The enclosing Field's hint or error, so a screen reader focusing the control hears it, and whether it's an error.
+const FieldDescription = createContext<{ id?: string; invalid?: boolean }>({});
+
+function useDescribed(props: { "aria-describedby"?: string; "aria-invalid"?: React.AriaAttributes["aria-invalid"] }) {
+  const { id, invalid } = useContext(FieldDescription);
+  return {
+    "aria-describedby": [props["aria-describedby"], id].filter(Boolean).join(" ") || undefined,
+    "aria-invalid": props["aria-invalid"] ?? (invalid || undefined),
+  };
+}
+
 export function Input({ className, ...props }: React.ComponentProps<"input">) {
-  return <input className={cn(field, "h-10", className)} {...props} />;
+  const described = useDescribed(props);
+  return <input className={cn(field, "h-10", className)} {...props} {...described} />;
 }
 
 /**
@@ -38,12 +50,14 @@ export function NumberInput({
 }
 
 export function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
-  return <textarea className={cn(field, "min-h-24 py-2 leading-relaxed", className)} {...props} />;
+  const described = useDescribed(props);
+  return <textarea className={cn(field, "min-h-24 py-2 leading-relaxed", className)} {...props} {...described} />;
 }
 
 /** With `w-auto` a select is as wide as its longest option, like a long campaign name. max-w-full stops that from widening the page. */
 export function Select({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={cn(field, "h-10 max-w-full pr-8", className)} {...props} />;
+  const described = useDescribed(props);
+  return <select className={cn(field, "h-10 max-w-full pr-8", className)} {...props} {...described} />;
 }
 
 const FieldLabelId = createContext<string | undefined>(undefined);
@@ -73,23 +87,36 @@ export function Field({
   className?: string;
 }) {
   const id = useId();
+  const descId = useId();
+  const desc = error || hint ? descId : undefined;
   const labelClass = "text-sm font-medium text-foreground";
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {group ? (
-        <div role="group" aria-labelledby={id} className="flex flex-col gap-1.5">
+        // A group is described as a whole, so its inputs don't each repeat it.
+        <div role="group" aria-labelledby={id} aria-describedby={desc} className="flex flex-col gap-1.5">
           <span id={id} className={labelClass}>
             {label}
           </span>
-          <FieldLabelId.Provider value={id}>{children}</FieldLabelId.Provider>
+          <FieldLabelId.Provider value={id}>
+            <FieldDescription.Provider value={{ invalid: !!error }}>{children}</FieldDescription.Provider>
+          </FieldLabelId.Provider>
         </div>
       ) : (
         <label className="flex flex-col gap-1.5">
           <span className={labelClass}>{label}</span>
-          {children}
+          <FieldDescription.Provider value={{ id: desc, invalid: !!error }}>{children}</FieldDescription.Provider>
         </label>
       )}
-      {error ? <p className="text-xs text-danger">{error}</p> : hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+      {error ? (
+        <p id={descId} className="text-xs text-danger">
+          {error}
+        </p>
+      ) : hint ? (
+        <p id={descId} className="text-xs text-muted-foreground">
+          {hint}
+        </p>
+      ) : null}
     </div>
   );
 }
