@@ -1,7 +1,7 @@
 "use client";
 
-import { use, useState } from "react";
-import { Bot } from "lucide-react";
+import { use, useEffect, useId, useRef, useState } from "react";
+import { Bot, ChevronDown } from "lucide-react";
 import useSWR from "swr";
 import { PageBody, PageHeader } from "@/components/app/page-header";
 import { ListSkeleton, LoadError, Td, Th, Tr, toastError } from "@/components/app/work/states";
@@ -137,11 +137,7 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
                           {[segmentName(r), r.started_at && timeAgo(r.started_at)].filter(Boolean).join(" · ")}
                         </p>
                       )}
-                      {r.status === "failed" && r.error && (
-                        <p className="mt-0.5 line-clamp-2 max-w-80 text-xs text-red-700" title={r.error}>
-                          {r.error}
-                        </p>
-                      )}
+                      {r.status === "failed" && r.error && <RunError error={r.error} />}
                       {(r.status === "failed" || r.status === "cancelled") && !rerun(r) && (
                         <button onClick={() => retry(r)} className="mt-1 text-xs font-medium text-foreground/75 underline-offset-2 hover:text-foreground hover:underline">
                           Run again
@@ -164,6 +160,44 @@ export default function RunsPage({ params }: PageProps<"/app/p/[projectId]/runs"
           </Card>
         )}
       </PageBody>
+    </>
+  );
+}
+
+// Errors run to a few hundred characters, and a hover title can't be read on a phone, so a button shows the rest.
+// It only appears when the clamp cuts something off, which is measured while closed since opening removes the clamp.
+function RunError({ error }: { error: string }) {
+  const id = useId();
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => {
+    const p = ref.current;
+    if (open || !p) return;
+    const measure = () => setClipped(p.scrollHeight > p.clientHeight);
+    const observer = new ResizeObserver(measure);
+    observer.observe(p);
+    // The web font can rewrap the text without resizing the two clamped lines, which the observer wouldn't see.
+    document.fonts.ready.then(measure);
+    return () => observer.disconnect();
+  }, [open]);
+  return (
+    <>
+      <p ref={ref} id={id} className={cn("mt-0.5 max-w-80 text-xs text-red-700 wrap-anywhere", !open && "line-clamp-2")}>
+        {error}
+      </p>
+      {clipped && (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen(!open)}
+          className="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+          {open ? "Show less" : "Show full error"}
+        </button>
+      )}
     </>
   );
 }
