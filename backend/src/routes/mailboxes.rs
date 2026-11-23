@@ -377,6 +377,10 @@ async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>)
         .bind(mailbox.id)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("update segments set mailbox_ids = array_remove(mailbox_ids, $1) where $1 = any(mailbox_ids)")
+        .bind(mailbox.id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("delete from mailboxes where id = $1").bind(mailbox.id).execute(&mut *tx).await?;
     tx.commit().await?;
     audit::record(&state.db, &auth, "mailbox.removed", Target::new("mailbox", mailbox.id, &mailbox.email), json!({})).await;
@@ -670,6 +674,12 @@ mod tests {
             sqlx::query("insert into project_settings (project_id, mailbox_ids) values ($1, $2)").bind(project).bind(picked).execute(&s.state.db).await.unwrap();
             projects.push(project);
         }
+        let campaign: Uuid = sqlx::query_scalar("insert into segments (project_id, name, mailbox_ids) values ($1, 'C', $2) returning id")
+            .bind(projects[0])
+            .bind(vec![gone.id, kept.id])
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
 
         assert!(matches!(remove(State(s.state.clone()), as_user(s.member, s.org, "member"), Path(gone.id)).await, Err(AppError::Forbidden(_))));
         assert!(matches!(remove(State(s.state.clone()), as_user(s.admin, s.other_org, "admin"), Path(gone.id)).await, Err(AppError::NotFound)));
@@ -683,6 +693,8 @@ mod tests {
         // A project that picked only the removed mailbox is left with none picked, so its first emails wait until someone picks
         // another, rather than going out from mailboxes it chose not to use. All mailboxes (null) stays all.
         assert_eq!(picks, [Some(vec![kept.id]), Some(vec![kept.id]), Some(vec![]), None]);
+        let own: Vec<Uuid> = sqlx::query_scalar("select mailbox_ids from segments where id = $1").bind(campaign).fetch_one(&s.state.db).await.unwrap();
+        assert_eq!(own, [kept.id], "a campaign's own pick loses it too");
         let left: Vec<Uuid> = sqlx::query_scalar("select id from mailboxes").fetch_all(&s.state.db).await.unwrap();
         assert_eq!(left, [kept.id]);
         let audit: Vec<String> = sqlx::query_scalar("select target_label from audit_events where action = 'mailbox.removed'").fetch_all(&s.state.db).await.unwrap();

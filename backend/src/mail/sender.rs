@@ -294,6 +294,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
         Some(cap) => cap - monthly_cap::spent_since(&state.db, p.id, crate::autopilot::month_start(now)).await?,
         None => i64::MAX,
     };
+    let own_mailboxes = own_mailboxes(&state.db, p.id).await?;
     // Replies sent in this tick also use up the day's room, so cold emails stop at the limit rather than one past it.
     let mut room = cold_slots;
     for email in due {
@@ -312,7 +313,7 @@ async fn send_project(state: &AppState, p: &SendingProject) -> anyhow::Result<()
             new_leads -= 1;
         }
         let id = email.id;
-        deliver(state, p, email).await?;
+        deliver(state, p, &own_mailboxes, email).await?;
         room -= 1;
         if p.monthly_cap_micros.is_some() {
             cap_left -= monthly_cap::cost_of(&state.db, id).await?;
@@ -499,7 +500,7 @@ async fn pick_mailbox(
 
 /// pick_mailbox's choice among `available`, the organization's mailboxes_with_room. A first email goes out from the least
 /// used one, or with `prefer`, the least used one on that provider when one has room, so matching never holds it back.
-/// `only` is the project's `mailbox_ids`, None for all. It picks who starts a thread, never moves one already going.
+/// `only` is the campaign's or else the project's `mailbox_ids`, None for all. It picks who starts a thread, never moves one already going.
 pub(crate) async fn pick_from(
     db: &sqlx::PgPool,
     available: Vec<Mailbox>,
@@ -614,7 +615,21 @@ pub(super) fn with_footer(kind: &str, body: &str, unsubscribe_page: &str, langua
     }
 }
 
-async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> anyhow::Result<()> {
+/// The project's campaigns that pick their own mailboxes, each with its pick.
+async fn own_mailboxes(db: &sqlx::PgPool, project: Uuid) -> anyhow::Result<HashMap<Uuid, Vec<Uuid>>> {
+    let rows = sqlx::query_as::<_, (Uuid, Vec<Uuid>)>("select id, mailbox_ids from segments where project_id = $1 and mailbox_ids is not null")
+        .bind(project)
+        .fetch_all(db)
+        .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The mailboxes an email may start a thread from: its campaign's own pick, else the project's, None for all.
+fn send_from<'a>(own_mailboxes: &'a HashMap<Uuid, Vec<Uuid>>, project: Option<&'a [Uuid]>, email: &EmailMessage) -> Option<&'a [Uuid]> {
+    email.segment_id.and_then(|id| own_mailboxes.get(&id)).map(Vec::as_slice).or(project)
+}
+
+async fn deliver(state: &AppState, p: &SendingProject, own_mailboxes: &HashMap<Uuid, Vec<Uuid>>, email: EmailMessage) -> anyhow::Result<()> {
     let org_id = p.org_id;
     let claimed = sqlx::query("update email_messages set status = 'sending' where id = $1 and status in ('approved', 'scheduled')")
         .bind(email.id)
@@ -629,7 +644,8 @@ async fn deliver(state: &AppState, p: &SendingProject, email: EmailMessage) -> a
         return release(state, &email, skip).await;
     }
     let prefer = if p.match_provider && email.kind == "initial" { lead_family(&lead).await? } else { None };
-    let Some(mb) = pick_mailbox(&state.db, org_id, &email, prefer, p.mailbox_ids.as_deref()).await? else {
+    let only = send_from(own_mailboxes, p.mailbox_ids.as_deref(), &email);
+    let Some(mb) = pick_mailbox(&state.db, org_id, &email, prefer, only).await? else {
         return release(state, &email, Skip::Wait).await;
     };
     let to = lead.email.clone().unwrap_or_default();
@@ -1033,8 +1049,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Family, MAX_DEFERRALS, campaign_status, company_is_full, defer, mailboxes_with_room, optimize, pick_mailbox, queue_linkedin,
-        replace_guessed, rewrite, swap_link, swap_signature, with_footer,
+        Family, MAX_DEFERRALS, campaign_status, company_is_full, defer, mailboxes_with_room, optimize, own_mailboxes, pick_mailbox,
+        queue_linkedin, replace_guessed, rewrite, send_from, swap_link, swap_signature, with_footer,
     };
     use crate::models::{EmailMessage, Lead};
     use crate::verify::Found;
@@ -1595,6 +1611,53 @@ mod tests {
         assert_eq!(picks(queued(started, "follow_up").await.unwrap(), Some(vec![picked])).await, Some(other), "the thread keeps its mailbox");
         // Its only mailbox deleted, the project starts no threads rather than send from the rest.
         assert_eq!(picks(queued(fresh, "initial").await.unwrap(), Some(vec![])).await, None);
+    }
+
+    // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_starts_threads_from_its_own_mailboxes_and_the_others_from_the_projects(db: PgPool) {
+        let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ('Test') returning id").fetch_one(&db).await.unwrap();
+        let project: Uuid =
+            sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'Test') returning id").bind(org).fetch_one(&db).await.unwrap();
+        let mailbox = |email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc)
+                 values ($1, $2, 'smtp.example.test', $2, 'x') returning id",
+            )
+            .bind(org)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (brand, other) = (mailbox("brand@example.test").await.unwrap(), mailbox("other@example.test").await.unwrap());
+        let campaign = |own: Option<Vec<Uuid>>| {
+            sqlx::query_scalar::<_, Uuid>("insert into segments (project_id, name, mailbox_ids) values ($1, 'C', $2) returning id")
+                .bind(project)
+                .bind(own)
+                .fetch_one(&db)
+        };
+        let (own, follows) = (campaign(Some(vec![other])).await.unwrap(), campaign(None).await.unwrap());
+        let lead = sqlx::query_scalar::<_, Uuid>("insert into leads (project_id) values ($1) returning id").bind(project).fetch_one(&db).await.unwrap();
+        let queued = |segment: Option<Uuid>| {
+            sqlx::query_as::<_, EmailMessage>(
+                "insert into email_messages (project_id, segment_id, lead_id, direction, kind, status)
+                 values ($1, $2, $3, 'outbound', 'initial', 'approved') returning *",
+            )
+            .bind(project)
+            .bind(segment)
+            .bind(lead)
+            .fetch_one(&db)
+        };
+        let loaded = own_mailboxes(&db, project).await.unwrap();
+        let project_pick = [brand];
+        let picks = |email: EmailMessage| {
+            let (db, loaded) = (&db, &loaded);
+            async move { pick_mailbox(db, org, &email, None, send_from(loaded, Some(&project_pick), &email)).await.unwrap().map(|m| m.id) }
+        };
+
+        assert_eq!(picks(queued(Some(own)).await.unwrap()).await, Some(other), "its own pick, not the project's");
+        assert_eq!(picks(queued(Some(follows)).await.unwrap()).await, Some(brand));
+        assert_eq!(picks(queued(None).await.unwrap()).await, Some(brand), "an email outside any campaign keeps to the project's");
     }
 
     // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.

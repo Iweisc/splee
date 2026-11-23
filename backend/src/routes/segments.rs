@@ -152,6 +152,9 @@ pub(super) struct SegmentBody {
     /// When the campaign starts itself, where null cancels it and leaves out keeps it.
     #[serde(default, deserialize_with = "crate::deals::nullable")]
     start_at: Option<Option<Ts>>,
+    /// The mailboxes its first emails go out from, where null goes back to the project's and leaves out keeps them.
+    #[serde(default, deserialize_with = "crate::deals::nullable")]
+    mailbox_ids: Option<Option<Vec<Uuid>>>,
 }
 
 /// A campaign's own send days, 1 (Monday) to 7, and hours, read in the project's time zone.
@@ -190,6 +193,15 @@ pub(super) async fn check_follow_ups(db: &PgPool, segment: Uuid, follow_ups: &Op
         return Err(AppError::BadRequest("This campaign came from another tool and sends the steps it came with".into()));
     }
     Ok(())
+}
+
+/// A campaign's own mailboxes, checked like the project's, or a 400. Null (the inner None) goes back to the project's.
+pub(super) async fn check_mailboxes(db: &PgPool, org_id: Uuid, ids: Option<Option<Vec<Uuid>>>) -> AppResult<Option<Option<Vec<Uuid>>>> {
+    match ids {
+        Some(Some(ids)) if ids.is_empty() => Err(AppError::BadRequest("Pick at least one mailbox".into())),
+        Some(Some(ids)) => Ok(Some(Some(super::settings::check_mailboxes(db, org_id, ids).await?))),
+        other => Ok(other),
+    }
 }
 
 /// A campaign's own daily limit, or a 400.
@@ -303,11 +315,11 @@ pub(super) async fn duplicate(db: &PgPool, segment: &Segment) -> AppResult<Segme
     let copy = sqlx::query_as::<_, Segment>(
         "insert into segments (project_id, name, description, icon, est_size, fit_score, targeting, pain_points, angle, position, language,
                                track_clicks, track_opens, lead_pages, daily_limit, follow_ups, send_days, send_start_hour, send_end_hour,
-                               my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from)
+                               my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from, mailbox_ids)
          select project_id, name || ' (copy)', description, icon, est_size, fit_score, targeting, pain_points, angle,
                 (select max(position) + 1 from segments where project_id = s.project_id), language,
                 track_clicks, track_opens, lead_pages, daily_limit, follow_ups, send_days, send_start_hour, send_end_hour,
-                my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from
+                my_copy_source, my_copy_mode, my_copy_subject, my_copy_body, variant_pick_after, imported_from, mailbox_ids
          from segments s where id = $1 returning *",
     )
     .bind(segment.id)
@@ -366,6 +378,7 @@ async fn update(
     }
     let status = body.status.as_deref().unwrap_or(&segment.status);
     let (set, start_at, by_user, by_key) = start_columns(&segment, status, (&auth).into(), body.start_at)?;
+    let mailbox_ids = check_mailboxes(&state.db, auth.org_id, body.mailbox_ids).await?;
     let segment = sqlx::query_as::<_, Segment>(&format!(
         "update segments set
            name = coalesce($2, name),
@@ -387,7 +400,8 @@ async fn update(
            send_days = case when $20 then $21 else send_days end,
            send_start_hour = case when $20 then $22 else send_start_hour end,
            send_end_hour = case when $20 then $23 else send_end_hour end,
-           {}
+           {},
+           mailbox_ids = case when $28 then $29 else mailbox_ids end
          where id = $1 returning *",
         set_start(24, "coalesce($7, status)"),
     ))
@@ -418,6 +432,8 @@ async fn update(
     .bind(start_at)
     .bind(by_user)
     .bind(by_key)
+    .bind(mailbox_ids.is_some())
+    .bind(mailbox_ids.flatten())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(one_with_stats(&state.db, &segment).await?))
@@ -769,7 +785,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{Archived, get_send_state, with_stats};
+    use super::{Archived, get_send_state, update, with_stats};
     use crate::auth::Auth;
     use crate::error::AppError;
     use crate::routes::stats::tests::seed_costs;
@@ -817,5 +833,46 @@ mod tests {
         assert_eq!((read.campaign_id, read.state, read.sending_now), (segment, "project_paused", false));
         let theirs = get_send_state(State(state), auth(theirs), Path(segment)).await;
         assert!(matches!(theirs, Err(AppError::NotFound)), "another organization's campaign is a 404");
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_campaign_picks_its_own_mailboxes_from_its_organization_and_goes_back_to_the_projects(db: PgPool) {
+        let org = |name: &str| sqlx::query_scalar::<_, Uuid>("insert into organizations (name) values ($1) returning id").bind(name.to_string()).fetch_one(&db);
+        let (ours, theirs) = (org("Ours").await.unwrap(), org("Theirs").await.unwrap());
+        let mailbox = |org_id: Uuid, email: &'static str| {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into mailboxes (org_id, email, smtp_host, smtp_username, smtp_password_enc) values ($1, $2, 'smtp.example.test', $2, 'x') returning id",
+            )
+            .bind(org_id)
+            .bind(email)
+            .fetch_one(&db)
+        };
+        let (a, b, foreign) =
+            (mailbox(ours, "a@ours.example").await.unwrap(), mailbox(ours, "b@ours.example").await.unwrap(), mailbox(theirs, "c@theirs.example").await.unwrap());
+        let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, 'P') returning id").bind(ours).fetch_one(&db).await.unwrap();
+        let segment: Uuid =
+            sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'C') returning id").bind(project).fetch_one(&db).await.unwrap();
+        let state = crate::autopilot::tests::state(db.clone());
+        let patch = |body: serde_json::Value| {
+            let auth = Auth { user_id: Uuid::new_v4(), org_id: ours, role: "member".into(), token_hash: String::new() };
+            update(State(state.clone()), auth, Path(segment), Json(serde_json::from_value(body).unwrap()))
+        };
+        let bad = |r: Result<_, AppError>| match r {
+            Err(AppError::BadRequest(m)) => m,
+            Err(e) => panic!("{e:?}"),
+            Ok(_) => panic!("saved"),
+        };
+
+        let Json(saved) = patch(serde_json::json!({ "mailbox_ids": [b, a, b] })).await.unwrap();
+        let mut both = vec![a, b];
+        both.sort();
+        assert_eq!(saved.segment.mailbox_ids, Some(both.clone()), "sorted without repeats");
+        let Json(kept) = patch(serde_json::json!({ "name": "Renamed" })).await.unwrap();
+        assert_eq!(kept.segment.mailbox_ids, Some(both), "left out keeps them");
+        assert_eq!(bad(patch(serde_json::json!({ "mailbox_ids": [] })).await), "Pick at least one mailbox");
+        assert_eq!(bad(patch(serde_json::json!({ "mailbox_ids": [a, foreign] })).await), "Pick mailboxes connected to this organization");
+        let Json(back) = patch(serde_json::json!({ "mailbox_ids": null })).await.unwrap();
+        assert_eq!(back.segment.mailbox_ids, None, "null goes back to the project's");
     }
 }

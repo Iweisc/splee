@@ -163,7 +163,7 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         mailbox_ready: mailbox_ready(
             db,
             mail::sender::mailboxes_with_room(db, org_id, false).await?,
-            settings.mailbox_ids.as_deref(),
+            segment.mailbox_ids.as_deref().or(settings.mailbox_ids.as_deref()),
             segment.id,
             lead_cap_reached,
             &closed,

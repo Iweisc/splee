@@ -888,6 +888,8 @@ export interface Segment {
   send_end_hour: number | null;
   /** When it starts by itself, as Start would. Starting or archiving it clears this. */
   start_at: Ts | null;
+  /** The mailboxes that send its first emails instead of the project's pick. Null sends from the project's. */
+  mailbox_ids: UUID[] | null;
 }
 
 /** One angle of a campaign's A/B test. Its instructions go to the writer on top of the campaign brief. */

@@ -124,6 +124,18 @@ pub(super) struct SettingsBody {
     assign_territories: Option<Vec<crate::ownership::Territory>>,
 }
 
+/// The mailboxes picked to send a project's or a campaign's first emails, sorted without repeats, or a 400 for one that isn't
+/// the organization's.
+pub(super) async fn check_mailboxes(db: impl sqlx::PgExecutor<'_>, org_id: Uuid, mut ids: Vec<Uuid>) -> AppResult<Vec<Uuid>> {
+    ids.sort();
+    ids.dedup();
+    let theirs: i64 = sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(&ids).fetch_one(db).await?;
+    if theirs != ids.len() as i64 {
+        return Err(AppError::BadRequest("Pick mailboxes connected to this organization".into()));
+    }
+    Ok(ids)
+}
+
 /// Send days, 1 (Monday) to 7, and the hours between, a project's or a campaign's.
 pub(super) fn check_send_window(days: &[i32], start: i32, end: i32) -> Result<(), &'static str> {
     if days.iter().any(|d| !(1..=7).contains(d)) {
@@ -328,18 +340,10 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if control || sender_name.as_deref().is_some_and(|n| n.chars().count() > 100 || n.contains('@')) {
         return bad("The sender name must be a person's or team's name of up to 100 characters, not an email address");
     }
-    let mailbox_ids = body.mailbox_ids.clone().flatten().map(|mut ids| {
-        ids.sort();
-        ids.dedup();
-        ids
-    });
-    if let Some(ids) = &mailbox_ids {
-        let theirs: i64 =
-            sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and id = any($2)").bind(org_id).bind(ids).fetch_one(&mut *tx).await?;
-        if theirs != ids.len() as i64 {
-            return bad("Pick mailboxes connected to this organization");
-        }
-    }
+    let mailbox_ids = match body.mailbox_ids.clone().flatten() {
+        Some(ids) => Some(check_mailboxes(&mut *tx, org_id, ids).await?),
+        None => None,
+    };
     if let Some(rule) = &body.assign_rule {
         util_input::one_of("assign_rule", rule, crate::ownership::RULES)?;
     }
