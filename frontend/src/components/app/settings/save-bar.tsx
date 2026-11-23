@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { ProjectSettingsForm } from "./use-project-settings";
 
 type Saving = Pick<ProjectSettingsForm, "dirty" | "saving" | "save">;
-// The text-like fields a browser submits a form from on Enter. Not date ones: Enter in Days off's adds the day.
+// The text-like fields a browser submits a form from on Enter. Not date ones, since Enter in Days off adds the picked date.
 const SUBMITS = new Set(["text", "email", "number", "password", "search", "tel", "url"]);
 
 /** Enter alone, not mid-composition and not already used by the field itself. */
@@ -16,8 +16,8 @@ export const isPlainEnter = (e: React.KeyboardEvent) =>
 
 /**
  * A keydown handler for the column around a SaveBar's fields, so Enter in one saves like it would in a form. The pages aren't
- * forms, since every Button in one would submit it. A field in its own form (integrations), using Enter itself (ChipInput)
- * or in a portal, like a dialog's, keeps it. With a problem showing, Enter does nothing, as Save is disabled.
+ * forms, since Button has no default type and every one in a form would submit it. The contains check is there because React
+ * bubbles a portal's events, like a dialog's, through the column too.
  */
 export function saveOnEnter(form: Saving, problem?: string | null) {
   return (e: React.KeyboardEvent<HTMLDivElement>) => {
