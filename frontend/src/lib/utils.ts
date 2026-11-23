@@ -71,6 +71,11 @@ export function dayTime(ts: string): string {
   return new Date(ts).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** An IANA time zone as people read it: "America/New_York" as "America/New York". */
+export function zoneName(zone: string): string {
+  return zone.replaceAll("_", " ");
+}
+
 export function isPast(ts: string): boolean {
   return new Date(ts).getTime() <= Date.now();
 }

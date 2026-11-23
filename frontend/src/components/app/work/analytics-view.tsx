@@ -7,7 +7,7 @@ import { ListSkeleton, MicroLabel } from "@/components/app/work/states";
 import { Badge, Card, Skeleton } from "@/components/ui/misc";
 import { bouncing } from "@/lib/mailbox";
 import type { Analytics, AnalyticsTotals, Engagement } from "@/lib/types";
-import { cn, money, num, percent, plural } from "@/lib/utils";
+import { cn, money, num, percent, plural, zoneName } from "@/lib/utils";
 
 /** "Oct 14 – Nov 12, 2026", with both years when the range crosses one. */
 export function rangeText(from: string, to: string) {
@@ -388,7 +388,7 @@ export function AnalyticsView({ data, validating, shared }: { data?: Analytics; 
           <Heatmap
             kind="email"
             cells={data.heatmap.map((c) => ({ weekday: c.weekday, hour: c.hour, total: c.sent, hits: c.replies }))}
-            where={`Times are in ${data.timezone}.`}
+            where={`Times are in ${zoneName(data.timezone)}.`}
           />
           {data.call_heatmap.length > 0 && (
             <Heatmap

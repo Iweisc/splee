@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Globe } from "lucide-react";
 import { Select } from "@/components/ui/form";
 import type { Ts } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, zoneName } from "@/lib/utils";
 
 const ZONES = Intl.supportedValuesOf("timeZone");
 
@@ -43,7 +43,7 @@ export function ZonePicker({ zone, onChange }: { zone: string; onChange: (zone: 
       <Select value={zone} onChange={(e) => onChange(e.target.value)} className="h-9 min-w-0 flex-1 text-sm">
         {zones.map((z) => (
           <option key={z} value={z}>
-            {z.replaceAll("_", " ")}
+            {zoneName(z)}
           </option>
         ))}
       </Select>

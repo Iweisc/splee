@@ -22,7 +22,7 @@ import { Address, Card, EmptyState, Favicon, Skeleton } from "@/components/ui/mi
 import { api, ApiError } from "@/lib/api";
 import { bouncing, wholePercent } from "@/lib/mailbox";
 import type { Lead, LeadRow, Mailbox, MailboxStats, ProjectDetail, ProjectSettings, ProjectStats } from "@/lib/types";
-import { dayTime, money, num, timeAgo } from "@/lib/utils";
+import { dayTime, money, num, timeAgo, zoneName } from "@/lib/utils";
 import { fetcher } from "@/hooks/use-me";
 
 export default function OverviewPage({ params }: PageProps<"/app/p/[projectId]">) {
@@ -204,7 +204,7 @@ function SendWindowNotice({ projectId, settings }: { projectId: string; settings
     <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
       <Clock className="size-4 text-muted-foreground" />
       <p className="min-w-0 flex-1 basis-64">
-        Outside sending hours. The next emails go out {yours} your time ({theirs} {settings.timezone.replaceAll("_", " ")}), {timeAgo(next.toISOString())}.
+        Outside sending hours. The next emails go out {yours} your time ({theirs} {zoneName(settings.timezone)}), {timeAgo(next.toISOString())}.
       </p>
       <LinkButton href={`/app/p/${projectId}/schedule`} variant="outline" size="sm" className="max-sm:grow">
         Change hours

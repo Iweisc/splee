@@ -43,7 +43,7 @@ import type {
   TextMessage,
   ThreadMessage,
 } from "@/lib/types";
-import { cn, dateTime, fileSize, isPast, timeAgo } from "@/lib/utils";
+import { cn, dateTime, fileSize, isPast, timeAgo, zoneName } from "@/lib/utils";
 import { useAgentEvents } from "@/hooks/use-agent-events";
 import { fetcher } from "@/hooks/use-me";
 import { LoadError, MicroLabel, Pager, PER_PAGE, toastError, useDebounced, useLastPageGuard } from "./states";
@@ -772,7 +772,7 @@ function offerLabel({ at, time_zone, theirs }: SendLaterOffer) {
         ? "Tomorrow"
         : when.toLocaleDateString("en-US", { timeZone: time_zone, weekday: "long" });
   const time = when.toLocaleTimeString("en-US", { timeZone: time_zone, hour: "numeric", minute: "2-digit" });
-  const zone = theirs ? "their time" : `${time_zone.split("/").pop()?.replaceAll("_", " ")} time`;
+  const zone = theirs ? "their time" : `${zoneName(time_zone.split("/").pop() ?? time_zone)} time`;
   return `${name} at ${time} ${zone}`;
 }
 

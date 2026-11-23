@@ -14,6 +14,7 @@ import { Card, EmptyState, Tabs } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import type { BookingPage, BookingPageInput, Mailbox } from "@/lib/types";
+import { zoneName } from "@/lib/utils";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const TIMEZONES = Intl.supportedValuesOf("timeZone");
@@ -189,7 +190,7 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
             <Select value={d.timezone} onChange={(e) => set({ timezone: e.target.value })}>
               {zones.map((z) => (
                 <option key={z} value={z}>
-                  {z.replaceAll("_", " ")}
+                  {zoneName(z)}
                 </option>
               ))}
             </Select>

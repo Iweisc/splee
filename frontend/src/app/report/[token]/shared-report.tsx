@@ -11,6 +11,7 @@ import { Card, Spinner } from "@/components/ui/misc";
 import { fetcher } from "@/hooks/use-me";
 import { ApiError } from "@/lib/api";
 import type { ReportPerson, SharedReport } from "@/lib/types";
+import { zoneName } from "@/lib/utils";
 
 function day(ts: string) {
   return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -58,7 +59,7 @@ export function SharedReportView({ token }: { token: string }) {
           </p>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">{data.title || `${data.name} outreach report`}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {RANGE_LABELS[data.range_preset]}, {rangeText(a.from, a.to)}, compared with {rangeText(a.previous_from, a.previous_to)}. Days are in {a.timezone}.
+            {RANGE_LABELS[data.range_preset]}, {rangeText(a.from, a.to)}, compared with {rangeText(a.previous_from, a.previous_to)}. Days are in {zoneName(a.timezone)}.
           </p>
           {data.intro && <p className="mt-4 text-[15px] whitespace-pre-line">{data.intro}</p>}
         </div>
