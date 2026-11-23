@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { BellRing } from "lucide-react";
 import { toast } from "sonner";
 import useSWR from "swr";
@@ -9,6 +9,7 @@ import { useAction } from "@/components/app/settings/use-action";
 import { LoadError } from "@/components/app/work/states";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
+import { useBrowserValue } from "@/hooks/use-browser-value";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api, ApiError } from "@/lib/api";
 import { keepPushFor, markPushOwner } from "@/lib/push";
@@ -26,7 +27,6 @@ function detectSupport(): Support {
   return window.matchMedia("(display-mode: standalone)").matches ? "ios-old" : "ios-browser";
 }
 
-const never = () => () => {};
 
 const WHY: Record<Exclude<Support, "loading" | "ok">, string> = {
   "ios-browser":
@@ -71,7 +71,7 @@ async function thisBrowser(userId: string): Promise<{ permission: NotificationPe
 
 /** Turn on push in this browser, send a test, and see or remove each browser it's on. */
 export function PushSection() {
-  const support = useSyncExternalStore(never, detectSupport, () => "loading" as const);
+  const support = useBrowserValue(detectSupport, "loading");
   const devices = useSWR<PushDevice[]>("/push/subscriptions", fetcher);
   const userId = useMe().me?.user.id;
   const [here, setHere] = useState<{ permission: NotificationPermission; deviceId: string | null } | null>(null);

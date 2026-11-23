@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { KeyRound } from "lucide-react";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import { Button, buttonClass } from "@/components/ui/button";
 import { LoadError, toastError } from "@/components/app/work/states";
 import { Field, Input, Switch } from "@/components/ui/form";
 import { Modal } from "@/components/ui/misc";
+import { useBrowserValue } from "@/hooks/use-browser-value";
 import { fetcher, useMe } from "@/hooks/use-me";
 import { api } from "@/lib/api";
 import { createPasskey, deviceName, passkeyCancelled, passkeysSupported, type PasskeyCreationOptions } from "@/lib/passkeys";
@@ -346,15 +347,13 @@ function BackupCodeList({ codes, onDone }: { codes: string[]; onDone: () => void
   );
 }
 
-const noSubscription = () => () => {};
-
 type PasskeyDialog = { kind: "add" } | { kind: "rename"; passkey: Passkey } | { kind: "remove"; passkey: Passkey };
 
 const PASSKEY_TITLES: Record<PasskeyDialog["kind"], string> = { add: "Add a passkey", rename: "Rename passkey", remove: "Remove passkey" };
 
 /** Hidden in a browser without WebAuthn, where a passkey can be neither added nor used. */
 function Passkeys() {
-  const supported = useSyncExternalStore(noSubscription, passkeysSupported, () => false);
+  const supported = useBrowserValue(passkeysSupported, false);
   const { data, error, mutate } = useSWR<Passkey[]>(supported ? "/auth/passkeys" : null, fetcher);
   const { data: methods } = useSWR<SignInMethods>("/auth/sign-in-methods", fetcher);
   const { data: twoFactor } = useSWR<TwoFactorStatus>("/auth/two-factor", fetcher);

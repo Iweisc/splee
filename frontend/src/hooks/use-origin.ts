@@ -1,6 +1,6 @@
-import { useSyncExternalStore } from "react";
+import { useBrowserValue } from "./use-browser-value";
 
-const subscribe = () => () => {};
+const origin = () => window.location.origin;
 
 /** The origin this page is served from, empty during the server render. The API lives on the same host as the app. */
-export const useOrigin = () => useSyncExternalStore(subscribe, () => window.location.origin, () => "");
+export const useOrigin = () => useBrowserValue(origin, "");

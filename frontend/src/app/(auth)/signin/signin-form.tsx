@@ -2,18 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card } from "@/components/ui/misc";
 import { SsoButtons } from "@/components/sso";
+import { useBrowserValue } from "@/hooks/use-browser-value";
 import { useMe } from "@/hooks/use-me";
 import { api, qs } from "@/lib/api";
 import { getPasskey, passkeyAutofill, passkeyCancelled, passkeysSupported, type PasskeyRequestOptions } from "@/lib/passkeys";
 import type { SignIn } from "@/lib/types";
 
-const noSubscription = () => () => {};
 // Signing in with Google or Microsoft comes back with #two_factor_token=… when two-factor is on. A fragment never reaches
 // a server or a Referer header, unlike a query.
 const tokenInHash = () => new URLSearchParams(window.location.hash.slice(1)).get("two_factor_token");
@@ -26,12 +26,12 @@ export function SigninForm({ next, ssoError, passwordReset }: { next: string | n
   // Set once the password is right for an account with two-factor on. The form then asks for the code.
   const [typedToken, setToken] = useState<string | null>(null);
   const [startedOver, setStartedOver] = useState(false);
-  const hashToken = useSyncExternalStore(noSubscription, tokenInHash, () => null);
+  const hashToken = useBrowserValue(tokenInHash, null);
   const token = typedToken ?? (startedOver ? null : hashToken);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const passkeys = useSyncExternalStore(noSubscription, passkeysSupported, () => false);
+  const passkeys = useBrowserValue(passkeysSupported, false);
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const [passkeyLoading, setPasskeyLoading] = useState(false);
   // The passkey request behind the email field's autofill, which has to stop before the button can ask for one. Bumping
