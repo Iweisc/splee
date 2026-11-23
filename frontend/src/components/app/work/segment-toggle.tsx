@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, CalendarClock, Pause, Play, X } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { toast } from "sonner";
@@ -45,10 +45,20 @@ export function StartLater({ segment }: { segment: Segment }) {
   const { mutate } = useSWRConfig();
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Scheduling swaps Start later for the Starts button and cancelling swaps it back, so the button that had focus, or that
+  // the picker would hand it back to, is gone. Focus goes to the one in its place, unless it has moved on meanwhile.
+  const trigger = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current || picking) return;
+    refocus.current = false;
+    if (document.activeElement === document.body) trigger.current?.focus();
+  }, [segment.start_at, picking]);
   const set = async (start_at: string | null) => {
     setBusy(true);
     try {
       await api(`/segments/${segment.id}`, { method: "PATCH", body: { start_at } });
+      refocus.current = true;
       await mutate(() => true);
       toast.success(start_at ? `${segment.name} starts by itself on ${dayTime(start_at)}` : "Scheduled start cancelled");
       setPicking(false);
@@ -62,8 +72,15 @@ export function StartLater({ segment }: { segment: Segment }) {
   return (
     <>
       {segment.start_at ? (
-        <span className="inline-flex items-center">
-          <Button variant="outline" className="rounded-r-none" onClick={() => setPicking(true)} aria-label={`Starts ${dayTime(segment.start_at)}. Change it`}>
+        // On a phone it takes a row of its own under the other actions, rather than one between them, which made three.
+        <span className="inline-flex items-center max-sm:order-last max-sm:basis-full">
+          <Button
+            ref={trigger}
+            variant="outline"
+            className="rounded-r-none max-sm:flex-1"
+            onClick={() => setPicking(true)}
+            aria-label={`Starts ${dayTime(segment.start_at)}. Change it`}
+          >
             <CalendarClock className="size-3.5" /> Starts {dayTime(segment.start_at)}
           </Button>
           <Button
@@ -79,7 +96,7 @@ export function StartLater({ segment }: { segment: Segment }) {
           </Button>
         </span>
       ) : (
-        <Button variant="outline" onClick={() => setPicking(true)}>
+        <Button ref={trigger} variant="outline" onClick={() => setPicking(true)}>
           <CalendarClock className="size-3.5" /> Start later
         </Button>
       )}
