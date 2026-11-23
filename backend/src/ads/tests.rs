@@ -688,14 +688,17 @@ async fn picking_another_account_waits_for_a_running_sync_and_leaves_no_stale_le
 
     // The sync has written Ana to the ledger and waits on LinkedIn when the account changes.
     s.fake.stall.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    // The one sync, not a tick: the change resets the audience, so a tick still looking for more would sync it again on the
+    // new account whenever the change landed first.
+    let audience: Uuid = sqlx::query_scalar("select id from ad_audiences").fetch_one(&s.db).await.unwrap();
     let state = s.state.clone();
-    let sync = tokio::spawn(async move { tick(&state).await.unwrap() });
+    let running = tokio::spawn(async move { sync(&state, audience).await.unwrap() });
     s.fake.stall.reached.notified().await;
     let picked = tokio::spawn(pick("5002"));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!picked.is_finished(), "the account change waits for the sync");
     s.fake.stall.release.notify_one();
-    assert_eq!(sync.await.unwrap(), 1);
+    running.await.unwrap();
     assert_eq!(picked.await.unwrap().unwrap().status(), 200);
 
     assert_eq!(ledger(&s.db).await, [], "nothing from the old account is left");
