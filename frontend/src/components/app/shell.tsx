@@ -37,6 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const navRef = useRef<HTMLElement>(null);
   const openRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   // A push subscription someone else made in this browser stops here, before it brings this person their leads.
   const userId = me?.user.id;
@@ -114,6 +115,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen flex-col lg:flex-row">
       <PageTitle title={pageTitle} />
       <ShortcutsDialog />
+      {/* The first Tab stop, past the 40 or more sidebar links. Focus moves into the page without changing the URL, or scrolling
+          the page title under the phone header. The page takes focus only for this, so a click on empty space in it doesn't
+          start Tab over from its top. */}
+      <a
+        href="#content"
+        inert={menuOpen}
+        onClick={(e) => {
+          e.preventDefault();
+          const main = mainRef.current;
+          if (!main) return;
+          main.tabIndex = -1;
+          main.addEventListener("blur", () => main.removeAttribute("tabindex"), { once: true });
+          main.focus({ preventScroll: true });
+        }}
+        className="fixed top-3 left-3 z-50 -translate-y-24 rounded-lg bg-card px-3 py-2 text-sm font-medium shadow-pop focus:translate-y-0 focus-visible:outline-2 focus-visible:outline-brand-600"
+      >
+        Skip to content
+      </a>
       <header inert={menuOpen} className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background px-4 lg:hidden">
         <button ref={openRef} onClick={() => setMenuPath(pathname)} className="-ml-1.5 rounded-md p-1.5 hover:bg-accent" aria-label="Open menu">
           <Menu className="size-5" />
@@ -202,7 +221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main inert={menuOpen} className="min-w-0 flex-1">
+      <main ref={mainRef} id="content" inert={menuOpen} className="min-w-0 flex-1 outline-none">
         <SWRConfig value={swrConfig}>{children}</SWRConfig>
       </main>
       <Toasts />
