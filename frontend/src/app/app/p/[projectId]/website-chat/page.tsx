@@ -58,7 +58,7 @@ export default function WebsiteChatPage({ params }: PageProps<"/app/p/[projectId
   const problem = !s
     ? null
     : !HEX.test(s.accent)
-      ? "Pick the colour as a hex code, like #2563eb"
+      ? "Pick the color as a hex code, like #2563eb"
       : !s.greeting.trim()
         ? "Write a greeting"
         : s.faq.length > FAQ_MAX
@@ -101,14 +101,14 @@ export default function WebsiteChatPage({ params }: PageProps<"/app/p/[projectId
               <Section title="Appearance" description="How the chat looks on your site, and where it shows.">
                 <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_280px]">
                   <div className="flex min-w-0 flex-col gap-4">
-                    <Field label="Accent colour">
+                    <Field label="Accent color">
                       <div className="flex items-center gap-2">
                         <input
                           type="color"
                           value={HEX.test(s.accent) ? s.accent : "#111111"}
                           onChange={(e) => update({ accent: e.target.value })}
                           className="h-10 w-12 shrink-0 cursor-pointer rounded-lg border border-border-strong bg-card p-1"
-                          aria-label="Pick a colour"
+                          aria-label="Pick a color"
                         />
                         <Input value={s.accent} onChange={(e) => update({ accent: e.target.value.trim() })} className="font-mono" maxLength={7} />
                       </div>

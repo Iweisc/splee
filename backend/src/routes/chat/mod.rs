@@ -702,7 +702,7 @@ async fn update_settings(State(state): State<AppState>, auth: Auth, Path(id): Pa
     load_settings(&state.db, id).await?;
     let accent = body.accent.map(|a| a.trim().to_lowercase());
     if accent.as_deref().is_some_and(|a| a.len() != 7 || !a.starts_with('#') || !a[1..].chars().all(|c| c.is_ascii_hexdigit())) {
-        return Err(AppError::BadRequest("Pick the colour as a hex code, like #2563eb".into()));
+        return Err(AppError::BadRequest("Pick the color as a hex code, like #2563eb".into()));
     }
     let greeting = body.greeting.map(|g| clean_text(&g));
     if greeting.as_deref().is_some_and(|g| g.is_empty() || g.chars().count() > MAX_GREETING) {
