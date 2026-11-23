@@ -159,8 +159,8 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
         </a>
       }
     >
-      {/* grid-cols-1 rather than the implicit track, which grows to the Time zone select's longest zone name and made a phone
-          scroll sideways. */}
+      {/* This grid and the Time zone row use grid-cols-1, not the implicit track, which grows to the select's longest zone name
+          and made a phone scroll sideways. */}
       <div className="grid grid-cols-1 gap-6">
         <CopyField value={page.url} />
 
