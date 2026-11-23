@@ -217,7 +217,7 @@ function ScoreSignals() {
                       onClick={() => flip(s)}
                       className={cn(
                         "rounded-lg border px-3 py-1.5 text-sm transition-colors",
-                        s.on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card text-muted-foreground line-through hover:bg-accent",
+                        s.on ? "border-foreground bg-primary text-primary-foreground" : "border-border-strong bg-card text-muted-foreground line-through hover:bg-accent hover:text-foreground",
                       )}
                     >
                       {s.label}
