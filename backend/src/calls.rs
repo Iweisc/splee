@@ -396,19 +396,10 @@ pub async fn cancel_stale(db: &PgPool, project: Option<Uuid>) -> sqlx::Result<u6
     Ok(done.rows_affected())
 }
 
-/// Stops everything still to go to the lead: unsent emails, LinkedIn steps, texts and other open calls.
+/// Ends the lead's sequence as a reply does, then cancels its other open calls too, like a call back they asked for.
 async fn stop_sequence(db: &PgPool, lead_id: Uuid, why: &str) -> sqlx::Result<()> {
     let mut tx = db.begin().await?;
-    sqlx::query(
-        "update email_messages set status = 'cancelled', error = $2
-         where lead_id = $1 and direction = 'outbound' and kind in ('initial', 'follow_up') and status in ('draft', 'approved', 'scheduled')",
-    )
-    .bind(lead_id)
-    .bind(why)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(crate::mail::STOP_LINKEDIN).bind(lead_id).execute(&mut *tx).await?;
-    sqlx::query(crate::twilio::STOP_TEXTS).bind(lead_id).bind(why).execute(&mut *tx).await?;
+    crate::mail::end_sequence(&mut tx, lead_id, why).await?;
     sqlx::query(STOP_CALLS).bind(lead_id).bind(why).execute(&mut *tx).await?;
     tx.commit().await
 }
