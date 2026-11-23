@@ -343,9 +343,239 @@ fn hunter_leads(body: &Value, segment_id: Option<Uuid>) -> Vec<NewLead> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::sync::Arc;
 
-    use super::{hunter_leads, parse_spreadsheet};
+    use axum::body::Body;
+    use axum::extract::{FromRequest, Request};
+    use serde_json::json;
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::config::Config;
+
+    struct Seeded {
+        state: AppState,
+        org: Uuid,
+        project: Uuid,
+        segment: Uuid,
+        other_org: Uuid,
+        other_project: Uuid,
+    }
+
+    async fn seed(db: PgPool) -> Seeded {
+        let mut ids = Vec::new();
+        for name in ["Acme", "Other"] {
+            let org: Uuid = sqlx::query_scalar("insert into organizations (name) values ($1) returning id").bind(name).fetch_one(&db).await.unwrap();
+            let project: Uuid = sqlx::query_scalar("insert into projects (org_id, name) values ($1, $2) returning id").bind(org).bind(name).fetch_one(&db).await.unwrap();
+            ids.push((org, project));
+        }
+        let [(org, project), (other_org, other_project)] = ids[..] else { unreachable!() };
+        let segment: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Founders') returning id").bind(project).fetch_one(&db).await.unwrap();
+        let state = AppState { db, cfg: Arc::new(Config::test()), events: tokio::sync::broadcast::channel(16).0, rate_limits: Default::default() };
+        Seeded { state, org, project, segment, other_org, other_project }
+    }
+
+    fn owner(org_id: Uuid) -> Auth {
+        Auth { user_id: Uuid::new_v4(), org_id, role: "owner".into(), token_hash: String::new() }
+    }
+
+    /// A form part: its name, the file name when it's a file, and its content.
+    type Part<'a> = (&'a str, Option<&'a str>, &'a [u8]);
+
+    /// The multipart body a browser sends for `parts`.
+    async fn form(parts: &[Part<'_>]) -> Multipart {
+        let mut body = Vec::new();
+        for (name, filename, content) in parts {
+            let filename = filename.map(|f| format!("; filename=\"{f}\"")).unwrap_or_default();
+            body.extend(format!("--XBOUNDARY\r\nContent-Disposition: form-data; name=\"{name}\"{filename}\r\n\r\n").as_bytes());
+            body.extend(*content);
+            body.extend(b"\r\n");
+        }
+        body.extend(b"--XBOUNDARY--\r\n");
+        let request =
+            Request::builder().method("POST").header("content-type", "multipart/form-data; boundary=XBOUNDARY").body(Body::from(body)).unwrap();
+        Multipart::from_request(request, &()).await.unwrap()
+    }
+
+    async fn upload(s: &Seeded, org: Uuid, project: Uuid, parts: &[Part<'_>]) -> AppResult<Import> {
+        import(State(s.state.clone()), owner(org), Path(project), form(parts).await).await.map(|Json(i)| i)
+    }
+
+    async fn count(s: &Seeded, table: &str) -> i64 {
+        sqlx::query_scalar(&format!("select count(*) from {table}")).fetch_one(&s.state.db).await.unwrap()
+    }
+
+    const CSV: &[u8] = b"\xEF\xBB\xBFE-mail,First Name,Last name,Name,Company,Website,Mobile,Country,Email address
+ada@acme.example,Ada,Lovelace,,Acme,https://www.acme.example/about,020 7946 0018,GB,
+ADA@acme.example,Ada,Again,,Acme,,,,
+
+not-an-email,Nope,,,,,,,
+,Blank,,,,,,,
+bob@blocked.example,Bob,,,Blocked,,,,
+sam@acme.example,,,Sam Lee,Acme,,,,
+";
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn the_preview_suggests_a_mapping_and_shows_the_first_rows(db: PgPool) {
+        let s = seed(db).await;
+        let preview_of = |org: Uuid, parts: Vec<Part<'static>>| {
+            let state = s.state.clone();
+            let project = s.project;
+            async move { preview(State(state), owner(org), Path(project), form(&parts).await).await.map(|Json(p)| p) }
+        };
+
+        let shown = preview_of(s.org, vec![("file", Some("leads.csv"), CSV)]).await.unwrap();
+        assert_eq!(shown.filename, "leads.csv");
+        assert_eq!(shown.headers[0], "E-mail", "the byte order mark is dropped");
+        let firsts: Vec<_> = shown.rows.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(firsts, ["ada@acme.example", "ADA@acme.example", "not-an-email", "", "bob@blocked.example"], "the first 5 rows in order, blank lines left out");
+        assert_eq!(shown.rows[0][..2], ["ada@acme.example", "Ada"]);
+        let mut suggested: Vec<_> = shown.suggested_mapping.iter().map(|(f, h)| (*f, h.as_str())).collect();
+        suggested.sort();
+        assert_eq!(suggested, [
+            ("company_domain", "Website"),
+            ("company_name", "Company"),
+            ("country_code", "Country"),
+            ("email", "E-mail"),
+            ("first_name", "First Name"),
+            ("full_name", "Name"),
+            ("last_name", "Last name"),
+            ("phone", "Mobile"),
+        ]);
+
+        let refused = |r: AppResult<Preview>| match r {
+            Err(AppError::BadRequest(m)) => m,
+            other => panic!("{:?}", other.map(|p| p.filename)),
+        };
+        assert_eq!(refused(preview_of(s.org, vec![("segment_id", None, b"".as_slice())]).await), "Attach a CSV or Excel file");
+        // A header row of empty cells.
+        assert_eq!(refused(preview_of(s.org, vec![("file", Some("leads.csv"), b",,\nada@acme.example,,\n".as_slice())]).await), "The CSV has no header row");
+        assert!(matches!(preview_of(s.other_org, vec![("file", Some("leads.csv"), CSV)]).await, Err(AppError::NotFound)));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn an_import_needs_a_file_an_email_column_and_a_campaign_of_its_project(db: PgPool) {
+        let s = seed(db).await;
+        let archived: Uuid = sqlx::query_scalar("insert into segments (project_id, name, archived_at) values ($1, 'Old', now()) returning id")
+            .bind(s.project)
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
+        let theirs: Uuid = sqlx::query_scalar("insert into segments (project_id, name) values ($1, 'Theirs') returning id")
+            .bind(s.other_project)
+            .fetch_one(&s.state.db)
+            .await
+            .unwrap();
+        let (archived, theirs) = (archived.to_string(), theirs.to_string());
+        let file: Part = ("file", Some("leads.csv"), CSV);
+        let email: Part = ("mapping", None, br#"{"email": "E-mail"}"#.as_slice());
+        let campaign = "That campaign isn't part of this project, or it's archived";
+        let cases: Vec<(Vec<Part>, &str)> = vec![
+            (vec![email], "Attach a CSV or Excel file"),
+            (vec![file], "Map your columns first"),
+            (vec![file, ("mapping", None, b"[\"email\"]".as_slice())], "mapping must be a JSON object of field to column"),
+            (vec![file, ("mapping", None, br#"{"email": "E-mail", "nickname": "Name"}"#.as_slice())], "Unknown field: nickname"),
+            (vec![file, ("mapping", None, br#"{"email": "Mail"}"#.as_slice())], "Column \"Mail\" is not in the file"),
+            (vec![file, ("mapping", None, br#"{"first_name": "First Name"}"#.as_slice())], "Pick the column that holds email addresses"),
+            (vec![file, ("mapping", None, br#"{"email": "", "first_name": "First Name"}"#.as_slice())], "Pick the column that holds email addresses"),
+            (vec![file, email, ("segment_id", None, b"not-an-id".as_slice())], "segment_id is not a valid id"),
+            (vec![file, email, ("segment_id", None, archived.as_bytes())], campaign),
+            (vec![file, email, ("segment_id", None, theirs.as_bytes())], campaign),
+        ];
+        for (parts, want) in cases {
+            match upload(&s, s.org, s.project, &parts).await {
+                Err(AppError::BadRequest(m)) => assert_eq!(m, want),
+                other => panic!("{want}: {:?}", other.map(|i| i.filename)),
+            }
+        }
+        assert!(matches!(upload(&s, s.other_org, s.project, &[file, email]).await, Err(AppError::NotFound)));
+        assert_eq!((count(&s, "leads").await, count(&s, "imports").await), (0, 0));
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn an_import_saves_the_mapped_leads_and_records_what_it_skipped(db: PgPool) {
+        let s = seed(db).await;
+        sqlx::query("insert into suppressions (org_id, value, kind, reason) values ($1, 'blocked.example', 'domain', 'manual')")
+            .bind(s.org)
+            .execute(&s.state.db)
+            .await
+            .unwrap();
+        let segment = s.segment.to_string();
+        let mapping = br#"{"email": "E-mail", "first_name": "First Name", "last_name": "Last name", "full_name": "Name", "company_name": "Company",
+                           "company_domain": "Website", "country_code": "Country", "phone": "", "title": ""}"#.as_slice();
+        let done = upload(&s, s.org, s.project, &[("file", Some("leads.csv"), CSV), ("mapping", None, mapping), ("segment_id", None, segment.as_bytes())])
+            .await
+            .unwrap();
+        assert_eq!((done.filename.as_str(), done.total, done.imported, done.skipped, done.segment_id), ("leads.csv", 6, 2, 4, Some(s.segment)));
+        // Rows are the file's line numbers, so the blank line 4 counts.
+        assert_eq!(
+            done.errors,
+            json!([
+                { "row": 3, "error": "Duplicate: ada@acme.example" },
+                { "row": 5, "error": "Invalid email: not-an-email" },
+                { "row": 6, "error": "Missing email" },
+                { "row": 7, "error": "Suppressed: bob@blocked.example" },
+            ])
+        );
+        let leads: Value = sqlx::query_scalar(
+            "select json_agg(json_build_object('email', email, 'full_name', full_name, 'first_name', first_name, 'last_name', last_name,
+                    'company_name', company_name, 'company_domain', company_domain, 'country_code', country_code, 'phone', phone,
+                    'segment_id', segment_id, 'source', source) order by email)
+             from leads where project_id = $1",
+        )
+        .bind(s.project)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+        let lead = |email: &str, full: &str, first: &str, last: &str, domain: Option<&str>, country: &str| {
+            json!({ "email": email, "full_name": full, "first_name": first, "last_name": last, "company_name": "Acme", "company_domain": domain,
+                    "country_code": country, "phone": "", "segment_id": s.segment, "source": "import" })
+        };
+        assert_eq!(
+            leads,
+            json!([lead("ada@acme.example", "Ada Lovelace", "Ada", "Lovelace", Some("acme.example"), "GB"), lead("sam@acme.example", "Sam Lee", "Sam", "Lee", None, "")]),
+            "a column mapped to nothing, like phone here, isn't read"
+        );
+
+        // An Excel file is read as a spreadsheet whatever the case of its extension. Both its people are new.
+        let xlsx = include_bytes!("testdata/leads.xlsx").as_slice();
+        let sheet = upload(&s, s.org, s.project, &[("file", Some("Leads.XLSX"), xlsx), ("mapping", None, br#"{"email": "Email", "first_name": "First name"}"#.as_slice())])
+            .await
+            .unwrap();
+        assert_eq!((sheet.filename.as_str(), sheet.total, sheet.imported, sheet.skipped, sheet.segment_id), ("Leads.XLSX", 2, 2, 0, None));
+        assert_eq!(sheet.errors, json!([]));
+
+        // The project's imports, newest first, only for its own org.
+        sqlx::query("update imports set created_at = now() - interval '1 hour' where id = $1").bind(sheet.id).execute(&s.state.db).await.unwrap();
+        let Json(past) = list(State(s.state.clone()), owner(s.org), Path(s.project)).await.unwrap();
+        assert_eq!(past.iter().map(|i| i.id).collect::<Vec<_>>(), [done.id, sheet.id]);
+        assert!(matches!(list(State(s.state.clone()), owner(s.other_org), Path(s.project)).await, Err(AppError::NotFound)));
+        let Json(none) = list(State(s.state.clone()), owner(s.other_org), Path(s.other_project)).await.unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[sqlx::test]
+    #[ignore = "needs Postgres"]
+    async fn a_hunter_import_needs_a_website_and_a_hunter_key(db: PgPool) {
+        let s = seed(db).await;
+        let hunter = |org: Uuid, project: Uuid, domain: &str, segment_id: Option<Uuid>| {
+            let state = s.state.clone();
+            let body = HunterBody { domain: domain.into(), segment_id };
+            async move { import_hunter(State(state), owner(org), Path(project), Json(body)).await.map(|Json(i)| i) }
+        };
+        let refused = |r: AppResult<Import>| match r {
+            Err(AppError::BadRequest(m)) => m,
+            other => panic!("{:?}", other.map(|i| i.filename)),
+        };
+        assert_eq!(refused(hunter(s.org, s.project, "not a website", None).await), "Enter a website like acme.com");
+        assert!(refused(hunter(s.org, s.project, "acme.example", Some(Uuid::new_v4())).await).starts_with("That campaign isn't part of this project"));
+        assert_eq!(refused(hunter(s.org, s.project, "https://www.acme.example/team", Some(s.segment)).await), "Connect Hunter under Integrations → Email finder first");
+        assert!(matches!(hunter(s.other_org, s.project, "acme.example", None).await, Err(AppError::NotFound)));
+        assert_eq!(count(&s, "imports").await, 0);
+    }
 
     #[test]
     fn reads_the_first_sheet_of_a_spreadsheet() {

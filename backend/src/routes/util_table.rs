@@ -22,10 +22,16 @@ pub(super) fn parse_csv(bytes: &[u8]) -> AppResult<Csv> {
     if headers.iter().all(String::is_empty) {
         return Err(AppError::BadRequest("The CSV has no header row".into()));
     }
+    // Line numbers are counted here, not taken from the reader: it counts only \n, so a file saved with \r endings is all
+    // line 1, and a record's position is where reading started, before the blank lines it skipped.
+    let (mut at, mut line) = (0, 1);
     let mut rows = Vec::new();
     for record in reader.byte_records() {
         let record = record.map_err(invalid)?;
-        let line = record.position().map_or(0, |p| p.line() as usize);
+        let start = record.position().map_or(at, |p| p.byte() as usize);
+        let start = start + bytes[start..].iter().take_while(|b| matches!(b, b'\r' | b'\n')).count();
+        line += (at..start).filter(|&i| bytes[i] == b'\r' || (bytes[i] == b'\n' && (i == 0 || bytes[i - 1] != b'\r'))).count();
+        at = start;
         rows.push((line, to_strings(&record)));
     }
     Ok(Csv { headers, rows })
@@ -87,6 +93,18 @@ fn with_blank_rows(header_line: usize, rows: Vec<(usize, Vec<String>)>, max: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_rows_keep_their_line_numbers_past_blank_lines() {
+        let csv = parse_csv(b"\xEF\xBB\xBFemail\na@x.example\n\n\nb@x.example\r\n\r\nc@x.example\n  \nd@x.example").unwrap();
+        let lines: Vec<_> = csv.rows.iter().map(|(line, cells)| (*line, cells[0].as_str())).collect();
+        assert_eq!(lines, [(2, "a@x.example"), (5, "b@x.example"), (7, "c@x.example"), (8, ""), (9, "d@x.example")]);
+
+        // \r endings, as Excel's CSV (Macintosh) saves, with a blank line and a quoted field running over two lines.
+        let csv = parse_csv(b"\nemail\ra@x.example\r\rb@x.example\r\"c\r\nd\"\re@x.example\r\r").unwrap();
+        let lines: Vec<_> = csv.rows.iter().map(|(line, cells)| (*line, cells[0].as_str())).collect();
+        assert_eq!(lines, [(3, "a@x.example"), (5, "b@x.example"), (6, "c\r\nd"), (8, "e@x.example")]);
+    }
 
     #[test]
     fn a_blank_row_between_two_comes_back_in_its_place() {
