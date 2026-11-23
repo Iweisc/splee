@@ -121,7 +121,10 @@ export function Avatar({ name, className }: { name: string; className?: string }
 
 /** Where toasts show. A modal renders its own, see Modal. */
 export function Toasts() {
-  return <Toaster position="bottom-right" />;
+  // Above the settings save bar (bottom-6, 3rem tall), which stays up after a keyboard save with Save focused. On phones and
+  // tablets a toast at the usual offset would cover it.
+  const bottom = { bottom: "5.25rem" };
+  return <Toaster position="bottom-right" offset={bottom} mobileOffset={bottom} />;
 }
 
 /** Native <dialog> modal. Closes on Escape and backdrop click. */
