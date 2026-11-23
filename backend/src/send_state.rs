@@ -149,10 +149,13 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
     .bind(day_start)
     .fetch_one(db)
     .await?;
-    let active_mailboxes: i64 = sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and status = 'active'")
-        .bind(org_id)
-        .fetch_one(db)
-        .await?;
+    // Only the project's own mailboxes, when it picked some, can start its threads.
+    let active_mailboxes: i64 =
+        sqlx::query_scalar("select count(*) from mailboxes where org_id = $1 and status = 'active' and ($2::uuid[] is null or id = any($2))")
+            .bind(org_id)
+            .bind(&settings.mailbox_ids)
+            .fetch_one(db)
+            .await?;
     let facts = Facts {
         campaign_id: segment.id,
         project_id: segment.project_id,
@@ -160,7 +163,16 @@ pub async fn load(db: &PgPool, org_id: Uuid, segment: &Segment, settings: &Proje
         archived: segment.archived_at.is_some(),
         project_paused: settings.paused,
         active_mailboxes,
-        mailbox_ready: mailbox_ready(db, mail::sender::mailboxes_with_room(db, org_id, false).await?, segment.id, lead_cap_reached, &closed, now).await?,
+        mailbox_ready: mailbox_ready(
+            db,
+            mail::sender::mailboxes_with_room(db, org_id, false).await?,
+            settings.mailbox_ids.as_deref(),
+            segment.id,
+            lead_cap_reached,
+            &closed,
+            now,
+        )
+        .await?,
         queue,
         unwritten: agent::leads_without_initial(db, segment.project_id, Some(segment.id)).await?.len(),
         project_sent,
@@ -213,7 +225,15 @@ const CHECKED: i64 = 50;
 
 /// Whether one of the campaign's due emails has a mailbox to go out from now, as the sender picks it: a first email takes any
 /// mailbox with room, and a follow-up waits for its thread's. Past autopilot's lead cap only follow-ups can go, so only they count.
-async fn mailbox_ready(db: &PgPool, rooms: Vec<Mailbox>, segment_id: Uuid, follow_ups_only: bool, closed: &Pairs, now: Ts) -> AppResult<bool> {
+async fn mailbox_ready(
+    db: &PgPool,
+    rooms: Vec<Mailbox>,
+    only: Option<&[Uuid]>,
+    segment_id: Uuid,
+    follow_ups_only: bool,
+    closed: &Pairs,
+    now: Ts,
+) -> AppResult<bool> {
     if rooms.is_empty() {
         return Ok(false);
     }
@@ -238,7 +258,7 @@ async fn mailbox_ready(db: &PgPool, rooms: Vec<Mailbox>, segment_id: Uuid, follo
         return Ok(true);
     }
     for email in &due {
-        if mail::sender::pick_from(db, rooms.clone(), email, None).await?.is_some() {
+        if mail::sender::pick_from(db, rooms.clone(), email, None, only).await?.is_some() {
             return Ok(true);
         }
     }

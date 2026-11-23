@@ -437,6 +437,8 @@ export interface ProjectSettings extends CrmStatus {
   lead_time_zone: boolean;
   /** Once a lead replies, the sequence stops for the project's other leads at the same company (same company or website). */
   stop_company_on_reply: boolean;
+  /** The mailboxes that send its first emails, or null for all of the organization's. Threads keep their mailbox. */
+  mailbox_ids: string[] | null;
   /** Texts after the first email, through the organization's Twilio account. */
   text_steps: TextStep[];
   /** Texts sent in any 24 hours. Replies count toward it but are never held back. */

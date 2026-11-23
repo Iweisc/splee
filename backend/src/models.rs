@@ -401,6 +401,8 @@ pub struct ProjectSettings {
     pub lead_time_zone: bool,
     /// Once a lead replies, the sequence stops for the project's other leads at the same company.
     pub stop_company_on_reply: bool,
+    /// The org mailboxes its first emails go out from, null for all of them. Threads keep their mailbox.
+    pub mailbox_ids: Option<Vec<Uuid>>,
     /// Texts after the first email, as [{channel, delay_days, instructions}]. Sent through the org's Twilio account.
     pub text_steps: Value,
     /// Texts sent in any 24 hours. Replies count toward it but are never held back, like emails.

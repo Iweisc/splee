@@ -372,6 +372,10 @@ async fn settings(State(_): State<AppState>, _: Auth, Query(q): Query<SettingsQu
 async fn remove(State(state): State<AppState>, auth: Auth, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
     auth.require_admin()?;
     let mailbox = load(&state.db, id, auth.org_id).await?;
+    sqlx::query("update project_settings set mailbox_ids = array_remove(mailbox_ids, $1) where $1 = any(mailbox_ids)")
+        .bind(mailbox.id)
+        .execute(&state.db)
+        .await?;
     sqlx::query("delete from mailboxes where id = $1").bind(mailbox.id).execute(&state.db).await?;
     audit::record(&state.db, &auth, "mailbox.removed", Target::new("mailbox", mailbox.id, &mailbox.email), json!({})).await;
     Ok(Json(json!({ "ok": true })))
