@@ -31,10 +31,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const params = useParams<{ projectId?: string; segId?: string; questionnaireId?: string }>();
   const { me, error, isLoading, mutate } = useMe();
   const { data: projects } = useSWR<ProjectSummary[]>(me ? "/projects" : null, fetcher);
-  // A campaign or questionnaire leads with its name, so two open tabs aren't both "Campaigns". Same keys as those pages, so
-  // this reads what they load rather than fetching again.
-  const { data: campaign } = useSWR<{ name: string }>(params.segId ? `/segments/${params.segId}` : null, fetcher);
-  const { data: questionnaire } = useSWR<{ name: string }>(params.questionnaireId ? `/questionnaires/${params.questionnaireId}` : null, fetcher);
+  // A campaign or questionnaire leads with its name, so two open tabs aren't both "Campaigns". Same keys and error handling
+  // as those pages, so this reads what they load rather than fetching again, and drops the name when they show an error.
+  const detailKey = !me
+    ? null
+    : params.segId
+      ? `/segments/${params.segId}`
+      : params.questionnaireId
+        ? `/questionnaires/${params.questionnaireId}`
+        : null;
+  const detail = useSWR<{ name: string }>(detailKey, fetcher, swrConfig);
   // The phone menu remembers the page it was opened on, so following any link closes it without an effect.
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const menuOpen = menuPath === pathname;
@@ -107,7 +113,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const projectId =
     params.projectId ?? (projects ? (projects.find((p) => p.id === lastProject)?.id ?? projects[0]?.id ?? null) : lastProject);
   const project = projects?.find((p) => p.id === projectId);
-  const item = (params.segId ? campaign : params.questionnaireId ? questionnaire : undefined)?.name;
+  const item = detail.error ? undefined : detail.data?.name;
   const pageTitle = (item ? `${item} · ` : "") + titleFor(pathname, projectId, project);
 
   const logout = async () => {
