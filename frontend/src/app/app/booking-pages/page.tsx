@@ -95,7 +95,7 @@ export default function BookingPagesPage() {
                     description="Pick the mailbox whose owner takes the calls. Invites go out from it."
                   >
                     <div className="flex flex-wrap gap-2">
-                      <Select value={mailbox || without[0]!.id} onChange={(e) => setMailbox(e.target.value)} className="min-w-0 flex-1 basis-60">
+                      <Select value={mailbox || without[0]!.id} onChange={(e) => setMailbox(e.target.value)} className="min-w-0 flex-1 basis-60" aria-label="Mailbox">
                         {without.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.from_name ? `${m.from_name} (${m.email})` : m.email}
@@ -291,8 +291,10 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
           </Select>
         </Field>
 
+        {/* With a calendar connected, the label would send its clicks to Remove, so it names the group instead. */}
         <Field
           label="Busy times from your calendar"
+          group={!!page.calendar_host}
           hint={
             page.calendar_host
               ? "Paste a new address to replace it."
@@ -322,6 +324,7 @@ function PageCard({ page, onSaved }: { page: BookingPage; onSaved: (p: BookingPa
             onChange={(e) => set({ calendar_url: e.target.value })}
             placeholder="https://calendar.google.com/calendar/ical/…/basic.ics"
             autoComplete="off"
+            aria-label={page.calendar_host ? "New calendar address" : undefined}
           />
         </Field>
         {page.calendar_error && (
