@@ -84,10 +84,13 @@ export default function SegmentPage({ params }: PageProps<"/app/p/[projectId]/se
         description={
           <span className="flex flex-wrap items-center gap-4">
             <SegmentStatusDot status={segment.status} />
-            <span className="tabular-nums">~{compact(segment.est_size)} companies</span>
-            <span className="inline-flex items-center gap-2">
-              Fit <FitScore value={segment.fit_score} />
-            </span>
+            {/* Size and fit stay 0 until research estimates them, as on a campaign made by hand. A real 0 wouldn't tell anyone much. */}
+            {segment.est_size > 0 && <span className="tabular-nums">~{compact(segment.est_size)} companies</span>}
+            {segment.fit_score > 0 && (
+              <span className="inline-flex items-center gap-2">
+                Fit <FitScore value={segment.fit_score} />
+              </span>
+            )}
           </span>
         }
         actions={
