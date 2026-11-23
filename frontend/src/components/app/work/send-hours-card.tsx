@@ -18,6 +18,7 @@ import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { MicroLabel, toastError } from "./states";
 
 const LABEL = "Its own days and hours";
+const SAVE = "Save hours";
 
 /** Whether the campaign sends in the project's days and hours or its own. Its own start as a copy of the project's, saved at once
  *  so nothing changes until someone edits them, and edits wait for Save. The page keys it on the saved hours, so a save starts the
@@ -32,7 +33,7 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const problemId = useId();
-  const root = useKeepFocus<HTMLDivElement>(`send-hours:${segment.id}`, LABEL);
+  const root = useKeepFocus<HTMLDivElement>(`send-hours:${segment.id}`, [LABEL, SAVE]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   useLeaveGuard(dirty);
 
@@ -88,9 +89,12 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
         </li>
       </ul>
       {draft && (
-        // Disabled while saving, since the saved hours start the draft over and would drop an edit made meanwhile.
-        <fieldset disabled={saving} className="flex min-w-0 flex-col">
-          <SendWindowFields value={draft} onChange={setDraft} />
+        // The fields are disabled while saving, since the saved hours start the draft over and would drop an edit made meanwhile.
+        // Save isn't, so it keeps keyboard focus, like the Follow-ups card's.
+        <div className="flex min-w-0 flex-col">
+          <fieldset disabled={saving} className="contents">
+            <SendWindowFields value={draft} onChange={setDraft} />
+          </fieldset>
           {/* Always mounted, so a screen reader is already listening when an edit makes the first problem, like the Follow-ups card. */}
           <span role="status" className="sr-only">
             {problem}
@@ -103,20 +107,21 @@ export function SendHoursCard({ segment }: { segment: SegmentWithStats }) {
               </p>
             )}
             {dirty && (
-              <Button variant="ghost" onClick={() => setDraft(saved)}>
+              <Button variant="ghost" onClick={() => setDraft(saved)} disabled={saving}>
                 Discard
               </Button>
             )}
             <Button
-              onClick={() => save(draft, "Sending hours saved")}
+              onClick={dirty ? () => save(draft, "Sending hours saved") : undefined}
               loading={saving}
-              disabled={!dirty || !!problem}
+              disabled={!!problem}
+              aria-disabled={!dirty || undefined}
               aria-describedby={problem ? problemId : undefined}
             >
-              Save hours
+              {SAVE}
             </Button>
           </div>
-        </fieldset>
+        </div>
       )}
       {shown && !windowProblem(shown) && zone && (
         <p className="text-sm text-muted-foreground">
