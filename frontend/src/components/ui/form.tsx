@@ -2,7 +2,7 @@ import { createContext, useContext, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const field =
-  "w-full rounded-lg border border-border-strong bg-card px-3 text-sm text-foreground placeholder:text-subtle-foreground outline-none transition-shadow focus:border-foreground/40 focus:ring-4 focus:ring-black/5 disabled:opacity-60";
+  "w-full rounded-lg border border-border-strong bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-shadow focus:border-foreground/40 focus:ring-4 focus:ring-black/5 disabled:opacity-60";
 
 export function Input({ className, ...props }: React.ComponentProps<"input">) {
   return <input className={cn(field, "h-10", className)} {...props} />;
