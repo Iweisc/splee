@@ -43,12 +43,20 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Line numbers are all a failing test's backtrace needs. Full debug info makes the test binary twice the size and slower to build.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+      # The test databases are thrown away, so Postgres needn't wait for the disk. A service can't take server flags, but these
+      # three take effect on a reload.
+      - run: >-
+          psql postgres://splee:splee@localhost:5432/postgres -q -v ON_ERROR_STOP=1 -c "alter system set fsync = off" -c "alter system set full_page_writes = off"
+          -c "alter system set synchronous_commit = off" -c "select pg_reload_conf()"
       # Migrating template1 once saves each of the hundreds of test databases its own run of every migration.
       - run: cargo run -q --example migrate
         env:
