@@ -24,7 +24,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
   const { data: imported } = useSWR<SegmentSteps>(`/segments/${segment.id}/steps`, fetcher);
   const { data: settings } = useSWR<ProjectSettings>(`/projects/${segment.project_id}/settings`, fetcher);
   // The API and MCP may leave a step's instructions out, and the editor needs text.
-  const saved = segment.follow_ups?.map((f) => ({ instructions: "", ...f })) ?? null;
+  const saved = segment.follow_ups?.map((f) => ({ ...f, instructions: f.instructions || "" })) ?? null;
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
