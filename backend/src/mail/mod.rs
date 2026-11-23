@@ -73,6 +73,8 @@ pub fn spawn_workers(state: AppState) {
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::routes::segments::start_scheduled(&s.db), "scheduled campaign starts").await });
     let s = state.clone();
+    tokio::spawn(async move { every(Duration::from_secs(60), || crate::routes::segments::pause_scheduled(&s.db), "scheduled campaign pauses").await });
+    let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(60), || crate::hooks::announce_due_reminders(&s), "reminder alerts").await });
     let s = state.clone();
     tokio::spawn(async move { every(Duration::from_secs(900), || crate::push::approval_digests(&s), "approval pushes").await });

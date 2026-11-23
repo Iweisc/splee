@@ -59,7 +59,7 @@ impl Who {
         self.org_id
     }
 
-    /// Kept to act for them later, like a campaign's scheduled start (routes/segments.rs start_scheduled).
+    /// Kept to act for them later, like a campaign's scheduled start or pause (routes/segments.rs start_scheduled).
     pub fn stored(org_id: Uuid, user_id: Option<Uuid>, key_id: Option<Uuid>) -> Self {
         Who { org_id, user_id, key_id }
     }

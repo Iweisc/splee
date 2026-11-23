@@ -410,6 +410,67 @@ async fn a_campaign_set_to_start_later_starts_itself_then_in_the_name_of_the_key
 // Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
 #[sqlx::test]
 #[ignore = "needs Postgres"]
+async fn a_campaign_set_to_pause_later_pauses_itself_then_and_a_scheduled_start_keeps_it(db: PgPool) {
+    let [a, _] = seed(&db).await;
+    let (segment, email) = campaign(&db, a, "draft").await;
+    let other: Uuid = sqlx::query_scalar("insert into segments (project_id, name, status) values ($1, 'Gyms', 'working') returning id")
+        .bind(a)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let api = Api::start(&db, LIMITS).await;
+    let path = format!("/v1/campaigns/{segment}");
+    let in_hours = |h: i64| (chrono::Utc::now() + chrono::Duration::hours(h)).to_rfc3339();
+    let row = |id: Uuid| {
+        let db = db.clone();
+        async move {
+            sqlx::query_as::<_, (String, bool)>("select status, pause_at is not null from segments where id = $1").bind(id).fetch_one(&db).await.unwrap()
+        }
+    };
+
+    assert_eq!(api.patch(&path, json!({ "pause_at": in_hours(5) })).await.0, 400, "a draft that won't start has nothing to pause");
+    let (status, detail) = api.patch(&path, json!({ "start_at": in_hours(2), "pause_at": in_hours(1) })).await;
+    assert_eq!(status, 400, "before it starts: {detail}");
+    for (pause_at, why) in [(in_hours(-1), "in the past"), (in_hours(24 * 400), "over a year away")] {
+        assert_eq!(api.patch(&path, json!({ "start_at": in_hours(2), "pause_at": pause_at })).await.0, 400, "{why}");
+    }
+    let (status, detail) = api.patch(&path, json!({ "start_at": in_hours(2), "pause_at": in_hours(5) })).await;
+    assert!(status == 200 && detail["pause_at"].is_string(), "{detail}");
+    assert!(detail["status_reason"].as_str().unwrap().contains("It pauses by itself on"), "{detail}");
+    assert_eq!(api.patch(&path, json!({ "start_at": in_hours(6) })).await.0, 400, "a start moved past the pause");
+
+    // The scheduled start keeps the pause, and the pause waits for its time.
+    sqlx::query("update segments set start_at = now() - interval '1 minute' where id = $1").bind(segment).execute(&db).await.unwrap();
+    crate::routes::segments::start_scheduled(&db).await.unwrap();
+    crate::routes::segments::pause_scheduled(&db).await.unwrap();
+    assert_eq!(row(segment).await, ("working".into(), true));
+
+    // Its time comes: it pauses like Pause, once, and the audit log names the key that set it.
+    sqlx::query("update segments set pause_at = now() - interval '1 minute' where id = $1").bind(segment).execute(&db).await.unwrap();
+    for _ in 0..2 {
+        crate::routes::segments::pause_scheduled(&db).await.unwrap();
+    }
+    assert_eq!(row(segment).await, ("paused".into(), false));
+    let email_status: String = sqlx::query_scalar("select status from email_messages where id = $1").bind(email).fetch_one(&db).await.unwrap();
+    assert_eq!(email_status, "draft");
+    assert_eq!(count(&db, "select count(*) from audit_events where action = 'campaign.paused' and actor_key_id is not null").await, 1);
+
+    // null cancels it, and so do Pause and archiving.
+    let other_path = format!("/v1/campaigns/{other}");
+    api.patch(&other_path, json!({ "pause_at": in_hours(2) })).await;
+    assert_eq!(api.patch(&other_path, json!({ "pause_at": null })).await.1["pause_at"], Value::Null);
+    api.patch(&other_path, json!({ "pause_at": in_hours(2) })).await;
+    assert_eq!(api.post(KEYS[0], &format!("{other_path}/stop"), None, json!({})).await.0, 200);
+    assert_eq!(row(other).await, ("paused".into(), false));
+    assert_eq!(api.post(KEYS[0], &format!("{other_path}/start"), None, json!({})).await.0, 200);
+    api.patch(&other_path, json!({ "pause_at": in_hours(2) })).await;
+    assert_eq!(api.post(KEYS[0], &format!("{other_path}/archive"), None, json!({})).await.0, 200);
+    assert_eq!(row(other).await, ("paused".into(), false));
+}
+
+// Ignored by default: sqlx::test creates throwaway databases on the DATABASE_URL server, which may come from .env. See CONTRIBUTING.md.
+#[sqlx::test]
+#[ignore = "needs Postgres"]
 async fn a_duplicated_campaign_is_a_draft_with_the_same_brief_and_settings_and_no_leads(db: PgPool) {
     let [a, b] = seed(&db).await;
     let (segment, _) = campaign(&db, a, "working").await;

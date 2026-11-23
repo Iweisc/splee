@@ -154,6 +154,10 @@ export function endpoints(projectId: string): Endpoint[] {
           "start_at",
           "a time within the next year when a campaign that isn't sending starts by itself, as POST /campaigns/{id}/start would, like 2026-12-01T09:00:00Z. null cancels it, and so do start and archive",
         ],
+        [
+          "pause_at",
+          "a time within the next year when a campaign that's sending, or set to start, pauses by itself, as POST /campaigns/{id}/stop would, like 2026-12-15T17:00:00Z. It must come after start_at. null cancels it, and so do stop and archive. A start keeps it",
+        ],
       ],
       body: `{ "angle": "Get paid on time without awkward emails", "targeting": { "roles": ["Founder", "Studio manager"] }, "daily_limit": 25 }`,
       response: `{
@@ -181,6 +185,7 @@ export function endpoints(projectId: string): Endpoint[] {
   "angle": "Get paid on time without awkward emails",
   "daily_limit": 25,
   "start_at": null,
+  "pause_at": null,
   "schedule": { "sending": true, "timezone": "America/New_York", "send_days": [1, 2, 3, 4, 5], "send_start_hour": 9, "send_end_hour": 17, "own_send_hours": false, "daily_email_limit": 50 },
   "follow_ups": [{ "delay_days": 3, "enabled": true, "instructions": "" }],
   "own_follow_ups": false,
