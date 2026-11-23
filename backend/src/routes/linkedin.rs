@@ -329,7 +329,7 @@ mod tests {
 
         sqlx::query("update project_settings set stop_company_on_reply = true where project_id = $1").bind(project).execute(&db).await.unwrap();
         stop_for_reply(&db, &sam, "They replied on LinkedIn").await.unwrap();
-        assert_eq!(follow_up(dana).await.unwrap(), ("cancelled".into(), Some("Sam Lee at the same company replied".into())));
+        assert_eq!(follow_up(dana).await.unwrap(), ("cancelled".into(), Some("Sam Lee at the same company responded".into())));
         assert_eq!(steps(&db, dana).await[0].status, "skipped");
         assert_eq!(follow_up(kim).await.unwrap().0, "approved");
         assert_eq!(steps(&db, kim).await[0].status, "todo");

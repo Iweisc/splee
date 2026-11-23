@@ -157,11 +157,17 @@ pub(crate) async fn mark_booked(state: &AppState, leads: &[Lead], at: Option<Ts>
         if rescheduled {
             continue;
         }
-        // Only the request that moves the lead sends the alerts, if the tool retries or two bookings arrive at once.
+        // Only the request that moves the lead sends the alerts, if the tool retries or two bookings arrive at once. A booking
+        // ends the sequence for their colleagues like a reply, in the same transaction, so a retry after a failure does it too.
+        let mut tx = state.db.begin().await?;
         let moved: Option<Lead> = sqlx::query_as("update leads set status = 'meeting_booked' where id = $1 and status <> 'meeting_booked' returning *")
             .bind(lead.id)
-            .fetch_optional(&state.db)
+            .fetch_optional(&mut *tx)
             .await?;
+        if let Some(moved) = &moved {
+            crate::mail::stop_colleagues(&mut tx, moved).await?;
+        }
+        tx.commit().await?;
         if let Some(moved) = moved {
             hooks::status_changed(state, &lead.status, &moved).await;
         }

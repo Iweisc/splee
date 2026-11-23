@@ -271,7 +271,7 @@ pub async fn stop_colleagues(conn: &mut sqlx::PgConnection, lead: &Lead) -> sqlx
         return Ok(0);
     }
     let who = [&lead.full_name, lead.email.as_ref().unwrap_or(&String::new())].into_iter().find(|s| !s.is_empty()).cloned();
-    let why = format!("{} at the same company replied", who.as_deref().unwrap_or("Someone"));
+    let why = format!("{} at the same company responded", who.as_deref().unwrap_or("Someone"));
     for id in &colleagues {
         end_sequence(conn, *id, &why).await?;
     }

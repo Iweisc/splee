@@ -495,3 +495,40 @@ async fn the_guest_is_reminded_once_the_pages_hours_before_the_call(db: PgPool) 
     reschedule(&state, &fourth_token, soon[1]).await.unwrap();
     assert_eq!(remind_at(fourth.id).await.unwrap(), None);
 }
+
+#[sqlx::test]
+#[ignore = "needs Postgres"]
+async fn a_booking_stops_the_sequence_for_colleagues_when_the_project_says_so(db: PgPool) {
+    let state = state(db.clone());
+    let (_, project, ..) = setup(&db, "Acme").await;
+    sqlx::query("insert into project_settings (project_id, stop_company_on_reply) values ($1, true)
+                 on conflict (project_id) do update set stop_company_on_reply = true")
+        .bind(project)
+        .execute(&db)
+        .await
+        .unwrap();
+    let sarah = lead(&db, project, "sarah@brightline.example").await;
+    let colleague: Uuid = sqlx::query_scalar(
+        "insert into leads (project_id, full_name, email, status) values ($1, 'Lee Park', 'lee@brightline.example', 'contacted') returning id",
+    )
+    .bind(project)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("update leads set company_domain = 'brightline.example' where project_id = $1").bind(project).execute(&db).await.unwrap();
+    sqlx::query("insert into email_messages (project_id, lead_id, direction, kind, step, status) values ($1, $2, 'outbound', 'follow_up', 1, 'approved')")
+        .bind(project)
+        .bind(colleague)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    crate::routes::bookings::mark_booked(&state, &[reload(&db, &sarah).await], None, false).await.unwrap();
+    assert_eq!(reload(&db, &sarah).await.status, "meeting_booked");
+    let (status, error): (String, String) = sqlx::query_as("select status, error from email_messages where lead_id = $1")
+        .bind(colleague)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!((status.as_str(), error.as_str()), ("cancelled", "Sarah Chen at the same company responded"));
+}
