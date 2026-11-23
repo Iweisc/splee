@@ -82,7 +82,8 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
         </li>
       </ul>
       {draft ? (
-        <>
+        // Disabled while saving, since the saved steps start the draft over and would drop an edit made meanwhile.
+        <fieldset disabled={saving} className="flex min-w-0 flex-col gap-4">
           <FollowUpSteps steps={draft} onChange={setDraft} />
           <div className="flex flex-wrap items-center gap-2">
             {draft.length > 0 && <AddStepButtons steps={draft} onChange={setDraft} />}
@@ -98,7 +99,7 @@ export function FollowUpsCard({ segment }: { segment: SegmentWithStats }) {
               </Button>
             </div>
           </div>
-        </>
+        </fieldset>
       ) : (
         settings && <ProjectSteps steps={settings.follow_ups} />
       )}

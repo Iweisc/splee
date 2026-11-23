@@ -799,6 +799,14 @@ mod tests {
         }
         assert_eq!(api.get("ana", &settings).await["assign_territories"], json!([{ "owner": ben, "countries": ["DE", "AT"] }]));
 
+        // Follow-ups saved before their check got stricter, sent back unchanged with the rest of the form, don't block a save.
+        let legacy = json!([{ "delay_days": 3, "enabled": true }, { "delay_days": 45 }]);
+        sqlx::query("update project_settings set follow_ups = $2 where project_id = $1").bind(t.project).bind(&legacy).execute(&t.db).await.unwrap();
+        let (status, _) = api.send("ana", put.clone(), &settings, Some(json!({ "assign_rule": "off", "follow_ups": legacy }))).await;
+        assert_eq!(status, 200);
+        let (status, _) = api.send("ana", put.clone(), &settings, Some(json!({ "follow_ups": [{ "delay_days": 45, "enabled": true }] }))).await;
+        assert_eq!(status, 400, "a change is checked");
+
         // Removing someone hands their leads back to nobody.
         assign(&t.db, t.acme, &[nobodys], Some(ben)).await.unwrap();
         let (status, _) = api.send("ana", reqwest::Method::DELETE, &format!("/organization/users/{ben}"), None).await;

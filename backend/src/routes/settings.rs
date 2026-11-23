@@ -262,7 +262,9 @@ pub(super) async fn apply(db: &PgPool, org_id: Uuid, id: Uuid, body: SettingsBod
     if !(0..=23).contains(&start) || !(1..=24).contains(&end) || start >= end {
         return bad("Send window must start before it ends, within 0-24h");
     }
-    if let Some(Err(m)) = body.follow_ups.as_ref().map(check_follow_ups) {
+    // Every settings page sends the whole form back, so only a change is checked. Steps saved before the check got stricter
+    // don't block saving something else.
+    if let Some(Err(m)) = body.follow_ups.as_ref().filter(|f| **f != current.follow_ups).map(check_follow_ups) {
         return bad(m);
     }
     if let Some(Err(m)) = body.text_steps.as_ref().map(check_text_steps) {
